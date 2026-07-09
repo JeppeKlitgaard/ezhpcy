@@ -1,7 +1,7 @@
 import typer
 
 from dtuhpc.cli.info import info_cmd
-from dtuhpc.cli.tunnel import app as tunnel_app
+from dtuhpc.cli.tunnel import tunnel_app
 from dtuhpc.patch.typer_alias import AliasGroup
 
 app = typer.Typer(

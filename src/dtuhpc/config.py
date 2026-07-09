@@ -7,6 +7,7 @@ from pydantic_settings import (
     SettingsConfigDict,
     TomlConfigSettingsSource,
 )
+from pydantic_extra_types.domain import DomainStr
 import typing
 import re
 
@@ -48,6 +49,13 @@ class HPCConfig(BaseModel):
     login_node_pattern: typing.Pattern = re.compile(r"^hpclogin\d+$")
 
 
+class ConnectionInfo(BaseModel):
+    user: str | None = None
+    password: str | None = None
+
+    login_node_address: DomainStr = DomainStr("login2.hpc.dtu.dk")
+
+
 
 class Config(BaseSettings):
     # define your fields here
@@ -55,6 +63,7 @@ class Config(BaseSettings):
     cache_dir: Path = _get_default_cache_dir()
 
     hpc: HPCConfig = HPCConfig()
+    connection: ConnectionInfo = ConnectionInfo()
 
     model_config = SettingsConfigDict(
         toml_file=_default_config_file(),

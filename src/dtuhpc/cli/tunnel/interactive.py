@@ -2,7 +2,13 @@ from typing import Annotated
 
 import typer
 
-from dtuhpc.cli.tunnel.common import local_machine_or_fail
+from dtuhpc.cli.tunnel.common import (
+    HostOpt,
+    PasswordOpt,
+    UserOpt,
+    connection_info_from_options,
+    local_machine_or_fail,
+)
 from dtuhpc.config import config
 
 
@@ -12,6 +18,9 @@ def _shell_help() -> str:
 
 
 def interactive_cmd(
+    user: UserOpt = config.connection.user,
+    password: PasswordOpt = config.connection.password,
+    host: HostOpt = config.connection.login_node_address,
     shell: Annotated[
         str | None,
         typer.Argument(
@@ -21,6 +30,8 @@ def interactive_cmd(
     ] = None,
 ) -> None:
     """Start an interactive DTU HPC session."""
+    connection_info_from_options(user=user, password=password, host=host)
+
     local_machine_or_fail()
 
     shell = shell or config.hpc.default_interactive_shell

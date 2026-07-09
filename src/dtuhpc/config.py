@@ -1,17 +1,24 @@
 import os
 from pathlib import Path
-
+from pydantic import BaseModel
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
     SettingsConfigDict,
     TomlConfigSettingsSource,
 )
+import typing
+import re
 
 def _get_default_config_dir() -> Path:
     xdg_config_home = os.environ.get("XDG_CONFIG_HOME")
     config_home = Path(xdg_config_home) if xdg_config_home else Path.home() / ".config"
     return config_home / "dtuhpc"
+
+def _get_default_cache_dir() -> Path:
+    xdg_cache_home = os.environ.get("XDG_CACHE_HOME")
+    cache_home = Path(xdg_cache_home) if xdg_cache_home else Path.home() / ".cache"
+    return cache_home / "dtuhpc"
 
 
 def _default_config_file() -> Path:
@@ -20,9 +27,34 @@ def _default_config_file() -> Path:
 
     return _get_default_config_dir() / "dtuhpc.toml"
 
+
+class HPCConfig(BaseModel):
+    # At DTU this can be found by running `ls /lsf/local/bin/` and filtering a bit manually
+    # Or using the list at https://www.hpc.dtu.dk/?page_id=2129 and elsewhere
+    interactive_shells: list[str] = [
+        # GPU
+        "a100sh",
+        "h100sh",
+        "voltash",
+        "sxm2sh",
+
+        # CPU
+        "qrsh",
+        "linuxsh",
+    ]
+
+    default_interactive_shell: str = "linuxsh"
+
+    login_node_pattern: typing.Pattern = re.compile(r"^hpclogin\d+$")
+
+
+
 class Config(BaseSettings):
     # define your fields here
     config_dir: Path = _get_default_config_dir()
+    cache_dir: Path = _get_default_cache_dir()
+
+    hpc: HPCConfig = HPCConfig()
 
     model_config = SettingsConfigDict(
         toml_file=_default_config_file(),

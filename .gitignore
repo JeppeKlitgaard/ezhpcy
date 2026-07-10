@@ -2,3 +2,10 @@
 .venv/
 *.py[cod]
 __pycache__/
+
+# Distribution
+dist/
+
+# Tools
+.ruff_cache/
+.pytest_cache/

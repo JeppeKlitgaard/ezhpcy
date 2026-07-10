@@ -7,6 +7,7 @@ from ezhpcy.cli.tunnel.common import (
     connection_info_from_options,
 )
 from ezhpcy.cli.tunnel.interactive import interactive_cmd
+from ezhpcy.cli.tunnel.install import install_cmd
 from ezhpcy.config import config
 from ezhpcy.patch.typer_alias import AliasGroup
 
@@ -27,6 +28,7 @@ def _batch(
     typer.echo("Running batch workflow.")
 
 
+tunnel_app.command(name="install", help="Install ezhpcy on HPC.")(install_cmd)
 tunnel_app.command(name="interactive, i", help="Start an interactive session.")(
     interactive_cmd
 )

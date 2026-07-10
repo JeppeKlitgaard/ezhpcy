@@ -1,5 +1,6 @@
 from ezhpcy.cli import app
 
+
 def main() -> None:
     app()
 

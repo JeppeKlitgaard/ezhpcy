@@ -82,7 +82,9 @@ def install_cmd(
     )
 
     if not user_accepts:
-        console.print("[bold yellow]Aborted[/bold yellow]: installation cancelled by user.")
+        console.print(
+            "[bold yellow]Aborted[/bold yellow]: installation cancelled by user."
+        )
         raise typer.Exit(code=1)
 
     install_script = resources.files("ezhpcy").joinpath(INSTALL_SCRIPT_RESOURCE)
@@ -113,4 +115,3 @@ def install_cmd(
         console.print(install_output.rstrip())
 
     console.print("[bold green]Success[/bold green]: remote installation completed.")
-

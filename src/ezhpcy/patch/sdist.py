@@ -58,7 +58,9 @@ def _bundled_sdist() -> resources.abc.Traversable:
         if path.is_file() and path.name.endswith(".tar.gz")
     ]
     if len(payloads) != 1:
-        raise RuntimeError(f"Expected exactly one bundled sdist, found {len(payloads)}.")
+        raise RuntimeError(
+            f"Expected exactly one bundled sdist, found {len(payloads)}."
+        )
 
     return payloads[0]
 

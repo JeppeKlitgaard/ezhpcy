@@ -48,7 +48,6 @@ class HPCConfig(BaseModel):
         "h100sh",
         "voltash",
         "sxm2sh",
-
         # CPU
         "qrsh",
         "linuxsh",

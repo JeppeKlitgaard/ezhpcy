@@ -1,10 +1,11 @@
 import typer.core
 import re
 
+
 class AliasGroup(typer.core.TyperGroup):
     # https://github.com/fastapi/typer/issues/132#issuecomment-1714516903
 
-    _CMD_SPLIT_P = r'[,| ?\/]'
+    _CMD_SPLIT_P = r"[,| ?\/]"
 
     def _group_cmd_name(self, default_name):
         for cmd in self.commands.values():

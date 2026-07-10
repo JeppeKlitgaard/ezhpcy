@@ -11,15 +11,25 @@ from pydantic_extra_types.domain import DomainStr
 import typing
 import re
 
+
 def _get_default_config_dir() -> Path:
     xdg_config_home = os.environ.get("XDG_CONFIG_HOME")
     config_home = Path(xdg_config_home) if xdg_config_home else Path.home() / ".config"
     return config_home / "ezhpcy"
 
+
 def _get_default_cache_dir() -> Path:
     xdg_cache_home = os.environ.get("XDG_CACHE_HOME")
     cache_home = Path(xdg_cache_home) if xdg_cache_home else Path.home() / ".cache"
     return cache_home / "ezhpcy"
+
+
+def _get_default_data_dir() -> Path:
+    xdg_data_home = os.environ.get("XDG_DATA_HOME")
+    data_home = (
+        Path(xdg_data_home) if xdg_data_home else Path.home() / ".local" / "share"
+    )
+    return data_home / "ezhpcy"
 
 
 def _default_config_file() -> Path:
@@ -56,11 +66,11 @@ class ConnectionInfo(BaseModel):
     host: DomainStr = DomainStr("login2.hpc.dtu.dk")
 
 
-
 class Config(BaseSettings):
     # define your fields here
     config_dir: Path = _get_default_config_dir()
     cache_dir: Path = _get_default_cache_dir()
+    data_dir: Path = _get_default_data_dir()
 
     hpc: HPCConfig = HPCConfig()
     connection: ConnectionInfo = ConnectionInfo()

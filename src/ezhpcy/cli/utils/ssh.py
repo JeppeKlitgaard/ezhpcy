@@ -8,6 +8,7 @@ import paramiko
 from paramiko.common import DEBUG
 
 from ezhpcy.config import ConnectionInfo
+from ezhpcy.ssh import SSHClient
 
 
 class PromptMissingHostKeyPolicy(paramiko.MissingHostKeyPolicy):
@@ -44,11 +45,11 @@ class PromptMissingHostKeyPolicy(paramiko.MissingHostKeyPolicy):
             raise paramiko.SSHException(f"Host key for {hostname} rejected by user.")
 
 
-class InteractiveSSHClient(paramiko.SSHClient):
+class InteractiveSSHClient(SSHClient):
     conn_info: ConnectionInfo
 
     def __init__(self, conn_info: ConnectionInfo):
-        super().__init__()
+        super().__init__(conn_info=conn_info)
         self.conn_info = conn_info
 
         self.load_system_host_keys()

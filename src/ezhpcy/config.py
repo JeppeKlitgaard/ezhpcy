@@ -1,15 +1,17 @@
 import os
-from pathlib import Path
-from pydantic import BaseModel
+import re
+import typing
+from pathlib import Path, PurePath, PurePosixPath
+from typing import Generic, TypeVar
+
+from pydantic import BaseModel, Field
+from pydantic_extra_types.domain import DomainStr
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
     SettingsConfigDict,
     TomlConfigSettingsSource,
 )
-from pydantic_extra_types.domain import DomainStr
-import typing
-import re
 
 
 def _get_default_config_dir() -> Path:
@@ -39,6 +41,41 @@ def _default_config_file() -> Path:
     return _get_default_config_dir() / "ezhpcy.toml"
 
 
+PathT = TypeVar("PathT", bound=PurePath)
+
+
+class FileConfig(BaseModel, Generic[PathT]):
+    """
+    The file locations required for ezhpcy.
+
+    Generic over the path type so local (Path) and remote (PurePosixPath)
+    configs can share structure without violating Liskov substitution.
+    """
+
+    cache_dir: PathT
+    config_dir: PathT
+    data_dir: PathT
+    config_file: PathT
+
+
+class LocalFileConfig(FileConfig[Path]):
+    """File locations for ezhpcy on the local system."""
+
+    cache_dir: Path = Field(default_factory=_get_default_cache_dir)
+    config_dir: Path = Field(default_factory=_get_default_config_dir)
+    data_dir: Path = Field(default_factory=_get_default_data_dir)
+    config_file: Path = Field(default_factory=_default_config_file)
+
+
+class RemoteFileConfig(FileConfig[PurePosixPath]):
+    """File locations for ezhpcy on a POSIX remote system."""
+
+    cache_dir: PurePosixPath
+    config_dir: PurePosixPath
+    data_dir: PurePosixPath
+    config_file: PurePosixPath
+
+
 class HPCConfig(BaseModel):
     # At DTU this can be found by running `ls /lsf/local/bin/` and filtering a bit manually
     # Or using the list at https://www.hpc.dtu.dk/?page_id=2129 and elsewhere
@@ -66,10 +103,7 @@ class ConnectionInfo(BaseModel):
 
 
 class Config(BaseSettings):
-    # define your fields here
-    config_dir: Path = _get_default_config_dir()
-    cache_dir: Path = _get_default_cache_dir()
-    data_dir: Path = _get_default_data_dir()
+    local_file: LocalFileConfig = LocalFileConfig()
 
     hpc: HPCConfig = HPCConfig()
     connection: ConnectionInfo = ConnectionInfo()

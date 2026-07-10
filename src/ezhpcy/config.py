@@ -14,19 +14,19 @@ import re
 def _get_default_config_dir() -> Path:
     xdg_config_home = os.environ.get("XDG_CONFIG_HOME")
     config_home = Path(xdg_config_home) if xdg_config_home else Path.home() / ".config"
-    return config_home / "dtuhpc"
+    return config_home / "ezhpcy"
 
 def _get_default_cache_dir() -> Path:
     xdg_cache_home = os.environ.get("XDG_CACHE_HOME")
     cache_home = Path(xdg_cache_home) if xdg_cache_home else Path.home() / ".cache"
-    return cache_home / "dtuhpc"
+    return cache_home / "ezhpcy"
 
 
 def _default_config_file() -> Path:
-    if config_file := os.environ.get("DTUHPC_CONFIG_FILE"):
+    if config_file := os.environ.get("EZHPCY_CONFIG_FILE"):
         return Path(config_file).expanduser()
 
-    return _get_default_config_dir() / "dtuhpc.toml"
+    return _get_default_config_dir() / "ezhpcy.toml"
 
 
 class HPCConfig(BaseModel):
@@ -67,7 +67,7 @@ class Config(BaseSettings):
 
     model_config = SettingsConfigDict(
         toml_file=_default_config_file(),
-        env_prefix="DTUHPC_",
+        env_prefix="EZHPCY_",
     )
 
     @classmethod

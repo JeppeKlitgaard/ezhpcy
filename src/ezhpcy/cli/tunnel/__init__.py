@@ -1,14 +1,14 @@
 import typer
 
-from dtuhpc.cli.tunnel.common import (
+from ezhpcy.cli.tunnel.common import (
     HostOpt,
     PasswordOpt,
     UserOpt,
     connection_info_from_options,
 )
-from dtuhpc.cli.tunnel.interactive import interactive_cmd
-from dtuhpc.config import config
-from dtuhpc.patch.typer_alias import AliasGroup
+from ezhpcy.cli.tunnel.interactive import interactive_cmd
+from ezhpcy.config import config
+from ezhpcy.patch.typer_alias import AliasGroup
 
 tunnel_app = typer.Typer(
     cls=AliasGroup,

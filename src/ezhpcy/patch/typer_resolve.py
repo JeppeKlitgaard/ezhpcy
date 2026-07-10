@@ -1,5 +1,5 @@
 import typing
-from dtuhpc.patch.typer_rich_bad_parameter import RichBadParameter
+from ezhpcy.patch.typer_rich_bad_parameter import RichBadParameter
 
 T = typing.TypeVar("T")
 

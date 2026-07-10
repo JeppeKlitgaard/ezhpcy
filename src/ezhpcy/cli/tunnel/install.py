@@ -1,13 +1,13 @@
 import typer
 
-from dtuhpc.cli.tunnel.common import (
+from ezhpcy.cli.tunnel.common import (
     HostOpt,
     PasswordOpt,
     UserOpt,
     connection_info_from_options,
     local_machine_or_fail,
 )
-from dtuhpc.config import config
+from ezhpcy.config import config
 
 def install_cmd(
     user: UserOpt = config.connection.user,

@@ -18,7 +18,7 @@ def test_wheel_contains_one_non_recursive_sdist() -> None:
         payloads = [
             name
             for name in wheel.namelist()
-            if name.startswith("dtuhpc/_payload/") and name.endswith(".tar.gz")
+            if name.startswith("ezhpcy/_payload/") and name.endswith(".tar.gz")
         ]
         assert len(payloads) == 1, (
             f"expected exactly one embedded sdist, found {payloads}"

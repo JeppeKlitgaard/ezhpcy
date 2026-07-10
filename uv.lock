@@ -260,7 +260,7 @@ wheels = [
 ]
 
 [[package]]
-name = "dtuhpc"
+name = "ezhpcy"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

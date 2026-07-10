@@ -7,7 +7,7 @@ from typing import Any, Iterator
 from hatchling.builders.hooks.plugin.interface import BuildHookInterface
 
 
-PACKAGE_NAME = "dtuhpc"
+PACKAGE_NAME = "ezhpcy"
 PAYLOAD_DIRECTORY = "_payload"
 
 
@@ -39,7 +39,7 @@ class CustomBuildHook(BuildHookInterface):
         from hatchling.build import build_sdist
 
         self._temporary_directory = tempfile.TemporaryDirectory(
-            prefix="dtuhpc-embedded-sdist-"
+            prefix="ezhpcy-embedded-sdist-"
         )
         output_directory = Path(self._temporary_directory.name)
 

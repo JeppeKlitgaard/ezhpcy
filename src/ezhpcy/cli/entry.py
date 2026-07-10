@@ -1,4 +1,4 @@
-from dtuhpc.cli import app
+from ezhpcy.cli import app
 
 def main() -> None:
     app()

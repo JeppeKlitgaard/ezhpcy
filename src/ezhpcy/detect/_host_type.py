@@ -2,7 +2,7 @@ import os
 import platform
 from enum import StrEnum
 
-from dtuhpc.config import config
+from ezhpcy.config import config
 
 
 class HostType(StrEnum):

@@ -9,7 +9,7 @@ from ezhpcy.cli.tunnel.common import (
 from ezhpcy.cli.tunnel.interactive import interactive_cmd
 from ezhpcy.cli.tunnel.install import install_cmd
 from ezhpcy.config import config
-from ezhpcy.patch.typer_alias import AliasGroup
+from ezhpcy.cli.utils.alias import AliasGroup
 
 tunnel_app = typer.Typer(
     cls=AliasGroup,

@@ -3,7 +3,7 @@ import typer
 from ezhpcy.cli.info import info_cmd
 from ezhpcy.cli.tunnel import tunnel_app
 from ezhpcy.cli.version import version_cmd
-from ezhpcy.patch.typer_alias import AliasGroup
+from ezhpcy.cli.utils.alias import AliasGroup
 
 app = typer.Typer(
     cls=AliasGroup,

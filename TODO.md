@@ -1,0 +1,1 @@
+- [ ] Deploy should check if editable install and make sdist on-the-fly if it is

@@ -2,12 +2,8 @@ from pathlib import Path
 import paramiko
 from dataclasses import dataclass
 
+from ezhpcy.console import console
 
-@dataclass
-class Paths:
-    home: Path
-    cache: Path
-    code_cli: Path
 
     @classmethod
     def from_home(cls, home: Path):

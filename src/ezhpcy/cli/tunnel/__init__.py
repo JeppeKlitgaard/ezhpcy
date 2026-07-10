@@ -13,7 +13,7 @@ from ezhpcy.cli.utils.alias import AliasGroup
 
 tunnel_app = typer.Typer(
     cls=AliasGroup,
-    help="Open tunnels for DTU HPC workflows.",
+    help="Open tunnels for HPC workflows.",
     no_args_is_help=True,
 )
 
@@ -23,7 +23,7 @@ def _batch(
     password: PasswordOpt = config.connection.password,
     host: HostOpt = config.connection.host,
 ) -> None:
-    """Run DTU HPC batch workflow."""
+    """Run HPC batch workflow."""
     connection_info_from_options(user=user, password=password, host=host)
     typer.echo("Running batch workflow.")
 

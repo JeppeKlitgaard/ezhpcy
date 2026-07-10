@@ -13,7 +13,7 @@ class HostType(StrEnum):
 
 def am_login_node() -> bool:
     """
-    Check if the current host is a DTU HPC login node.
+    Check if the current host is a HPC login node.
     """
     hostname = platform.node()
     return bool(config.hpc.login_node_pattern.match(hostname))
@@ -21,7 +21,7 @@ def am_login_node() -> bool:
 
 def am_compute_node() -> bool:
     """
-    Check if the current host is a DTU HPC compute node.
+    Check if the current host is a HPC compute node.
     """
     am_lsf = os.environ.get("LSF_ENVDIR", default=None) is not None
     return am_lsf and not am_login_node()
@@ -29,7 +29,7 @@ def am_compute_node() -> bool:
 
 def am_other() -> bool:
     """
-    Check if the current host is neither a DTU HPC login node nor a compute node.
+    Check if the current host is neither a HPC login node nor a compute node.
     """
     return not am_login_node() and not am_compute_node()
 

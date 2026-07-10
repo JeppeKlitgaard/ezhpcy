@@ -29,7 +29,7 @@ def interactive_cmd(
         ),
     ] = None,
 ) -> None:
-    """Start an interactive DTU HPC session."""
+    """Start an interactive HPC session."""
     connection_info_from_options(user=user, password=password, host=host)
 
     local_machine_or_fail()

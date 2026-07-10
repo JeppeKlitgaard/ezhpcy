@@ -7,7 +7,7 @@ from ezhpcy.cli.utils.alias import AliasGroup
 
 app = typer.Typer(
     cls=AliasGroup,
-    help="Utilities for working with DTU HPC.",
+    help="Utilities for working with HPC facilities.",
     no_args_is_help=True,
 )
 

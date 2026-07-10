@@ -33,7 +33,7 @@ def connection_info_from_options(
     return ConnectionInfo(
         user=user,
         password=password,
-        login_node_address=host or config.connection.login_node_address,
+        host=host or config.connection.host,
     )
 
 

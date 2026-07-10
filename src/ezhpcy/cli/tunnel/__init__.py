@@ -21,7 +21,7 @@ tunnel_app = typer.Typer(
 def _batch(
     user: UserOpt = config.connection.user,
     password: PasswordOpt = config.connection.password,
-    host: HostOpt = config.connection.login_node_address,
+    host: HostOpt = config.connection.host,
 ) -> None:
     """Run DTU HPC batch workflow."""
     connection_info_from_options(user=user, password=password, host=host)

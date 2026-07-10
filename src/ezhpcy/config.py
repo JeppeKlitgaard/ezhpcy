@@ -53,7 +53,7 @@ class ConnectionInfo(BaseModel):
     user: str | None = None
     password: str | None = None
 
-    login_node_address: DomainStr = DomainStr("login2.hpc.dtu.dk")
+    host: DomainStr = DomainStr("login2.hpc.dtu.dk")
 
 
 

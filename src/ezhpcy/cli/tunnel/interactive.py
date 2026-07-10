@@ -20,7 +20,7 @@ def _shell_help() -> str:
 def interactive_cmd(
     user: UserOpt = config.connection.user,
     password: PasswordOpt = config.connection.password,
-    host: HostOpt = config.connection.login_node_address,
+    host: HostOpt = config.connection.host,
     shell: Annotated[
         str | None,
         typer.Argument(

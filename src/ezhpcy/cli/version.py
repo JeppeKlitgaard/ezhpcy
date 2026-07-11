@@ -1,15 +1,9 @@
 import json as json_lib
-from importlib.metadata import PackageNotFoundError, version
 
 import typer
 from typing_extensions import Annotated
 
-
-def ezhpcy_version() -> str:
-    try:
-        return version("ezhpcy")
-    except PackageNotFoundError:
-        return "unknown"
+from ezhpcy.utils import ezhpcy_version
 
 
 def version_cmd(

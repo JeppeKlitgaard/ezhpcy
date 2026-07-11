@@ -17,8 +17,8 @@ from ezhpcy.config import config
 from ezhpcy.patch.sdist import sdist_for_current_installation
 
 INSTALL_DIR_NAME = "ezhpcy"
-INSTALL_SCRIPT_RESOURCE = "static/install.sh"
-UNINSTALL_SCRIPT_RESOURCE = "static/uninstall.sh"
+INSTALL_SCRIPT_RESOURCE = "static/data/install.sh"
+UNINSTALL_SCRIPT_RESOURCE = "static/data/uninstall.sh"
 
 
 def install_cmd(

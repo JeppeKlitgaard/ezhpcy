@@ -2,6 +2,7 @@
 set -euo pipefail
 
 UV_MATCHSPEC="uv==0.11.26"
+OPENSSH_MATCHSPEC="openssh"
 
 pixi_install_script_url="https://pixi.sh/install.sh"
 xdg_data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
@@ -29,6 +30,7 @@ download_file() {
     exit 1
 }
 
+### pixi
 install_pixi() {
     if [[ -x "$pixi_bin" ]]; then
         echo "Pixi is already installed at: $pixi_bin"
@@ -46,10 +48,10 @@ install_pixi() {
 
 run_pixi() {
     PIXI_HOME="$pixi_home" \
-        PIXI_NO_PATH_UPDATE="1" \
         "$pixi_bin" "$@"
 }
 
+### sdist of ezhpcy
 mkdir -p "$install_root"
 
 if [[ -z "$sdist_path" ]]; then
@@ -63,6 +65,11 @@ fi
 
 install_pixi
 run_pixi --version
+
+# Materialize OpenSSH on shared storage so worker jobs never need to download it.
+echo "Installing the worker OpenSSH environment..."
+run_pixi global install "$OPENSSH_MATCHSPEC"
+"$pixi_home/bin/sshd" -V
 
 echo "Bundled ezhpcy sdist staged at: $sdist_path"
 

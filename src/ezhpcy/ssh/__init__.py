@@ -4,6 +4,7 @@ from pathlib import Path, PurePosixPath
 import paramiko
 
 from ezhpcy.config import ConnectionInfo, RemoteFileConfig
+from ezhpcy.constants import PACKAGE_NAME
 
 
 class SSHClient(paramiko.SSHClient):
@@ -29,6 +30,10 @@ class SSHClient(paramiko.SSHClient):
         Convenience method to run a command on the remote host and return its output as a string.
 
         Handles escaping of the command and its arguments, and raises an exception if the command fails.
+
+        Note that `environment` requires the SSH server to support the `AcceptEnv` directive for the specified environment variables.
+        If the server does not support this, the environment variables will not be set.
+        It is more reliable to set environment variables in the command itself, e.g. `env VAR=value command`.
         """
         escaped_cmd = shlex.join(args)
         _stdin, stdout, stderr = self.exec_command(
@@ -63,6 +68,29 @@ class SSHClient(paramiko.SSHClient):
         with self.open_sftp() as sftp:
             with sftp.file(str(remote_path), "w") as remote_file:
                 remote_file.write(content.encode(encoding))
+
+    def run_pixi(
+        self,
+        args: list[str],
+        file_config: RemoteFileConfig | None = None,
+        **run_kwargs,
+    ) -> str:
+        """Run private Pixi remotely with ezhpcy's XDG-resolved home and cache."""
+        file_config = file_config or self.get_file_config()
+        pixi_home = file_config.data_dir / PACKAGE_NAME / "pixi_home"
+        pixi_cache_dir = file_config.cache_dir / PACKAGE_NAME / "pixi_cache"
+        pixi = pixi_home / "bin/pixi"
+
+        return self.run(
+            [
+                "env",
+                f"PIXI_HOME={pixi_home}",
+                f"PIXI_CACHE_DIR={pixi_cache_dir}",
+                str(pixi),
+                *args,
+            ],
+            **run_kwargs,
+        )
 
     def get_file_config(self) -> RemoteFileConfig:
         """

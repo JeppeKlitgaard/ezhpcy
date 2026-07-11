@@ -6,8 +6,10 @@ OPENSSH_MATCHSPEC="openssh"
 
 pixi_install_script_url="https://pixi.sh/install.sh"
 xdg_data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
+xdg_cache_home="${XDG_CACHE_HOME:-$HOME/.cache}"
 install_root="${EZHPCY_INSTALL_ROOT:-$xdg_data_home/ezhpcy}"
 pixi_home="${PIXI_HOME:-$install_root/pixi_home}"
+pixi_cache_dir="${PIXI_CACHE_DIR:-$xdg_cache_home/ezhpcy/pixi_cache}"
 pixi_bin="$pixi_home/bin/pixi"
 pixi_install_script="$install_root/pixi-install.sh"
 sdist_path="${1:-}"
@@ -48,9 +50,11 @@ install_pixi() {
 
 run_pixi() {
     PIXI_HOME="$pixi_home" \
+        PIXI_CACHE_DIR="$pixi_cache_dir" \
         "$pixi_bin" "$@"
 }
 
+mkdir -p "$pixi_cache_dir"
 install_pixi
 run_pixi --version
 

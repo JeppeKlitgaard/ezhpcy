@@ -1,5 +1,4 @@
 import os
-import shlex
 import subprocess
 from importlib import resources
 from pathlib import Path, PurePosixPath
@@ -189,34 +188,27 @@ def install_cmd(
     remote_host_key = remote_ssh_dir / WORKER_HOST_KEY_NAME
     remote_host_public_key = PurePosixPath(f"{remote_host_key}.pub")
     remote_sshd_config = remote_ssh_dir / "sshd_config"
-    remote_pixi_home = remote_file_config.data_dir / INSTALL_DIR_NAME / "pixi_home"
-    remote_pixi = remote_pixi_home / "bin/pixi"
-    generate_host_key = shlex.join(
-        [
-            "env",
-            f"PIXI_HOME={remote_pixi_home}",
-            str(remote_pixi),
-            "exec",
-            f"--spec={OPENSSH_MATCHSPEC}",
-            "ssh-keygen",
-            "-q",
-            "-t",
-            "ed25519",
-            "-N",
-            "",
-            "-C",
-            "ezhpcy worker host",
-            "-f",
-            str(remote_host_key),
-        ]
-    )
-    ssh.run(
-        [
-            "bash",
-            "-lc",
-            f"test -f {shlex.quote(str(remote_host_key))} || {generate_host_key}",
-        ]
-    )
+    with ssh.open_sftp() as sftp:
+        try:
+            sftp.stat(str(remote_host_key))
+        except FileNotFoundError:
+            ssh.run_pixi(
+                [
+                    "exec",
+                    f"--spec={OPENSSH_MATCHSPEC}",
+                    "ssh-keygen",
+                    "-q",
+                    "-t",
+                    "ed25519",
+                    "-N",
+                    "",
+                    "-C",
+                    "ezhpcy worker host",
+                    "-f",
+                    str(remote_host_key),
+                ],
+                file_config=remote_file_config,
+            )
 
     with resources.as_file(sshd_config_traversable) as sshd_config_template:
         rendered_config = _render_sshd_config(
@@ -235,18 +227,16 @@ def install_cmd(
         ]
     )
     ssh.run(["chmod", "644", str(remote_host_public_key)])
-    ssh.run(
+    ssh.run_pixi(
         [
-            "env",
-            f"PIXI_HOME={remote_pixi_home}",
-            str(remote_pixi),
             "exec",
             f"--spec={OPENSSH_MATCHSPEC}",
             "sshd",
             "-t",
             "-f",
             str(remote_sshd_config),
-        ]
+        ],
+        file_config=remote_file_config,
     )
 
     host_public_key = ssh.run(["cat", str(remote_host_public_key)])

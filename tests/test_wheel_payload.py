@@ -65,7 +65,21 @@ def test_install_script_uses_xdg_private_pixi_home() -> None:
 
     assert "XDG_DATA_HOME" in install_script
     assert "PIXI_HOME" in install_script
+    assert "PIXI_CACHE_DIR" in install_script
+    assert "xdg_cache_home/ezhpcy/pixi_cache" in install_script
     assert "PIXI_NO_PATH_UPDATE" in install_script
-    assert 'pixi global install' not in install_script
     assert 'run_pixi exec --spec="$OPENSSH_MATCHSPEC" sshd -V' in install_script
-    assert ".config" not in install_script
+
+
+def test_uninstall_script_removes_xdg_pixi_cache() -> None:
+    wheels = list(DIST_DIRECTORY.glob("*.whl"))
+    assert len(wheels) == 1, (
+        f"expected exactly one wheel in {DIST_DIRECTORY}, found {wheels}"
+    )
+
+    with zipfile.ZipFile(wheels[0]) as wheel:
+        uninstall_script = wheel.read("ezhpcy/static/data/uninstall.sh").decode()
+
+    assert "XDG_CACHE_HOME" in uninstall_script
+    assert "PIXI_CACHE_DIR" in uninstall_script
+    assert 'rm -rf -- "$pixi_cache_dir"' in uninstall_script

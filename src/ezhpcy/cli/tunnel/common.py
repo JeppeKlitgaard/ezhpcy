@@ -4,6 +4,7 @@ import typer
 
 from ezhpcy.cli.utils.resolve import resolve_forbidden_none
 from ezhpcy.config import ConnectionInfo, config
+from ezhpcy.console import console
 from ezhpcy.detect import HostType, get_host_type
 
 UserOpt = Annotated[
@@ -43,7 +44,7 @@ def local_machine_or_fail() -> None:
     """
     host_type = get_host_type()
     if host_type != HostType.OTHER:
-        print(
-            f"This command should be run on your local machine (detected: {host_type.value})."
+        console.print(
+            f"[bold red]ERROR[/bold red]: This command should be run on your local machine (detected: [bold blue]{host_type.value}[/bold blue])."
         )
         raise typer.Exit(code=1)

@@ -47,8 +47,9 @@ def test_wheel_contains_install_script() -> None:
     with zipfile.ZipFile(wheels[0]) as wheel:
         names = wheel.namelist()
 
-    assert "ezhpcy/scripts/install.sh" in names
-    assert "ezhpcy/scripts/uninstall.sh" in names
+    assert "ezhpcy/static/data/install.sh" in names
+    assert "ezhpcy/static/data/uninstall.sh" in names
+    assert "ezhpcy/static/config/ssh_remote/sshd_config" in names
     assert "ezhpcy/patch/editable.py" in names
     assert "ezhpcy/patch/sdist.py" in names
 
@@ -60,9 +61,11 @@ def test_install_script_uses_xdg_private_pixi_home() -> None:
     )
 
     with zipfile.ZipFile(wheels[0]) as wheel:
-        install_script = wheel.read("ezhpcy/scripts/install.sh").decode()
+        install_script = wheel.read("ezhpcy/static/data/install.sh").decode()
 
     assert "XDG_DATA_HOME" in install_script
     assert "PIXI_HOME" in install_script
     assert "PIXI_NO_PATH_UPDATE" in install_script
+    assert 'pixi global install' not in install_script
+    assert 'run_pixi exec --spec="$OPENSSH_MATCHSPEC" sshd -V' in install_script
     assert ".config" not in install_script

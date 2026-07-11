@@ -51,6 +51,13 @@ run_pixi() {
         "$pixi_bin" "$@"
 }
 
+install_pixi
+run_pixi --version
+
+# Resolve OpenSSH during setup so later worker jobs can reuse Pixi's cache.
+echo "Caching the worker OpenSSH environment..."
+run_pixi exec --spec="$OPENSSH_MATCHSPEC" sshd -V
+
 ### sdist of ezhpcy
 mkdir -p "$install_root"
 
@@ -62,14 +69,6 @@ if [[ -z "$sdist_path" || ! -f "$sdist_path" ]]; then
     echo "No bundled ezhpcy sdist found in $install_root" >&2
     exit 1
 fi
-
-install_pixi
-run_pixi --version
-
-# Materialize OpenSSH on shared storage so worker jobs never need to download it.
-echo "Installing the worker OpenSSH environment..."
-run_pixi global install "$OPENSSH_MATCHSPEC"
-"$pixi_home/bin/sshd" -V
 
 echo "Bundled ezhpcy sdist staged at: $sdist_path"
 

@@ -53,6 +53,17 @@ class SSHClient(paramiko.SSHClient):
         with self.open_sftp() as sftp:
             sftp.put(local_path, str(remote_path))
 
+    def upload_text(
+        self,
+        content: str,
+        remote_path: PurePosixPath,
+        encoding: str = "utf-8",
+    ) -> None:
+        """Upload text content directly to a file on the remote host."""
+        with self.open_sftp() as sftp:
+            with sftp.file(str(remote_path), "w") as remote_file:
+                remote_file.write(content.encode(encoding))
+
     def get_file_config(self) -> RemoteFileConfig:
         """
         Get the FileConfig from the remote host.
@@ -65,7 +76,7 @@ class SSHClient(paramiko.SSHClient):
             '"${XDG_CONFIG_HOME:-$HOME/.config}" '
             '"${XDG_CACHE_HOME:-$HOME/.cache}" '
             '"${XDG_DATA_HOME:-$HOME/.local/share}" '
-            '"${EZHPCY_CONFIG_FILE:-${XDG_CONFIG_HOME:-$HOME/.local/share}/ezhpcy/ezhpcy.toml}"'
+            '"${EZHPCY_CONFIG_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/ezhpcy/ezhpcy.toml}"'
         )
         raw = self.run(["bash", "-lc", cmd]).strip()
 

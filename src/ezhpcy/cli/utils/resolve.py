@@ -1,4 +1,5 @@
 import typing
+
 from ezhpcy.cli.utils.bad_parameter import RichBadParameter
 
 T = typing.TypeVar("T")

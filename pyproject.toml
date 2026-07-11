@@ -23,6 +23,9 @@ dev = [
     "ruff>=0.15.21",
 ]
 
+[tool.ruff.lint]
+extend-select = ["I"]
+isort.combine-as-imports = true
 
 [build-system]
 requires = ["hatchling>=1.31,<2"]

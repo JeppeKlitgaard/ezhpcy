@@ -2,9 +2,9 @@ from typing import Annotated
 
 import typer
 
+from ezhpcy.cli.utils.resolve import resolve_forbidden_none
 from ezhpcy.config import ConnectionInfo, config
 from ezhpcy.detect import HostType, get_host_type
-from ezhpcy.cli.utils.resolve import resolve_forbidden_none
 
 UserOpt = Annotated[
     str | None, typer.Option("--user", "-u", help="Username for the login node.")

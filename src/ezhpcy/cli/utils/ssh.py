@@ -1,12 +1,10 @@
 from binascii import hexlify
 
-from ezhpcy import console
-from rich.prompt import Confirm, Prompt
-
-
 import paramiko
 from paramiko.common import DEBUG
+from rich.prompt import Confirm, Prompt
 
+from ezhpcy import console
 from ezhpcy.config import ConnectionInfo
 from ezhpcy.ssh import SSHClient
 

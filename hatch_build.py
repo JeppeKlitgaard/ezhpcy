@@ -6,7 +6,6 @@ from typing import Any, Iterator
 
 from hatchling.builders.hooks.plugin.interface import BuildHookInterface
 
-
 PACKAGE_NAME = "ezhpcy"
 PAYLOAD_DIRECTORY = "_payload"
 

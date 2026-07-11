@@ -6,11 +6,11 @@ from ezhpcy.cli.tunnel.common import (
     UserOpt,
     connection_info_from_options,
 )
-from ezhpcy.cli.tunnel.interactive import interactive_cmd
 from ezhpcy.cli.tunnel.install import install_cmd
+from ezhpcy.cli.tunnel.interactive import interactive_cmd
 from ezhpcy.cli.tunnel.uninstall import uninstall_cmd
-from ezhpcy.config import config
 from ezhpcy.cli.utils.alias import AliasGroup
+from ezhpcy.config import config
 
 tunnel_app = typer.Typer(
     cls=AliasGroup,

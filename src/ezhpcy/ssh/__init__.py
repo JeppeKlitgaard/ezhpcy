@@ -1,7 +1,7 @@
+import shlex
 from pathlib import Path, PurePosixPath
 
 import paramiko
-import shlex
 
 from ezhpcy.config import ConnectionInfo, RemoteFileConfig
 

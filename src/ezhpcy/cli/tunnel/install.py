@@ -18,6 +18,7 @@ from ezhpcy.patch.sdist import sdist_for_current_installation
 
 INSTALL_DIR_NAME = "ezhpcy"
 INSTALL_SCRIPT_RESOURCE = "scripts/install.sh"
+UNINSTALL_SCRIPT_RESOURCE = "scripts/uninstall.sh"
 
 
 def install_cmd(
@@ -64,7 +65,13 @@ def install_cmd(
     install_script_traversable = resources.files("ezhpcy").joinpath(
         INSTALL_SCRIPT_RESOURCE
     )
-    with resources.as_file(install_script_traversable) as install_script:
+    uninstall_script_traversable = resources.files("ezhpcy").joinpath(
+        UNINSTALL_SCRIPT_RESOURCE
+    )
+    with (
+        resources.as_file(install_script_traversable) as install_script,
+        resources.as_file(uninstall_script_traversable) as uninstall_script,
+    ):
         console.print(
             f"Creating remote install directory: [bold blue]{remote_install_dir}[/bold blue]"
         )
@@ -76,8 +83,15 @@ def install_cmd(
         )
         ssh.upload_file(install_script, remote_install_script)
 
+        remote_uninstall_script = remote_install_dir / "uninstall.sh"
+        console.print(
+            f"Uploading uninstall script: [bold blue]{remote_uninstall_script}[/bold blue]"
+        )
+        ssh.upload_file(uninstall_script, remote_uninstall_script)
+
     with ssh.open_sftp() as sftp:
         sftp.chmod(str(remote_install_script), 0o755)
+        sftp.chmod(str(remote_uninstall_script), 0o755)
 
     with sdist_for_current_installation() as sdist:
         remote_sdist = remote_install_dir / sdist.name

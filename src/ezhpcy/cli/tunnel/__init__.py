@@ -8,6 +8,7 @@ from ezhpcy.cli.tunnel.common import (
 )
 from ezhpcy.cli.tunnel.interactive import interactive_cmd
 from ezhpcy.cli.tunnel.install import install_cmd
+from ezhpcy.cli.tunnel.uninstall import uninstall_cmd
 from ezhpcy.config import config
 from ezhpcy.cli.utils.alias import AliasGroup
 
@@ -29,6 +30,7 @@ def _batch(
 
 
 tunnel_app.command(name="install", help="Install ezhpcy on HPC.")(install_cmd)
+tunnel_app.command(name="uninstall", help="Uninstall ezhpcy from HPC.")(uninstall_cmd)
 tunnel_app.command(name="interactive, i", help="Start an interactive session.")(
     interactive_cmd
 )

@@ -3,7 +3,6 @@ import tarfile
 import zipfile
 from pathlib import Path
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DIST_DIRECTORY = PROJECT_ROOT / "dist"
 
@@ -49,6 +48,7 @@ def test_wheel_contains_install_script() -> None:
         names = wheel.namelist()
 
     assert "ezhpcy/scripts/install.sh" in names
+    assert "ezhpcy/scripts/uninstall.sh" in names
     assert "ezhpcy/patch/editable.py" in names
     assert "ezhpcy/patch/sdist.py" in names
 

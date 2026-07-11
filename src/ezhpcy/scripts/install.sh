@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+UV_MATCHSPEC="uv==0.11.26"
+
 pixi_install_script_url="https://pixi.sh/install.sh"
 xdg_data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
 install_root="${EZHPCY_INSTALL_ROOT:-$xdg_data_home/ezhpcy}"
@@ -63,3 +65,11 @@ install_pixi
 run_pixi --version
 
 echo "Bundled ezhpcy sdist staged at: $sdist_path"
+
+# Install ezhpcy from the sdist using pixi
+echo "Installing ezhpcy from sdist..."
+run_pixi exec --spec="$UV_MATCHSPEC" uv tool install "$sdist_path" --no-config --force-reinstall
+
+# Validate installation
+echo "Validating ezhpcy installation..."
+echo "ezhpcy version: $(ezhpcy version)"

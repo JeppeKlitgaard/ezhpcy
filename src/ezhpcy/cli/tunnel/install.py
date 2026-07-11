@@ -76,7 +76,8 @@ def install_cmd(
         )
         ssh.upload_file(install_script, remote_install_script)
 
-    ssh.run(["chmod", "+x", str(remote_install_script)])
+    with ssh.open_sftp() as sftp:
+        sftp.chmod(str(remote_install_script), 0o755)
 
     with sdist_for_current_installation() as sdist:
         remote_sdist = remote_install_dir / sdist.name

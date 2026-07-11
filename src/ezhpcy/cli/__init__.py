@@ -1,5 +1,6 @@
 import typer
 
+from ezhpcy.cli.compute import compute_app
 from ezhpcy.cli.info import info_cmd
 from ezhpcy.cli.tunnel import tunnel_app
 from ezhpcy.cli.utils.alias import AliasGroup
@@ -12,5 +13,6 @@ app = typer.Typer(
 )
 
 app.add_typer(tunnel_app, name="tunnel, t")
+app.add_typer(compute_app, name="compute")
 app.command(name="info", help="Show debug information.")(info_cmd)
 app.command(name="version", help="Show the ezhpcy version.")(version_cmd)

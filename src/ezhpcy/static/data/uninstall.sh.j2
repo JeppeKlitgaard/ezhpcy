@@ -8,7 +8,7 @@ ezhpcy_cache_dir="${EZHPCY_CACHE_DIR:-$xdg_cache_home/ezhpcy}"
 pixi_home="${PIXI_HOME:-$install_root/pixi_home}"
 pixi_cache_dir="${PIXI_CACHE_DIR:-$ezhpcy_cache_dir/pixi_cache}"
 pixi_bin="$pixi_home/bin/pixi"
-uv_matchspec="${1:?Usage: uninstall.sh UV_MATCHSPEC}"
+uv_matchspec={{ uv_matchspec }}
 
 run_pixi() {
     PIXI_HOME="$pixi_home" \

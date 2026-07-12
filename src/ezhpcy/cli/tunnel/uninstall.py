@@ -14,7 +14,6 @@ from ezhpcy.cli.tunnel.common import (
 from ezhpcy.cli.tunnel.install import INSTALL_DIR_NAME
 from ezhpcy.cli.utils.ssh import InteractiveSSHClient
 from ezhpcy.config import config
-from ezhpcy.constants import UV_MATCHSPEC
 
 
 def uninstall_cmd(
@@ -55,7 +54,7 @@ def uninstall_cmd(
         raise typer.Exit(code=1)
 
     console.print("Running remote uninstaller.")
-    uninstall_output = ssh.run(["bash", str(remote_uninstall_script), UV_MATCHSPEC])
+    uninstall_output = ssh.run(["bash", str(remote_uninstall_script)])
     if uninstall_output:
         console.print(uninstall_output.rstrip())
 

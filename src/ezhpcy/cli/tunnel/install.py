@@ -1,4 +1,5 @@
 import os
+import shlex
 import subprocess
 from importlib import resources
 from pathlib import Path, PurePosixPath
@@ -27,8 +28,8 @@ from ezhpcy.constants import (
 from ezhpcy.patch.sdist import sdist_for_current_installation
 
 INSTALL_DIR_NAME = "ezhpcy"
-INSTALL_SCRIPT_RESOURCE = "static/data/install.sh"
-UNINSTALL_SCRIPT_RESOURCE = "static/data/uninstall.sh"
+INSTALL_SCRIPT_RESOURCE = "static/data/install.sh.j2"
+UNINSTALL_SCRIPT_RESOURCE = "static/data/uninstall.sh.j2"
 SSHD_CONFIG_RESOURCE = "static/config/ssh_remote/sshd_config"
 WORKER_CLIENT_KEY_NAME = "worker_client_ed25519"
 WORKER_HOST_ALIAS = "ezhpcy-worker"
@@ -93,6 +94,12 @@ def _render_sshd_config(
         remote_username=remote_username,
         remote_config_dir=str(remote_config_dir),
     )
+
+
+def _render_shell_script(template_text: str, **variables: str) -> str:
+    """Render a self-contained shell script from its packaged template."""
+    quoted_variables = {name: shlex.quote(value) for name, value in variables.items()}
+    return Template(template_text, undefined=StrictUndefined).render(**quoted_variables)
 
 
 def _pin_worker_host_key(host_public_key: str, known_hosts: Path) -> None:
@@ -174,27 +181,33 @@ def install_cmd(
     )
     sshd_config_traversable = resources.files("ezhpcy").joinpath(SSHD_CONFIG_RESOURCE)
 
+    install_script = _render_shell_script(
+        install_script_traversable.read_text(encoding="utf-8"),
+        uv_matchspec=UV_MATCHSPEC,
+        openssh_matchspec=OPENSSH_MATCHSPEC,
+    )
+    uninstall_script = _render_shell_script(
+        uninstall_script_traversable.read_text(encoding="utf-8"),
+        uv_matchspec=UV_MATCHSPEC,
+    )
+
     with ssh.sftp_client() as sftp:
-        with (
-            resources.as_file(install_script_traversable) as install_script,
-            resources.as_file(uninstall_script_traversable) as uninstall_script,
-        ):
-            console.print(
-                f"Creating remote install directory: [bold blue]{remote_install_dir}[/bold blue]"
-            )
-            sftp.mkdir(remote_install_dir, parents=True, exist_ok=True)
+        console.print(
+            f"Creating remote install directory: [bold blue]{remote_install_dir}[/bold blue]"
+        )
+        sftp.mkdir(remote_install_dir, parents=True, exist_ok=True)
 
-            remote_install_script = remote_install_dir / "install.sh"
-            console.print(
-                f"Uploading install script: [bold blue]{remote_install_script}[/bold blue]"
-            )
-            sftp.put(str(install_script), str(remote_install_script))
+        remote_install_script = remote_install_dir / "install.sh"
+        console.print(
+            f"Uploading install script: [bold blue]{remote_install_script}[/bold blue]"
+        )
+        sftp.write_text(remote_install_script, install_script)
 
-            remote_uninstall_script = remote_install_dir / "uninstall.sh"
-            console.print(
-                f"Uploading uninstall script: [bold blue]{remote_uninstall_script}[/bold blue]"
-            )
-            sftp.put(str(uninstall_script), str(remote_uninstall_script))
+        remote_uninstall_script = remote_install_dir / "uninstall.sh"
+        console.print(
+            f"Uploading uninstall script: [bold blue]{remote_uninstall_script}[/bold blue]"
+        )
+        sftp.write_text(remote_uninstall_script, uninstall_script)
 
         sftp.chmod(str(remote_install_script), 0o755)
         sftp.chmod(str(remote_uninstall_script), 0o755)
@@ -209,9 +222,6 @@ def install_cmd(
             [
                 "bash",
                 str(remote_install_script),
-                str(remote_sdist),
-                UV_MATCHSPEC,
-                OPENSSH_MATCHSPEC,
             ]
         )
         if install_output:

@@ -3,6 +3,8 @@ import tarfile
 import zipfile
 from pathlib import Path
 
+from jinja2 import StrictUndefined, Template
+
 from ezhpcy.constants import OPENSSH_MATCHSPEC, UV_MATCHSPEC
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -49,8 +51,8 @@ def test_wheel_contains_install_script() -> None:
     with zipfile.ZipFile(wheels[0]) as wheel:
         names = wheel.namelist()
 
-    assert "ezhpcy/static/data/install.sh" in names
-    assert "ezhpcy/static/data/uninstall.sh" in names
+    assert "ezhpcy/static/data/install.sh.j2" in names
+    assert "ezhpcy/static/data/uninstall.sh.j2" in names
     assert "ezhpcy/static/config/ssh_remote/sshd_config" in names
     assert "ezhpcy/patch/editable.py" in names
     assert "ezhpcy/patch/sdist.py" in names
@@ -63,21 +65,31 @@ def test_install_script_uses_xdg_private_pixi_home() -> None:
     )
 
     with zipfile.ZipFile(wheels[0]) as wheel:
-        install_script = wheel.read("ezhpcy/static/data/install.sh").decode()
+        install_template = wheel.read("ezhpcy/static/data/install.sh.j2").decode()
 
-    assert "\r" not in install_script
+    install_script = Template(install_template, undefined=StrictUndefined).render(
+        uv_matchspec=UV_MATCHSPEC,
+        openssh_matchspec=OPENSSH_MATCHSPEC,
+    )
+
+    assert "\r" not in install_template
     assert "XDG_DATA_HOME" in install_script
     assert "PIXI_HOME" in install_script
     assert "PIXI_CACHE_DIR" in install_script
     assert "xdg_cache_home/ezhpcy/pixi_cache" in install_script
     assert "PIXI_NO_PATH_UPDATE" in install_script
-    assert 'openssh_matchspec="${3:?' in install_script
+    assert "openssh_matchspec={{ openssh_matchspec }}" in install_template
     assert 'run_pixi exec --spec="$openssh_matchspec" sh -c' in install_script
     assert 'exec "$sshd_path" -V' in install_script
-    assert 'uv_matchspec="${2:?' in install_script
+    assert "uv_matchspec={{ uv_matchspec }}" in install_template
     assert 'run_pixi exec --spec="$uv_matchspec" uv tool install' in install_script
-    assert OPENSSH_MATCHSPEC not in install_script
-    assert UV_MATCHSPEC not in install_script
+    assert OPENSSH_MATCHSPEC not in install_template
+    assert UV_MATCHSPEC not in install_template
+    assert f"openssh_matchspec={OPENSSH_MATCHSPEC}" in install_script
+    assert f"uv_matchspec={UV_MATCHSPEC}" in install_script
+    assert "${1:-}" not in install_script
+    assert "${2:?" not in install_script
+    assert "${3:?" not in install_script
 
 
 def test_uninstall_script_removes_xdg_pixi_cache() -> None:
@@ -87,12 +99,18 @@ def test_uninstall_script_removes_xdg_pixi_cache() -> None:
     )
 
     with zipfile.ZipFile(wheels[0]) as wheel:
-        uninstall_script = wheel.read("ezhpcy/static/data/uninstall.sh").decode()
+        uninstall_template = wheel.read("ezhpcy/static/data/uninstall.sh.j2").decode()
 
-    assert "\r" not in uninstall_script
+    uninstall_script = Template(uninstall_template, undefined=StrictUndefined).render(
+        uv_matchspec=UV_MATCHSPEC
+    )
+
+    assert "\r" not in uninstall_template
     assert "XDG_CACHE_HOME" in uninstall_script
     assert "PIXI_CACHE_DIR" in uninstall_script
-    assert 'uv_matchspec="${1:?' in uninstall_script
+    assert "uv_matchspec={{ uv_matchspec }}" in uninstall_template
     assert 'run_pixi exec --spec="$uv_matchspec" uv tool uninstall' in uninstall_script
-    assert UV_MATCHSPEC not in uninstall_script
+    assert UV_MATCHSPEC not in uninstall_template
+    assert f"uv_matchspec={UV_MATCHSPEC}" in uninstall_script
+    assert "${1:?" not in uninstall_script
     assert 'rm -rf -- "$ezhpcy_cache_dir"' in uninstall_script

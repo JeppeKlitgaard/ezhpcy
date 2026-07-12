@@ -9,9 +9,8 @@ pixi_home="${PIXI_HOME:-$install_root/pixi_home}"
 pixi_cache_dir="${PIXI_CACHE_DIR:-$xdg_cache_home/ezhpcy/pixi_cache}"
 pixi_bin="$pixi_home/bin/pixi"
 pixi_install_script="$install_root/pixi-install.sh"
-sdist_path="${1:-}"
-uv_matchspec="${2:?Usage: install.sh SDIST_PATH UV_MATCHSPEC OPENSSH_MATCHSPEC}"
-openssh_matchspec="${3:?Usage: install.sh SDIST_PATH UV_MATCHSPEC OPENSSH_MATCHSPEC}"
+uv_matchspec={{ uv_matchspec }}
+openssh_matchspec={{ openssh_matchspec }}
 
 download_file() {
     local url="$1"
@@ -63,10 +62,7 @@ run_pixi exec --spec="$openssh_matchspec" sh -c 'sshd_path="$(command -v sshd)" 
 
 ### sdist of ezhpcy
 mkdir -p "$install_root"
-
-if [[ -z "$sdist_path" ]]; then
-    sdist_path="$(find "$install_root" -maxdepth 1 -type f -name 'ezhpcy-*.tar.gz' -print -quit)"
-fi
+sdist_path="$(find "$install_root" -maxdepth 1 -type f -name 'ezhpcy-*.tar.gz' -print -quit)"
 
 if [[ -z "$sdist_path" || ! -f "$sdist_path" ]]; then
     echo "No bundled ezhpcy sdist found in $install_root" >&2

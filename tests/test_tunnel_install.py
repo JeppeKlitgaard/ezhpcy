@@ -11,6 +11,7 @@ from ezhpcy.cli.tunnel.install import (
     _check_existing_installation,
     _ensure_not_installed,
     _pin_worker_host_key,
+    _render_shell_script,
     _render_sshd_config,
 )
 
@@ -75,6 +76,15 @@ def test_render_sshd_config_replaces_remote_values() -> None:
     assert rendered == (
         "AllowUsers alice\nHostKey /home/alice/.config/ezhpcy/ssh/host\nPidFile /home/alice/.config/ezhpcy/ssh/sshd.pid"
     )
+
+
+def test_render_shell_script_quotes_template_values() -> None:
+    rendered = _render_shell_script(
+        "uv_matchspec={{ uv_matchspec }}",
+        uv_matchspec="uv>=1; echo unsafe",
+    )
+
+    assert rendered == "uv_matchspec='uv>=1; echo unsafe'"
 
 
 def test_pin_worker_host_key_preserves_unrelated_entries(tmp_path: Path) -> None:

@@ -48,12 +48,12 @@ def test_ensure_not_installed_aborts_when_version_succeeds() -> None:
 
 def test_render_sshd_config_replaces_remote_values() -> None:
     rendered = _render_sshd_config(
-        "AllowUsers {{ remote_username }}\nHostKey {{ remote_config_dir }}/host\n",
+        "AllowUsers {{ remote_username }}\nHostKey {{ remote_config_dir }}/host\nPidFile {{ remote_config_dir }}/sshd.pid\n",
         remote_username="alice",
         remote_config_dir=PurePosixPath("/home/alice/.config/ezhpcy/ssh"),
     )
 
-    assert rendered == ("AllowUsers alice\nHostKey /home/alice/.config/ezhpcy/ssh/host")
+    assert rendered == ("AllowUsers alice\nHostKey /home/alice/.config/ezhpcy/ssh/host\nPidFile /home/alice/.config/ezhpcy/ssh/sshd.pid")
 
 
 def test_pin_worker_host_key_preserves_unrelated_entries(tmp_path: Path) -> None:

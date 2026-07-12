@@ -59,7 +59,7 @@ run_pixi --version
 
 # Resolve OpenSSH during setup so later worker jobs can reuse Pixi's cache.
 echo "Caching the worker OpenSSH environment..."
-run_pixi exec --spec="$openssh_matchspec" sshd -V
+run_pixi exec --spec="$openssh_matchspec" sh -c 'sshd_path="$(command -v sshd)" || exit; case "$sshd_path" in /*) exec "$sshd_path" -V;; *) echo "sshd must resolve to an absolute path" >&2; exit 1;; esac'
 
 ### sdist of ezhpcy
 mkdir -p "$install_root"

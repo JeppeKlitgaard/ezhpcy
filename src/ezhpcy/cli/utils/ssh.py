@@ -8,6 +8,17 @@ from ezhpcy import console
 from ezhpcy.config import ConnectionInfo
 from ezhpcy.ssh import SSHClient
 
+_EXEC_ABSOLUTE_SSHD = (
+    'sshd_path="$(command -v sshd)" || exit; '
+    'case "$sshd_path" in /*) exec "$sshd_path" "$@";; '
+    '*) echo "sshd must resolve to an absolute path" >&2; exit 1;; esac'
+)
+
+
+def absolute_sshd_command(arguments: list[str]) -> list[str]:
+    """Run ``sshd`` by its resolved absolute path within a Pixi environment."""
+    return ["sh", "-c", _EXEC_ABSOLUTE_SSHD, "sshd", *arguments]
+
 
 class PromptMissingHostKeyPolicy(paramiko.MissingHostKeyPolicy):
     """

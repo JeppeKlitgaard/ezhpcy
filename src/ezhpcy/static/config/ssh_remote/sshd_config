@@ -1,4 +1,5 @@
 HostKey {{ remote_config_dir }}/ssh_host_ed25519_key
+PidFile {{ remote_config_dir }}/sshd.pid
 AuthorizedKeysFile {{ remote_config_dir }}/authorized_keys
 
 StrictModes yes

@@ -16,7 +16,7 @@ from ezhpcy.cli.tunnel.common import (
     connection_info_from_options,
     local_machine_or_fail,
 )
-from ezhpcy.cli.utils.ssh import InteractiveSSHClient
+from ezhpcy.cli.utils.ssh import InteractiveSSHClient, absolute_sshd_command
 from ezhpcy.config import config
 from ezhpcy.constants import (
     OPENSSH_MATCHSPEC,
@@ -255,10 +255,7 @@ def install_cmd(
             [
                 "exec",
                 f"--spec={OPENSSH_MATCHSPEC}",
-                "sshd",
-                "-t",
-                "-f",
-                str(remote_sshd_config),
+                *absolute_sshd_command(["-t", "-f", str(remote_sshd_config)]),
             ],
             file_config=remote_file_config,
         )

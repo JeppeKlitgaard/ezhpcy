@@ -7,6 +7,7 @@ from typing import Annotated
 import typer
 
 from ezhpcy.cli.compute.common import compute_node_or_fail
+from ezhpcy.cli.utils.ssh import absolute_sshd_command
 from ezhpcy.config import LocalFileConfig, config
 from ezhpcy.constants import (
     OPENSSH_MATCHSPEC,
@@ -73,7 +74,7 @@ def _build_sshd_command(
         str(pixi_home / "bin" / "pixi"),
         "exec",
         f"--spec={OPENSSH_MATCHSPEC}",
-        "sshd",
+        *absolute_sshd_command([]),
     ]
     if validate_only:
         command.append("-t")

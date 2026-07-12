@@ -71,7 +71,8 @@ def test_install_script_uses_xdg_private_pixi_home() -> None:
     assert "xdg_cache_home/ezhpcy/pixi_cache" in install_script
     assert "PIXI_NO_PATH_UPDATE" in install_script
     assert 'openssh_matchspec="${3:?' in install_script
-    assert 'run_pixi exec --spec="$openssh_matchspec" sshd -V' in install_script
+    assert 'run_pixi exec --spec="$openssh_matchspec" sh -c' in install_script
+    assert 'exec "$sshd_path" -V' in install_script
     assert 'uv_matchspec="${2:?' in install_script
     assert 'run_pixi exec --spec="$uv_matchspec" uv tool install' in install_script
     assert OPENSSH_MATCHSPEC not in install_script

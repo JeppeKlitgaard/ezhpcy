@@ -28,6 +28,9 @@ def test_build_sshd_command_uses_foreground_mode_and_dynamic_overrides() -> None
         str(Path("/data/ezhpcy/pixi_home/bin/pixi")),
         "exec",
         f"--spec={OPENSSH_MATCHSPEC}",
+        "sh",
+        "-c",
+        'sshd_path="$(command -v sshd)" || exit; case "$sshd_path" in /*) exec "$sshd_path" "$@";; *) echo "sshd must resolve to an absolute path" >&2; exit 1;; esac',
         "sshd",
         "-D",
         "-e",
@@ -91,7 +94,7 @@ def test_ssh_serve_validates_then_replaces_process(tmp_path: Path) -> None:
     assert "-t" in validation_command
     assert run.call_args.kwargs["check"] is True
     serve_command = execve.call_args.args[1]
-    assert serve_command[4:6] == ["-D", "-e"]
+    assert serve_command[7:9] == ["-D", "-e"]
     assert execve.call_args.args[2]["PIXI_HOME"] == str(
         file_config.data_dir / "pixi_home"
     )

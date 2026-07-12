@@ -9,6 +9,7 @@ from ezhpcy.cli.tunnel.common import (
 from ezhpcy.cli.tunnel.install import install_cmd
 from ezhpcy.cli.tunnel.interactive import interactive_cmd
 from ezhpcy.cli.tunnel.reinstall import reinstall_cmd
+from ezhpcy.cli.tunnel.relay import relay_cmd
 from ezhpcy.cli.tunnel.uninstall import uninstall_cmd
 from ezhpcy.cli.utils.alias import AliasGroup
 from ezhpcy.config import config
@@ -39,3 +40,6 @@ tunnel_app.command(name="interactive, i", help="Start an interactive session.")(
     interactive_cmd
 )
 tunnel_app.command(name="batch, b", help="Run a batch workflow.")(_batch)
+tunnel_app.command(name="relay", help="Relay OpenSSH to a worker through the login node.")(
+    relay_cmd
+)

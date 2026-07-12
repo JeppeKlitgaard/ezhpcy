@@ -49,6 +49,11 @@ def _ensure_not_installed(ssh: InteractiveSSHClient) -> None:
     raise typer.Exit(code=1)
 
 
+def _check_existing_installation(ssh: InteractiveSSHClient, *, force: bool) -> None:
+    if not force:
+        _ensure_not_installed(ssh)
+
+
 def _ensure_local_client_key(ssh_dir: Path) -> tuple[Path, Path]:
     """Create ezhpcy's dedicated worker client key if it does not exist."""
     private_key = ssh_dir / WORKER_CLIENT_KEY_NAME
@@ -110,6 +115,14 @@ def install_cmd(
     user: UserOpt = config.connection.user,
     password: PasswordOpt = config.connection.password,
     host: HostOpt = config.connection.host,
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            "-f",
+            help="Install even if ezhpcy is already installed on the remote host.",
+        ),
+    ] = False,
     yes: Annotated[
         bool,
         typer.Option(
@@ -128,7 +141,7 @@ def install_cmd(
     ssh = InteractiveSSHClient(conn_info)
     ssh.interactive_connect()
 
-    _ensure_not_installed(ssh)
+    _check_existing_installation(ssh, force=force)
 
     # Get remote file_config
     remote_file_config = ssh.get_file_config()

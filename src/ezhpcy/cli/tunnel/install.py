@@ -140,55 +140,58 @@ def install_cmd(
         UNINSTALL_SCRIPT_RESOURCE
     )
     sshd_config_traversable = resources.files("ezhpcy").joinpath(SSHD_CONFIG_RESOURCE)
-    with (
-        resources.as_file(install_script_traversable) as install_script,
-        resources.as_file(uninstall_script_traversable) as uninstall_script,
-    ):
-        console.print(
-            f"Creating remote install directory: [bold blue]{remote_install_dir}[/bold blue]"
-        )
-        ssh.run(["mkdir", "-p", str(remote_install_dir)])
 
-        remote_install_script = remote_install_dir / "install.sh"
-        console.print(
-            f"Uploading install script: [bold blue]{remote_install_script}[/bold blue]"
-        )
-        ssh.upload_file(install_script, remote_install_script)
+    with ssh.sftp_client() as sftp:
+        with (
+            resources.as_file(install_script_traversable) as install_script,
+            resources.as_file(uninstall_script_traversable) as uninstall_script,
+        ):
+            console.print(
+                f"Creating remote install directory: [bold blue]{remote_install_dir}[/bold blue]"
+            )
+            sftp.mkdir(remote_install_dir, parents=True, exist_ok=True)
 
-        remote_uninstall_script = remote_install_dir / "uninstall.sh"
-        console.print(
-            f"Uploading uninstall script: [bold blue]{remote_uninstall_script}[/bold blue]"
-        )
-        ssh.upload_file(uninstall_script, remote_uninstall_script)
+            remote_install_script = remote_install_dir / "install.sh"
+            console.print(
+                f"Uploading install script: [bold blue]{remote_install_script}[/bold blue]"
+            )
+            sftp.put(str(install_script), str(remote_install_script))
 
-    with ssh.open_sftp() as sftp:
+            remote_uninstall_script = remote_install_dir / "uninstall.sh"
+            console.print(
+                f"Uploading uninstall script: [bold blue]{remote_uninstall_script}[/bold blue]"
+            )
+            sftp.put(str(uninstall_script), str(remote_uninstall_script))
+
         sftp.chmod(str(remote_install_script), 0o755)
         sftp.chmod(str(remote_uninstall_script), 0o755)
 
-    with sdist_for_current_installation() as sdist:
-        remote_sdist = remote_install_dir / sdist.name
-        console.print(f"Uploading sdist: [bold blue]{remote_sdist}[/bold blue]")
-        ssh.upload_file(sdist, remote_sdist)
+        with sdist_for_current_installation() as sdist:
+            remote_sdist = remote_install_dir / sdist.name
+            console.print(f"Uploading sdist: [bold blue]{remote_sdist}[/bold blue]")
+            sftp.put(str(sdist), str(remote_sdist))
 
-    console.print("Running remote installer.")
-    install_output = ssh.run(["bash", str(remote_install_script), str(remote_sdist)])
-    if install_output:
-        console.print(install_output.rstrip())
+        console.print("Running remote installer.")
+        install_output = ssh.run(
+            ["bash", str(remote_install_script), str(remote_sdist)]
+        )
+        if install_output:
+            console.print(install_output.rstrip())
 
-    console.print("Provisioning worker SSH keys and configuration.")
-    _private_key, public_key = _ensure_local_client_key(local_ssh_dir)
-    known_hosts = local_ssh_dir / "worker_known_hosts"
+        console.print("Provisioning worker SSH keys and configuration.")
+        _private_key, public_key = _ensure_local_client_key(local_ssh_dir)
+        known_hosts = local_ssh_dir / "worker_known_hosts"
 
-    ssh.run(["mkdir", "-p", str(remote_ssh_dir)])
-    ssh.run(["chmod", "700", str(remote_ssh_dir)])
-    remote_authorized_keys = remote_ssh_dir / "authorized_keys"
-    ssh.upload_file(public_key, remote_authorized_keys)
-    ssh.run(["chmod", "600", str(remote_authorized_keys)])
+        sftp.mkdir(remote_ssh_dir, mode=0o700, parents=True, exist_ok=True)
+        sftp.chmod(str(remote_ssh_dir), 0o700)
 
-    remote_host_key = remote_ssh_dir / WORKER_HOST_KEY_NAME
-    remote_host_public_key = PurePosixPath(f"{remote_host_key}.pub")
-    remote_sshd_config = remote_ssh_dir / "sshd_config"
-    with ssh.open_sftp() as sftp:
+        remote_authorized_keys = remote_ssh_dir / "authorized_keys"
+        sftp.put(str(public_key), str(remote_authorized_keys))
+        sftp.chmod(str(remote_authorized_keys), 0o600)
+
+        remote_host_key = remote_ssh_dir / WORKER_HOST_KEY_NAME
+        remote_host_public_key = PurePosixPath(f"{remote_host_key}.pub")
+        remote_sshd_config = remote_ssh_dir / "sshd_config"
         try:
             sftp.stat(str(remote_host_key))
         except FileNotFoundError:
@@ -210,36 +213,31 @@ def install_cmd(
                 file_config=remote_file_config,
             )
 
-    with resources.as_file(sshd_config_traversable) as sshd_config_template:
-        rendered_config = _render_sshd_config(
-            sshd_config_template.read_text(encoding="utf-8"),
-            remote_username=conn_info.user,
-            remote_config_dir=remote_ssh_dir,
+        with resources.as_file(sshd_config_traversable) as sshd_config_template:
+            rendered_config = _render_sshd_config(
+                sshd_config_template.read_text(encoding="utf-8"),
+                remote_username=conn_info.user,
+                remote_config_dir=remote_ssh_dir,
+            )
+        sftp.write_text(remote_sshd_config, rendered_config)
+
+        sftp.chmod(str(remote_host_key), 0o600)
+        sftp.chmod(str(remote_sshd_config), 0o600)
+        sftp.chmod(str(remote_host_public_key), 0o644)
+
+        ssh.run_pixi(
+            [
+                "exec",
+                f"--spec={OPENSSH_MATCHSPEC}",
+                "sshd",
+                "-t",
+                "-f",
+                str(remote_sshd_config),
+            ],
+            file_config=remote_file_config,
         )
-    ssh.upload_text(rendered_config, remote_sshd_config)
 
-    ssh.run(
-        [
-            "chmod",
-            "600",
-            str(remote_host_key),
-            str(remote_sshd_config),
-        ]
-    )
-    ssh.run(["chmod", "644", str(remote_host_public_key)])
-    ssh.run_pixi(
-        [
-            "exec",
-            f"--spec={OPENSSH_MATCHSPEC}",
-            "sshd",
-            "-t",
-            "-f",
-            str(remote_sshd_config),
-        ],
-        file_config=remote_file_config,
-    )
-
-    host_public_key = ssh.run(["cat", str(remote_host_public_key)])
-    _pin_worker_host_key(host_public_key, known_hosts)
+        host_public_key = sftp.read_text(remote_host_public_key)
+        _pin_worker_host_key(host_public_key, known_hosts)
 
     console.print("[bold green]Success[/bold green]: remote installation completed.")

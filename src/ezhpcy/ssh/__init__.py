@@ -1,10 +1,63 @@
 import shlex
+import stat
+from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
+from typing import Iterator
 
 import paramiko
 
 from ezhpcy.config import ConnectionInfo, RemoteFileConfig
 from ezhpcy.constants import PACKAGE_NAME
+
+
+class SFTPClient(paramiko.SFTPClient):
+    """SFTP client with convenience methods for ezhpcy's remote operations."""
+
+    def read_text(
+        self,
+        path: str | PurePosixPath,
+        encoding: str = "utf-8",
+        errors: str = "strict",
+    ) -> str:
+        """Read and decode a remote text file."""
+        with self.file(str(path), "r") as remote_file:
+            return remote_file.read().decode(encoding, errors)
+
+    def write_text(
+        self,
+        path: str | PurePosixPath,
+        content: str,
+        encoding: str = "utf-8",
+        errors: str = "strict",
+    ) -> int:
+        """Encode and write text to a remote file."""
+        with self.file(str(path), "w") as remote_file:
+            remote_file.write(content.encode(encoding, errors))
+        return len(content)
+
+    def mkdir(
+        self,
+        path: str | PurePosixPath,
+        mode: int = 0o777,
+        parents: bool = False,
+        exist_ok: bool = False,
+    ) -> None:
+        """Create a remote directory with semantics matching ``Path.mkdir``."""
+        remote_path = PurePosixPath(path)
+
+        try:
+            super().mkdir(str(remote_path), mode=mode)
+        except FileNotFoundError:
+            if not parents or remote_path.parent == remote_path:
+                raise
+            self.mkdir(remote_path.parent, parents=True, exist_ok=True)
+            self.mkdir(remote_path, mode=mode, exist_ok=exist_ok)
+        except OSError:
+            if not exist_ok:
+                raise
+            attributes = self.stat(str(remote_path))
+            if attributes.st_mode is None or not stat.S_ISDIR(attributes.st_mode):
+                raise
 
 
 class SSHClient(paramiko.SSHClient):
@@ -17,6 +70,19 @@ class SSHClient(paramiko.SSHClient):
     def __init__(self, conn_info: ConnectionInfo):
         super().__init__()
         self.conn_info = conn_info
+
+    @contextmanager
+    def sftp_client(self) -> Iterator[SFTPClient]:
+        """Open an ezhpcy SFTP client for this SSH connection."""
+        transport = self.get_transport()
+        if transport is None or not transport.is_active():
+            raise paramiko.SSHException("SSH session is not active")
+
+        sftp = SFTPClient.from_transport(transport)
+        try:
+            yield sftp
+        finally:
+            sftp.close()
 
     def run(
         self,
@@ -55,7 +121,7 @@ class SSHClient(paramiko.SSHClient):
         """
         Upload a file to the remote host.
         """
-        with self.open_sftp() as sftp:
+        with self.sftp_client() as sftp:
             sftp.put(local_path, str(remote_path))
 
     def upload_text(
@@ -65,9 +131,8 @@ class SSHClient(paramiko.SSHClient):
         encoding: str = "utf-8",
     ) -> None:
         """Upload text content directly to a file on the remote host."""
-        with self.open_sftp() as sftp:
-            with sftp.file(str(remote_path), "w") as remote_file:
-                remote_file.write(content.encode(encoding))
+        with self.sftp_client() as sftp:
+            sftp.write_text(remote_path, content, encoding=encoding)
 
     def run_pixi(
         self,

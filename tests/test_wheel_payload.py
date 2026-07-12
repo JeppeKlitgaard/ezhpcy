@@ -65,6 +65,7 @@ def test_install_script_uses_xdg_private_pixi_home() -> None:
     with zipfile.ZipFile(wheels[0]) as wheel:
         install_script = wheel.read("ezhpcy/static/data/install.sh").decode()
 
+    assert "\r" not in install_script
     assert "XDG_DATA_HOME" in install_script
     assert "PIXI_HOME" in install_script
     assert "PIXI_CACHE_DIR" in install_script
@@ -88,6 +89,7 @@ def test_uninstall_script_removes_xdg_pixi_cache() -> None:
     with zipfile.ZipFile(wheels[0]) as wheel:
         uninstall_script = wheel.read("ezhpcy/static/data/uninstall.sh").decode()
 
+    assert "\r" not in uninstall_script
     assert "XDG_CACHE_HOME" in uninstall_script
     assert "PIXI_CACHE_DIR" in uninstall_script
     assert 'uv_matchspec="${1:?' in uninstall_script

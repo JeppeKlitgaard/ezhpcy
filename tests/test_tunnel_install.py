@@ -2,10 +2,13 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 import typer
+from typer.testing import CliRunner
 
 from ezhpcy import console
+from ezhpcy.cli import app
 from ezhpcy.cli.tunnel.install import (
     WORKER_HOST_ALIAS,
+    _check_existing_installation,
     _ensure_not_installed,
     _pin_worker_host_key,
     _render_sshd_config,
@@ -22,6 +25,22 @@ class StubSSH:
         if self.error is not None:
             raise self.error
         return "EZHPCY Version: 0.1.0\n"
+
+
+def test_install_help_includes_force_option() -> None:
+    result = CliRunner().invoke(app, ["tunnel", "install", "--help"])
+
+    assert result.exit_code == 0
+    assert "--force" in result.stdout
+    assert "already installed" in result.stdout
+
+
+def test_force_skips_existing_installation_check() -> None:
+    ssh = StubSSH()
+
+    _check_existing_installation(ssh, force=True)  # type: ignore[arg-type]
+
+    assert ssh.commands == []
 
 
 def test_ensure_not_installed_checks_remote_version() -> None:
@@ -53,7 +72,9 @@ def test_render_sshd_config_replaces_remote_values() -> None:
         remote_config_dir=PurePosixPath("/home/alice/.config/ezhpcy/ssh"),
     )
 
-    assert rendered == ("AllowUsers alice\nHostKey /home/alice/.config/ezhpcy/ssh/host\nPidFile /home/alice/.config/ezhpcy/ssh/sshd.pid")
+    assert rendered == (
+        "AllowUsers alice\nHostKey /home/alice/.config/ezhpcy/ssh/host\nPidFile /home/alice/.config/ezhpcy/ssh/sshd.pid"
+    )
 
 
 def test_pin_worker_host_key_preserves_unrelated_entries(tmp_path: Path) -> None:

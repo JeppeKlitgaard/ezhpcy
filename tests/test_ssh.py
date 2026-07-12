@@ -25,22 +25,6 @@ def test_sftp_client_context_manager_closes_custom_client() -> None:
     sftp.close.assert_called_once_with()
 
 
-def test_upload_text_writes_encoded_content() -> None:
-    client = SSHClient(ConnectionInfo())
-    sftp = MagicMock(spec=SFTPClient)
-    sftp_client = MagicMock()
-    sftp_client.__enter__.return_value = sftp
-
-    with patch.object(client, "sftp_client", return_value=sftp_client):
-        client.upload_text("AllowUsers s250250\n", PurePosixPath("/remote/sshd_config"))
-
-    sftp.write_text.assert_called_once_with(
-        PurePosixPath("/remote/sshd_config"),
-        "AllowUsers s250250\n",
-        encoding="utf-8",
-    )
-
-
 def test_sftp_read_text_decodes_remote_file() -> None:
     sftp = MagicMock(spec=SFTPClient)
     remote_file = MagicMock()

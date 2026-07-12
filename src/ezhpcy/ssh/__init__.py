@@ -117,22 +117,6 @@ class SSHClient(paramiko.SSHClient):
 
         return stdout.read().decode()
 
-    def upload_file(self, local_path: Path, remote_path: PurePosixPath) -> None:
-        """
-        Upload a file to the remote host.
-        """
-        with self.sftp_client() as sftp:
-            sftp.put(local_path, str(remote_path))
-
-    def upload_text(
-        self,
-        content: str,
-        remote_path: PurePosixPath,
-        encoding: str = "utf-8",
-    ) -> None:
-        """Upload text content directly to a file on the remote host."""
-        with self.sftp_client() as sftp:
-            sftp.write_text(remote_path, content, encoding=encoding)
 
     def run_pixi(
         self,

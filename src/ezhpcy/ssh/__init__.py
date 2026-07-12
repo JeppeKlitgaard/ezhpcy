@@ -1,7 +1,7 @@
 import shlex
 import stat
 from contextlib import contextmanager
-from pathlib import Path, PurePosixPath
+from pathlib import PurePosixPath
 from typing import Iterator
 
 import paramiko
@@ -117,7 +117,6 @@ class SSHClient(paramiko.SSHClient):
 
         return stdout.read().decode()
 
-
     def run_pixi(
         self,
         args: list[str],
@@ -150,8 +149,8 @@ class SSHClient(paramiko.SSHClient):
 
         cmd = (
             'printf \'{"cache_dir":"%s","config_dir":"%s","data_dir":"%s","config_file":"%s"}\' '
-            '"${XDG_CONFIG_HOME:-$HOME/.config}" '
             '"${XDG_CACHE_HOME:-$HOME/.cache}" '
+            '"${XDG_CONFIG_HOME:-$HOME/.config}" '
             '"${XDG_DATA_HOME:-$HOME/.local/share}" '
             '"${EZHPCY_CONFIG_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/ezhpcy/ezhpcy.toml}"'
         )

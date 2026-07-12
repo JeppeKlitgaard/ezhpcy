@@ -1,9 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-UV_MATCHSPEC="uv==0.11.26"
-OPENSSH_MATCHSPEC="openssh"
-
 pixi_install_script_url="https://pixi.sh/install.sh"
 xdg_data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
 xdg_cache_home="${XDG_CACHE_HOME:-$HOME/.cache}"
@@ -13,6 +10,8 @@ pixi_cache_dir="${PIXI_CACHE_DIR:-$xdg_cache_home/ezhpcy/pixi_cache}"
 pixi_bin="$pixi_home/bin/pixi"
 pixi_install_script="$install_root/pixi-install.sh"
 sdist_path="${1:-}"
+uv_matchspec="${2:?Usage: install.sh SDIST_PATH UV_MATCHSPEC OPENSSH_MATCHSPEC}"
+openssh_matchspec="${3:?Usage: install.sh SDIST_PATH UV_MATCHSPEC OPENSSH_MATCHSPEC}"
 
 download_file() {
     local url="$1"
@@ -60,7 +59,7 @@ run_pixi --version
 
 # Resolve OpenSSH during setup so later worker jobs can reuse Pixi's cache.
 echo "Caching the worker OpenSSH environment..."
-run_pixi exec --spec="$OPENSSH_MATCHSPEC" sshd -V
+run_pixi exec --spec="$openssh_matchspec" sshd -V
 
 ### sdist of ezhpcy
 mkdir -p "$install_root"
@@ -78,7 +77,7 @@ echo "Bundled ezhpcy sdist staged at: $sdist_path"
 
 # Install ezhpcy from the sdist using pixi
 echo "Installing ezhpcy from sdist..."
-run_pixi exec --spec="$UV_MATCHSPEC" uv tool install "$sdist_path" --no-config --force-reinstall
+run_pixi exec --spec="$uv_matchspec" uv tool install "$sdist_path" --no-config --force-reinstall
 
 # Validate installation
 echo "Validating ezhpcy installation..."

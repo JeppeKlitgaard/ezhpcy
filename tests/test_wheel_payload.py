@@ -3,6 +3,8 @@ import tarfile
 import zipfile
 from pathlib import Path
 
+from ezhpcy.constants import OPENSSH_MATCHSPEC, UV_MATCHSPEC
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DIST_DIRECTORY = PROJECT_ROOT / "dist"
 
@@ -68,7 +70,12 @@ def test_install_script_uses_xdg_private_pixi_home() -> None:
     assert "PIXI_CACHE_DIR" in install_script
     assert "xdg_cache_home/ezhpcy/pixi_cache" in install_script
     assert "PIXI_NO_PATH_UPDATE" in install_script
-    assert 'run_pixi exec --spec="$OPENSSH_MATCHSPEC" sshd -V' in install_script
+    assert 'openssh_matchspec="${3:?' in install_script
+    assert 'run_pixi exec --spec="$openssh_matchspec" sshd -V' in install_script
+    assert 'uv_matchspec="${2:?' in install_script
+    assert 'run_pixi exec --spec="$uv_matchspec" uv tool install' in install_script
+    assert OPENSSH_MATCHSPEC not in install_script
+    assert UV_MATCHSPEC not in install_script
 
 
 def test_uninstall_script_removes_xdg_pixi_cache() -> None:
@@ -82,4 +89,7 @@ def test_uninstall_script_removes_xdg_pixi_cache() -> None:
 
     assert "XDG_CACHE_HOME" in uninstall_script
     assert "PIXI_CACHE_DIR" in uninstall_script
-    assert 'rm -rf -- "$pixi_cache_dir"' in uninstall_script
+    assert 'uv_matchspec="${1:?' in uninstall_script
+    assert 'run_pixi exec --spec="$uv_matchspec" uv tool uninstall' in uninstall_script
+    assert UV_MATCHSPEC not in uninstall_script
+    assert 'rm -rf -- "$ezhpcy_cache_dir"' in uninstall_script

@@ -116,3 +116,21 @@ def test_run_pixi_uses_ezhpcy_xdg_directories() -> None:
             "-V",
         ]
     )
+
+
+def test_get_file_config_maps_xdg_directories_to_the_correct_fields() -> None:
+    client = SSHClient(ConnectionInfo())
+    response = (
+        '{"cache_dir":"/cache","config_dir":"/config",'
+        '"data_dir":"/data","config_file":"/config/ezhpcy/ezhpcy.toml"}'
+    )
+
+    with patch.object(client, "run", return_value=response) as run:
+        file_config = client.get_file_config()
+
+    assert file_config.cache_dir == PurePosixPath("/cache")
+    assert file_config.config_dir == PurePosixPath("/config")
+    remote_script = run.call_args.args[0][2]
+    assert remote_script.index("XDG_CACHE_HOME") < remote_script.index(
+        "XDG_CONFIG_HOME"
+    )

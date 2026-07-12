@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-UV_MATCHSPEC="uv==0.11.26"
-
 xdg_data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
 xdg_cache_home="${XDG_CACHE_HOME:-$HOME/.cache}"
 install_root="${EZHPCY_INSTALL_ROOT:-$xdg_data_home/ezhpcy}"
@@ -10,6 +8,7 @@ ezhpcy_cache_dir="${EZHPCY_CACHE_DIR:-$xdg_cache_home/ezhpcy}"
 pixi_home="${PIXI_HOME:-$install_root/pixi_home}"
 pixi_cache_dir="${PIXI_CACHE_DIR:-$ezhpcy_cache_dir/pixi_cache}"
 pixi_bin="$pixi_home/bin/pixi"
+uv_matchspec="${1:?Usage: uninstall.sh UV_MATCHSPEC}"
 
 run_pixi() {
     PIXI_HOME="$pixi_home" \
@@ -24,7 +23,7 @@ if [[ ! -x "$pixi_bin" ]]; then
 fi
 
 echo "Uninstalling ezhpcy..."
-run_pixi exec --spec="$UV_MATCHSPEC" uv tool uninstall ezhpcy
+run_pixi exec --spec="$uv_matchspec" uv tool uninstall ezhpcy
 
 echo "Removing ezhpcy's cache: ${ezhpcy_cache_dir}"
 rm -rf -- "$ezhpcy_cache_dir"

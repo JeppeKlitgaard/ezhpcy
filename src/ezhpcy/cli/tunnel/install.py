@@ -18,17 +18,20 @@ from ezhpcy.cli.tunnel.common import (
 )
 from ezhpcy.cli.utils.ssh import InteractiveSSHClient
 from ezhpcy.config import config
+from ezhpcy.constants import (
+    OPENSSH_MATCHSPEC,
+    SSH_DIRECTORY_NAME,
+    UV_MATCHSPEC,
+    WORKER_HOST_KEY_NAME,
+)
 from ezhpcy.patch.sdist import sdist_for_current_installation
 
 INSTALL_DIR_NAME = "ezhpcy"
 INSTALL_SCRIPT_RESOURCE = "static/data/install.sh"
 UNINSTALL_SCRIPT_RESOURCE = "static/data/uninstall.sh"
 SSHD_CONFIG_RESOURCE = "static/config/ssh_remote/sshd_config"
-SSH_DIRECTORY_NAME = "ssh"
 WORKER_CLIENT_KEY_NAME = "worker_client_ed25519"
-WORKER_HOST_KEY_NAME = "ssh_host_ed25519_key"
 WORKER_HOST_ALIAS = "ezhpcy-worker"
-OPENSSH_MATCHSPEC = "openssh==10.4p1"
 
 
 def _ensure_not_installed(ssh: InteractiveSSHClient) -> None:
@@ -190,7 +193,13 @@ def install_cmd(
 
         console.print("Running remote installer.")
         install_output = ssh.run(
-            ["bash", str(remote_install_script), str(remote_sdist)]
+            [
+                "bash",
+                str(remote_install_script),
+                str(remote_sdist),
+                UV_MATCHSPEC,
+                OPENSSH_MATCHSPEC,
+            ]
         )
         if install_output:
             console.print(install_output.rstrip())

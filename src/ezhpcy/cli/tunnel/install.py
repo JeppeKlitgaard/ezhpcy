@@ -31,6 +31,21 @@ WORKER_HOST_ALIAS = "ezhpcy-worker"
 OPENSSH_MATCHSPEC = "openssh==10.4p1"
 
 
+def _ensure_not_installed(ssh: InteractiveSSHClient) -> None:
+    """Abort installation when ezhpcy is already available remotely."""
+    try:
+        ssh.run(["ezhpcy", "version"])
+    except RuntimeError:
+        return
+
+    console.print(
+        "[bold yellow]Aborted[/bold yellow]: ezhpcy is already installed on the "
+        "remote host. Use [bold blue]ezhpcy tunnel reinstall[/bold blue] instead, "
+        "or run [bold blue]ezhpcy tunnel uninstall[/bold blue] first."
+    )
+    raise typer.Exit(code=1)
+
+
 def _ensure_local_client_key(ssh_dir: Path) -> tuple[Path, Path]:
     """Create ezhpcy's dedicated worker client key if it does not exist."""
     private_key = ssh_dir / WORKER_CLIENT_KEY_NAME
@@ -109,6 +124,8 @@ def install_cmd(
     # Connect
     ssh = InteractiveSSHClient(conn_info)
     ssh.interactive_connect()
+
+    _ensure_not_installed(ssh)
 
     # Get remote file_config
     remote_file_config = ssh.get_file_config()

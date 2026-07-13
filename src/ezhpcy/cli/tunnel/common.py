@@ -24,8 +24,11 @@ PasswordOpt = Annotated[
     typer.Option(
         "--password",
         "-p",
-        help="Password for the login node. Defaults to config.",
-    ),
+        help=(
+            "Password for the login node. Defaults to config. "
+            "Note: Specifying this is potentially a security risk."
+            ),
+    )
 ]
 PasswordEnvOpt = Annotated[
     bool,

@@ -55,17 +55,21 @@ def _validate_listen_address(value: str) -> str:
     return address
 
 
-def _worker_ssh_paths(file_config: LocalFileConfig) -> tuple[Path, Path, Path]:
+def _worker_ssh_paths(
+    file_config: LocalFileConfig,
+) -> tuple[Path, Path, Path, Path]:
     sshd_config = file_config.config_dir / SSH_DIRECTORY_NAME / "sshd_config"
+    sshd_pid = file_config.runtime_dir / "sshd.pid"
     pixi_home = file_config.data_dir / "pixi_home"
     pixi_cache = file_config.cache_dir / "pixi_cache"
-    return sshd_config, pixi_home, pixi_cache
+    return sshd_config, sshd_pid, pixi_home, pixi_cache
 
 
 def _build_sshd_command(
     *,
     pixi_home: Path,
     sshd_config: Path,
+    sshd_pid: Path,
     listen_address: str,
     port: int,
     validate_only: bool,
@@ -88,6 +92,8 @@ def _build_sshd_command(
             str(port),
             "-o",
             f"ListenAddress={listen_address}",
+            "-o",
+            f"PidFile={sshd_pid}",
         ]
     )
     return command
@@ -101,7 +107,7 @@ def ssh_serve_cmd(
     port = _validate_port(port)
     listen_address = _validate_listen_address(listen_address)
 
-    sshd_config, pixi_home, pixi_cache = _worker_ssh_paths(config.local_file)
+    sshd_config, sshd_pid, pixi_home, pixi_cache = _worker_ssh_paths(config.local_file)
     pixi = pixi_home / "bin" / "pixi"
     if not sshd_config.is_file():
         raise typer.BadParameter(
@@ -110,6 +116,9 @@ def ssh_serve_cmd(
     if not pixi.is_file():
         raise typer.BadParameter(f"private Pixi executable was not found at {pixi}")
 
+    sshd_pid.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(sshd_pid.parent, 0o700)
+
     environment = os.environ.copy()
     environment["PIXI_HOME"] = str(pixi_home)
     environment["PIXI_CACHE_DIR"] = str(pixi_cache)
@@ -117,6 +126,7 @@ def ssh_serve_cmd(
     validation_command = _build_sshd_command(
         pixi_home=pixi_home,
         sshd_config=sshd_config,
+        sshd_pid=sshd_pid,
         listen_address=listen_address,
         port=port,
         validate_only=True,
@@ -129,6 +139,7 @@ def ssh_serve_cmd(
     serve_command = _build_sshd_command(
         pixi_home=pixi_home,
         sshd_config=sshd_config,
+        sshd_pid=sshd_pid,
         listen_address=listen_address,
         port=port,
         validate_only=False,

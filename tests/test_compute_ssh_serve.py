@@ -1,3 +1,4 @@
+import os
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
@@ -19,6 +20,7 @@ def test_build_sshd_command_uses_foreground_mode_and_dynamic_overrides() -> None
     command = _build_sshd_command(
         pixi_home=Path("/data/ezhpcy/pixi_home"),
         sshd_config=Path("/config/ezhpcy/ssh/sshd_config"),
+        sshd_pid=Path("/runtime/ezhpcy/sshd.pid"),
         listen_address="10.0.0.7",
         port=23456,
         validate_only=False,
@@ -40,6 +42,8 @@ def test_build_sshd_command_uses_foreground_mode_and_dynamic_overrides() -> None
         "23456",
         "-o",
         "ListenAddress=10.0.0.7",
+        "-o",
+        f"PidFile={Path('/runtime/ezhpcy/sshd.pid')}",
     ]
 
 
@@ -72,6 +76,7 @@ def test_ssh_serve_validates_then_replaces_process(tmp_path: Path) -> None:
         cache_dir=tmp_path / "cache" / "ezhpcy",
         config_dir=tmp_path / "config" / "ezhpcy",
         data_dir=tmp_path / "data" / "ezhpcy",
+        runtime_dir=tmp_path / "runtime" / "ezhpcy",
         config_file=tmp_path / "config" / "ezhpcy" / "ezhpcy.toml",
     )
     sshd_config = file_config.config_dir / "ssh" / "sshd_config"
@@ -95,6 +100,10 @@ def test_ssh_serve_validates_then_replaces_process(tmp_path: Path) -> None:
     assert run.call_args.kwargs["check"] is True
     serve_command = execve.call_args.args[1]
     assert serve_command[7:9] == ["-D", "-e"]
+    assert f"PidFile={file_config.runtime_dir / 'sshd.pid'}" in serve_command
+    assert file_config.runtime_dir.is_dir()
+    if os.name == "posix":
+        assert file_config.runtime_dir.stat().st_mode & 0o777 == 0o700
     assert execve.call_args.args[2]["PIXI_HOME"] == str(
         file_config.data_dir / "pixi_home"
     )
@@ -105,6 +114,7 @@ def test_ssh_serve_defaults_to_all_ipv4_interfaces(tmp_path: Path) -> None:
         cache_dir=tmp_path / "cache" / "ezhpcy",
         config_dir=tmp_path / "config" / "ezhpcy",
         data_dir=tmp_path / "data" / "ezhpcy",
+        runtime_dir=tmp_path / "runtime" / "ezhpcy",
         config_file=tmp_path / "config" / "ezhpcy" / "ezhpcy.toml",
     )
     sshd_config = file_config.config_dir / "ssh" / "sshd_config"
@@ -150,6 +160,7 @@ def test_ssh_serve_propagates_validation_failure(tmp_path: Path) -> None:
         cache_dir=tmp_path / "cache" / "ezhpcy",
         config_dir=tmp_path / "config" / "ezhpcy",
         data_dir=tmp_path / "data" / "ezhpcy",
+        runtime_dir=tmp_path / "runtime" / "ezhpcy",
         config_file=tmp_path / "config" / "ezhpcy" / "ezhpcy.toml",
     )
     sshd_config = file_config.config_dir / "ssh" / "sshd_config"

@@ -8,17 +8,18 @@ from pathlib import Path
 
 import pytest
 
-import ezhpcy.tunnel.ipc as ipc
-from ezhpcy.tunnel.ipc import (
+import ezhpcy.ipc.protocol as protocol
+import ezhpcy.ipc.runtime as runtime
+from ezhpcy.ipc import (
     AuthenticatedIPCBackend,
+    create_broker_backend,
+    load_broker_backend,
+)
+from ezhpcy.ipc.common import (
     BrokerUnavailableError,
     IPCAddress,
     IPCAuthenticationError,
     IPCError,
-    create_broker_backend,
-    load_broker_backend,
-    reject_worker_stream,
-    wait_for_worker_stream,
 )
 
 AUTHKEY = b"a" * 32
@@ -35,18 +36,18 @@ def start_server(backend, handler, error_handler=None):
 def test_worker_stream_rejection_is_bounded_and_actionable() -> None:
     client, server = socket.socketpair()
     thread = threading.Thread(
-        target=reject_worker_stream,
+        target=protocol.reject_worker_stream,
         args=(server, "worker failed: " + "x" * 2000),
     )
     thread.start()
 
     with pytest.raises(IPCError, match="worker failed") as raised:
-        wait_for_worker_stream(client)
+        protocol.wait_for_worker_stream(client)
     thread.join(timeout=1)
     client.close()
     server.close()
 
-    assert len(str(raised.value).encode()) <= ipc.MAX_ERROR_SIZE
+    assert len(str(raised.value).encode()) <= protocol.MAX_ERROR_SIZE
 
 
 def test_wrong_authkey_is_rejected() -> None:
@@ -91,7 +92,7 @@ def test_runtime_descriptor_publishes_capability_and_is_removed(tmp_path: Path) 
     assert client_backend.address.port != 0
     assert client_backend.authkey == AUTHKEY
     assert "authkey" not in repr(client_backend)
-    assert payload["version"] == ipc.RUNTIME_DESCRIPTOR_VERSION
+    assert payload["version"] == runtime.RUNTIME_DESCRIPTOR_VERSION
     assert payload["host"] == "127.0.0.1"
     assert payload["port"] == listener.address.port
 
@@ -148,7 +149,9 @@ def test_runtime_descriptor_rejects_directory_owned_by_another_user(
 ) -> None:
     runtime_directory = tmp_path / "runtime"
     runtime_directory.mkdir(mode=0o700)
-    monkeypatch.setattr(ipc.os, "getuid", lambda: runtime_directory.stat().st_uid + 1)
+    monkeypatch.setattr(
+        runtime.os, "getuid", lambda: runtime_directory.stat().st_uid + 1
+    )
     backend = create_broker_backend(descriptor_path=runtime_directory / "broker.json")
 
     with pytest.raises(IPCError, match="not owned by the current user"):
@@ -188,6 +191,17 @@ def test_listener_close_cancels_blocked_accept() -> None:
     backend = AuthenticatedIPCBackend(BIND_ADDRESS, AUTHKEY)
     server, thread = start_server(backend, lambda _connection: None)
     server.close()
+    thread.join(timeout=1)
+
+    assert not thread.is_alive()
+
+
+def test_listener_closed_before_serving_returns_immediately() -> None:
+    backend = AuthenticatedIPCBackend(BIND_ADDRESS, AUTHKEY)
+    server = backend.listen(lambda _connection: None)
+    server.close()
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
     thread.join(timeout=1)
 
     assert not thread.is_alive()
@@ -254,12 +268,14 @@ def test_client_rejects_invalid_server_proof() -> None:
         def impersonate_broker() -> None:
             connection, _address = listener.accept()
             with connection:
-                connection.sendall(ipc._AUTH_MAGIC + b"s" * ipc._AUTH_NONCE_SIZE)
-                response_size = ipc._AUTH_NONCE_SIZE + ipc._AUTH_DIGEST_SIZE
+                connection.sendall(
+                    protocol.AUTH_MAGIC + b"s" * protocol.AUTH_NONCE_SIZE
+                )
+                response_size = protocol.AUTH_NONCE_SIZE + protocol.AUTH_DIGEST_SIZE
                 response = bytearray()
                 while len(response) < response_size:
                     response.extend(connection.recv(response_size - len(response)))
-                connection.sendall(b"x" * ipc._AUTH_DIGEST_SIZE)
+                connection.sendall(b"x" * protocol.AUTH_DIGEST_SIZE)
 
         thread = threading.Thread(target=impersonate_broker)
         thread.start()
@@ -275,7 +291,7 @@ def test_server_close_interrupts_stalled_authentication() -> None:
     backend = AuthenticatedIPCBackend(BIND_ADDRESS, AUTHKEY, authentication_timeout=10)
     server, thread = start_server(backend, lambda _connection: None)
     with socket.create_connection(server.address.as_tuple()) as stalled:
-        greeting_size = len(ipc._AUTH_MAGIC) + ipc._AUTH_NONCE_SIZE
+        greeting_size = len(protocol.AUTH_MAGIC) + protocol.AUTH_NONCE_SIZE
         greeting = bytearray()
         while len(greeting) < greeting_size:
             greeting.extend(stalled.recv(greeting_size - len(greeting)))
@@ -319,7 +335,7 @@ def test_runtime_descriptor_rejects_non_loopback_address(tmp_path: Path) -> None
     descriptor.write_text(
         json.dumps(
             {
-                "version": ipc.RUNTIME_DESCRIPTOR_VERSION,
+                "version": runtime.RUNTIME_DESCRIPTOR_VERSION,
                 "host": "0.0.0.0",
                 "port": 12345,
                 "authkey": base64.b64encode(AUTHKEY).decode("ascii"),

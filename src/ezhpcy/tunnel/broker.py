@@ -7,8 +7,10 @@ from typing import BinaryIO, Callable
 
 import paramiko
 
-from ezhpcy.tunnel.ipc import (
+from ezhpcy.ipc.common import (
     IPCBackend,
+)
+from ezhpcy.ipc.protocol import (
     ready_worker_stream,
     reject_worker_stream,
     wait_for_worker_stream,
@@ -16,7 +18,6 @@ from ezhpcy.tunnel.ipc import (
 from ezhpcy.tunnel.relay import _shutdown_write
 
 ErrorHandler = Callable[[Exception], None]
-WORKER_BANNER_TIMEOUT = 10.0
 
 
 def _channel_to_socket(channel: paramiko.Channel, stream: socket.socket) -> None:
@@ -77,27 +78,7 @@ class ForegroundBroker:
                     f"worker channel could not be opened: {error}",
                 )
                 return
-            channel.settimeout(WORKER_BANNER_TIMEOUT)
-            try:
-                first_data = channel.recv(64 * 1024)
-            except (OSError, paramiko.SSHException) as error:
-                reject_worker_stream(
-                    stream,
-                    f"worker connection failed before sending an SSH banner: {error}",
-                )
-                return
-            finally:
-                channel.settimeout(None)
-            if not first_data:
-                reject_worker_stream(
-                    stream,
-                    "worker connection closed before sending an SSH banner; verify "
-                    "that the worker daemon is running and that WORKER_HOST and "
-                    "--worker-port match its endpoint",
-                )
-                return
             ready_worker_stream(stream)
-            stream.sendall(first_data)
             outgoing = threading.Thread(
                 target=self._forward_channel,
                 args=(channel, stream),

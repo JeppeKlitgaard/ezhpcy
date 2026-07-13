@@ -8,9 +8,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import ezhpcy.tunnel.broker as broker_module
+from ezhpcy.ipc import create_broker_backend, load_broker_backend
+from ezhpcy.ipc.common import IPCError
 from ezhpcy.tunnel.broker import ForegroundBroker, relay_proxy_stdio
-from ezhpcy.tunnel.ipc import IPCError, create_broker_backend, load_broker_backend
 
 
 class ClientBackend:
@@ -49,16 +49,24 @@ class EchoTransport:
         return broker_channel
 
 
-class ClosingTransport(EchoTransport):
+class FailingTransport(EchoTransport):
+    def open_channel(self, _kind, *, dest_addr, src_addr):
+        raise OSError("channel rejected")
+
+
+class ClientFirstTransport(EchoTransport):
     def open_channel(self, _kind, *, dest_addr, src_addr):
         broker_channel, worker = socket.socketpair()
-        worker.close()
-        return broker_channel
 
+        def respond_after_client() -> None:
+            request = bytearray()
+            while chunk := worker.recv(65536):
+                request.extend(chunk)
+            worker.sendall(b"worker:" + request)
+            worker.shutdown(socket.SHUT_WR)
+            worker.close()
 
-class SilentTransport(EchoTransport):
-    def open_channel(self, _kind, *, dest_addr, src_addr):
-        broker_channel, self.worker = socket.socketpair()
+        threading.Thread(target=respond_after_client, daemon=True).start()
         return broker_channel
 
 
@@ -199,9 +207,9 @@ def test_authentication_transport_loss_is_actionable_and_opens_no_channel() -> N
     assert transport.destinations == []
 
 
-def test_worker_close_before_ssh_banner_is_actionable() -> None:
+def test_worker_channel_open_failure_is_actionable() -> None:
     broker = ForegroundBroker(
-        ClosingTransport(), ("wrong-worker.internal", 3333), MagicMock()
+        FailingTransport(), ("wrong-worker.internal", 3333), MagicMock()
     )
     client, server = socket.socketpair()
     thread = threading.Thread(
@@ -210,26 +218,19 @@ def test_worker_close_before_ssh_banner_is_actionable() -> None:
     )
     thread.start()
 
-    with pytest.raises(IPCError, match="closed before sending an SSH banner"):
+    with pytest.raises(IPCError, match="worker channel could not be opened"):
         relay_proxy_stdio(ClientBackend(client), io.BytesIO(), io.BytesIO())
     thread.join(timeout=1)
 
 
-def test_worker_banner_timeout_is_actionable(monkeypatch) -> None:
-    monkeypatch.setattr(broker_module, "WORKER_BANNER_TIMEOUT", 0.05)
-    transport = SilentTransport()
-    broker = ForegroundBroker(transport, ("silent-worker.internal", 3333), MagicMock())
-    client, server = socket.socketpair()
-    thread = threading.Thread(target=broker._serve_client, args=(server,))
-    thread.start()
+def test_proxy_sends_client_bytes_before_worker_sends_any_bytes() -> None:
+    broker = ForegroundBroker(
+        ClientFirstTransport(), ("worker.internal", 3333), MagicMock()
+    )
 
-    try:
-        with pytest.raises(IPCError, match="failed before sending an SSH banner"):
-            relay_proxy_stdio(ClientBackend(client), io.BytesIO(), io.BytesIO())
-        thread.join(timeout=1)
-        assert not thread.is_alive()
-    finally:
-        transport.worker.close()
+    assert run_proxy(broker, b"client-identification") == (
+        b"worker:client-identification"
+    )
 
 
 def test_loopback_broker_relays_server_banner_while_waiting_for_client(

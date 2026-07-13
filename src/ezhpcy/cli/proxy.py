@@ -2,8 +2,9 @@ import sys
 
 import typer
 
+from ezhpcy.ipc import load_broker_backend
+from ezhpcy.ipc.common import IPCError
 from ezhpcy.tunnel.broker import relay_proxy_stdio
-from ezhpcy.tunnel.ipc import IPCError, load_broker_backend
 
 
 def proxy_cmd() -> None:

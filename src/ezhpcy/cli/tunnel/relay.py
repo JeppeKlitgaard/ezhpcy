@@ -3,18 +3,13 @@ from typing import Annotated
 import paramiko
 import typer
 
-from ezhpcy.cli.tunnel.common import (
-    HostOpt,
-    PasswordOpt,
-    UserOpt,
-    connection_info_from_options,
-    local_machine_or_fail,
-)
+from ezhpcy.cli.tunnel.common import local_machine_or_fail, with_connection_options
 from ezhpcy.cli.utils.ssh import InteractiveSSHClient
-from ezhpcy.config import config
+from ezhpcy.config import ConnectionInfo
 from ezhpcy.tunnel.relay import DirectTCPIPRelay
 
 
+@with_connection_options
 def relay_cmd(
     worker_host: Annotated[
         str, typer.Argument(help="Hostname or internal address of the worker node.")
@@ -23,9 +18,7 @@ def relay_cmd(
         int,
         typer.Option("--worker-port", min=1024, max=65535, help="Worker SSH port."),
     ],
-    user: UserOpt = config.connection.user,
-    password: PasswordOpt = config.connection.password,
-    host: HostOpt = config.connection.host,
+    conn_info: ConnectionInfo,
     listen_port: Annotated[
         int,
         typer.Option(
@@ -38,11 +31,8 @@ def relay_cmd(
 ) -> None:
     """Relay local TCP connections to a manually started worker SSH daemon."""
     local_machine_or_fail()
-    connection_info = connection_info_from_options(
-        user=user, password=password, host=host
-    )
 
-    with InteractiveSSHClient(connection_info) as ssh:
+    with InteractiveSSHClient(conn_info) as ssh:
         ssh.interactive_connect()
         transport = ssh.get_transport()
         if transport is None or not transport.is_active():

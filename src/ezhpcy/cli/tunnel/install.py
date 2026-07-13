@@ -10,15 +10,9 @@ from jinja2 import StrictUndefined, Template
 from rich.prompt import Confirm
 
 from ezhpcy import console
-from ezhpcy.cli.tunnel.common import (
-    HostOpt,
-    PasswordOpt,
-    UserOpt,
-    connection_info_from_options,
-    local_machine_or_fail,
-)
+from ezhpcy.cli.tunnel.common import local_machine_or_fail, with_connection_options
 from ezhpcy.cli.utils.ssh import InteractiveSSHClient, absolute_sshd_command
-from ezhpcy.config import config
+from ezhpcy.config import ConnectionInfo, config
 from ezhpcy.constants import (
     OPENSSH_MATCHSPEC,
     SSH_DIRECTORY_NAME,
@@ -118,10 +112,9 @@ def _pin_worker_host_key(host_public_key: str, known_hosts: Path) -> None:
     os.chmod(known_hosts, 0o600)
 
 
+@with_connection_options
 def install_cmd(
-    user: UserOpt = config.connection.user,
-    password: PasswordOpt = config.connection.password,
-    host: HostOpt = config.connection.host,
+    conn_info: ConnectionInfo,
     force: Annotated[
         bool,
         typer.Option(
@@ -141,8 +134,6 @@ def install_cmd(
 ) -> None:
     """Install ezhpcy and provision worker SSH on the remote HPC host."""
     local_machine_or_fail()
-
-    conn_info = connection_info_from_options(user=user, password=password, host=host)
 
     # Connect
     ssh = InteractiveSSHClient(conn_info)

@@ -2,14 +2,8 @@ from typing import Annotated
 
 import typer
 
-from ezhpcy.cli.tunnel.common import (
-    HostOpt,
-    PasswordOpt,
-    UserOpt,
-    connection_info_from_options,
-    local_machine_or_fail,
-)
-from ezhpcy.config import config
+from ezhpcy.cli.tunnel.common import local_machine_or_fail, with_connection_options
+from ezhpcy.config import ConnectionInfo, config
 
 
 def _shell_help() -> str:
@@ -17,10 +11,9 @@ def _shell_help() -> str:
     return f"Interactive shell command to run. Examples: {shells}."
 
 
+@with_connection_options
 def interactive_cmd(
-    user: UserOpt = config.connection.user,
-    password: PasswordOpt = config.connection.password,
-    host: HostOpt = config.connection.host,
+    conn_info: ConnectionInfo,
     shell: Annotated[
         str | None,
         typer.Argument(
@@ -30,8 +23,6 @@ def interactive_cmd(
     ] = None,
 ) -> None:
     """Start an interactive HPC session."""
-    connection_info_from_options(user=user, password=password, host=host)
-
     local_machine_or_fail()
 
     shell = shell or config.hpc.default_interactive_shell

@@ -2,6 +2,7 @@ import typer
 
 from ezhpcy.cli.compute import compute_app
 from ezhpcy.cli.info import info_cmd
+from ezhpcy.cli.keyring import keyring_app
 from ezhpcy.cli.proxy import proxy_cmd
 from ezhpcy.cli.tunnel import tunnel_app
 from ezhpcy.cli.utils.alias import AliasGroup
@@ -15,6 +16,7 @@ app = typer.Typer(
 
 app.add_typer(tunnel_app, name="tunnel, t")
 app.add_typer(compute_app, name="compute")
+app.add_typer(keyring_app, name="keyring")
 app.command(name="info", help="Show debug information.")(info_cmd)
 app.command(name="version", help="Show the ezhpcy version.")(version_cmd)
 app.command(name="proxy", help="Proxy SSH bytes through a running tunnel broker.")(

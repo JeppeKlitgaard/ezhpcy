@@ -2,16 +2,15 @@ from typing import Annotated
 
 import typer
 
-from ezhpcy.cli.tunnel.common import HostOpt, PasswordOpt, UserOpt
+from ezhpcy.cli.tunnel.common import with_connection_options
 from ezhpcy.cli.tunnel.install import install_cmd
 from ezhpcy.cli.tunnel.uninstall import uninstall_cmd
-from ezhpcy.config import config
+from ezhpcy.config import ConnectionInfo
 
 
+@with_connection_options
 def reinstall_cmd(
-    user: UserOpt = config.connection.user,
-    password: PasswordOpt = config.connection.password,
-    host: HostOpt = config.connection.host,
+    conn_info: ConnectionInfo,
     yes: Annotated[
         bool,
         typer.Option(
@@ -22,5 +21,17 @@ def reinstall_cmd(
     ] = False,
 ) -> None:
     """Uninstall ezhpcy from the remote HPC host, then install it again."""
-    uninstall_cmd(user=user, password=password, host=host, yes=yes)
-    install_cmd(user=user, password=password, host=host, yes=yes)
+    # Resolve one-shot sources such as file descriptors and keyrings once, then
+    # reuse the resulting credentials for both halves of the operation.
+    uninstall_cmd(
+        user=conn_info.user,
+        password=conn_info.password,
+        host=str(conn_info.host),
+        yes=yes,
+    )
+    install_cmd(
+        user=conn_info.user,
+        password=conn_info.password,
+        host=str(conn_info.host),
+        yes=yes,
+    )

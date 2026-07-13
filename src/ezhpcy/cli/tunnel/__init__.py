@@ -1,12 +1,7 @@
 import typer
 
 from ezhpcy.cli.tunnel.broker import broker_cmd
-from ezhpcy.cli.tunnel.common import (
-    HostOpt,
-    PasswordOpt,
-    UserOpt,
-    connection_info_from_options,
-)
+from ezhpcy.cli.tunnel.common import with_connection_options
 from ezhpcy.cli.tunnel.install import install_cmd
 from ezhpcy.cli.tunnel.interactive import interactive_cmd
 from ezhpcy.cli.tunnel.reinstall import reinstall_cmd
@@ -14,7 +9,7 @@ from ezhpcy.cli.tunnel.relay import relay_cmd
 from ezhpcy.cli.tunnel.ssh_config import ssh_config_cmd
 from ezhpcy.cli.tunnel.uninstall import uninstall_cmd
 from ezhpcy.cli.utils.alias import AliasGroup
-from ezhpcy.config import config
+from ezhpcy.config import ConnectionInfo
 
 tunnel_app = typer.Typer(
     cls=AliasGroup,
@@ -23,13 +18,11 @@ tunnel_app = typer.Typer(
 )
 
 
+@with_connection_options
 def _batch(
-    user: UserOpt = config.connection.user,
-    password: PasswordOpt = config.connection.password,
-    host: HostOpt = config.connection.host,
+    conn_info: ConnectionInfo,
 ) -> None:
     """Run HPC batch workflow."""
-    connection_info_from_options(user=user, password=password, host=host)
     typer.echo("Running batch workflow.")
 
 

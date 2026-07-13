@@ -4,22 +4,15 @@ import typer
 from rich.prompt import Confirm
 
 from ezhpcy import console
-from ezhpcy.cli.tunnel.common import (
-    HostOpt,
-    PasswordOpt,
-    UserOpt,
-    connection_info_from_options,
-    local_machine_or_fail,
-)
+from ezhpcy.cli.tunnel.common import local_machine_or_fail, with_connection_options
 from ezhpcy.cli.tunnel.install import INSTALL_DIR_NAME
 from ezhpcy.cli.utils.ssh import InteractiveSSHClient
-from ezhpcy.config import config
+from ezhpcy.config import ConnectionInfo
 
 
+@with_connection_options
 def uninstall_cmd(
-    user: UserOpt = config.connection.user,
-    password: PasswordOpt = config.connection.password,
-    host: HostOpt = config.connection.host,
+    conn_info: ConnectionInfo,
     yes: Annotated[
         bool,
         typer.Option(
@@ -31,8 +24,6 @@ def uninstall_cmd(
 ) -> None:
     """Uninstall ezhpcy from the remote HPC host."""
     local_machine_or_fail()
-
-    conn_info = connection_info_from_options(user=user, password=password, host=host)
     ssh = InteractiveSSHClient(conn_info)
     ssh.interactive_connect()
 

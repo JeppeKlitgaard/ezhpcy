@@ -7,7 +7,6 @@ import hashlib
 import json
 import os
 import secrets
-import struct
 import sys
 import threading
 import time
@@ -16,7 +15,6 @@ from dataclasses import dataclass, field
 from multiprocessing.connection import (
     AuthenticationError,
     Client,
-    Connection,
     Listener,
 )
 from pathlib import Path
@@ -27,8 +25,7 @@ RUNTIME_DESCRIPTOR_VERSION = 1
 MAX_CONTROL_SIZE = 4096
 MAX_DATA_SIZE = 1024 * 1024
 
-_FRAME_HEADER = struct.Struct("!BI")
-_MAX_WIRE_SIZE = _FRAME_HEADER.size + MAX_DATA_SIZE
+_MAX_WIRE_SIZE = 1 + MAX_DATA_SIZE
 _HELLO = 1
 _READY = 2
 _ERROR = 3
@@ -52,16 +49,16 @@ class ProtocolError(IPCError):
     """The peer sent an invalid or unsupported IPC message."""
 
 
-class RawIPCStream(Protocol):
-    def read(self, size: int) -> bytes: ...
+class MessageConnection(Protocol):
+    def recv_bytes(self, maxlength: int | None = None) -> bytes: ...
 
-    def write(self, data: bytes) -> None: ...
+    def send_bytes(self, data: bytes) -> None: ...
 
     def close(self) -> None: ...
 
 
 class IPCListener(Protocol):
-    def accept(self) -> RawIPCStream: ...
+    def accept(self) -> MessageConnection: ...
 
     def close(self) -> None: ...
 
@@ -69,38 +66,41 @@ class IPCListener(Protocol):
 class IPCBackend(Protocol):
     def listen(self) -> IPCListener: ...
 
-    def connect(self, *, timeout: float) -> RawIPCStream: ...
+    def connect(self, *, timeout: float) -> MessageConnection: ...
 
 
 class FramedConnection:
-    """Frames control messages and byte chunks over a full-duplex IPC stream."""
+    """Send typed protocol messages over a full-duplex IPC connection."""
 
-    def __init__(self, stream: RawIPCStream) -> None:
-        self.stream = stream
+    def __init__(self, connection: MessageConnection) -> None:
+        self.connection = connection
         self._write_lock = threading.Lock()
-
-    def _read_exact(self, size: int) -> bytes:
-        chunks = bytearray()
-        while len(chunks) < size:
-            chunk = self.stream.read(size - len(chunks))
-            if not chunk:
-                raise EOFError("broker IPC connection closed")
-            chunks.extend(chunk)
-        return bytes(chunks)
+        self._close_lock = threading.Lock()
+        self._closed = False
 
     def receive_frame(self) -> tuple[int, bytes]:
-        kind, size = _FRAME_HEADER.unpack(self._read_exact(_FRAME_HEADER.size))
+        try:
+            message = self.connection.recv_bytes(_MAX_WIRE_SIZE)
+        except EOFError as error:
+            raise EOFError("broker IPC connection closed") from error
+        except OSError as error:
+            raise ProtocolError(
+                "broker IPC message was invalid or exceeded the size limit"
+            ) from error
+        if not message:
+            raise ProtocolError("broker IPC contained an empty message")
+        kind, payload = message[0], message[1:]
         limit = MAX_DATA_SIZE if kind == _DATA else MAX_CONTROL_SIZE
-        if size > limit:
+        if len(payload) > limit:
             raise ProtocolError(f"IPC frame exceeds the {limit}-byte limit")
-        return kind, self._read_exact(size) if size else b""
+        return kind, payload
 
     def send_frame(self, kind: int, payload: bytes = b"") -> None:
         limit = MAX_DATA_SIZE if kind == _DATA else MAX_CONTROL_SIZE
         if len(payload) > limit:
             raise ProtocolError(f"IPC frame exceeds the {limit}-byte limit")
         with self._write_lock:
-            self.stream.write(_FRAME_HEADER.pack(kind, len(payload)) + payload)
+            self.connection.send_bytes(bytes((kind,)) + payload)
 
     def send_data(self, data: bytes) -> None:
         self.send_frame(_DATA, data)
@@ -120,7 +120,10 @@ class FramedConnection:
         raise ProtocolError(f"unexpected IPC frame type {kind}")
 
     def close(self) -> None:
-        self.stream.close()
+        with self._close_lock:
+            if not self._closed:
+                self._closed = True
+                self.connection.close()
 
 
 def _encode_control(message: dict[str, object]) -> bytes:
@@ -180,46 +183,6 @@ def reject_worker_stream(connection: FramedConnection, message: str) -> None:
     )
 
 
-class _ConnectionStream:
-    """Expose message-oriented stdlib connections as the existing byte stream API."""
-
-    def __init__(self, connection: Connection) -> None:
-        self.connection = connection
-        self._read_buffer = bytearray()
-        self._closed = False
-        self._close_lock = threading.Lock()
-
-    def read(self, size: int) -> bytes:
-        if size <= 0:
-            return b""
-        if not self._read_buffer:
-            try:
-                message = self.connection.recv_bytes(_MAX_WIRE_SIZE)
-            except EOFError:
-                return b""
-            except OSError as error:
-                raise ProtocolError(
-                    "broker IPC message was invalid or exceeded the size limit"
-                ) from error
-            if not message:
-                raise ProtocolError("broker IPC contained an empty message")
-            self._read_buffer.extend(message)
-        chunk = bytes(self._read_buffer[:size])
-        del self._read_buffer[:size]
-        return chunk
-
-    def write(self, data: bytes) -> None:
-        if not data:
-            raise ProtocolError("broker IPC cannot send an empty message")
-        self.connection.send_bytes(data)
-
-    def close(self) -> None:
-        with self._close_lock:
-            if not self._closed:
-                self._closed = True
-                self.connection.close()
-
-
 @dataclass(frozen=True)
 class AuthenticatedIPCBackend:
     """A named pipe or Unix socket authenticated by a per-broker capability."""
@@ -261,7 +224,7 @@ class AuthenticatedIPCBackend:
             raise
         return wrapped
 
-    def connect(self, *, timeout: float = 2.0) -> RawIPCStream:
+    def connect(self, *, timeout: float = 2.0) -> MessageConnection:
         if self.family == "AF_PIPE":
             _wait_for_windows_pipe(self.address, timeout)
         try:
@@ -278,7 +241,7 @@ class AuthenticatedIPCBackend:
             raise BrokerUnavailableError(
                 "foreground broker is not running; start `ezhpcy tunnel broker`"
             ) from error
-        return _ConnectionStream(connection)
+        return connection
 
 
 class _AuthenticatedListener:
@@ -288,9 +251,9 @@ class _AuthenticatedListener:
         self._closed = False
         self._lock = threading.Lock()
 
-    def accept(self) -> RawIPCStream:
+    def accept(self) -> MessageConnection:
         try:
-            return _ConnectionStream(self.listener.accept())
+            return self.listener.accept()
         except AuthenticationError as error:
             raise IPCAuthenticationError(
                 "rejected a local client with an invalid broker authkey"

@@ -1,9 +1,9 @@
 import json
 import os
-import socket
 import threading
 import time
 import uuid
+from multiprocessing import Pipe
 from pathlib import Path
 
 import pytest
@@ -22,23 +22,9 @@ from ezhpcy.tunnel.ipc import (
 )
 
 
-class SocketStream:
-    def __init__(self, sock: socket.socket) -> None:
-        self.sock = sock
-
-    def read(self, size: int) -> bytes:
-        return self.sock.recv(size)
-
-    def write(self, data: bytes) -> None:
-        self.sock.sendall(data)
-
-    def close(self) -> None:
-        self.sock.close()
-
-
 def connection_pair() -> tuple[FramedConnection, FramedConnection]:
-    left, right = socket.socketpair()
-    return FramedConnection(SocketStream(left)), FramedConnection(SocketStream(right))
+    left, right = Pipe(duplex=True)
+    return FramedConnection(left), FramedConnection(right)
 
 
 def ipc_address(tmp_path: Path, label: str) -> tuple[str, str]:
@@ -65,6 +51,17 @@ def test_versioned_handshake_accepts_current_version() -> None:
     client.close()
     server.close()
     thread.join(timeout=1)
+
+
+def test_protocol_frame_uses_one_connection_message() -> None:
+    sender, receiver = Pipe(duplex=True)
+    connection = FramedConnection(sender)
+    try:
+        connection.send_data(b"payload")
+        assert receiver.recv_bytes() == bytes((ipc._DATA,)) + b"payload"
+    finally:
+        connection.close()
+        receiver.close()
 
 
 def test_version_mismatch_returns_bounded_actionable_error() -> None:
@@ -105,16 +102,16 @@ def test_authenticated_connection_uses_send_bytes_without_pickle(
     received: list[bytes] = []
 
     def serve() -> None:
-        stream = listener.accept()
-        received.append(stream.read(4))
-        stream.write(b"pong")
-        stream.close()
+        connection = listener.accept()
+        received.append(connection.recv_bytes(4))
+        connection.send_bytes(b"pong")
+        connection.close()
 
     thread = threading.Thread(target=serve)
     thread.start()
     client = backend.connect(timeout=1)
-    client.write(b"ping")
-    assert client.read(4) == b"pong"
+    client.send_bytes(b"ping")
+    assert client.recv_bytes(4) == b"pong"
     client.close()
     thread.join(timeout=1)
     listener.close()
@@ -164,16 +161,16 @@ def test_runtime_descriptor_publishes_capability_and_is_removed(tmp_path: Path) 
     received: list[bytes] = []
 
     def serve() -> None:
-        stream = listener.accept()
-        received.append(stream.read(4))
-        stream.write(b"pong")
-        stream.close()
+        connection = listener.accept()
+        received.append(connection.recv_bytes(4))
+        connection.send_bytes(b"pong")
+        connection.close()
 
     thread = threading.Thread(target=serve)
     thread.start()
     client = client_backend.connect(timeout=1)
-    client.write(b"ping")
-    assert client.read(4) == b"pong"
+    client.send_bytes(b"ping")
+    assert client.recv_bytes(4) == b"pong"
     client.close()
     thread.join(timeout=1)
     listener.close()

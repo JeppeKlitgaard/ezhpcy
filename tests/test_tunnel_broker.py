@@ -4,6 +4,7 @@ import socket
 import threading
 import time
 import uuid
+from multiprocessing import Pipe
 from unittest.mock import MagicMock
 
 import pytest
@@ -13,29 +14,16 @@ from ezhpcy.tunnel.ipc import (
     AuthenticatedIPCBackend,
     FramedConnection,
     IPCError,
+    MessageConnection,
 )
 
 
-class SocketStream:
-    def __init__(self, sock: socket.socket) -> None:
-        self.sock = sock
-
-    def read(self, size: int) -> bytes:
-        return self.sock.recv(size)
-
-    def write(self, data: bytes) -> None:
-        self.sock.sendall(data)
-
-    def close(self) -> None:
-        self.sock.close()
-
-
 class ClientBackend:
-    def __init__(self, stream: SocketStream) -> None:
-        self.stream = stream
+    def __init__(self, connection: MessageConnection) -> None:
+        self.connection = connection
 
-    def connect(self, *, timeout: float) -> SocketStream:
-        return self.stream
+    def connect(self, *, timeout: float) -> MessageConnection:
+        return self.connection
 
 
 class ClosingListener:
@@ -137,14 +125,14 @@ class FilenoOnlyStdin:
 
 
 def run_proxy(broker: ForegroundBroker, payload: bytes) -> bytes:
-    client, server = socket.socketpair()
+    client, server = Pipe(duplex=True)
     broker_thread = threading.Thread(
         target=broker._serve_client,
-        args=(FramedConnection(SocketStream(server)),),
+        args=(FramedConnection(server),),
     )
     broker_thread.start()
     output = io.BytesIO()
-    relay_proxy_stdio(ClientBackend(SocketStream(client)), io.BytesIO(payload), output)
+    relay_proxy_stdio(ClientBackend(client), io.BytesIO(payload), output)
     broker_thread.join(timeout=1)
     assert not broker_thread.is_alive()
     return output.getvalue()
@@ -196,17 +184,17 @@ def test_proxy_does_not_leave_a_buffered_stdin_reader_at_shutdown() -> None:
     broker = ForegroundBroker(
         ClosingBannerTransport(), ("worker.internal", 3333), MagicMock()
     )
-    client, server = socket.socketpair()
+    client, server = Pipe(duplex=True)
     broker_thread = threading.Thread(
         target=broker._serve_client,
-        args=(FramedConnection(SocketStream(server)),),
+        args=(FramedConnection(server),),
     )
     broker_thread.start()
     read_descriptor, write_descriptor = os.pipe()
     stdin = FilenoOnlyStdin(read_descriptor)
     output = io.BytesIO()
     try:
-        relay_proxy_stdio(ClientBackend(SocketStream(client)), stdin, output)
+        relay_proxy_stdio(ClientBackend(client), stdin, output)
         assert output.getvalue() == b"SSH-2.0-test-worker\r\n"
         assert not stdin.buffered_read_called
     finally:
@@ -224,16 +212,16 @@ def test_proxy_does_not_leave_a_buffered_stdin_reader_at_shutdown() -> None:
 def test_authentication_transport_loss_is_actionable_and_opens_no_channel() -> None:
     transport = EchoTransport(active=False)
     broker = ForegroundBroker(transport, ("worker.internal", 3333), MagicMock())
-    client, server = socket.socketpair()
+    client, server = Pipe(duplex=True)
     thread = threading.Thread(
         target=broker._serve_client,
-        args=(FramedConnection(SocketStream(server)),),
+        args=(FramedConnection(server),),
     )
     thread.start()
 
     with pytest.raises(IPCError, match="restart the foreground broker"):
         relay_proxy_stdio(
-            ClientBackend(SocketStream(client)), io.BytesIO(), io.BytesIO()
+            ClientBackend(client), io.BytesIO(), io.BytesIO()
         )
     thread.join(timeout=1)
     assert transport.destinations == []
@@ -243,26 +231,26 @@ def test_worker_close_before_ssh_banner_is_actionable() -> None:
     broker = ForegroundBroker(
         ClosingTransport(), ("wrong-worker.internal", 3333), MagicMock()
     )
-    client, server = socket.socketpair()
+    client, server = Pipe(duplex=True)
     thread = threading.Thread(
         target=broker._serve_client,
-        args=(FramedConnection(SocketStream(server)),),
+        args=(FramedConnection(server),),
     )
     thread.start()
 
     with pytest.raises(IPCError, match="closed before sending an SSH banner"):
         relay_proxy_stdio(
-            ClientBackend(SocketStream(client)), io.BytesIO(), io.BytesIO()
+            ClientBackend(client), io.BytesIO(), io.BytesIO()
         )
     thread.join(timeout=1)
 
 
 def test_client_disconnect_before_handshake_is_clean() -> None:
     broker = ForegroundBroker(EchoTransport(), ("worker.internal", 3333), MagicMock())
-    client, server = socket.socketpair()
+    client, server = Pipe(duplex=True)
     thread = threading.Thread(
         target=broker._serve_client,
-        args=(FramedConnection(SocketStream(server)),),
+        args=(FramedConnection(server),),
     )
     thread.start()
     client.close()

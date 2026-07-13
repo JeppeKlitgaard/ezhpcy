@@ -23,6 +23,8 @@ from ezhpcy.constants import (
     OPENSSH_MATCHSPEC,
     SSH_DIRECTORY_NAME,
     UV_MATCHSPEC,
+    WORKER_CLIENT_KEY_NAME,
+    WORKER_HOST_ALIAS,
     WORKER_HOST_KEY_NAME,
 )
 from ezhpcy.patch.sdist import sdist_for_current_installation
@@ -31,8 +33,6 @@ INSTALL_DIR_NAME = "ezhpcy"
 INSTALL_SCRIPT_RESOURCE = "static/data/install.sh.j2"
 UNINSTALL_SCRIPT_RESOURCE = "static/data/uninstall.sh.j2"
 SSHD_CONFIG_RESOURCE = "static/config/ssh_remote/sshd_config"
-WORKER_CLIENT_KEY_NAME = "worker_client_ed25519"
-WORKER_HOST_ALIAS = "ezhpcy-worker"
 
 
 def _ensure_not_installed(ssh: InteractiveSSHClient) -> None:

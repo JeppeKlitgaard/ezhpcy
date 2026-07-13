@@ -85,9 +85,7 @@ class DirectTCPIPRelay(socketserver.ThreadingTCPServer):
         host, port = self.server_address[:2]
         return str(host), int(port)
 
-    def _serve_client(
-        self, client: socket.socket, origin: tuple[str, int]
-    ) -> None:
+    def _serve_client(self, client: socket.socket, origin: tuple[str, int]) -> None:
         channel = None
         try:
             channel = self.transport.open_channel(

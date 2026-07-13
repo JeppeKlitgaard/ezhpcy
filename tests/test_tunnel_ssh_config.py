@@ -1,0 +1,41 @@
+import sys
+from pathlib import Path
+
+from typer.testing import CliRunner
+
+from ezhpcy.cli import app
+from ezhpcy.cli.tunnel.ssh_config import render_worker_ssh_config
+
+
+def test_render_worker_ssh_config_contains_complete_strict_proxy_configuration(
+    tmp_path: Path,
+) -> None:
+    rendered = render_worker_ssh_config(
+        user="alice",
+        ssh_dir=tmp_path / "config with spaces" / "ssh",
+        python_executable=tmp_path / "runtime with spaces" / "python.exe",
+    )
+
+    assert rendered == (
+        "Host ezhpcy-worker\n"
+        "    HostName ezhpcy-worker\n"
+        "    User alice\n"
+        f'    IdentityFile "{(tmp_path / "config with spaces" / "ssh" / "worker_client_ed25519").as_posix()}"\n'
+        "    IdentitiesOnly yes\n"
+        f'    UserKnownHostsFile "{(tmp_path / "config with spaces" / "ssh" / "worker_known_hosts").as_posix()}"\n'
+        "    HostKeyAlias ezhpcy-worker\n"
+        "    StrictHostKeyChecking yes\n"
+        f'    ProxyCommand "{(tmp_path / "runtime with spaces" / "python.exe").as_posix()}" -m ezhpcy.cli.entry proxy\n'
+    )
+
+
+def test_ssh_config_command_is_available_and_uses_current_python() -> None:
+    result = CliRunner().invoke(
+        app,
+        ["tunnel", "ssh-config", "--user", "alice", "--alias", "cluster-worker"],
+    )
+
+    assert result.exit_code == 0
+    assert result.stdout.startswith("Host cluster-worker\n")
+    assert "    User alice\n" in result.stdout
+    assert f'    ProxyCommand "{Path(sys.executable).as_posix()}"' in result.stdout

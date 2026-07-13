@@ -1,3 +1,4 @@
+import signal
 from typing import Annotated
 
 import paramiko
@@ -53,9 +54,19 @@ def broker_cmd(
             f"Broker IPC ready; worker endpoint {worker_host}:{worker_port} will be "
             "checked on first connection (press Ctrl+C to stop)."
         )
+        previous_sigbreak_handler = None
+        if hasattr(signal, "SIGBREAK"):
+            # A Windows process-group interrupt is delivered as Ctrl+Break.
+            # Treat it like Ctrl+C so automated launchers and terminal hosts use
+            # the same descriptor/socket cleanup path.
+            previous_sigbreak_handler = signal.signal(
+                signal.SIGBREAK, signal.default_int_handler
+            )
         try:
             broker.serve_forever()
         except KeyboardInterrupt:
             typer.echo("Stopping broker...", err=True)
         finally:
             broker.close()
+            if previous_sigbreak_handler is not None:
+                signal.signal(signal.SIGBREAK, previous_sigbreak_handler)

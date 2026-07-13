@@ -1,7 +1,5 @@
 """Foreground broker and ProxyCommand stream relays."""
 
-from __future__ import annotations
-
 import os
 import socket
 import threading
@@ -68,6 +66,11 @@ class ForegroundBroker:
                     dest_addr=self.destination,
                     src_addr=("ezhpcy-proxy", 0),
                 )
+            # Paramiko documents SSHException here, but open_channel() also
+            # re-raises exceptions saved by its transport thread, including
+            # EOFError, socket errors, and exceptions from socket wrappers.
+            # Keep this client boundary broad so every channel-open failure is
+            # returned to the proxy without terminating the broker.
             except Exception as error:
                 reject_worker_stream(
                     stream,

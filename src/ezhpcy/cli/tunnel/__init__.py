@@ -11,6 +11,7 @@ from ezhpcy.cli.tunnel.install import install_cmd
 from ezhpcy.cli.tunnel.interactive import interactive_cmd
 from ezhpcy.cli.tunnel.reinstall import reinstall_cmd
 from ezhpcy.cli.tunnel.relay import relay_cmd
+from ezhpcy.cli.tunnel.ssh_config import ssh_config_cmd
 from ezhpcy.cli.tunnel.uninstall import uninstall_cmd
 from ezhpcy.cli.utils.alias import AliasGroup
 from ezhpcy.config import config
@@ -47,3 +48,7 @@ tunnel_app.command(
 tunnel_app.command(name="broker", help="Run the foreground worker-stream broker.")(
     broker_cmd
 )
+tunnel_app.command(
+    name="ssh-config",
+    help="Print the OpenSSH configuration for the broker-backed worker.",
+)(ssh_config_cmd)

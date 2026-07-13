@@ -1,7 +1,5 @@
 """Authenticated, versioned IPC for the foreground tunnel broker."""
 
-from __future__ import annotations
-
 import base64
 import hmac
 import json
@@ -31,6 +29,20 @@ _AUTH_NONCE_SIZE = 32
 _AUTH_DIGEST_SIZE = 32
 _READY = 0
 _ERROR = 1
+
+# Wire protocol
+#
+# The broker sends ``_AUTH_MAGIC`` (including the protocol version) and a
+# random server nonce. The proxy replies with its nonce and an HMAC proving
+# possession of the descriptor's capability key; the broker returns a
+# role-separated HMAC so authentication is mutual. The broker then sends either
+# ``_READY`` or ``_ERROR || uint16-length || UTF-8 message``. After ``_READY``,
+# framing ends permanently and both directions carry raw worker SSH bytes.
+#
+# This prevents a local process that cannot read the owner-only descriptor from
+# using or impersonating the broker. It does not defend against denial of
+# service, compromise of the same OS account, or an administrator/root process;
+# worker confidentiality and authentication remain the responsibility of SSH.
 
 
 @dataclass(frozen=True)
@@ -524,16 +536,16 @@ def _prepare_runtime_directory(directory: Path) -> int | None:
     try:
         directory_fd = os.open(directory, flags)
     except OSError as error:
-        raise IPCError("could not securely open the broker runtime directory") from error
+        raise IPCError(
+            "could not securely open the broker runtime directory"
+        ) from error
 
     try:
         metadata = os.fstat(directory_fd)
         if not stat.S_ISDIR(metadata.st_mode):
             raise IPCError("broker runtime path is not a directory")
         if metadata.st_uid != os.getuid():
-            raise IPCError(
-                "broker runtime directory is not owned by the current user"
-            )
+            raise IPCError("broker runtime directory is not owned by the current user")
         try:
             os.fchmod(directory_fd, 0o700)
         except OSError as error:

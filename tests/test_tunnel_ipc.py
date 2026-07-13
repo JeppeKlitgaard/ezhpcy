@@ -124,9 +124,7 @@ def test_runtime_descriptor_rejects_symlinked_directory(tmp_path: Path) -> None:
     real_directory.mkdir(mode=0o700)
     linked_directory = tmp_path / "linked-runtime"
     linked_directory.symlink_to(real_directory, target_is_directory=True)
-    backend = create_broker_backend(
-        descriptor_path=linked_directory / "broker.json"
-    )
+    backend = create_broker_backend(descriptor_path=linked_directory / "broker.json")
 
     with pytest.raises(IPCError, match="must not be a symbolic link"):
         backend.listen(lambda _connection: None)
@@ -151,9 +149,7 @@ def test_runtime_descriptor_rejects_directory_owned_by_another_user(
     runtime_directory = tmp_path / "runtime"
     runtime_directory.mkdir(mode=0o700)
     monkeypatch.setattr(ipc.os, "getuid", lambda: runtime_directory.stat().st_uid + 1)
-    backend = create_broker_backend(
-        descriptor_path=runtime_directory / "broker.json"
-    )
+    backend = create_broker_backend(descriptor_path=runtime_directory / "broker.json")
 
     with pytest.raises(IPCError, match="not owned by the current user"):
         backend.listen(lambda _connection: None)
@@ -164,9 +160,7 @@ def test_runtime_descriptor_restricts_precreated_directory(tmp_path: Path) -> No
     runtime_directory = tmp_path / "runtime"
     runtime_directory.mkdir(mode=0o777)
     runtime_directory.chmod(0o777)
-    backend = create_broker_backend(
-        descriptor_path=runtime_directory / "broker.json"
-    )
+    backend = create_broker_backend(descriptor_path=runtime_directory / "broker.json")
     listener = backend.listen(lambda _connection: None)
     try:
         assert runtime_directory.stat().st_mode & 0o777 == 0o700

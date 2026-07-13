@@ -1,5 +1,6 @@
 import typer
 
+from ezhpcy.cli.tunnel.broker import broker_cmd
 from ezhpcy.cli.tunnel.common import (
     HostOpt,
     PasswordOpt,
@@ -40,6 +41,9 @@ tunnel_app.command(name="interactive, i", help="Start an interactive session.")(
     interactive_cmd
 )
 tunnel_app.command(name="batch, b", help="Run a batch workflow.")(_batch)
-tunnel_app.command(name="relay", help="Relay OpenSSH to a worker through the login node.")(
-    relay_cmd
+tunnel_app.command(
+    name="relay", help="Relay OpenSSH to a worker through the login node."
+)(relay_cmd)
+tunnel_app.command(name="broker", help="Run the foreground worker-stream broker.")(
+    broker_cmd
 )

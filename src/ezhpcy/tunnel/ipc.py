@@ -3,32 +3,33 @@
 from __future__ import annotations
 
 import base64
+import hmac
 import json
 import os
 import secrets
 import socket
+import socketserver
+import struct
 import threading
+import time
 import uuid
 from dataclasses import InitVar, dataclass, field
-from multiprocessing.connection import (
-    AuthenticationError,
-    Connection,
-    Listener,
-    answer_challenge,
-    deliver_challenge,
-)
 from pathlib import Path
-from typing import Protocol
+from typing import Callable, Protocol
 
 from ezhpcy.config import config
 
-PROTOCOL_VERSION = 1
 RUNTIME_DESCRIPTOR_VERSION = 1
-MAX_CONTROL_SIZE = 4096
-MAX_DATA_SIZE = 1024 * 1024
+MAX_ERROR_SIZE = 1024
 IPC_BACKLOG = 32
+AUTHENTICATION_TIMEOUT = 2.0
 
 _LOOPBACK_HOST = "127.0.0.1"
+_AUTH_MAGIC = b"EZHPCY\x00\x01"
+_AUTH_NONCE_SIZE = 32
+_AUTH_DIGEST_SIZE = 32
+_READY = 0
+_ERROR = 1
 
 
 @dataclass(frozen=True)
@@ -50,13 +51,6 @@ class IPCAddress:
 
 _DEFAULT_BIND_ADDRESS = IPCAddress(_LOOPBACK_HOST, 0, allow_zero_port=True)
 
-_MAX_WIRE_SIZE = 1 + MAX_DATA_SIZE
-_HELLO = 1
-_READY = 2
-_ERROR = 3
-_DATA = 4
-_EOF = 5
-
 
 class IPCError(Exception):
     """Base class for actionable broker IPC failures."""
@@ -70,144 +64,62 @@ class IPCAuthenticationError(IPCError):
     """The broker and proxy do not share the same capability key."""
 
 
+class _AuthenticationError(Exception):
+    """The fixed-size HMAC exchange failed."""
+
+
 class ProtocolError(IPCError):
     """The peer sent an invalid or unsupported IPC message."""
 
 
-class MessageConnection(Protocol):
-    def recv_bytes(self, maxlength: int | None = None) -> bytes: ...
-
-    def send_bytes(self, data: bytes) -> None: ...
-
-    def close(self) -> None: ...
-
-
-class IPCListener(Protocol):
+class IPCServer(Protocol):
     address: IPCAddress
 
-    def accept(self) -> MessageConnection: ...
+    def serve_forever(self) -> None: ...
 
     def close(self) -> None: ...
 
 
 class IPCBackend(Protocol):
-    def listen(self) -> IPCListener: ...
+    def listen(
+        self,
+        client_handler: Callable[[socket.socket], None],
+        error_handler: Callable[[Exception], None] | None = None,
+    ) -> IPCServer: ...
 
-    def connect(self, *, timeout: float) -> MessageConnection: ...
-
-
-class FramedConnection:
-    """Send typed protocol messages over a full-duplex IPC connection."""
-
-    def __init__(self, connection: MessageConnection) -> None:
-        self.connection = connection
-        self._write_lock = threading.Lock()
-        self._close_lock = threading.Lock()
-        self._closed = False
-
-    def receive_frame(self) -> tuple[int, bytes]:
-        try:
-            message = self.connection.recv_bytes(_MAX_WIRE_SIZE)
-        except EOFError as error:
-            raise EOFError("broker IPC connection closed") from error
-        except OSError as error:
-            raise ProtocolError(
-                "broker IPC message was invalid or exceeded the size limit"
-            ) from error
-        if not message:
-            raise ProtocolError("broker IPC contained an empty message")
-        kind, payload = message[0], message[1:]
-        limit = MAX_DATA_SIZE if kind == _DATA else MAX_CONTROL_SIZE
-        if len(payload) > limit:
-            raise ProtocolError(f"IPC frame exceeds the {limit}-byte limit")
-        return kind, payload
-
-    def send_frame(self, kind: int, payload: bytes = b"") -> None:
-        limit = MAX_DATA_SIZE if kind == _DATA else MAX_CONTROL_SIZE
-        if len(payload) > limit:
-            raise ProtocolError(f"IPC frame exceeds the {limit}-byte limit")
-        with self._write_lock:
-            self.connection.send_bytes(bytes((kind,)) + payload)
-
-    def send_data(self, data: bytes) -> None:
-        self.send_frame(_DATA, data)
-
-    def send_eof(self) -> None:
-        self.send_frame(_EOF)
-
-    def receive_data(self) -> bytes | None:
-        kind, payload = self.receive_frame()
-        if kind == _DATA:
-            return payload
-        if kind == _EOF:
-            return None
-        if kind == _ERROR:
-            message = _decode_control(payload).get("message", "broker rejected stream")
-            raise IPCError(str(message))
-        raise ProtocolError(f"unexpected IPC frame type {kind}")
-
-    def close(self) -> None:
-        with self._close_lock:
-            if not self._closed:
-                self._closed = True
-                self.connection.close()
+    def connect(self, *, timeout: float) -> socket.socket: ...
 
 
-def _encode_control(message: dict[str, object]) -> bytes:
-    return json.dumps(message, separators=(",", ":")).encode("utf-8")
+def _receive_stream_bytes(stream: socket.socket, size: int) -> bytes:
+    chunks = bytearray()
+    while len(chunks) < size:
+        chunk = stream.recv(size - len(chunks))
+        if not chunk:
+            raise EOFError("broker IPC connection closed")
+        chunks.extend(chunk)
+    return bytes(chunks)
 
 
-def _decode_control(payload: bytes) -> dict[str, object]:
-    try:
-        message = json.loads(payload.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise ProtocolError("invalid IPC control message") from error
-    if not isinstance(message, dict):
-        raise ProtocolError("IPC control message must be an object")
-    return message
-
-
-def request_worker_stream(connection: FramedConnection) -> None:
-    connection.send_frame(
-        _HELLO,
-        _encode_control(
-            {"version": PROTOCOL_VERSION, "operation": "open-worker-stream"}
-        ),
-    )
-    kind, payload = connection.receive_frame()
-    message = _decode_control(payload)
-    if kind == _ERROR:
-        raise IPCError(str(message.get("message", "broker rejected stream")))
-    if kind != _READY or message.get("version") != PROTOCOL_VERSION:
+def wait_for_worker_stream(stream: socket.socket) -> None:
+    status = _receive_stream_bytes(stream, 1)[0]
+    if status == _READY:
+        return
+    if status != _ERROR:
         raise ProtocolError("broker returned an invalid readiness response")
+    size = struct.unpack("!H", _receive_stream_bytes(stream, 2))[0]
+    if size > MAX_ERROR_SIZE:
+        raise ProtocolError("broker returned an oversized error response")
+    message = _receive_stream_bytes(stream, size).decode("utf-8", errors="replace")
+    raise IPCError(message or "broker rejected stream")
 
 
-def accept_worker_stream(connection: FramedConnection) -> None:
-    kind, payload = connection.receive_frame()
-    if kind != _HELLO:
-        reject_worker_stream(connection, "expected worker-stream request")
-        raise ProtocolError("expected worker-stream request")
-    message = _decode_control(payload)
-    if message.get("version") != PROTOCOL_VERSION:
-        reject_worker_stream(
-            connection,
-            f"unsupported IPC protocol version; expected {PROTOCOL_VERSION}",
-        )
-        raise ProtocolError("unsupported IPC protocol version")
-    if message.get("operation") != "open-worker-stream":
-        reject_worker_stream(connection, "unsupported IPC operation")
-        raise ProtocolError("unsupported IPC operation")
+def ready_worker_stream(stream: socket.socket) -> None:
+    stream.sendall(bytes((_READY,)))
 
 
-def ready_worker_stream(connection: FramedConnection) -> None:
-    connection.send_frame(_READY, _encode_control({"version": PROTOCOL_VERSION}))
-
-
-def reject_worker_stream(connection: FramedConnection, message: str) -> None:
-    connection.send_frame(
-        _ERROR,
-        _encode_control({"version": PROTOCOL_VERSION, "message": message[:1024]}),
-    )
+def reject_worker_stream(stream: socket.socket, message: str) -> None:
+    payload = message.encode("utf-8")[:MAX_ERROR_SIZE]
+    stream.sendall(bytes((_ERROR,)) + struct.pack("!H", len(payload)) + payload)
 
 
 @dataclass(frozen=True)
@@ -219,93 +131,247 @@ class AuthenticatedIPCBackend:
     descriptor_path: Path | None = None
     instance_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     publish_descriptor: bool = False
+    authentication_timeout: float = AUTHENTICATION_TIMEOUT
 
     def __post_init__(self) -> None:
         if len(self.authkey) < 32:
             raise ValueError("broker authkey must contain at least 32 random bytes")
+        if self.authentication_timeout <= 0:
+            raise ValueError("broker authentication timeout must be positive")
 
-    def listen(self) -> IPCListener:
+    def listen(
+        self,
+        client_handler: Callable[[socket.socket], None],
+        error_handler: Callable[[Exception], None] | None = None,
+    ) -> IPCServer:
         try:
-            listener = Listener(
+            server = _AuthenticatedServer(
                 self.address.as_tuple(),
-                family="AF_INET",
-                backlog=IPC_BACKLOG,
-                authkey=self.authkey,
+                self,
+                client_handler,
+                error_handler,
             )
         except OSError as error:
             raise IPCError("could not create the broker IPC listener") from error
 
-        address = IPCAddress(*listener.address)
-        wrapped = _AuthenticatedListener(listener, self, address)
         try:
             if self.publish_descriptor:
-                _publish_runtime_descriptor(self, address)
+                _publish_runtime_descriptor(self, server.address)
         except BaseException:
-            wrapped.close()
+            server.close()
             raise
-        return wrapped
+        return server
 
-    def connect(self, *, timeout: float = 2.0) -> MessageConnection:
-        connection = None
+    def connect(self, *, timeout: float = 2.0) -> socket.socket:
         try:
-            with socket.create_connection(
+            client_socket = socket.create_connection(
                 self.address.as_tuple(), timeout=max(0.0, timeout)
-            ) as client_socket:
-                client_socket.settimeout(None)
-                connection = Connection(client_socket.detach())
-            answer_challenge(connection, self.authkey)
-            deliver_challenge(connection, self.authkey)
-        except AuthenticationError as error:
-            if connection is not None:
-                connection.close()
-            raise IPCAuthenticationError(
-                "broker authentication failed; restart the foreground broker"
-            ) from error
+            )
         except OSError as error:
-            if connection is not None:
-                connection.close()
             raise BrokerUnavailableError(
                 "foreground broker is not running; start `ezhpcy tunnel broker`"
             ) from error
-        return connection
+
+        try:
+            _authenticate_client(client_socket, self.authkey, timeout)
+            client_socket.settimeout(None)
+        except (_AuthenticationError, OSError, TimeoutError) as error:
+            client_socket.close()
+            raise IPCAuthenticationError(
+                "broker authentication failed; restart the foreground broker"
+            ) from error
+        return client_socket
 
 
-class _AuthenticatedListener:
+def _deadline(timeout: float) -> float:
+    return time.monotonic() + max(0.0, timeout)
+
+
+def _remaining(deadline: float) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("broker authentication timed out")
+    return remaining
+
+
+def _send_exact(stream: socket.socket, data: bytes, deadline: float) -> None:
+    stream.settimeout(_remaining(deadline))
+    stream.sendall(data)
+
+
+def _receive_exact(stream: socket.socket, size: int, deadline: float) -> bytes:
+    chunks = bytearray()
+    while len(chunks) < size:
+        stream.settimeout(_remaining(deadline))
+        chunk = stream.recv(size - len(chunks))
+        if not chunk:
+            raise _AuthenticationError("peer closed during authentication")
+        chunks.extend(chunk)
+    return bytes(chunks)
+
+
+def _client_digest(authkey: bytes, server_nonce: bytes, client_nonce: bytes) -> bytes:
+    return hmac.digest(
+        authkey, b"ezhpcy-client" + server_nonce + client_nonce, "sha256"
+    )
+
+
+def _server_digest(authkey: bytes, server_nonce: bytes, client_nonce: bytes) -> bytes:
+    return hmac.digest(
+        authkey, b"ezhpcy-server" + server_nonce + client_nonce, "sha256"
+    )
+
+
+def _authenticate_client(stream: socket.socket, authkey: bytes, timeout: float) -> None:
+    deadline = _deadline(timeout)
+    greeting = _receive_exact(stream, len(_AUTH_MAGIC) + _AUTH_NONCE_SIZE, deadline)
+    if greeting[: len(_AUTH_MAGIC)] != _AUTH_MAGIC:
+        raise _AuthenticationError("broker authentication protocol is invalid")
+    server_nonce = greeting[len(_AUTH_MAGIC) :]
+    client_nonce = secrets.token_bytes(_AUTH_NONCE_SIZE)
+    _send_exact(
+        stream,
+        client_nonce + _client_digest(authkey, server_nonce, client_nonce),
+        deadline,
+    )
+    proof = _receive_exact(stream, _AUTH_DIGEST_SIZE, deadline)
+    expected = _server_digest(authkey, server_nonce, client_nonce)
+    if not hmac.compare_digest(proof, expected):
+        raise _AuthenticationError("broker authentication proof is invalid")
+
+
+def _authenticate_server(stream: socket.socket, authkey: bytes, timeout: float) -> None:
+    deadline = _deadline(timeout)
+    server_nonce = secrets.token_bytes(_AUTH_NONCE_SIZE)
+    _send_exact(stream, _AUTH_MAGIC + server_nonce, deadline)
+    response = _receive_exact(stream, _AUTH_NONCE_SIZE + _AUTH_DIGEST_SIZE, deadline)
+    client_nonce = response[:_AUTH_NONCE_SIZE]
+    proof = response[_AUTH_NONCE_SIZE:]
+    expected = _client_digest(authkey, server_nonce, client_nonce)
+    if not hmac.compare_digest(proof, expected):
+        raise _AuthenticationError("client authentication proof is invalid")
+    _send_exact(
+        stream,
+        _server_digest(authkey, server_nonce, client_nonce),
+        deadline,
+    )
+
+
+class _AuthenticatedHandler(socketserver.BaseRequestHandler):
+    def handle(self) -> None:
+        server: _AuthenticatedServer = self.server  # type: ignore[assignment]
+        server._serve_authenticated(self.request)  # type: ignore[arg-type]
+
+
+class _AuthenticatedServer(socketserver.ThreadingTCPServer):
+    daemon_threads = True
+    block_on_close = False
+    request_queue_size = IPC_BACKLOG
+
     def __init__(
         self,
-        listener: Listener,
+        address: tuple[str, int],
         backend: AuthenticatedIPCBackend,
-        address: IPCAddress,
+        client_handler: Callable[[socket.socket], None],
+        error_handler: Callable[[Exception], None] | None,
     ) -> None:
-        self.listener = listener
         self.backend = backend
-        self.address = address
+        self.client_handler = client_handler
+        self.error_handler = error_handler
+        self._clients: set[socket.socket] = set()
+        self._clients_lock = threading.Lock()
+        self._close_lock = threading.Lock()
         self._closed = False
-        self._lock = threading.Lock()
+        self._serving = threading.Event()
+        self._stop_requested = threading.Event()
+        super().__init__(address, _AuthenticatedHandler)
 
-    def accept(self) -> MessageConnection:
+    @property
+    def address(self) -> IPCAddress:
+        return IPCAddress(*self.server_address[:2])
+
+    def verify_request(
+        self, request: socket.socket, client_address: tuple[str, int]
+    ) -> bool:
+        with self._clients_lock:
+            self._clients.add(request)
+        return True
+
+    def serve_forever(self) -> None:
+        if self._stop_requested.is_set():
+            return
+        self._serving.set()
+        if self._stop_requested.is_set():
+            self._serving.clear()
+            return
         try:
-            return self.listener.accept()
-        except AuthenticationError as error:
-            raise IPCAuthenticationError(
-                "rejected a local client with an invalid broker authkey"
-            ) from error
+            super().serve_forever(poll_interval=0.05)
+        finally:
+            self._serving.clear()
+
+    def _serve_authenticated(self, stream: socket.socket) -> None:
+        try:
+            try:
+                _authenticate_server(
+                    stream,
+                    self.backend.authkey,
+                    self.backend.authentication_timeout,
+                )
+            except TimeoutError:
+                self._report(
+                    IPCAuthenticationError("local client authentication timed out")
+                )
+                return
+            except _AuthenticationError, OSError:
+                if not self._closed:
+                    self._report(
+                        IPCAuthenticationError(
+                            "rejected a local client during broker authentication"
+                        )
+                    )
+                return
+            if self._closed:
+                return
+            stream.settimeout(None)
+            self.client_handler(stream)
+        finally:
+            with self._clients_lock:
+                self._clients.discard(stream)
+            stream.close()
+
+    def _report(self, error: Exception) -> None:
+        if self.error_handler is not None:
+            self.error_handler(error)
+
+    def handle_error(
+        self, request: socket.socket, client_address: tuple[str, int]
+    ) -> None:
+        import sys
+
+        error = sys.exception()
+        if isinstance(error, Exception):
+            self._report(error)
+        else:
+            super().handle_error(request, client_address)
 
     def close(self) -> None:
-        with self._lock:
+        with self._close_lock:
             if self._closed:
                 return
             self._closed = True
-            # Listener.close() does not reliably wake an accept blocked in
-            # another thread. A connection without an authkey returns
-            # immediately, then closes; the server-side HMAC handshake rejects
-            # it and releases the broker accept loop.
-            try:
-                with socket.create_connection(self.address.as_tuple(), timeout=0.1):
+            self._stop_requested.set()
+            if self._serving.is_set():
+                self.shutdown()
+            self.server_close()
+            with self._clients_lock:
+                clients = list(self._clients)
+                self._clients.clear()
+            for client in clients:
+                try:
+                    client.shutdown(socket.SHUT_RDWR)
+                except OSError:
                     pass
-            except OSError:
-                pass
-            self.listener.close()
+                client.close()
             if self.backend.publish_descriptor:
                 _remove_runtime_descriptor(self.backend)
 

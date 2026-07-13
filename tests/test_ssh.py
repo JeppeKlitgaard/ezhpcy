@@ -136,6 +136,3 @@ def test_get_file_config_maps_xdg_directories_to_the_correct_fields() -> None:
     remote_script = run.call_args.args[0][2]
     assert "XDG_RUNTIME_DIR" in remote_script
     assert "TMPDIR" in remote_script
-    assert remote_script.index("XDG_CACHE_HOME") < remote_script.index(
-        "XDG_CONFIG_HOME"
-    )

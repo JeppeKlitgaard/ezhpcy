@@ -1,5 +1,3 @@
-import signal
-import threading
 from typing import Annotated
 
 import paramiko
@@ -51,36 +49,13 @@ def broker_cmd(
                 f"Broker client error: {error}", err=True
             ),
         )
-        server_thread = threading.Thread(
-            target=broker.serve_forever,
-            daemon=True,
-            name="ezhpcy-broker-listener",
-        )
-        server_thread.start()
-        try:
-            broker.wait_until_ready()
-        except BaseException:
-            broker.close()
-            server_thread.join(timeout=1)
-            raise
         typer.echo(
-            "Broker ready for `ezhpcy proxy` connections (press Ctrl+C to stop)."
+            f"Broker IPC ready; worker endpoint {worker_host}:{worker_port} will be "
+            "checked on first connection (press Ctrl+C to stop)."
         )
-        stop_requested = threading.Event()
-        previous_sigint = signal.getsignal(signal.SIGINT)
-
-        def request_stop(_signum: int, _frame: object) -> None:
-            stop_requested.set()
-
-        signal.signal(signal.SIGINT, request_stop)
         try:
-            while server_thread.is_alive() and not stop_requested.wait(timeout=0.25):
-                pass
+            broker.serve_forever()
         except KeyboardInterrupt:
-            stop_requested.set()
+            typer.echo("Stopping broker...", err=True)
         finally:
-            signal.signal(signal.SIGINT, previous_sigint)
-            if stop_requested.is_set():
-                typer.echo("Stopping broker...", err=True)
             broker.close()
-            server_thread.join(timeout=1)

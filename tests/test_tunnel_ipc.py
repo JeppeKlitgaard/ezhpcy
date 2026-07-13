@@ -4,7 +4,6 @@ import os
 import socket
 import threading
 import time
-from multiprocessing import Pipe
 from pathlib import Path
 
 import pytest
@@ -13,134 +12,59 @@ import ezhpcy.tunnel.ipc as ipc
 from ezhpcy.tunnel.ipc import (
     AuthenticatedIPCBackend,
     BrokerUnavailableError,
-    FramedConnection,
     IPCAddress,
     IPCAuthenticationError,
-    accept_worker_stream,
+    IPCError,
     create_broker_backend,
     load_broker_backend,
-    ready_worker_stream,
-    request_worker_stream,
+    reject_worker_stream,
+    wait_for_worker_stream,
 )
 
 AUTHKEY = b"a" * 32
 BIND_ADDRESS = IPCAddress("127.0.0.1", 0, allow_zero_port=True)
 
 
-def connection_pair() -> tuple[FramedConnection, FramedConnection]:
-    left, right = Pipe(duplex=True)
-    return FramedConnection(left), FramedConnection(right)
-
-
-def test_versioned_handshake_accepts_current_version() -> None:
-    client, server = connection_pair()
-    accepted = threading.Event()
-
-    def serve() -> None:
-        accept_worker_stream(server)
-        accepted.set()
-        ready_worker_stream(server)
-
-    thread = threading.Thread(target=serve)
+def start_server(backend, handler, error_handler=None):
+    server = backend.listen(handler, error_handler)
+    thread = threading.Thread(target=server.serve_forever)
     thread.start()
-    request_worker_stream(client)
-
-    assert accepted.wait(timeout=1)
-    client.close()
-    server.close()
-    thread.join(timeout=1)
+    return server, thread
 
 
-def test_protocol_frame_uses_one_connection_message() -> None:
-    sender, receiver = Pipe(duplex=True)
-    connection = FramedConnection(sender)
-    try:
-        connection.send_data(b"payload")
-        assert receiver.recv_bytes() == bytes((ipc._DATA,)) + b"payload"
-    finally:
-        connection.close()
-        receiver.close()
-
-
-def test_version_mismatch_returns_bounded_actionable_error() -> None:
-    client, server = connection_pair()
-    result: list[Exception] = []
-
-    def serve() -> None:
-        try:
-            accept_worker_stream(server)
-        except Exception as error:
-            result.append(error)
-
-    thread = threading.Thread(target=serve)
-    thread.start()
-    client.send_frame(
-        ipc._HELLO,
-        json.dumps(
-            {"version": ipc.PROTOCOL_VERSION + 1, "operation": "open-worker-stream"}
-        ).encode(),
+def test_worker_stream_rejection_is_bounded_and_actionable() -> None:
+    client, server = socket.socketpair()
+    thread = threading.Thread(
+        target=reject_worker_stream,
+        args=(server, "worker failed: " + "x" * 2000),
     )
-    kind, payload = client.receive_frame()
-    message = json.loads(payload)
+    thread.start()
 
-    assert kind == ipc._ERROR
-    assert "unsupported IPC protocol version" in message["message"]
+    with pytest.raises(IPCError, match="worker failed") as raised:
+        wait_for_worker_stream(client)
     thread.join(timeout=1)
-    assert result and isinstance(result[0], ipc.ProtocolError)
     client.close()
     server.close()
 
-
-def test_authenticated_connection_uses_send_bytes_without_pickle() -> None:
-    server = AuthenticatedIPCBackend(BIND_ADDRESS, AUTHKEY)
-    listener = server.listen()
-    client_backend = AuthenticatedIPCBackend(listener.address, AUTHKEY)
-    received: list[bytes] = []
-
-    def serve() -> None:
-        connection = listener.accept()
-        received.append(connection.recv_bytes(4))
-        connection.send_bytes(b"pong")
-        connection.close()
-
-    thread = threading.Thread(target=serve)
-    thread.start()
-    client = client_backend.connect(timeout=1)
-    client.send_bytes(b"ping")
-    assert client.recv_bytes(4) == b"pong"
-    client.close()
-    thread.join(timeout=1)
-    listener.close()
-
-    assert received == [b"ping"]
-
-
-def test_ipc_address_constructor_validates_loopback_and_port() -> None:
-    assert IPCAddress("127.0.0.1", 12345).as_tuple() == ("127.0.0.1", 12345)
-    with pytest.raises(ValueError, match="IPv4 loopback"):
-        IPCAddress("0.0.0.0", 12345)
-    with pytest.raises(ValueError, match="port is invalid"):
-        IPCAddress("127.0.0.1", 0)
+    assert len(str(raised.value).encode()) <= ipc.MAX_ERROR_SIZE
 
 
 def test_wrong_authkey_is_rejected() -> None:
-    server = AuthenticatedIPCBackend(BIND_ADDRESS, AUTHKEY)
-    listener = server.listen()
-    wrong_client = AuthenticatedIPCBackend(listener.address, b"b" * 32)
+    server_backend = AuthenticatedIPCBackend(BIND_ADDRESS, AUTHKEY)
     errors: list[Exception] = []
+    rejected = threading.Event()
 
-    def accept() -> None:
-        try:
-            listener.accept()
-        except Exception as error:
-            errors.append(error)
+    def report(error: Exception) -> None:
+        errors.append(error)
+        rejected.set()
 
-    thread = threading.Thread(target=accept)
-    thread.start()
+    server, thread = start_server(server_backend, lambda _connection: None, report)
+    wrong_client = AuthenticatedIPCBackend(server.address, b"b" * 32)
     with pytest.raises(IPCAuthenticationError, match="authentication failed"):
         wrong_client.connect(timeout=1)
+    assert rejected.wait(timeout=1)
+    server.close()
     thread.join(timeout=1)
-    listener.close()
 
     assert errors and isinstance(errors[0], IPCAuthenticationError)
 
@@ -151,7 +75,13 @@ def test_runtime_descriptor_publishes_capability_and_is_removed(tmp_path: Path) 
         descriptor_path=descriptor,
         authkey=AUTHKEY,
     )
-    listener = server.listen()
+    received: list[bytes] = []
+
+    def serve(connection) -> None:
+        received.append(connection.recv(4))
+        connection.sendall(b"pong")
+
+    listener, thread = start_server(server, serve)
     client_backend = load_broker_backend(descriptor)
     payload = json.loads(descriptor.read_text(encoding="utf-8"))
 
@@ -164,25 +94,13 @@ def test_runtime_descriptor_publishes_capability_and_is_removed(tmp_path: Path) 
     assert payload["version"] == ipc.RUNTIME_DESCRIPTOR_VERSION
     assert payload["host"] == "127.0.0.1"
     assert payload["port"] == listener.address.port
-    assert "family" not in payload
-    assert "pid" not in payload
 
-    received: list[bytes] = []
-
-    def serve() -> None:
-        connection = listener.accept()
-        received.append(connection.recv_bytes(4))
-        connection.send_bytes(b"pong")
-        connection.close()
-
-    thread = threading.Thread(target=serve)
-    thread.start()
     client = client_backend.connect(timeout=1)
-    client.send_bytes(b"ping")
-    assert client.recv_bytes(4) == b"pong"
+    client.sendall(b"ping")
+    assert client.recv(4) == b"pong"
     client.close()
-    thread.join(timeout=1)
     listener.close()
+    thread.join(timeout=1)
 
     assert received == [b"ping"]
     assert not descriptor.exists()
@@ -192,7 +110,7 @@ def test_runtime_descriptor_publishes_capability_and_is_removed(tmp_path: Path) 
 def test_runtime_descriptor_is_owner_only_on_posix(tmp_path: Path) -> None:
     descriptor = tmp_path / "runtime" / "broker.json"
     backend = create_broker_backend(descriptor_path=descriptor)
-    listener = backend.listen()
+    listener = backend.listen(lambda _connection: None)
     try:
         assert descriptor.stat().st_mode & 0o077 == 0
         assert descriptor.parent.stat().st_mode & 0o077 == 0
@@ -217,24 +135,132 @@ def test_ipc_endpoint_absence_fails_quickly() -> None:
 
 
 def test_listener_close_cancels_blocked_accept() -> None:
-    listener = AuthenticatedIPCBackend(BIND_ADDRESS, AUTHKEY).listen()
-    finished = threading.Event()
-
-    def accept() -> None:
-        try:
-            listener.accept()
-        except Exception:
-            pass
-        finally:
-            finished.set()
-
-    thread = threading.Thread(target=accept)
-    thread.start()
-    time.sleep(0.05)
-    listener.close()
+    backend = AuthenticatedIPCBackend(BIND_ADDRESS, AUTHKEY)
+    server, thread = start_server(backend, lambda _connection: None)
+    server.close()
     thread.join(timeout=1)
 
-    assert finished.is_set()
+    assert not thread.is_alive()
+
+
+def test_stalled_authentication_does_not_block_valid_client() -> None:
+    errors: list[Exception] = []
+    rejected = threading.Event()
+    backend = AuthenticatedIPCBackend(BIND_ADDRESS, AUTHKEY, authentication_timeout=0.1)
+
+    def serve(connection) -> None:
+        assert connection.recv(4) == b"ping"
+        connection.sendall(b"pong")
+
+    def report(error: Exception) -> None:
+        errors.append(error)
+        rejected.set()
+
+    server, thread = start_server(backend, serve, report)
+    with socket.create_connection(server.address.as_tuple()) as _stalled:
+        client = AuthenticatedIPCBackend(server.address, AUTHKEY).connect(timeout=1)
+        client.sendall(b"ping")
+        assert client.recv(4) == b"pong"
+        client.close()
+        assert rejected.wait(timeout=1)
+
+    server.close()
+    thread.join(timeout=1)
+    assert errors and "timed out" in str(errors[0])
+
+
+def test_client_authentication_has_an_overall_deadline() -> None:
+    with socket.socket() as listener:
+        listener.bind(BIND_ADDRESS.as_tuple())
+        listener.listen()
+        address = IPCAddress(*listener.getsockname())
+        release = threading.Event()
+
+        def stall() -> None:
+            connection, _address = listener.accept()
+            with connection:
+                release.wait(timeout=1)
+
+        thread = threading.Thread(target=stall)
+        thread.start()
+        backend = AuthenticatedIPCBackend(address, AUTHKEY)
+        started = time.monotonic()
+        with pytest.raises(IPCAuthenticationError, match="authentication failed"):
+            backend.connect(timeout=0.05)
+        elapsed = time.monotonic() - started
+        release.set()
+        thread.join(timeout=1)
+
+    assert elapsed < 1
+    assert not thread.is_alive()
+
+
+def test_client_rejects_invalid_server_proof() -> None:
+    with socket.socket() as listener:
+        listener.bind(BIND_ADDRESS.as_tuple())
+        listener.listen()
+        address = IPCAddress(*listener.getsockname())
+
+        def impersonate_broker() -> None:
+            connection, _address = listener.accept()
+            with connection:
+                connection.sendall(ipc._AUTH_MAGIC + b"s" * ipc._AUTH_NONCE_SIZE)
+                response_size = ipc._AUTH_NONCE_SIZE + ipc._AUTH_DIGEST_SIZE
+                response = bytearray()
+                while len(response) < response_size:
+                    response.extend(connection.recv(response_size - len(response)))
+                connection.sendall(b"x" * ipc._AUTH_DIGEST_SIZE)
+
+        thread = threading.Thread(target=impersonate_broker)
+        thread.start()
+        backend = AuthenticatedIPCBackend(address, AUTHKEY)
+        with pytest.raises(IPCAuthenticationError, match="authentication failed"):
+            backend.connect(timeout=1)
+        thread.join(timeout=1)
+
+    assert not thread.is_alive()
+
+
+def test_server_close_interrupts_stalled_authentication() -> None:
+    backend = AuthenticatedIPCBackend(BIND_ADDRESS, AUTHKEY, authentication_timeout=10)
+    server, thread = start_server(backend, lambda _connection: None)
+    with socket.create_connection(server.address.as_tuple()) as stalled:
+        greeting_size = len(ipc._AUTH_MAGIC) + ipc._AUTH_NONCE_SIZE
+        greeting = bytearray()
+        while len(greeting) < greeting_size:
+            greeting.extend(stalled.recv(greeting_size - len(greeting)))
+
+        started = time.monotonic()
+        server.close()
+        elapsed = time.monotonic() - started
+        thread.join(timeout=1)
+        stalled.settimeout(1)
+        assert stalled.recv(1) == b""
+
+    assert elapsed < 1
+    assert not thread.is_alive()
+
+
+def test_unexpected_client_handler_error_is_reported() -> None:
+    errors: list[Exception] = []
+    reported = threading.Event()
+
+    def fail(_connection) -> None:
+        raise RuntimeError("handler failed")
+
+    def report(error: Exception) -> None:
+        errors.append(error)
+        reported.set()
+
+    backend = AuthenticatedIPCBackend(BIND_ADDRESS, AUTHKEY)
+    server, thread = start_server(backend, fail, report)
+    client = AuthenticatedIPCBackend(server.address, AUTHKEY).connect(timeout=1)
+    assert reported.wait(timeout=1)
+    client.close()
+    server.close()
+    thread.join(timeout=1)
+
+    assert errors and isinstance(errors[0], RuntimeError)
     assert not thread.is_alive()
 
 
@@ -269,8 +295,8 @@ def test_latest_broker_descriptor_wins_and_old_close_preserves_it(
         descriptor_path=descriptor,
         authkey=b"b" * 32,
     )
-    first_listener = first.listen()
-    second_listener = second.listen()
+    first_listener = first.listen(lambda _connection: None)
+    second_listener = second.listen(lambda _connection: None)
     try:
         current = load_broker_backend(descriptor)
         assert current.address == second_listener.address

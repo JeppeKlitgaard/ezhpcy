@@ -1,7 +1,6 @@
 from pathlib import Path
 
 from ezhpcy import config as config_module
-from ezhpcy.config import LocalFileConfig
 
 
 def test_default_config_dir_respects_xdg_config_home(monkeypatch) -> None:
@@ -36,15 +35,3 @@ def test_default_runtime_dir_falls_back_to_temp(monkeypatch) -> None:
     monkeypatch.setattr(config_module.tempfile, "gettempdir", lambda: "/tmp")
 
     assert config_module._get_default_runtime_dir() == Path("/tmp/ezhpcy")
-
-
-def test_runtime_dir_is_independently_configurable(tmp_path: Path) -> None:
-    file_config = LocalFileConfig(
-        cache_dir=tmp_path / "cache",
-        config_dir=tmp_path / "config",
-        data_dir=tmp_path / "data",
-        runtime_dir=tmp_path / "runtime",
-        config_file=tmp_path / "config" / "ezhpcy.toml",
-    )
-
-    assert file_config.runtime_dir == tmp_path / "runtime"

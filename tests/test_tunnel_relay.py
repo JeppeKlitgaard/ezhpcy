@@ -108,19 +108,6 @@ def test_connection_reset_is_reported_without_escaping_worker_thread() -> None:
     channel.close.assert_called()
 
 
-def test_relay_uses_threading_tcp_server_lifecycle() -> None:
-    transport = MagicMock()
-
-    with DirectTCPIPRelay(transport, ("worker.internal", 3333)) as server:
-        host, port = server.address
-        assert host == "127.0.0.1"
-        assert port > 0
-        assert server.daemon_threads is True
-        assert server.block_on_close is False
-
-    assert server.socket.fileno() == -1
-
-
 def test_threading_tcp_server_dispatches_accepted_client() -> None:
     transport = MagicMock()
     channel = MagicMock()

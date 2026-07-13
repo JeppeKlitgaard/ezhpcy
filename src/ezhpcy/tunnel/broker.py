@@ -10,38 +10,25 @@ from typing import BinaryIO, Callable
 import paramiko
 
 from ezhpcy.tunnel.ipc import (
-    FramedConnection,
     IPCBackend,
-    IPCError,
-    ProtocolError,
-    accept_worker_stream,
     ready_worker_stream,
     reject_worker_stream,
-    request_worker_stream,
+    wait_for_worker_stream,
 )
 from ezhpcy.tunnel.relay import _shutdown_write
 
 ErrorHandler = Callable[[Exception], None]
+WORKER_BANNER_TIMEOUT = 5.0
 
 
-def _channel_to_ipc(channel: paramiko.Channel, connection: FramedConnection) -> None:
-    received_data = False
+def _channel_to_socket(channel: paramiko.Channel, stream: socket.socket) -> None:
     while data := channel.recv(64 * 1024):
-        received_data = True
-        connection.send_data(data)
-    if received_data:
-        connection.send_eof()
-    else:
-        reject_worker_stream(
-            connection,
-            "worker connection closed before sending an SSH banner; verify that "
-            "the worker daemon is running and that WORKER_HOST and --worker-port "
-            "match its endpoint",
-        )
+        stream.sendall(data)
+    _shutdown_write(stream)
 
 
-def _ipc_to_channel(connection: FramedConnection, channel: paramiko.Channel) -> None:
-    while (data := connection.receive_data()) is not None:
+def _socket_to_channel(stream: socket.socket, channel: paramiko.Channel) -> None:
+    while data := stream.recv(64 * 1024):
         channel.sendall(data)
     _shutdown_write(channel)
 
@@ -61,61 +48,17 @@ class ForegroundBroker:
         self.destination = destination
         self.backend = backend
         self.error_handler = error_handler
-        self._listener = None
-        self._connections: set[FramedConnection] = set()
-        self._threads: set[threading.Thread] = set()
-        self._lock = threading.Lock()
-        self._stopped = threading.Event()
-        self._started = threading.Event()
-        self._startup_error: Exception | None = None
+        self._server = backend.listen(self._serve_client, self._report)
 
     def serve_forever(self) -> None:
-        try:
-            try:
-                self._listener = self.backend.listen()
-            except Exception as error:
-                self._startup_error = error
-                self._report(error)
-                return
-            finally:
-                self._started.set()
+        self._server.serve_forever()
 
-            while not self._stopped.is_set():
-                try:
-                    stream = self._listener.accept()
-                except Exception as error:
-                    if self._stopped.is_set():
-                        break
-                    self._report(error)
-                    continue
-                connection = FramedConnection(stream)
-                thread = threading.Thread(
-                    target=self._serve_client,
-                    args=(connection,),
-                    daemon=True,
-                    name="ezhpcy-broker-client",
-                )
-                with self._lock:
-                    self._connections.add(connection)
-                    self._threads.add(thread)
-                thread.start()
-        finally:
-            self.close()
-
-    def wait_until_ready(self, timeout: float = 2.0) -> None:
-        """Wait until the listener and its runtime descriptor are available."""
-        if not self._started.wait(timeout):
-            raise IPCError("broker IPC listener did not start in time")
-        if self._startup_error is not None:
-            raise self._startup_error
-
-    def _serve_client(self, connection: FramedConnection) -> None:
+    def _serve_client(self, stream: socket.socket) -> None:
         channel = None
         try:
-            accept_worker_stream(connection)
             if not self.transport.is_active():
                 reject_worker_stream(
-                    connection,
+                    stream,
                     "login-node transport was lost; restart the foreground broker",
                 )
                 return
@@ -127,44 +70,56 @@ class ForegroundBroker:
                 )
             except Exception as error:
                 reject_worker_stream(
-                    connection,
+                    stream,
                     f"worker channel could not be opened: {error}",
                 )
                 return
-            ready_worker_stream(connection)
+            channel.settimeout(WORKER_BANNER_TIMEOUT)
+            try:
+                first_data = channel.recv(64 * 1024)
+            except (OSError, paramiko.SSHException) as error:
+                reject_worker_stream(
+                    stream,
+                    f"worker connection failed before sending an SSH banner: {error}",
+                )
+                return
+            finally:
+                channel.settimeout(None)
+            if not first_data:
+                reject_worker_stream(
+                    stream,
+                    "worker connection closed before sending an SSH banner; verify "
+                    "that the worker daemon is running and that WORKER_HOST and "
+                    "--worker-port match its endpoint",
+                )
+                return
+            ready_worker_stream(stream)
+            stream.sendall(first_data)
             outgoing = threading.Thread(
                 target=self._forward_channel,
-                args=(channel, connection),
+                args=(channel, stream),
                 daemon=True,
                 name="ezhpcy-worker-to-proxy",
             )
             outgoing.start()
-            _ipc_to_channel(connection, channel)
+            _socket_to_channel(stream, channel)
             outgoing.join()
-        except (EOFError, IPCError, OSError, socket.error) as error:
-            if not isinstance(error, (EOFError, ProtocolError)):
-                self._report(error)
+        except OSError as error:
+            self._report(error)
         finally:
             if channel is not None:
                 channel.close()
-            connection.close()
-            with self._lock:
-                self._connections.discard(connection)
-                self._threads.discard(threading.current_thread())
 
     def _forward_channel(
-        self, channel: paramiko.Channel, connection: FramedConnection
+        self, channel: paramiko.Channel, stream: socket.socket
     ) -> None:
         try:
-            _channel_to_ipc(channel, connection)
-        except (EOFError, IPCError, OSError) as error:
+            _channel_to_socket(channel, stream)
+        except (OSError, paramiko.SSHException) as error:
+            self._report(error)
             try:
-                reject_worker_stream(
-                    connection,
-                    "worker stream was interrupted; restart the broker if the "
-                    f"login-node connection was lost ({error})",
-                )
-            except EOFError, IPCError, OSError:
+                _shutdown_write(stream)
+            except OSError:
                 pass
 
     def _report(self, error: Exception) -> None:
@@ -172,16 +127,7 @@ class ForegroundBroker:
             self.error_handler(error)
 
     def close(self) -> None:
-        self._stopped.set()
-        if self._listener is not None:
-            try:
-                self._listener.close()
-            except OSError:
-                pass
-        with self._lock:
-            connections = list(self._connections)
-        for connection in connections:
-            connection.close()
+        self._server.close()
 
 
 def relay_proxy_stdio(
@@ -192,9 +138,9 @@ def relay_proxy_stdio(
     connect_timeout: float = 2.0,
 ) -> None:
     """Connect to the broker and reserve stdout exclusively for SSH bytes."""
-    connection = FramedConnection(backend.connect(timeout=connect_timeout))
+    stream = backend.connect(timeout=connect_timeout)
     try:
-        request_worker_stream(connection)
+        wait_for_worker_stream(stream)
 
         try:
             stdin_fd = stdin.fileno()
@@ -212,17 +158,17 @@ def relay_proxy_stdio(
         def send_stdin() -> None:
             try:
                 while data := read_stdin(64 * 1024):
-                    connection.send_data(data)
-                connection.send_eof()
-            except OSError, IPCError, ValueError:
+                    stream.sendall(data)
+                _shutdown_write(stream)
+            except OSError, ValueError:
                 pass
 
         sender = threading.Thread(
             target=send_stdin, daemon=True, name="ezhpcy-proxy-stdin"
         )
         sender.start()
-        while (data := connection.receive_data()) is not None:
+        while data := stream.recv(64 * 1024):
             stdout.write(data)
             stdout.flush()
     finally:
-        connection.close()
+        stream.close()

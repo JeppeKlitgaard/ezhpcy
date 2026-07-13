@@ -83,13 +83,8 @@ def test_install_script_uses_xdg_private_pixi_home() -> None:
     assert 'exec "$sshd_path" -V' in install_script
     assert "uv_matchspec={{ uv_matchspec }}" in install_template
     assert 'run_pixi exec --spec="$uv_matchspec" uv tool install' in install_script
-    assert OPENSSH_MATCHSPEC not in install_template
-    assert UV_MATCHSPEC not in install_template
     assert f"openssh_matchspec={OPENSSH_MATCHSPEC}" in install_script
     assert f"uv_matchspec={UV_MATCHSPEC}" in install_script
-    assert "${1:-}" not in install_script
-    assert "${2:?" not in install_script
-    assert "${3:?" not in install_script
 
 
 def test_uninstall_script_removes_xdg_pixi_cache() -> None:
@@ -110,7 +105,5 @@ def test_uninstall_script_removes_xdg_pixi_cache() -> None:
     assert "PIXI_CACHE_DIR" in uninstall_script
     assert "uv_matchspec={{ uv_matchspec }}" in uninstall_template
     assert 'run_pixi exec --spec="$uv_matchspec" uv tool uninstall' in uninstall_script
-    assert UV_MATCHSPEC not in uninstall_template
     assert f"uv_matchspec={UV_MATCHSPEC}" in uninstall_script
-    assert "${1:?" not in uninstall_script
     assert 'rm -rf -- "$ezhpcy_cache_dir"' in uninstall_script

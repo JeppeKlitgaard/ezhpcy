@@ -18,7 +18,7 @@ from ezhpcy.tunnel.ipc import (
 from ezhpcy.tunnel.relay import _shutdown_write
 
 ErrorHandler = Callable[[Exception], None]
-WORKER_BANNER_TIMEOUT = 5.0
+WORKER_BANNER_TIMEOUT = 10.0
 
 
 def _channel_to_socket(channel: paramiko.Channel, stream: socket.socket) -> None:

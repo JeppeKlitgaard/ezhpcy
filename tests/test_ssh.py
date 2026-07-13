@@ -94,6 +94,7 @@ def test_run_pixi_uses_ezhpcy_xdg_directories() -> None:
         cache_dir=PurePosixPath("/cache"),
         config_dir=PurePosixPath("/config"),
         data_dir=PurePosixPath("/data"),
+        runtime_dir=PurePosixPath("/runtime/ezhpcy"),
         config_file=PurePosixPath("/config/ezhpcy/ezhpcy.toml"),
     )
 
@@ -122,7 +123,8 @@ def test_get_file_config_maps_xdg_directories_to_the_correct_fields() -> None:
     client = SSHClient(ConnectionInfo())
     response = (
         '{"cache_dir":"/cache","config_dir":"/config",'
-        '"data_dir":"/data","config_file":"/config/ezhpcy/ezhpcy.toml"}'
+        '"data_dir":"/data","runtime_dir":"/runtime/ezhpcy",'
+        '"config_file":"/config/ezhpcy/ezhpcy.toml"}'
     )
 
     with patch.object(client, "run", return_value=response) as run:
@@ -130,7 +132,10 @@ def test_get_file_config_maps_xdg_directories_to_the_correct_fields() -> None:
 
     assert file_config.cache_dir == PurePosixPath("/cache")
     assert file_config.config_dir == PurePosixPath("/config")
+    assert file_config.runtime_dir == PurePosixPath("/runtime/ezhpcy")
     remote_script = run.call_args.args[0][2]
+    assert "XDG_RUNTIME_DIR" in remote_script
+    assert "TMPDIR" in remote_script
     assert remote_script.index("XDG_CACHE_HOME") < remote_script.index(
         "XDG_CONFIG_HOME"
     )

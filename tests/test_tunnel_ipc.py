@@ -1,8 +1,9 @@
+import base64
 import json
 import os
+import socket
 import threading
 import time
-import uuid
 from multiprocessing import Pipe
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from ezhpcy.tunnel.ipc import (
     AuthenticatedIPCBackend,
     BrokerUnavailableError,
     FramedConnection,
+    IPCAddress,
     IPCAuthenticationError,
     accept_worker_stream,
     create_broker_backend,
@@ -21,17 +23,13 @@ from ezhpcy.tunnel.ipc import (
     request_worker_stream,
 )
 
+AUTHKEY = b"a" * 32
+BIND_ADDRESS = IPCAddress("127.0.0.1", 0, allow_zero_port=True)
+
 
 def connection_pair() -> tuple[FramedConnection, FramedConnection]:
     left, right = Pipe(duplex=True)
     return FramedConnection(left), FramedConnection(right)
-
-
-def ipc_address(tmp_path: Path, label: str) -> tuple[str, str]:
-    unique = f"{label}-{os.getpid()}-{uuid.uuid4().hex}"
-    if os.name == "nt":
-        return rf"\\.\pipe\ezhpcy-test-{unique}", "AF_PIPE"
-    return str(tmp_path / f"{unique}.sock"), "AF_UNIX"
 
 
 def test_versioned_handshake_accepts_current_version() -> None:
@@ -93,12 +91,10 @@ def test_version_mismatch_returns_bounded_actionable_error() -> None:
     server.close()
 
 
-def test_authenticated_connection_uses_send_bytes_without_pickle(
-    tmp_path: Path,
-) -> None:
-    address, family = ipc_address(tmp_path, "bytes")
-    backend = AuthenticatedIPCBackend(address, family, b"a" * 32)
-    listener = backend.listen()
+def test_authenticated_connection_uses_send_bytes_without_pickle() -> None:
+    server = AuthenticatedIPCBackend(BIND_ADDRESS, AUTHKEY)
+    listener = server.listen()
+    client_backend = AuthenticatedIPCBackend(listener.address, AUTHKEY)
     received: list[bytes] = []
 
     def serve() -> None:
@@ -109,7 +105,7 @@ def test_authenticated_connection_uses_send_bytes_without_pickle(
 
     thread = threading.Thread(target=serve)
     thread.start()
-    client = backend.connect(timeout=1)
+    client = client_backend.connect(timeout=1)
     client.send_bytes(b"ping")
     assert client.recv_bytes(4) == b"pong"
     client.close()
@@ -119,11 +115,18 @@ def test_authenticated_connection_uses_send_bytes_without_pickle(
     assert received == [b"ping"]
 
 
-def test_wrong_authkey_is_rejected(tmp_path: Path) -> None:
-    address, family = ipc_address(tmp_path, "auth")
-    server = AuthenticatedIPCBackend(address, family, b"a" * 32)
-    wrong_client = AuthenticatedIPCBackend(address, family, b"b" * 32)
+def test_ipc_address_constructor_validates_loopback_and_port() -> None:
+    assert IPCAddress("127.0.0.1", 12345).as_tuple() == ("127.0.0.1", 12345)
+    with pytest.raises(ValueError, match="IPv4 loopback"):
+        IPCAddress("0.0.0.0", 12345)
+    with pytest.raises(ValueError, match="port is invalid"):
+        IPCAddress("127.0.0.1", 0)
+
+
+def test_wrong_authkey_is_rejected() -> None:
+    server = AuthenticatedIPCBackend(BIND_ADDRESS, AUTHKEY)
     listener = server.listen()
+    wrong_client = AuthenticatedIPCBackend(listener.address, b"b" * 32)
     errors: list[Exception] = []
 
     def accept() -> None:
@@ -143,20 +146,26 @@ def test_wrong_authkey_is_rejected(tmp_path: Path) -> None:
 
 
 def test_runtime_descriptor_publishes_capability_and_is_removed(tmp_path: Path) -> None:
-    address, _family = ipc_address(tmp_path, "runtime")
     descriptor = tmp_path / "broker.json"
     server = create_broker_backend(
-        address,
         descriptor_path=descriptor,
-        authkey=b"a" * 32,
+        authkey=AUTHKEY,
     )
     listener = server.listen()
     client_backend = load_broker_backend(descriptor)
+    payload = json.loads(descriptor.read_text(encoding="utf-8"))
 
     assert descriptor.is_file()
-    assert client_backend.address == address
-    assert client_backend.authkey == b"a" * 32
+    assert client_backend.address == listener.address
+    assert client_backend.address.host == "127.0.0.1"
+    assert client_backend.address.port != 0
+    assert client_backend.authkey == AUTHKEY
     assert "authkey" not in repr(client_backend)
+    assert payload["version"] == ipc.RUNTIME_DESCRIPTOR_VERSION
+    assert payload["host"] == "127.0.0.1"
+    assert payload["port"] == listener.address.port
+    assert "family" not in payload
+    assert "pid" not in payload
 
     received: list[bytes] = []
 
@@ -181,14 +190,12 @@ def test_runtime_descriptor_publishes_capability_and_is_removed(tmp_path: Path) 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
 def test_runtime_descriptor_is_owner_only_on_posix(tmp_path: Path) -> None:
-    address, _family = ipc_address(tmp_path, "permissions")
     descriptor = tmp_path / "runtime" / "broker.json"
-    backend = create_broker_backend(address, descriptor_path=descriptor)
+    backend = create_broker_backend(descriptor_path=descriptor)
     listener = backend.listen()
     try:
         assert descriptor.stat().st_mode & 0o077 == 0
         assert descriptor.parent.stat().st_mode & 0o077 == 0
-        assert Path(address).stat().st_mode & 0o077 == 0
     finally:
         listener.close()
 
@@ -198,19 +205,19 @@ def test_missing_runtime_descriptor_fails_quickly(tmp_path: Path) -> None:
         load_broker_backend(tmp_path / "missing.json")
 
 
-def test_ipc_endpoint_absence_fails_quickly(tmp_path: Path) -> None:
-    address, family = ipc_address(tmp_path, "absent")
-    backend = AuthenticatedIPCBackend(address, family, b"a" * 32)
+def test_ipc_endpoint_absence_fails_quickly() -> None:
+    with socket.socket() as reserved:
+        reserved.bind(BIND_ADDRESS.as_tuple())
+        address = IPCAddress(*reserved.getsockname())
+    backend = AuthenticatedIPCBackend(address, AUTHKEY)
     started = time.monotonic()
     with pytest.raises(BrokerUnavailableError, match="broker is not running"):
         backend.connect(timeout=0.05)
     assert time.monotonic() - started < 1
 
 
-@pytest.mark.skipif(os.name != "nt", reason="Windows named-pipe shutdown behavior")
-def test_listener_close_cancels_blocked_accept(tmp_path: Path) -> None:
-    address, family = ipc_address(tmp_path, "close")
-    listener = AuthenticatedIPCBackend(address, family, b"a" * 32).listen()
+def test_listener_close_cancels_blocked_accept() -> None:
+    listener = AuthenticatedIPCBackend(BIND_ADDRESS, AUTHKEY).listen()
     finished = threading.Event()
 
     def accept() -> None:
@@ -229,3 +236,51 @@ def test_listener_close_cancels_blocked_accept(tmp_path: Path) -> None:
 
     assert finished.is_set()
     assert not thread.is_alive()
+
+
+def test_runtime_descriptor_rejects_non_loopback_address(tmp_path: Path) -> None:
+    descriptor = tmp_path / "broker.json"
+    descriptor.write_text(
+        json.dumps(
+            {
+                "version": ipc.RUNTIME_DESCRIPTOR_VERSION,
+                "host": "0.0.0.0",
+                "port": 12345,
+                "authkey": base64.b64encode(AUTHKEY).decode("ascii"),
+                "instance_id": "test-instance",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(BrokerUnavailableError, match="runtime information is invalid"):
+        load_broker_backend(descriptor)
+
+
+def test_latest_broker_descriptor_wins_and_old_close_preserves_it(
+    tmp_path: Path,
+) -> None:
+    descriptor = tmp_path / "broker.json"
+    first = create_broker_backend(
+        descriptor_path=descriptor,
+        authkey=b"a" * 32,
+    )
+    second = create_broker_backend(
+        descriptor_path=descriptor,
+        authkey=b"b" * 32,
+    )
+    first_listener = first.listen()
+    second_listener = second.listen()
+    try:
+        current = load_broker_backend(descriptor)
+        assert current.address == second_listener.address
+        assert current.authkey == b"b" * 32
+
+        first_listener.close()
+        assert descriptor.is_file()
+        assert load_broker_backend(descriptor).instance_id == second.instance_id
+    finally:
+        first_listener.close()
+        second_listener.close()
+
+    assert not descriptor.exists()

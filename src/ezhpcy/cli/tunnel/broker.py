@@ -29,17 +29,13 @@ def broker_cmd(
     user: UserOpt = config.connection.user,
     password: PasswordOpt = config.connection.password,
     host: HostOpt = config.connection.host,
-    pipe_name: Annotated[
-        str | None,
-        typer.Option("--pipe-name", hidden=True, help="Override the local IPC pipe."),
-    ] = None,
 ) -> None:
     """Run the authenticated worker-stream broker in the foreground."""
     local_machine_or_fail()
     connection_info = connection_info_from_options(
         user=user, password=password, host=host
     )
-    backend = create_broker_backend(pipe_name)
+    backend = create_broker_backend()
 
     with InteractiveSSHClient(connection_info) as ssh:
         ssh.interactive_connect()

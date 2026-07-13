@@ -3,18 +3,19 @@ import os
 import socket
 import threading
 import time
-import uuid
 from multiprocessing import Pipe
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
 from ezhpcy.tunnel.broker import ForegroundBroker, relay_proxy_stdio
 from ezhpcy.tunnel.ipc import (
-    AuthenticatedIPCBackend,
     FramedConnection,
     IPCError,
     MessageConnection,
+    create_broker_backend,
+    load_broker_backend,
 )
 
 
@@ -220,9 +221,7 @@ def test_authentication_transport_loss_is_actionable_and_opens_no_channel() -> N
     thread.start()
 
     with pytest.raises(IPCError, match="restart the foreground broker"):
-        relay_proxy_stdio(
-            ClientBackend(client), io.BytesIO(), io.BytesIO()
-        )
+        relay_proxy_stdio(ClientBackend(client), io.BytesIO(), io.BytesIO())
     thread.join(timeout=1)
     assert transport.destinations == []
 
@@ -239,9 +238,7 @@ def test_worker_close_before_ssh_banner_is_actionable() -> None:
     thread.start()
 
     with pytest.raises(IPCError, match="closed before sending an SSH banner"):
-        relay_proxy_stdio(
-            ClientBackend(client), io.BytesIO(), io.BytesIO()
-        )
+        relay_proxy_stdio(ClientBackend(client), io.BytesIO(), io.BytesIO())
     thread.join(timeout=1)
 
 
@@ -274,19 +271,27 @@ def test_broker_close_interrupts_accept_and_cleans_up_listener() -> None:
     assert not thread.is_alive()
 
 
-@pytest.mark.skipif(os.name != "nt", reason="Windows named-pipe implementation")
-def test_named_pipe_broker_relays_server_banner_while_waiting_for_client() -> None:
-    backend = AuthenticatedIPCBackend(
-        rf"\\.\pipe\ezhpcy-broker-{os.getpid()}-{uuid.uuid4().hex}",
-        "AF_PIPE",
-        b"a" * 32,
+def test_loopback_broker_relays_server_banner_while_waiting_for_client(
+    tmp_path: Path,
+) -> None:
+    descriptor = tmp_path / "broker.json"
+    server_backend = create_broker_backend(
+        descriptor_path=descriptor,
+        authkey=b"a" * 32,
     )
-    broker = ForegroundBroker(BannerTransport(), ("worker.internal", 3333), backend)
+    broker = ForegroundBroker(
+        BannerTransport(), ("worker.internal", 3333), server_backend
+    )
     broker_thread = threading.Thread(target=broker.serve_forever, daemon=True)
     broker_thread.start()
+    broker.wait_until_ready()
     output = io.BytesIO()
 
-    relay_proxy_stdio(backend, io.BytesIO(b"SSH-2.0-test-client\r\n"), output)
+    relay_proxy_stdio(
+        load_broker_backend(descriptor),
+        io.BytesIO(b"SSH-2.0-test-client\r\n"),
+        output,
+    )
     broker.close()
     broker_thread.join(timeout=1)
 

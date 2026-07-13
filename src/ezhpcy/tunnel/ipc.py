@@ -3,27 +3,52 @@
 from __future__ import annotations
 
 import base64
-import hashlib
 import json
 import os
 import secrets
-import sys
+import socket
 import threading
-import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass, field
 from multiprocessing.connection import (
     AuthenticationError,
-    Client,
+    Connection,
     Listener,
+    answer_challenge,
+    deliver_challenge,
 )
 from pathlib import Path
 from typing import Protocol
+
+from ezhpcy.config import config
 
 PROTOCOL_VERSION = 1
 RUNTIME_DESCRIPTOR_VERSION = 1
 MAX_CONTROL_SIZE = 4096
 MAX_DATA_SIZE = 1024 * 1024
+IPC_BACKLOG = 32
+
+_LOOPBACK_HOST = "127.0.0.1"
+
+
+@dataclass(frozen=True)
+class IPCAddress:
+    host: str
+    port: int
+    allow_zero_port: InitVar[bool] = False
+
+    def __post_init__(self, allow_zero_port: bool) -> None:
+        if self.host != _LOOPBACK_HOST:
+            raise ValueError("broker IPC address must use IPv4 loopback")
+        minimum_port = 0 if allow_zero_port else 1
+        if type(self.port) is not int or not minimum_port <= self.port <= 65535:
+            raise ValueError("broker IPC port is invalid")
+
+    def as_tuple(self) -> tuple[str, int]:
+        return self.host, self.port
+
+
+_DEFAULT_BIND_ADDRESS = IPCAddress(_LOOPBACK_HOST, 0, allow_zero_port=True)
 
 _MAX_WIRE_SIZE = 1 + MAX_DATA_SIZE
 _HELLO = 1
@@ -58,6 +83,8 @@ class MessageConnection(Protocol):
 
 
 class IPCListener(Protocol):
+    address: IPCAddress
+
     def accept(self) -> MessageConnection: ...
 
     def close(self) -> None: ...
@@ -185,10 +212,9 @@ def reject_worker_stream(connection: FramedConnection, message: str) -> None:
 
 @dataclass(frozen=True)
 class AuthenticatedIPCBackend:
-    """A named pipe or Unix socket authenticated by a per-broker capability."""
+    """An authenticated TCP endpoint bound exclusively to IPv4 loopback."""
 
-    address: str
-    family: str
+    address: IPCAddress
     authkey: bytes = field(repr=False)
     descriptor_path: Path | None = None
     instance_id: str = field(default_factory=lambda: uuid.uuid4().hex)
@@ -197,47 +223,47 @@ class AuthenticatedIPCBackend:
     def __post_init__(self) -> None:
         if len(self.authkey) < 32:
             raise ValueError("broker authkey must contain at least 32 random bytes")
-        if self.family not in {"AF_PIPE", "AF_UNIX"}:
-            raise ValueError(f"unsupported local IPC family {self.family!r}")
 
     def listen(self) -> IPCListener:
         try:
             listener = Listener(
-                self.address,
-                family=self.family,
+                self.address.as_tuple(),
+                family="AF_INET",
+                backlog=IPC_BACKLOG,
                 authkey=self.authkey,
             )
         except OSError as error:
-            raise IPCError(
-                "could not create the broker IPC endpoint; another broker may "
-                "already be running"
-            ) from error
+            raise IPCError("could not create the broker IPC listener") from error
 
-        wrapped = _AuthenticatedListener(listener, self)
+        address = IPCAddress(*listener.address)
+        wrapped = _AuthenticatedListener(listener, self, address)
         try:
-            if self.family == "AF_UNIX":
-                os.chmod(self.address, 0o600)
             if self.publish_descriptor:
-                _publish_runtime_descriptor(self)
+                _publish_runtime_descriptor(self, address)
         except BaseException:
             wrapped.close()
             raise
         return wrapped
 
     def connect(self, *, timeout: float = 2.0) -> MessageConnection:
-        if self.family == "AF_PIPE":
-            _wait_for_windows_pipe(self.address, timeout)
+        connection = None
         try:
-            connection = Client(
-                self.address,
-                family=self.family,
-                authkey=self.authkey,
-            )
+            with socket.create_connection(
+                self.address.as_tuple(), timeout=max(0.0, timeout)
+            ) as client_socket:
+                client_socket.settimeout(None)
+                connection = Connection(client_socket.detach())
+            answer_challenge(connection, self.authkey)
+            deliver_challenge(connection, self.authkey)
         except AuthenticationError as error:
+            if connection is not None:
+                connection.close()
             raise IPCAuthenticationError(
                 "broker authentication failed; restart the foreground broker"
             ) from error
         except OSError as error:
+            if connection is not None:
+                connection.close()
             raise BrokerUnavailableError(
                 "foreground broker is not running; start `ezhpcy tunnel broker`"
             ) from error
@@ -245,9 +271,15 @@ class AuthenticatedIPCBackend:
 
 
 class _AuthenticatedListener:
-    def __init__(self, listener: Listener, backend: AuthenticatedIPCBackend) -> None:
+    def __init__(
+        self,
+        listener: Listener,
+        backend: AuthenticatedIPCBackend,
+        address: IPCAddress,
+    ) -> None:
         self.listener = listener
         self.backend = backend
+        self.address = address
         self._closed = False
         self._lock = threading.Lock()
 
@@ -264,66 +296,34 @@ class _AuthenticatedListener:
             if self._closed:
                 return
             self._closed = True
-            # On Windows, Listener.close() does not wake a thread that is
-            # already blocked in PipeListener.accept(). A connection without
-            # an authkey returns immediately, then closes; the server-side HMAC
-            # handshake rejects it and releases the accept loop so Ctrl+C can
-            # join the broker thread cleanly.
+            # Listener.close() does not reliably wake an accept blocked in
+            # another thread. A connection without an authkey returns
+            # immediately, then closes; the server-side HMAC handshake rejects
+            # it and releases the broker accept loop.
             try:
-                wakeup = Client(
-                    self.backend.address,
-                    family=self.backend.family,
-                    authkey=None,
-                )
-                wakeup.close()
+                with socket.create_connection(self.address.as_tuple(), timeout=0.1):
+                    pass
             except OSError:
                 pass
             self.listener.close()
             if self.backend.publish_descriptor:
                 _remove_runtime_descriptor(self.backend)
-            if self.backend.family == "AF_UNIX":
-                try:
-                    Path(self.backend.address).unlink()
-                except FileNotFoundError:
-                    pass
-
-
-def default_runtime_directory() -> Path:
-    """Return a per-user location for the ephemeral broker descriptor."""
-    if os.name == "nt":
-        base = os.environ.get("LOCALAPPDATA")
-        root = Path(base) if base else Path.home() / "AppData" / "Local"
-        return root / "ezhpcy" / "runtime"
-    if runtime_dir := os.environ.get("XDG_RUNTIME_DIR"):
-        return Path(runtime_dir) / "ezhpcy"
-    if cache_dir := os.environ.get("XDG_CACHE_HOME"):
-        return Path(cache_dir) / "ezhpcy" / "runtime"
-    return Path.home() / ".cache" / "ezhpcy" / "runtime"
 
 
 def default_descriptor_path() -> Path:
-    return default_runtime_directory() / "broker.json"
-
-
-def default_ipc_address(descriptor_path: Path | None = None) -> str:
-    descriptor = (descriptor_path or default_descriptor_path()).resolve()
-    if os.name == "nt":
-        digest = hashlib.sha256(str(descriptor).casefold().encode()).hexdigest()[:16]
-        return rf"\\.\pipe\ezhpcy-{digest}-broker"
-    return str(descriptor.with_suffix(".sock"))
+    return config.local_file.runtime_dir / "broker.json"
 
 
 def create_broker_backend(
-    address: str | None = None,
     *,
+    address: IPCAddress = _DEFAULT_BIND_ADDRESS,
     descriptor_path: Path | None = None,
     authkey: bytes | None = None,
 ) -> AuthenticatedIPCBackend:
     """Create the server backend and its per-run authentication capability."""
     descriptor = descriptor_path or default_descriptor_path()
     return AuthenticatedIPCBackend(
-        address=address or default_ipc_address(descriptor),
-        family="AF_PIPE" if os.name == "nt" else "AF_UNIX",
+        address=address,
         authkey=authkey or secrets.token_bytes(32),
         descriptor_path=descriptor,
         publish_descriptor=True,
@@ -348,20 +348,17 @@ def load_broker_backend(
 
     try:
         version = payload["version"]
-        address = payload["address"]
-        family = payload["family"]
+        host = payload["host"]
+        port = payload["port"]
         encoded_authkey = payload["authkey"]
         instance_id = payload["instance_id"]
         if version != RUNTIME_DESCRIPTOR_VERSION:
             raise ValueError("unsupported runtime descriptor version")
         if not all(
-            isinstance(value, str)
-            for value in (address, family, encoded_authkey, instance_id)
+            isinstance(value, str) for value in (host, encoded_authkey, instance_id)
         ):
             raise ValueError("runtime descriptor values have invalid types")
-        expected_family = "AF_PIPE" if os.name == "nt" else "AF_UNIX"
-        if family != expected_family:
-            raise ValueError("runtime descriptor is for another platform")
+        address = IPCAddress(host, port)
         authkey = base64.b64decode(encoded_authkey, validate=True)
     except (KeyError, TypeError, ValueError) as error:
         raise BrokerUnavailableError(
@@ -371,7 +368,6 @@ def load_broker_backend(
     try:
         return AuthenticatedIPCBackend(
             address=address,
-            family=family,
             authkey=authkey,
             descriptor_path=path,
             instance_id=instance_id,
@@ -382,21 +378,21 @@ def load_broker_backend(
         ) from error
 
 
-def _publish_runtime_descriptor(backend: AuthenticatedIPCBackend) -> None:
+def _publish_runtime_descriptor(
+    backend: AuthenticatedIPCBackend, address: IPCAddress
+) -> None:
     path = backend.descriptor_path
     if path is None:
         raise IPCError("broker runtime descriptor path is not configured")
     directory = path.parent
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    if os.name != "nt":
-        directory.chmod(0o700)
+    directory.chmod(0o700)
     payload = {
         "version": RUNTIME_DESCRIPTOR_VERSION,
-        "address": backend.address,
-        "family": backend.family,
+        "host": address.host,
+        "port": address.port,
         "authkey": base64.b64encode(backend.authkey).decode("ascii"),
         "instance_id": backend.instance_id,
-        "pid": os.getpid(),
     }
     temporary = directory / f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
@@ -424,26 +420,3 @@ def _remove_runtime_descriptor(backend: AuthenticatedIPCBackend) -> None:
             path.unlink()
     except FileNotFoundError, OSError, json.JSONDecodeError:
         pass
-
-
-def _wait_for_windows_pipe(address: str, timeout: float) -> None:
-    if sys.platform != "win32":
-        return
-    import _winapi
-
-    deadline = time.monotonic() + max(0.0, timeout)
-    while True:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise BrokerUnavailableError(
-                "foreground broker is not running; start `ezhpcy tunnel broker`"
-            )
-        try:
-            _winapi.WaitNamedPipe(address, max(1, min(int(remaining * 1000), 100)))
-            return
-        except OSError as error:
-            if error.winerror not in {2, 121, 231}:
-                raise BrokerUnavailableError(
-                    "could not connect to the foreground broker; restart it and retry"
-                ) from error
-            time.sleep(min(0.01, remaining))

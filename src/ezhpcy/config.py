@@ -1,5 +1,6 @@
 import os
 import re
+import tempfile
 import typing
 from pathlib import Path, PurePath, PurePosixPath
 from typing import Generic, TypeVar
@@ -34,6 +35,14 @@ def _get_default_data_dir() -> Path:
     return data_home / "ezhpcy"
 
 
+def _get_default_runtime_dir() -> Path:
+    xdg_runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
+    runtime_home = (
+        Path(xdg_runtime_dir) if xdg_runtime_dir else Path(tempfile.gettempdir())
+    )
+    return runtime_home / "ezhpcy"
+
+
 def _default_config_file() -> Path:
     if config_file := os.environ.get("EZHPCY_CONFIG_FILE"):
         return Path(config_file).expanduser()
@@ -55,6 +64,7 @@ class FileConfig(BaseModel, Generic[PathT]):
     cache_dir: PathT
     config_dir: PathT
     data_dir: PathT
+    runtime_dir: PathT
     config_file: PathT
 
 
@@ -64,6 +74,7 @@ class LocalFileConfig(FileConfig[Path]):
     cache_dir: Path = Field(default_factory=_get_default_cache_dir)
     config_dir: Path = Field(default_factory=_get_default_config_dir)
     data_dir: Path = Field(default_factory=_get_default_data_dir)
+    runtime_dir: Path = Field(default_factory=_get_default_runtime_dir)
     config_file: Path = Field(default_factory=_default_config_file)
 
 
@@ -73,6 +84,7 @@ class RemoteFileConfig(FileConfig[PurePosixPath]):
     cache_dir: PurePosixPath
     config_dir: PurePosixPath
     data_dir: PurePosixPath
+    runtime_dir: PurePosixPath
     config_file: PurePosixPath
 
 

@@ -9,6 +9,7 @@ import os
 import secrets
 import socket
 import socketserver
+import stat
 import struct
 import threading
 import time
@@ -450,9 +451,6 @@ def _publish_runtime_descriptor(
     path = backend.descriptor_path
     if path is None:
         raise IPCError("broker runtime descriptor path is not configured")
-    directory = path.parent
-    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    directory.chmod(0o700)
     payload = {
         "version": RUNTIME_DESCRIPTOR_VERSION,
         "host": address.host,
@@ -460,20 +458,94 @@ def _publish_runtime_descriptor(
         "authkey": base64.b64encode(backend.authkey).decode("ascii"),
         "instance_id": backend.instance_id,
     }
-    temporary = directory / f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    directory = path.parent
+    directory_fd = _prepare_runtime_directory(directory)
+    temporary_name = f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    temporary = directory / temporary_name
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
-    descriptor = os.open(temporary, flags, 0o600)
     try:
+        if directory_fd is None:
+            descriptor = os.open(temporary, flags, 0o600)
+        else:
+            descriptor = os.open(temporary_name, flags, 0o600, dir_fd=directory_fd)
         with os.fdopen(descriptor, "w", encoding="utf-8") as file:
             json.dump(payload, file, separators=(",", ":"))
             file.flush()
             os.fsync(file.fileno())
-        os.replace(temporary, path)
+        if directory_fd is None:
+            os.replace(temporary, path)
+        else:
+            os.replace(
+                temporary_name,
+                path.name,
+                src_dir_fd=directory_fd,
+                dst_dir_fd=directory_fd,
+            )
     finally:
         try:
-            temporary.unlink()
-        except FileNotFoundError:
-            pass
+            try:
+                if directory_fd is None:
+                    temporary.unlink()
+                else:
+                    os.unlink(temporary_name, dir_fd=directory_fd)
+            except FileNotFoundError:
+                pass
+        finally:
+            if directory_fd is not None:
+                os.close(directory_fd)
+
+
+def _prepare_runtime_directory(directory: Path) -> int | None:
+    """Create a private runtime directory and pin its audited POSIX inode."""
+    try:
+        directory.mkdir(mode=0o700, parents=True)
+    except FileExistsError:
+        pass
+    except OSError as error:
+        raise IPCError("could not create the broker runtime directory") from error
+
+    if os.name != "posix":
+        # Python 3.14 applies an owner-and-administrators-only ACL when mode 0700
+        # creates a directory on Windows. Files then inherit that protected ACL.
+        return None
+
+    try:
+        metadata = directory.lstat()
+    except OSError as error:
+        raise IPCError("could not inspect the broker runtime directory") from error
+    if stat.S_ISLNK(metadata.st_mode):
+        raise IPCError("broker runtime directory must not be a symbolic link")
+    if not stat.S_ISDIR(metadata.st_mode):
+        raise IPCError("broker runtime path is not a directory")
+    if metadata.st_uid != os.getuid():
+        raise IPCError("broker runtime directory is not owned by the current user")
+
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    try:
+        directory_fd = os.open(directory, flags)
+    except OSError as error:
+        raise IPCError("could not securely open the broker runtime directory") from error
+
+    try:
+        metadata = os.fstat(directory_fd)
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise IPCError("broker runtime path is not a directory")
+        if metadata.st_uid != os.getuid():
+            raise IPCError(
+                "broker runtime directory is not owned by the current user"
+            )
+        try:
+            os.fchmod(directory_fd, 0o700)
+        except OSError as error:
+            raise IPCError(
+                "could not restrict the broker runtime directory permissions"
+            ) from error
+        if stat.S_IMODE(os.fstat(directory_fd).st_mode) != 0o700:
+            raise IPCError("broker runtime directory permissions are not private")
+    except BaseException:
+        os.close(directory_fd)
+        raise
+    return directory_fd
 
 
 def _remove_runtime_descriptor(backend: AuthenticatedIPCBackend) -> None:

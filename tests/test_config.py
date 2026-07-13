@@ -30,8 +30,9 @@ def test_default_runtime_dir_respects_xdg_runtime_dir(
     assert config_module._get_default_runtime_dir() == runtime_dir / "ezhpcy"
 
 
-def test_default_runtime_dir_falls_back_to_temp(monkeypatch) -> None:
+def test_default_runtime_dir_falls_back_to_per_user_temp(monkeypatch) -> None:
     monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
     monkeypatch.setattr(config_module.tempfile, "gettempdir", lambda: "/tmp")
+    monkeypatch.setattr(config_module.os, "getuid", lambda: 1234, raising=False)
 
-    assert config_module._get_default_runtime_dir() == Path("/tmp/ezhpcy")
+    assert config_module._get_default_runtime_dir() == Path("/tmp/ezhpcy-1234")

@@ -37,10 +37,16 @@ def _get_default_data_dir() -> Path:
 
 def _get_default_runtime_dir() -> Path:
     xdg_runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
-    runtime_home = (
-        Path(xdg_runtime_dir) if xdg_runtime_dir else Path(tempfile.gettempdir())
-    )
-    return runtime_home / "ezhpcy"
+    if xdg_runtime_dir:
+        return Path(xdg_runtime_dir) / "ezhpcy"
+
+    # Unlike XDG_RUNTIME_DIR, the system temporary directory is commonly shared.
+    # Include the numeric uid so another user cannot reserve our predictable
+    # fallback directory first. Windows temporary directories are already scoped
+    # to the user and os.getuid() is not available there.
+    getuid = getattr(os, "getuid", None)
+    directory_name = f"ezhpcy-{getuid()}" if getuid is not None else "ezhpcy"
+    return Path(tempfile.gettempdir()) / directory_name
 
 
 def _default_config_file() -> Path:

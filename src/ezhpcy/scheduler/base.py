@@ -27,13 +27,15 @@ class JobState(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class JobSpec:
-    """Portable job settings, with memory expressed as a total for the job."""
+    """Portable settings for a job constrained to one execution host."""
 
     command: Sequence[str]
     name: str = "ezhpcy"
     time_limit: timedelta | None = None
-    memory_mb: int | None = None
-    slots: int | None = None
+    memory_bytes: int | None = None
+    cores: int = 1
+    gpus: int = 0
+    exclusive: bool = False
     queue: str | None = None
     working_directory: PurePosixPath | None = None
     stdout_path: PurePosixPath | None = None
@@ -48,10 +50,12 @@ class JobSpec:
             raise ValueError("name must not be empty or contain NUL")
         if self.time_limit is not None and self.time_limit <= timedelta(0):
             raise ValueError("time_limit must be positive")
-        if self.memory_mb is not None and self.memory_mb <= 0:
-            raise ValueError("memory_mb must be positive")
-        if self.slots is not None and self.slots <= 0:
-            raise ValueError("slots must be positive")
+        if self.memory_bytes is not None and self.memory_bytes <= 0:
+            raise ValueError("memory_bytes must be positive")
+        if self.cores <= 0:
+            raise ValueError("cores must be positive")
+        if self.gpus < 0:
+            raise ValueError("gpus must not be negative")
         if self.queue is not None and (not self.queue or "\0" in self.queue):
             raise ValueError("queue must not be empty or contain NUL")
 

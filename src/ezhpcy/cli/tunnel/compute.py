@@ -47,16 +47,16 @@ _MEMORY_PATTERN = re.compile(
     r"^(?P<amount>(?:\d+(?:\.\d*)?|\.\d+))\s*(?P<unit>[KMGT]?I?B)?$",
     re.IGNORECASE,
 )
-_MEMORY_UNIT_IN_MB = {
-    "B": Decimal(1) / (1024**2),
-    "KB": Decimal(1) / 1024,
-    "KIB": Decimal(1) / 1024,
-    "MB": Decimal(1),
-    "MIB": Decimal(1),
-    "GB": Decimal(1024),
-    "GIB": Decimal(1024),
-    "TB": Decimal(1024**2),
-    "TIB": Decimal(1024**2),
+_MEMORY_UNIT_IN_BYTES = {
+    "B": 1,
+    "KB": 1000,
+    "KIB": 1024,
+    "MB": 1000**2,
+    "MIB": 1024**2,
+    "GB": 1000**3,
+    "GIB": 1024**3,
+    "TB": 1000**4,
+    "TIB": 1024**4,
 }
 
 
@@ -64,22 +64,22 @@ class ComputeTunnelError(RuntimeError):
     pass
 
 
-def _parse_memory_mb(value: str | None) -> int | None:
+def _parse_memory_bytes(value: str | None) -> int | None:
     if value is None:
         return None
     match = _MEMORY_PATTERN.fullmatch(value.strip())
     if match is None:
         raise ValueError(
             "memory must be a positive number optionally followed by "
-            "B, KB, MB, GB, or TB"
+            "B, KB, KiB, MB, MiB, GB, GiB, TB, or TiB"
         )
 
     amount = Decimal(match.group("amount"))
     if amount <= 0:
         raise ValueError("memory must be positive")
-    unit = (match.group("unit") or "MB").upper()
-    memory_mb = amount * _MEMORY_UNIT_IN_MB[unit]
-    return int(memory_mb.to_integral_value(rounding=ROUND_CEILING))
+    unit = (match.group("unit") or "MIB").upper()
+    memory_bytes = amount * _MEMORY_UNIT_IN_BYTES[unit]
+    return int(memory_bytes.to_integral_value(rounding=ROUND_CEILING))
 
 
 def _select_worker_port() -> int:
@@ -247,9 +247,11 @@ def _run_compute_tunnel(
     conn_info: ConnectionInfo,
     scheduler_type: SchedulerType,
     queue: str | None,
-    slots: int | None,
+    cores: int,
+    gpus: int,
+    exclusive: bool,
     time_limit_minutes: int | None,
-    memory_mb: int | None,
+    memory_bytes: int | None,
     queue_timeout_seconds: float,
     startup_timeout_seconds: float,
     worker_port: int,
@@ -272,7 +274,6 @@ def _run_compute_tunnel(
         match scheduler_type:
             case SchedulerType.LSF:
                 effective_queue = queue or config.hpc.lsf_queue
-                effective_slots = slots if slots is not None else config.hpc.lsf_slots
                 scheduler: Scheduler = LSFScheduler(
                     ssh.run_login_shell,
                     ssh.start_login_shell,
@@ -282,13 +283,13 @@ def _run_compute_tunnel(
                     interactive_submission_environment=(
                         config.hpc.lsf_submission_environment
                     ),
-                    interactive_export_environment=(
-                        config.hpc.lsf_export_environment
+                    interactive_export_environment=(config.hpc.lsf_export_environment),
+                    resource_reserve_per_task=(
+                        config.hpc.lsf_resource_reserve_per_task
                     ),
                 )
             case SchedulerType.PBS:
                 effective_queue = queue or config.hpc.pbs_queue
-                effective_slots = slots
                 scheduler = PBSScheduler(
                     ssh.run_login_shell,
                     ssh.start_login_shell,
@@ -306,8 +307,10 @@ def _run_compute_tunnel(
                 if time_limit_minutes is not None
                 else None
             ),
-            memory_mb=memory_mb,
-            slots=effective_slots,
+            memory_bytes=memory_bytes,
+            cores=cores,
+            gpus=gpus,
+            exclusive=exclusive,
             queue=effective_queue,
             working_directory=worker_directory,
             stdout_path=worker_directory / "worker-%J.out",
@@ -336,7 +339,7 @@ def _run_compute_tunnel(
             target=_drain_interactive_job,
             args=(interactive_job, output_stop),
             daemon=True,
-                name="ezhpcy-compute-job-output",
+            name="ezhpcy-compute-job-output",
         )
         output_thread.start()
         try:
@@ -447,15 +450,30 @@ def compute_cmd(
         str | None,
         typer.Option("--queue", "-q", help="Scheduler queue for the worker job."),
     ] = None,
-    slots: Annotated[
-        int | None,
+    cores: Annotated[
+        int,
         typer.Option(
-            "--slots",
+            "--cores",
             "-n",
             min=1,
-            help="Optional scheduler slot override.",
+            help="Scheduler CPU cores reserved on the worker host.",
         ),
-    ] = None,
+    ] = 1,
+    gpus: Annotated[
+        int,
+        typer.Option(
+            "--gpus",
+            min=0,
+            help="Number of GPUs reserved on the worker host.",
+        ),
+    ] = 0,
+    exclusive: Annotated[
+        bool,
+        typer.Option(
+            "--exclusive",
+            help="Reserve the worker host exclusively.",
+        ),
+    ] = False,
     time_limit_minutes: Annotated[
         int | None,
         typer.Option(
@@ -469,7 +487,10 @@ def compute_cmd(
         typer.Option(
             "--memory",
             metavar="SIZE",
-            help="Optional total worker memory, such as 2048MB or 256GB.",
+            help=(
+                "Optional total worker memory. Bare values are MiB; SI (GB) and "
+                "IEC (GiB) units are distinguished."
+            ),
         ),
     ] = None,
     queue_timeout_seconds: Annotated[
@@ -502,7 +523,7 @@ def compute_cmd(
     local_machine_or_fail()
     try:
         try:
-            memory_mb = _parse_memory_mb(memory)
+            memory_bytes = _parse_memory_bytes(memory)
         except ValueError as error:
             raise typer.BadParameter(str(error), param_hint="--memory") from error
         _ensure_local_worker_credentials()
@@ -510,9 +531,11 @@ def compute_cmd(
             conn_info=conn_info,
             scheduler_type=scheduler_type,
             queue=queue,
-            slots=slots,
+            cores=cores,
+            gpus=gpus,
+            exclusive=exclusive,
             time_limit_minutes=time_limit_minutes,
-            memory_mb=memory_mb,
+            memory_bytes=memory_bytes,
             queue_timeout_seconds=queue_timeout_seconds,
             startup_timeout_seconds=startup_timeout_seconds,
             worker_port=worker_port or _select_worker_port(),

@@ -180,13 +180,14 @@ class PBSScheduler(Scheduler):
         if spec.queue is not None:
             command.extend(["-q", spec.queue])
 
-        resources = []
-        if spec.slots is not None:
-            resources.append(f"ncpus={spec.slots}")
-        if spec.memory_mb is not None:
-            resources.append(f"mem={spec.memory_mb}mb")
-        if resources:
-            command.extend(["-l", f"select=1:{':'.join(resources)}"])
+        resources = [f"ncpus={spec.cores}"]
+        if spec.memory_bytes is not None:
+            resources.append(f"mem={spec.memory_bytes}b")
+        if spec.gpus:
+            resources.append(f"ngpus={spec.gpus}")
+        command.extend(["-l", f"select=1:{':'.join(resources)}"])
+        if spec.exclusive:
+            command.extend(["-l", "place=exclhost"])
         if spec.time_limit is not None:
             seconds = math.ceil(spec.time_limit.total_seconds())
             hours, remainder = divmod(seconds, 3600)

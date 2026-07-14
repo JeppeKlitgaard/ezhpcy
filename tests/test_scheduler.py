@@ -15,6 +15,8 @@ from ezhpcy.scheduler.base import (
 from ezhpcy.scheduler.lsf import LSFScheduler
 from ezhpcy.scheduler.pbs import PBSScheduler
 
+_MEBIBYTE = 1024**2
+
 
 class FakeRunner:
     def __init__(self, output: str = "") -> None:
@@ -77,8 +79,10 @@ def test_lsf_submission_builds_portable_job_spec() -> None:
         command=("ezhpcy", "compute", "ssh-serve", "34321"),
         name="ezhpcy-worker",
         time_limit=timedelta(hours=1, seconds=1),
-        memory_mb=1024,
-        slots=4,
+        memory_bytes=1024 * _MEBIBYTE,
+        cores=4,
+        gpus=2,
+        exclusive=True,
         queue="normal",
         working_directory=PurePosixPath("/home/user"),
         stdout_path=PurePosixPath("/home/user/worker.out"),
@@ -92,12 +96,17 @@ def test_lsf_submission_builds_portable_job_spec() -> None:
             "bsub",
             "-n",
             "4",
+            "-R",
+            "span[hosts=1]",
             "-J",
             "ezhpcy-worker",
             "-W",
             "61",
             "-R",
-            "rusage[mem=256MB]",
+            "rusage[mem=1024MB]",
+            "-gpu",
+            "num=2/host",
+            "-x",
             "-q",
             "normal",
             "-cwd",
@@ -135,13 +144,14 @@ def test_lsf_interactive_submission_keeps_process_and_uses_site_profile() -> Non
             "LSF_QRSH": "true",
         },
         interactive_export_environment=("TERM", "LSF_QRSH"),
+        resource_reserve_per_task=True,
     )
     spec = JobSpec(
         command=("ezhpcy", "compute", "ssh-serve", "54321"),
         name="ezhpcy-worker",
         time_limit=timedelta(minutes=60),
-        memory_mb=1024,
-        slots=4,
+        memory_bytes=1024 * _MEBIBYTE,
+        cores=4,
         queue="hpcint",
     )
 
@@ -163,6 +173,8 @@ def test_lsf_interactive_submission_keeps_process_and_uses_site_profile() -> Non
             "qrsh",
             "-n",
             "4",
+            "-R",
+            "span[hosts=1]",
             "-env",
             "TERM,LSF_QRSH",
             "-J",
@@ -181,7 +193,7 @@ def test_lsf_interactive_submission_keeps_process_and_uses_site_profile() -> Non
     ]
 
 
-def test_lsf_interactive_submission_omits_unspecified_resource_overrides() -> None:
+def test_lsf_interactive_submission_sets_explicit_core_and_host_defaults() -> None:
     process = FakeProcess(stdout=[b"Job <99> is submitted to queue <hpcint>.\n"])
     commands: list[list[str]] = []
     scheduler = LSFScheduler(
@@ -200,7 +212,6 @@ def test_lsf_interactive_submission_omits_unspecified_resource_overrides() -> No
         JobSpec(
             command=("ezhpcy", "compute", "ssh-serve", "54321"),
             name="ezhpcy-worker",
-            slots=4,
             queue="hpcint",
         )
     )
@@ -216,7 +227,9 @@ def test_lsf_interactive_submission_omits_unspecified_resource_overrides() -> No
             "-app",
             "qrsh",
             "-n",
-            "4",
+            "1",
+            "-R",
+            "span[hosts=1]",
             "-env",
             "TERM,LSF_QRSH",
             "-J",
@@ -325,8 +338,10 @@ def test_pbs_submission_builds_portable_job_spec() -> None:
         command=("ezhpcy", "compute", "ssh-serve", "34321"),
         name="ezhpcy-worker",
         time_limit=timedelta(hours=1, seconds=1),
-        memory_mb=1024,
-        slots=4,
+        memory_bytes=1024 * _MEBIBYTE,
+        cores=4,
+        gpus=2,
+        exclusive=True,
         queue="workq",
         working_directory=PurePosixPath("/home/user"),
         stdout_path=PurePosixPath("/home/user/worker.out"),
@@ -343,7 +358,9 @@ def test_pbs_submission_builds_portable_job_spec() -> None:
             "-q",
             "workq",
             "-l",
-            "select=1:ncpus=4:mem=1024mb",
+            "select=1:ncpus=4:mem=1073741824b:ngpus=2",
+            "-l",
+            "place=exclhost",
             "-l",
             "walltime=01:00:01",
             "-o",
@@ -369,8 +386,8 @@ def test_pbs_interactive_submission_uses_site_queue_and_starts_payload() -> None
     spec = JobSpec(
         command=("ezhpcy", "compute", "ssh-serve", "54321"),
         name="ezhpcy-worker",
-        memory_mb=256 * 1024,
-        slots=32,
+        memory_bytes=256 * 1024 * _MEBIBYTE,
+        cores=32,
         queue="workq",
         working_directory=PurePosixPath("/home/user"),
         environment={"EZHPCY_PROFILE": "interactive"},
@@ -391,7 +408,7 @@ def test_pbs_interactive_submission_uses_site_queue_and_starts_payload() -> None
             "-q",
             "workq",
             "-l",
-            "select=1:ncpus=32:mem=262144mb",
+            "select=1:ncpus=32:mem=274877906944b",
         ]
     ]
     assert process.sent == [
@@ -400,7 +417,7 @@ def test_pbs_interactive_submission_uses_site_queue_and_starts_payload() -> None
     ]
 
 
-def test_pbs_interactive_submission_preserves_linuxsh_resource_defaults() -> None:
+def test_pbs_interactive_submission_sets_ezhpcy_default_core_count() -> None:
     process = FakeProcess(stdout=[b"qsub: waiting for job 42.server to start\n"])
     commands: list[list[str]] = []
     scheduler = PBSScheduler(
@@ -421,6 +438,8 @@ def test_pbs_interactive_submission_preserves_linuxsh_resource_defaults() -> Non
             "ezhpcy-worker",
             "-q",
             "workq",
+            "-l",
+            "select=1:ncpus=1",
         ]
     ]
 
@@ -490,9 +509,11 @@ def test_job_spec_validates_commands_time_limits_and_environment() -> None:
         JobSpec(command=())
     with pytest.raises(ValueError, match="time_limit"):
         JobSpec(command=("true",), time_limit=timedelta(0))
-    with pytest.raises(ValueError, match="memory_mb"):
-        JobSpec(command=("true",), memory_mb=0)
-    with pytest.raises(ValueError, match="slots"):
-        JobSpec(command=("true",), slots=0)
+    with pytest.raises(ValueError, match="memory_bytes"):
+        JobSpec(command=("true",), memory_bytes=0)
+    with pytest.raises(ValueError, match="cores"):
+        JobSpec(command=("true",), cores=0)
+    with pytest.raises(ValueError, match="gpus"):
+        JobSpec(command=("true",), gpus=-1)
     with pytest.raises(ValueError, match="environment"):
         JobSpec(command=("true",), environment={"NOT-VALID": "value"})

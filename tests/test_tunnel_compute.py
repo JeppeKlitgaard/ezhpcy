@@ -9,7 +9,7 @@ from typer.testing import CliRunner
 from ezhpcy.cli import app
 from ezhpcy.cli.tunnel.compute import (
     ComputeTunnelError,
-    _parse_memory_mb,
+    _parse_memory_bytes,
     _run_compute_tunnel,
     _wait_for_running_job,
     _wait_for_worker_endpoint,
@@ -17,6 +17,8 @@ from ezhpcy.cli.tunnel.compute import (
 from ezhpcy.config import ConnectionInfo, RemoteFileConfig
 from ezhpcy.scheduler.base import InteractiveJob, JobInfo, JobSpec, JobState
 from ezhpcy.scheduler.types import SchedulerType
+
+_MEBIBYTE = 1024**2
 
 
 class StubScheduler:
@@ -178,27 +180,27 @@ def snapshot(state: JobState, raw_state: str, host: str | None = None) -> JobInf
 
 
 @pytest.mark.parametrize(
-    ("value", "expected_mb"),
+    ("value", "expected_bytes"),
     [
         (None, None),
-        ("2048", 2048),
-        ("2048MB", 2048),
-        ("256GB", 256 * 1024),
-        ("1.5 GiB", 1536),
-        ("1TB", 1024 * 1024),
+        ("2048", 2048 * _MEBIBYTE),
+        ("2048MB", 2_048_000_000),
+        ("256GB", 256_000_000_000),
+        ("1.5 GiB", 1_610_612_736),
+        ("1TB", 1_000_000_000_000),
         ("1B", 1),
     ],
 )
-def test_parse_memory_normalizes_sizes_to_mb(
-    value: str | None, expected_mb: int | None
+def test_parse_memory_normalizes_sizes_to_bytes(
+    value: str | None, expected_bytes: int | None
 ) -> None:
-    assert _parse_memory_mb(value) == expected_mb
+    assert _parse_memory_bytes(value) == expected_bytes
 
 
 @pytest.mark.parametrize("value", ["0", "-1GB", "GB", "12PB", "lots"])
 def test_parse_memory_rejects_invalid_sizes(value: str) -> None:
     with pytest.raises(ValueError, match="memory"):
-        _parse_memory_mb(value)
+        _parse_memory_bytes(value)
 
 
 def test_wait_for_running_job_reports_transitions_and_returns_host() -> None:
@@ -275,20 +277,18 @@ def test_compute_tunnel_submits_worker_starts_broker_and_cancels(capsys) -> None
             return_value=scheduler,
         ) as scheduler_constructor,
         patch("ezhpcy.cli.tunnel.compute._wait_for_worker_endpoint"),
-        patch(
-            "ezhpcy.cli.tunnel.compute.create_broker_backend", return_value=object()
-        ),
-        patch(
-            "ezhpcy.cli.tunnel.compute.ForegroundBroker", side_effect=make_broker
-        ),
+        patch("ezhpcy.cli.tunnel.compute.create_broker_backend", return_value=object()),
+        patch("ezhpcy.cli.tunnel.compute.ForegroundBroker", side_effect=make_broker),
     ):
         _run_compute_tunnel(
             conn_info=ConnectionInfo(user="alice", host="login.example.com"),
             scheduler_type=SchedulerType.LSF,
             queue="normal",
-            slots=32,
+            cores=32,
+            gpus=2,
+            exclusive=True,
             time_limit_minutes=90,
-            memory_mb=2048,
+            memory_bytes=2048 * _MEBIBYTE,
             queue_timeout_seconds=10,
             startup_timeout_seconds=10,
             worker_port=54321,
@@ -298,9 +298,11 @@ def test_compute_tunnel_submits_worker_starts_broker_and_cancels(capsys) -> None
     spec = scheduler.submitted[0]
     assert tuple(spec.command) == ("ezhpcy", "compute", "ssh-serve", "54321")
     assert spec.queue == "normal"
-    assert spec.memory_mb == 2048
-    assert scheduler.submitted[0].slots == 32
-    assert "interactive_slots" not in scheduler_constructor.call_args.kwargs
+    assert spec.memory_bytes == 2048 * _MEBIBYTE
+    assert spec.cores == 32
+    assert spec.gpus == 2
+    assert spec.exclusive
+    assert scheduler_constructor.call_args.kwargs["resource_reserve_per_task"]
     assert spec.working_directory == PurePosixPath("/home/alice/.local/share/ezhpcy")
     assert spec.stdout_path == PurePosixPath(
         "/home/alice/.local/share/ezhpcy/worker-%J.out"
@@ -341,9 +343,11 @@ def test_compute_tunnel_cancels_job_when_worker_startup_fails() -> None:
             conn_info=ConnectionInfo(user="alice", host="login.example.com"),
             scheduler_type=SchedulerType.LSF,
             queue=None,
-            slots=4,
+            cores=4,
+            gpus=0,
+            exclusive=False,
             time_limit_minutes=60,
-            memory_mb=1024,
+            memory_bytes=1024 * _MEBIBYTE,
             queue_timeout_seconds=10,
             startup_timeout_seconds=10,
             worker_port=54321,
@@ -364,30 +368,31 @@ def test_compute_tunnel_uses_explicit_pbs_and_linuxsh_defaults(capsys) -> None:
             "ezhpcy.cli.tunnel.compute.PBSScheduler", return_value=scheduler
         ) as scheduler_constructor,
         patch("ezhpcy.cli.tunnel.compute._wait_for_worker_endpoint"),
-        patch(
-            "ezhpcy.cli.tunnel.compute.create_broker_backend", return_value=object()
-        ),
+        patch("ezhpcy.cli.tunnel.compute.create_broker_backend", return_value=object()),
         patch("ezhpcy.cli.tunnel.compute.ForegroundBroker", StubBroker),
     ):
         _run_compute_tunnel(
             conn_info=ConnectionInfo(user="alice", host="login.example.com"),
             scheduler_type=SchedulerType.PBS,
             queue=None,
-            slots=None,
+            cores=1,
+            gpus=0,
+            exclusive=False,
             time_limit_minutes=None,
-            memory_mb=None,
+            memory_bytes=None,
             queue_timeout_seconds=10,
             startup_timeout_seconds=10,
             worker_port=54321,
         )
 
-    assert scheduler.submitted[0].slots is None
-    assert "interactive_slots" not in scheduler_constructor.call_args.kwargs
+    assert scheduler.submitted[0].cores == 1
+    assert scheduler.submitted[0].gpus == 0
+    assert not scheduler.submitted[0].exclusive
     assert scheduler_constructor.call_args.kwargs["command_directory"] == PurePosixPath(
         "/opt/pbspro/bin"
     )
     assert scheduler.submitted[0].queue == "workq"
-    assert scheduler.submitted[0].memory_mb is None
+    assert scheduler.submitted[0].memory_bytes is None
     assert scheduler.payload_starts == 1
     output = capsys.readouterr().out
     assert "Using PBS scheduler." in output
@@ -400,7 +405,9 @@ def test_compute_tunnel_help_exposes_scheduler_and_resource_options() -> None:
     assert result.exit_code == 0
     assert "--scheduler" in result.stdout
     assert "--queue" in result.stdout
-    assert "--slots" in result.stdout
+    assert "--cores" in result.stdout
+    assert "--gpus" in result.stdout
+    assert "--exclusive" in result.stdout
     assert "--time-limit" in result.stdout
     assert "--memory" in result.stdout
     assert "--queue-timeout" in result.stdout

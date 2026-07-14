@@ -21,6 +21,7 @@ _SUBMITTED_JOB_PATTERN = re.compile(r"Job <(?P<job_id>\d+)> is submitted")
 _LSF_JOB_ID_PATTERN = re.compile(r"\d+")
 _JOB_NOT_FOUND_PATTERN = re.compile(r"Job <[^>]+> is not found", re.IGNORECASE)
 _BJOBS_FORMAT = "jobid stat exec_host exit_code delimiter='|'"
+_MEBIBYTE = 1024**2
 
 _STATE_MAP = {
     "PEND": JobState.PENDING,
@@ -50,6 +51,7 @@ class LSFScheduler(Scheduler):
         interactive_application_profile: str | None = None,
         interactive_submission_environment: Mapping[str, str] | None = None,
         interactive_export_environment: Sequence[str] = (),
+        resource_reserve_per_task: bool = False,
     ) -> None:
         self._runner = runner
         self._process_starter = process_starter
@@ -58,13 +60,20 @@ class LSFScheduler(Scheduler):
             interactive_submission_environment or {}
         )
         self._interactive_export_environment = tuple(interactive_export_environment)
+        self._resource_reserve_per_task = resource_reserve_per_task
 
     @property
     def scheduler_type(self) -> SchedulerType:
         return SchedulerType.LSF
 
     def submit(self, spec: JobSpec) -> str:
-        output = self._run(self._submit_command(spec), "submit a job")
+        output = self._run(
+            self._submit_command(
+                spec,
+                resource_reserve_per_task=self._resource_reserve_per_task,
+            ),
+            "submit a job",
+        )
         match = _SUBMITTED_JOB_PATTERN.search(output)
         if match is None:
             raise SchedulerOutputError(
@@ -86,6 +95,7 @@ class LSFScheduler(Scheduler):
             application_profile=self._interactive_application_profile,
             export_environment=self._interactive_export_environment,
             submission_environment=self._interactive_submission_environment,
+            resource_reserve_per_task=self._resource_reserve_per_task,
         )
         try:
             process = self._process_starter(command)
@@ -166,24 +176,29 @@ class LSFScheduler(Scheduler):
         application_profile: str | None = None,
         export_environment: Sequence[str] = (),
         submission_environment: Mapping[str, str] | None = None,
+        resource_reserve_per_task: bool = False,
     ) -> list[str]:
         command = ["bsub"]
-        slots = spec.slots or 1
         if interactive:
             command.append("-Is")
         if application_profile is not None:
             command.extend(["-app", application_profile])
-        if slots != 1:
-            command.extend(["-n", str(slots)])
+        command.extend(["-n", str(spec.cores), "-R", "span[hosts=1]"])
         if export_environment:
             command.extend(["-env", ",".join(export_environment)])
         command.extend(["-J", spec.name])
         if spec.time_limit is not None:
             minutes = math.ceil(spec.time_limit.total_seconds() / 60)
             command.extend(["-W", str(minutes)])
-        if spec.memory_mb is not None:
-            memory_per_slot_mb = math.ceil(spec.memory_mb / slots)
-            command.extend(["-R", f"rusage[mem={memory_per_slot_mb}MB]"])
+        if spec.memory_bytes is not None:
+            divisor = spec.cores if resource_reserve_per_task else 1
+            reservation_unit = divisor * _MEBIBYTE
+            memory_mib = (spec.memory_bytes + reservation_unit - 1) // reservation_unit
+            command.extend(["-R", f"rusage[mem={memory_mib}MB]"])
+        if spec.gpus:
+            command.extend(["-gpu", f"num={spec.gpus}/host"])
+        if spec.exclusive:
+            command.append("-x")
         if spec.queue is not None:
             command.extend(["-q", spec.queue])
         if spec.working_directory is not None:

@@ -36,3 +36,10 @@ def test_default_runtime_dir_falls_back_to_per_user_temp(monkeypatch) -> None:
     monkeypatch.setattr(config_module.os, "getuid", lambda: 1234, raising=False)
 
     assert config_module._get_default_runtime_dir() == Path("/tmp/ezhpcy-1234")
+
+
+def test_lsf_resource_reservations_default_to_dtu_per_task_policy() -> None:
+    assert config_module.HPCConfig().lsf_resource_reserve_per_task
+    assert not config_module.HPCConfig(
+        lsf_resource_reserve_per_task=False
+    ).lsf_resource_reserve_per_task

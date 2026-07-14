@@ -96,7 +96,7 @@ class RemoteFileConfig(FileConfig[PurePosixPath]):
 
 class HPCConfig(BaseModel):
     lsf_queue: str = "hpcint"
-    lsf_slots: int = Field(default=4, gt=0)
+    lsf_resource_reserve_per_task: bool = True
     pbs_queue: str = "workq"
     pbs_command_directory: PurePosixPath = PurePosixPath("/opt/pbspro/bin")
     lsf_application_profile: str = "qrsh"

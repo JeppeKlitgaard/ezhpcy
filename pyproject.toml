@@ -31,6 +31,7 @@ ezhpcy = "ezhpcy.cli.entry:main"
 [dependency-groups]
 dev = [
     "ipykernel>=7.2.0",
+    "prek>=0.4.9",
     "pytest>=9.1.1",
     "ruff>=0.15.21",
 ]

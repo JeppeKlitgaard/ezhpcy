@@ -17,6 +17,16 @@ format:
 lint:
     uv run ruff check .
 
+# Runs the pre-commit hooks on all files
+[group: 'format']
+pc-all:
+    uv run prek run --all-files
+
+# Runs the pre-commit hooks on the changed files
+[group: 'format']
+pc:
+    uv run prek run
+
 # Runs the test suite
 [group: 'test']
 test:

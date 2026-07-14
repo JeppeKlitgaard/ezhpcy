@@ -1,0 +1,41 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      # Security
+      - id: detect-private-key
+
+      # Nit
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+
+      # Windows
+      - id: check-illegal-windows-names
+      - id: check-case-conflict
+
+      # Data formats
+      - id: check-yaml
+      - id: check-toml
+      - id: check-json
+
+      # Python
+      - id: debug-statements
+      - id: name-tests-test
+        args: [--pytest-test-first]
+
+  - repo: https://github.com/asottile/pyupgrade
+    rev: v3.21.2
+    hooks:
+      - id: pyupgrade
+        args: ["--py314-plus"]
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.21
+    hooks:
+      # Run the linter and fix what is possible
+      - id: ruff-check
+        args: ["--fix"]
+
+      # Run the formatter and fix code styling
+      - id: ruff-format

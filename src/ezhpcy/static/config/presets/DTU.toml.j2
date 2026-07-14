@@ -1,0 +1,19 @@
+# {{ preset }} HPC configuration for ezhpcy.
+
+[connection]
+host = "login2.hpc.dtu.dk"
+
+[hpc]
+login_node_pattern = "^hpclogin\\d+$"
+
+lsf_queue = "hpcint"
+lsf_resource_reserve_per_task = true
+lsf_application_profile = "qrsh"
+lsf_submission_environment = { ESUB_BYPASS = "1", ESUB_QUIET = "1", LSF_QRSH = "true" }
+lsf_export_environment = ["TERM", "LSF_QRSH"]
+
+pbs_queue = "workq"
+pbs_command_directory = "/opt/pbspro/bin"
+
+queue_timeout_seconds = 900
+worker_startup_timeout_seconds = 60

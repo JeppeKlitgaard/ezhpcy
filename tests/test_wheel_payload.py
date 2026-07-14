@@ -54,6 +54,7 @@ def test_wheel_contains_install_script() -> None:
     assert "ezhpcy/static/data/install.sh.j2" in names
     assert "ezhpcy/static/data/uninstall.sh.j2" in names
     assert "ezhpcy/static/config/ssh_remote/sshd_config" in names
+    assert "ezhpcy/static/config/presets/DTU.toml.j2" in names
     assert "ezhpcy/patch/editable.py" in names
     assert "ezhpcy/patch/sdist.py" in names
 

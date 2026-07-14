@@ -59,7 +59,7 @@ def _worker_ssh_paths(
     file_config: LocalFileConfig,
 ) -> tuple[Path, Path, Path, Path]:
     sshd_config = file_config.config_dir / SSH_DIRECTORY_NAME / "sshd_config"
-    sshd_pid = file_config.runtime_dir / "sshd.pid"
+    sshd_pid = file_config.runtime_dir / f"sshd-{os.getpid()}.pid"
     pixi_home = file_config.data_dir / "pixi_home"
     pixi_cache = file_config.cache_dir / "pixi_cache"
     return sshd_config, sshd_pid, pixi_home, pixi_cache

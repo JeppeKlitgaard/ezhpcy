@@ -12,32 +12,27 @@ class HostType(StrEnum):
 
 
 def am_login_node() -> bool:
-    """
-    Check if the current host is a HPC login node.
-    """
+    """Check whether the current host is an HPC login node."""
     hostname = platform.node()
     return bool(config.hpc.login_node_pattern.match(hostname))
 
 
 def am_compute_node() -> bool:
-    """
-    Check if the current host is a HPC compute node.
-    """
-    am_lsf = os.environ.get("LSF_ENVDIR", default=None) is not None
-    return am_lsf and not am_login_node()
+    """Check whether the current host is an HPC compute node."""
+    has_scheduler_job = any(
+        os.environ.get(variable) is not None
+        for variable in ("LSB_JOBID", "LSF_ENVDIR", "PBS_JOBID")
+    )
+    return has_scheduler_job and not am_login_node()
 
 
 def am_other() -> bool:
-    """
-    Check if the current host is neither a HPC login node nor a compute node.
-    """
+    """Check whether the current host is neither a login nor compute node."""
     return not am_login_node() and not am_compute_node()
 
 
 def get_host_type() -> HostType:
-    """
-    Determine the type of the current host.
-    """
+    """Determine the type of the current host."""
     if am_login_node():
         return HostType.LOGIN_NODE
     elif am_compute_node():

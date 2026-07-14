@@ -95,20 +95,23 @@ class RemoteFileConfig(FileConfig[PurePosixPath]):
 
 
 class HPCConfig(BaseModel):
-    # At DTU this can be found by running `ls /lsf/local/bin/` and filtering a bit manually
-    # Or using the list at https://www.hpc.dtu.dk/?page_id=2129 and elsewhere
-    interactive_shells: list[str] = [
-        # GPU
-        "a100sh",
-        "h100sh",
-        "voltash",
-        "sxm2sh",
-        # CPU
-        "qrsh",
-        "linuxsh",
-    ]
-
-    default_interactive_shell: str = "linuxsh"
+    lsf_queue: str = "hpcint"
+    lsf_slots: int = Field(default=4, gt=0)
+    pbs_queue: str = "workq"
+    pbs_command_directory: PurePosixPath = PurePosixPath("/opt/pbspro/bin")
+    lsf_application_profile: str = "qrsh"
+    lsf_submission_environment: dict[str, str] = Field(
+        default_factory=lambda: {
+            "ESUB_BYPASS": "1",
+            "ESUB_QUIET": "1",
+            "LSF_QRSH": "true",
+        }
+    )
+    lsf_export_environment: list[str] = Field(
+        default_factory=lambda: ["TERM", "LSF_QRSH"]
+    )
+    queue_timeout_seconds: float = Field(default=15 * 60, gt=0)
+    worker_startup_timeout_seconds: float = Field(default=60, gt=0)
 
     login_node_pattern: typing.Pattern = re.compile(r"^hpclogin\d+$")
 

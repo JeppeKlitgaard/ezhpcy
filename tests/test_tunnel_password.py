@@ -84,7 +84,16 @@ def test_password_env_fails_when_environment_variable_is_unset() -> None:
 
 def test_password_env_cli_fails_loudly_when_variable_is_unset() -> None:
     result = CliRunner().invoke(
-        app, ["tunnel", "batch", "--user", "alice", "--password-env"]
+        app,
+        [
+            "tunnel",
+            "compute",
+            "--scheduler",
+            "lsf",
+            "--user",
+            "alice",
+            "--password-env",
+        ],
     )
 
     assert result.exit_code == 2
@@ -158,8 +167,7 @@ def test_explicit_password_sources_are_mutually_exclusive(tmp_path: Path) -> Non
         ["tunnel", "install"],
         ["tunnel", "reinstall"],
         ["tunnel", "uninstall"],
-        ["tunnel", "interactive"],
-        ["tunnel", "batch"],
+        ["tunnel", "compute"],
         ["tunnel", "relay"],
         ["tunnel", "broker"],
     ],

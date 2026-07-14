@@ -8,6 +8,7 @@ import paramiko
 
 from ezhpcy.config import ConnectionInfo, RemoteFileConfig
 from ezhpcy.constants import PACKAGE_NAME
+from ezhpcy.scheduler.base import RemoteProcess
 
 
 class SFTPClient(paramiko.SFTPClient):
@@ -139,6 +140,24 @@ class SSHClient(paramiko.SSHClient):
             ],
             **run_kwargs,
         )
+
+    def run_login_shell(self, args: list[str], **run_kwargs) -> str:
+        """Run a safely quoted command through the remote Bash login shell."""
+        return self.run(["bash", "-lc", shlex.join(args)], **run_kwargs)
+
+    def start_login_shell(self, args: list[str]) -> RemoteProcess:
+        """Start a command in a remote Bash login shell with a pseudo-terminal."""
+        transport = self.get_transport()
+        if transport is None or not transport.is_active():
+            raise paramiko.SSHException("SSH session is not active")
+        channel = transport.open_session()
+        try:
+            channel.get_pty()
+            channel.exec_command(shlex.join(["bash", "-lc", shlex.join(args)]))
+        except BaseException:
+            channel.close()
+            raise
+        return channel
 
     def get_file_config(self) -> RemoteFileConfig:
         """

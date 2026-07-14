@@ -1,7 +1,7 @@
 import typer
 
 from ezhpcy.console import console
-from ezhpcy.detect._host_type import HostType, get_host_type
+from ezhpcy.detect.host_type import HostType, get_host_type
 
 
 def compute_node_or_fail() -> None:

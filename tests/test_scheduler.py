@@ -1,0 +1,498 @@
+import json
+from datetime import timedelta
+from pathlib import PurePosixPath
+
+import pytest
+
+from ezhpcy.scheduler.base import (
+    InteractiveJob,
+    JobNotFoundError,
+    JobSpec,
+    JobState,
+    SchedulerCommandError,
+    SchedulerOutputError,
+)
+from ezhpcy.scheduler.lsf import LSFScheduler
+from ezhpcy.scheduler.pbs import PBSScheduler
+
+
+class FakeRunner:
+    def __init__(self, output: str = "") -> None:
+        self.output = output
+        self.commands: list[list[str]] = []
+        self.error: Exception | None = None
+
+    def __call__(self, command: list[str]) -> str:
+        self.commands.append(command)
+        if self.error is not None:
+            raise self.error
+        return self.output
+
+
+class FakeProcess:
+    def __init__(
+        self,
+        stdout: list[bytes] | None = None,
+        stderr: list[bytes] | None = None,
+        *,
+        exit_status: int | None = None,
+    ) -> None:
+        self.stdout = stdout or []
+        self.stderr = stderr or []
+        self.exit_status = exit_status
+        self.closed = False
+        self.sent: list[bytes | str] = []
+
+    def recv_ready(self) -> bool:
+        return bool(self.stdout)
+
+    def recv(self, _size: int) -> bytes:
+        return self.stdout.pop(0)
+
+    def recv_stderr_ready(self) -> bool:
+        return bool(self.stderr)
+
+    def recv_stderr(self, _size: int) -> bytes:
+        return self.stderr.pop(0)
+
+    def exit_status_ready(self) -> bool:
+        return self.exit_status is not None
+
+    def recv_exit_status(self) -> int:
+        assert self.exit_status is not None
+        return self.exit_status
+
+    def send(self, data: bytes | str) -> int:
+        self.sent.append(data)
+        return len(data)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_lsf_submission_builds_portable_job_spec() -> None:
+    runner = FakeRunner("Job <31415> is submitted to queue <normal>.\n")
+    scheduler = LSFScheduler(runner)
+    spec = JobSpec(
+        command=("ezhpcy", "compute", "ssh-serve", "34321"),
+        name="ezhpcy-worker",
+        time_limit=timedelta(hours=1, seconds=1),
+        memory_mb=1024,
+        slots=4,
+        queue="normal",
+        working_directory=PurePosixPath("/home/user"),
+        stdout_path=PurePosixPath("/home/user/worker.out"),
+        stderr_path=PurePosixPath("/home/user/worker.err"),
+        environment={"EZHPCY_PROFILE": "default"},
+    )
+
+    assert scheduler.submit(spec) == "31415"
+    assert runner.commands == [
+        [
+            "bsub",
+            "-n",
+            "4",
+            "-J",
+            "ezhpcy-worker",
+            "-W",
+            "61",
+            "-R",
+            "rusage[mem=256MB]",
+            "-q",
+            "normal",
+            "-cwd",
+            "/home/user",
+            "-o",
+            "/home/user/worker.out",
+            "-e",
+            "/home/user/worker.err",
+            "env",
+            "EZHPCY_PROFILE=default",
+            "ezhpcy",
+            "compute",
+            "ssh-serve",
+            "34321",
+        ]
+    ]
+
+
+def test_lsf_interactive_submission_keeps_process_and_uses_site_profile() -> None:
+    runner = FakeRunner()
+    process = FakeProcess(stdout=[b"Job <2718> is submitted to queue <hpcint>.\r\n"])
+    commands: list[list[str]] = []
+
+    def start(command: list[str]) -> FakeProcess:
+        commands.append(command)
+        return process
+
+    scheduler = LSFScheduler(
+        runner,
+        start,
+        interactive_application_profile="qrsh",
+        interactive_submission_environment={
+            "ESUB_BYPASS": "1",
+            "ESUB_QUIET": "1",
+            "LSF_QRSH": "true",
+        },
+        interactive_export_environment=("TERM", "LSF_QRSH"),
+    )
+    spec = JobSpec(
+        command=("ezhpcy", "compute", "ssh-serve", "54321"),
+        name="ezhpcy-worker",
+        time_limit=timedelta(minutes=60),
+        memory_mb=1024,
+        slots=4,
+        queue="hpcint",
+    )
+
+    job = scheduler.submit_interactive(spec)
+
+    assert isinstance(job, InteractiveJob)
+    assert job.job_id == "2718"
+    assert job.process is process
+    assert job.submission_command == tuple(commands[0])
+    assert commands == [
+        [
+            "env",
+            "ESUB_BYPASS=1",
+            "ESUB_QUIET=1",
+            "LSF_QRSH=true",
+            "bsub",
+            "-Is",
+            "-app",
+            "qrsh",
+            "-n",
+            "4",
+            "-env",
+            "TERM,LSF_QRSH",
+            "-J",
+            "ezhpcy-worker",
+            "-W",
+            "60",
+            "-R",
+            "rusage[mem=256MB]",
+            "-q",
+            "hpcint",
+            "ezhpcy",
+            "compute",
+            "ssh-serve",
+            "54321",
+        ]
+    ]
+
+
+def test_lsf_interactive_submission_omits_unspecified_resource_overrides() -> None:
+    process = FakeProcess(stdout=[b"Job <99> is submitted to queue <hpcint>.\n"])
+    commands: list[list[str]] = []
+    scheduler = LSFScheduler(
+        FakeRunner(),
+        lambda command: commands.append(command) or process,
+        interactive_application_profile="qrsh",
+        interactive_submission_environment={
+            "ESUB_BYPASS": "1",
+            "ESUB_QUIET": "1",
+            "LSF_QRSH": "true",
+        },
+        interactive_export_environment=("TERM", "LSF_QRSH"),
+    )
+
+    scheduler.submit_interactive(
+        JobSpec(
+            command=("ezhpcy", "compute", "ssh-serve", "54321"),
+            name="ezhpcy-worker",
+            slots=4,
+            queue="hpcint",
+        )
+    )
+
+    assert commands == [
+        [
+            "env",
+            "ESUB_BYPASS=1",
+            "ESUB_QUIET=1",
+            "LSF_QRSH=true",
+            "bsub",
+            "-Is",
+            "-app",
+            "qrsh",
+            "-n",
+            "4",
+            "-env",
+            "TERM,LSF_QRSH",
+            "-J",
+            "ezhpcy-worker",
+            "-q",
+            "hpcint",
+            "ezhpcy",
+            "compute",
+            "ssh-serve",
+            "54321",
+        ]
+    ]
+
+
+def test_lsf_interactive_submission_closes_process_on_early_exit() -> None:
+    process = FakeProcess(stderr=[b"submission rejected\n"], exit_status=2)
+    scheduler = LSFScheduler(FakeRunner(), lambda _command: process)
+
+    with pytest.raises(SchedulerCommandError, match="submission rejected"):
+        scheduler.submit_interactive(JobSpec(command=("true",)))
+
+    assert process.closed
+
+
+@pytest.mark.parametrize(
+    ("raw_state", "expected"),
+    [
+        ("PEND", JobState.PENDING),
+        ("WAIT", JobState.PENDING),
+        ("RUN", JobState.RUNNING),
+        ("PSUSP", JobState.SUSPENDED),
+        ("USUSP", JobState.SUSPENDED),
+        ("SSUSP", JobState.SUSPENDED),
+        ("DONE", JobState.SUCCEEDED),
+        ("POST_DONE", JobState.SUCCEEDED),
+        ("EXIT", JobState.FAILED),
+        ("POST_ERR", JobState.FAILED),
+        ("ZOMBI", JobState.FAILED),
+        ("UNKWN", JobState.UNKNOWN),
+        ("FUTURE_STATE", JobState.UNKNOWN),
+    ],
+)
+def test_lsf_states_are_normalized(raw_state: str, expected: JobState) -> None:
+    runner = FakeRunner(f"42|{raw_state}|-|-")
+
+    info = LSFScheduler(runner).inspect("42")
+
+    assert info.state is expected
+    assert info.raw_state == raw_state
+
+
+def test_lsf_inspection_returns_execution_host_and_exit_code() -> None:
+    runner = FakeRunner("42|DONE|4*node1:4*node1:2*node2|0\n")
+
+    info = LSFScheduler(runner).inspect("42")
+
+    assert info.execution_hosts == ("node1", "node2")
+    assert info.primary_host == "node1"
+    assert info.exit_code == 0
+    assert info.state.is_terminal
+    assert runner.commands == [
+        [
+            "bjobs",
+            "-a",
+            "-noheader",
+            "-o",
+            "jobid stat exec_host exit_code delimiter='|'",
+            "42",
+        ]
+    ]
+
+
+def test_lsf_missing_job_is_distinct_from_command_failure() -> None:
+    runner = FakeRunner()
+    runner.error = RuntimeError("Remote command failed (255): Job <42> is not found")
+
+    with pytest.raises(JobNotFoundError, match="'42'"):
+        LSFScheduler(runner).inspect("42")
+
+
+def test_lsf_other_command_failure_is_wrapped() -> None:
+    runner = FakeRunner()
+    runner.error = RuntimeError("LSF daemon is unavailable")
+
+    with pytest.raises(SchedulerCommandError, match="inspect job"):
+        LSFScheduler(runner).inspect("42")
+
+
+def test_lsf_rejects_unparseable_output() -> None:
+    with pytest.raises(SchedulerOutputError, match="four bjobs fields"):
+        LSFScheduler(FakeRunner("42 RUN node1")).inspect("42")
+
+
+def test_lsf_cancellation_targets_exact_job_id() -> None:
+    runner = FakeRunner("Job <42> is being terminated\n")
+
+    LSFScheduler(runner).cancel("42")
+
+    assert runner.commands == [["bkill", "42"]]
+
+
+def test_pbs_submission_builds_portable_job_spec() -> None:
+    runner = FakeRunner("31415.hnode41\n")
+    scheduler = PBSScheduler(runner)
+    spec = JobSpec(
+        command=("ezhpcy", "compute", "ssh-serve", "34321"),
+        name="ezhpcy-worker",
+        time_limit=timedelta(hours=1, seconds=1),
+        memory_mb=1024,
+        slots=4,
+        queue="workq",
+        working_directory=PurePosixPath("/home/user"),
+        stdout_path=PurePosixPath("/home/user/worker.out"),
+        stderr_path=PurePosixPath("/home/user/worker.err"),
+        environment={"EZHPCY_PROFILE": "default"},
+    )
+
+    assert scheduler.submit(spec) == "31415.hnode41"
+    assert runner.commands == [
+        [
+            "qsub",
+            "-N",
+            "ezhpcy-worker",
+            "-q",
+            "workq",
+            "-l",
+            "select=1:ncpus=4:mem=1024mb",
+            "-l",
+            "walltime=01:00:01",
+            "-o",
+            "/home/user/worker.out",
+            "-e",
+            "/home/user/worker.err",
+            "--",
+            "bash",
+            "-lc",
+            "cd /home/user && exec env EZHPCY_PROFILE=default ezhpcy compute "
+            "ssh-serve 34321",
+        ]
+    ]
+
+
+def test_pbs_interactive_submission_uses_site_queue_and_starts_payload() -> None:
+    process = FakeProcess(stdout=[b"qsub: waiting for job 690874.hnode41 to start\r\n"])
+    commands: list[list[str]] = []
+    scheduler = PBSScheduler(
+        FakeRunner(),
+        lambda command: commands.append(command) or process,
+    )
+    spec = JobSpec(
+        command=("ezhpcy", "compute", "ssh-serve", "54321"),
+        name="ezhpcy-worker",
+        memory_mb=256 * 1024,
+        slots=32,
+        queue="workq",
+        working_directory=PurePosixPath("/home/user"),
+        environment={"EZHPCY_PROFILE": "interactive"},
+    )
+
+    job = scheduler.submit_interactive(spec)
+    job.start_payload()
+    job.start_payload()
+
+    assert job.job_id == "690874.hnode41"
+    assert job.submission_command == tuple(commands[0])
+    assert commands == [
+        [
+            "qsub",
+            "-I",
+            "-N",
+            "ezhpcy-worker",
+            "-q",
+            "workq",
+            "-l",
+            "select=1:ncpus=32:mem=262144mb",
+        ]
+    ]
+    assert process.sent == [
+        "cd /home/user && exec env EZHPCY_PROFILE=interactive ezhpcy compute "
+        "ssh-serve 54321\n"
+    ]
+
+
+def test_pbs_interactive_submission_preserves_linuxsh_resource_defaults() -> None:
+    process = FakeProcess(stdout=[b"qsub: waiting for job 42.server to start\n"])
+    commands: list[list[str]] = []
+    scheduler = PBSScheduler(
+        FakeRunner(),
+        lambda command: commands.append(command) or process,
+        command_directory=PurePosixPath("/opt/pbspro/bin"),
+    )
+
+    scheduler.submit_interactive(
+        JobSpec(command=("true",), name="ezhpcy-worker", queue="workq")
+    )
+
+    assert commands == [
+        [
+            "/opt/pbspro/bin/qsub",
+            "-I",
+            "-N",
+            "ezhpcy-worker",
+            "-q",
+            "workq",
+        ]
+    ]
+
+
+def test_pbs_inspection_parses_json_state_hosts_and_exit_status() -> None:
+    runner = FakeRunner(
+        json.dumps(
+            {
+                "Jobs": {
+                    "690874.hnode41.hpccluster.dtu.dk": {
+                        "job_state": "R",
+                        "exec_host": "node1/0*2+node1/1+node2/0",
+                    }
+                }
+            }
+        )
+    )
+
+    info = PBSScheduler(runner).inspect("690874.hnode41")
+
+    assert info.state is JobState.RUNNING
+    assert info.execution_hosts == ("node1", "node2")
+    assert runner.commands == [["qstat", "-f", "-F", "json", "690874.hnode41"]]
+
+    runner.output = json.dumps(
+        {"Jobs": {"690874.hnode41": {"job_state": "F", "Exit_status": 0}}}
+    )
+    assert PBSScheduler(runner).inspect("690874.hnode41").state is JobState.SUCCEEDED
+
+
+def test_pbs_missing_job_and_cancellation_use_exact_job_id() -> None:
+    runner = FakeRunner()
+    runner.error = RuntimeError("qstat: Unknown Job Id 42.server")
+    with pytest.raises(JobNotFoundError, match="'42.server'"):
+        PBSScheduler(runner).inspect("42.server")
+
+    assert runner.commands == [
+        ["qstat", "-f", "-F", "json", "42.server"],
+        ["qstat", "-x", "-f", "-F", "json", "42.server"],
+    ]
+
+    runner.error = None
+    PBSScheduler(runner).cancel("42.server")
+    assert runner.commands[-1] == ["qdel", "42.server"]
+
+
+def test_pbs_inspection_falls_back_to_job_history() -> None:
+    commands: list[list[str]] = []
+
+    def runner(command: list[str]) -> str:
+        commands.append(command)
+        if "-x" not in command:
+            raise RuntimeError("qstat: Unknown Job Id 42.server")
+        return json.dumps({"Jobs": {"42.server": {"job_state": "F", "Exit_status": 0}}})
+
+    info = PBSScheduler(runner).inspect("42.server")
+
+    assert info.state is JobState.SUCCEEDED
+    assert commands == [
+        ["qstat", "-f", "-F", "json", "42.server"],
+        ["qstat", "-x", "-f", "-F", "json", "42.server"],
+    ]
+
+
+def test_job_spec_validates_commands_time_limits_and_environment() -> None:
+    with pytest.raises(ValueError, match="command"):
+        JobSpec(command=())
+    with pytest.raises(ValueError, match="time_limit"):
+        JobSpec(command=("true",), time_limit=timedelta(0))
+    with pytest.raises(ValueError, match="memory_mb"):
+        JobSpec(command=("true",), memory_mb=0)
+    with pytest.raises(ValueError, match="slots"):
+        JobSpec(command=("true",), slots=0)
+    with pytest.raises(ValueError, match="environment"):
+        JobSpec(command=("true",), environment={"NOT-VALID": "value"})

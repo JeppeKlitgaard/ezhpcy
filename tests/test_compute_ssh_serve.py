@@ -100,7 +100,10 @@ def test_ssh_serve_validates_then_replaces_process(tmp_path: Path) -> None:
     assert run.call_args.kwargs["check"] is True
     serve_command = execve.call_args.args[1]
     assert serve_command[7:9] == ["-D", "-e"]
-    assert f"PidFile={file_config.runtime_dir / 'sshd.pid'}" in serve_command
+    assert (
+        f"PidFile={file_config.runtime_dir / f'sshd-{os.getpid()}.pid'}"
+        in serve_command
+    )
     assert file_config.runtime_dir.is_dir()
     if os.name == "posix":
         assert file_config.runtime_dir.stat().st_mode & 0o777 == 0o700

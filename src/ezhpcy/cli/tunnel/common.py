@@ -11,7 +11,7 @@ from ezhpcy.cli.utils.options_group import attach_hook
 from ezhpcy.cli.utils.resolve import resolve_forbidden_none
 from ezhpcy.config import ConnectionInfo, config
 from ezhpcy.console import console
-from ezhpcy.detect import HostType, get_host_type
+from ezhpcy.detect.host_type import HostType, get_host_type
 
 KEYRING_SERVICE_NAME = "ezhpcy"
 PASSWORD_ENV_VAR = "EZHPCY_PASSWORD"
@@ -25,10 +25,10 @@ PasswordOpt = Annotated[
         "--password",
         "-p",
         help=(
-            "Password for the login node. Defaults to config. "
+            "Password for the login node. "
             "Note: Specifying this is potentially a security risk."
-            ),
-    )
+        ),
+    ),
 ]
 PasswordEnvOpt = Annotated[
     bool,

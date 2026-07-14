@@ -119,6 +119,45 @@ def test_run_pixi_uses_ezhpcy_xdg_directories() -> None:
     )
 
 
+def test_run_login_shell_safely_quotes_the_nested_command() -> None:
+    client = SSHClient(ConnectionInfo())
+
+    with patch.object(client, "run", return_value="submitted") as run:
+        output = client.run_login_shell(
+            ["bsub", "-J", "worker name", "sh", "-c", "echo '$HOME'"],
+            timeout=30,
+        )
+
+    assert output == "submitted"
+    run.assert_called_once_with(
+        [
+            "bash",
+            "-lc",
+            "bsub -J 'worker name' sh -c 'echo '\"'\"'$HOME'\"'\"''",
+        ],
+        timeout=30,
+    )
+
+
+def test_start_login_shell_opens_pty_and_keeps_channel_running() -> None:
+    client = SSHClient(ConnectionInfo())
+    transport = MagicMock()
+    transport.is_active.return_value = True
+    channel = MagicMock()
+    transport.open_session.return_value = channel
+
+    with patch.object(client, "get_transport", return_value=transport):
+        process = client.start_login_shell(
+            ["bsub", "-Is", "-J", "worker name", "sleep", "60"]
+        )
+
+    assert process is channel
+    channel.get_pty.assert_called_once_with()
+    channel.exec_command.assert_called_once_with(
+        "bash -lc 'bsub -Is -J '\"'\"'worker name'\"'\"' sleep 60'"
+    )
+
+
 def test_get_file_config_maps_xdg_directories_to_the_correct_fields() -> None:
     client = SSHClient(ConnectionInfo())
     response = (

@@ -1,9 +1,9 @@
 import os
 import tempfile
+from collections.abc import Iterator
 from contextlib import contextmanager
 from importlib import resources
 from pathlib import Path
-from typing import Iterator
 
 from ezhpcy.constants import PACKAGE_NAME
 from ezhpcy.patch.editable import editable_project_root, is_editable_install

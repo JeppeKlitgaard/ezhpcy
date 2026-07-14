@@ -1,8 +1,9 @@
 import select
 import socket
 import socketserver
+from collections.abc import Callable
 from contextlib import suppress
-from typing import Callable, Protocol
+from typing import Protocol
 
 import paramiko
 

@@ -43,10 +43,7 @@ def edit_cmd(
         ) from error
 
     editor_command = (
-        editor
-        or os.environ.get("VISUAL")
-        or os.environ.get("EDITOR")
-        or DEFAULT_EDITOR
+        editor or os.environ.get("VISUAL") or os.environ.get("EDITOR") or DEFAULT_EDITOR
     )
 
     try:

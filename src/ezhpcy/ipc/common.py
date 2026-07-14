@@ -1,8 +1,9 @@
 """Shared IPC types without transport or storage dependencies."""
 
 import socket
+from collections.abc import Callable
 from dataclasses import InitVar, dataclass
-from typing import Callable, Protocol
+from typing import Protocol
 
 LOOPBACK_HOST = "127.0.0.1"
 

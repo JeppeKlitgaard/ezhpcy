@@ -1,8 +1,8 @@
 import shlex
 import stat
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import PurePosixPath
-from typing import Iterator
 
 import paramiko
 

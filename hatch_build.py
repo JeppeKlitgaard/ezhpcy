@@ -1,8 +1,9 @@
 import os
 import tempfile
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 from hatchling.builders.hooks.plugin.interface import BuildHookInterface
 

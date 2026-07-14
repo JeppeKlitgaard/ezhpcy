@@ -1,7 +1,7 @@
 import json as json_lib
+from typing import Annotated
 
 import typer
-from typing_extensions import Annotated
 
 from ezhpcy.utils import ezhpcy_version
 

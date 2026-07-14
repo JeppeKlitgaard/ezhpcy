@@ -8,9 +8,9 @@ The tunnel forwards the requests to a target SSH server.
 import secrets
 import socket
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
 
 from ezhpcy.config import config
 from ezhpcy.ipc.common import (

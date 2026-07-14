@@ -3,7 +3,7 @@ from typer._click.exceptions import BadParameter
 
 
 class _ManualMarkupText(Text):
-    def copy(self) -> "_ManualMarkupText":
+    def copy(self) -> _ManualMarkupText:
         text = type(self)(
             self.plain,
             style=self.style,

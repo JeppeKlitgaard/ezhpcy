@@ -1,7 +1,8 @@
 import functools
 import inspect
 import typing
-from typing import Any, Callable, Concatenate, ParamSpec, TypeVar
+from collections.abc import Callable
+from typing import Any, Concatenate, ParamSpec, TypeVar
 
 RHook = TypeVar("RHook")
 ParamsHook = ParamSpec("ParamsHook")

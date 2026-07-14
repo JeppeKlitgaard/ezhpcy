@@ -1,10 +1,11 @@
 set minimum-version := '1.55.0'
 set default-list := true
 
-# Installs the project dependencies
+# Installs the project dependencies and pre-commit hooks
 [group: 'dev']
 install:
     uv sync --all-extras
+    uv run prek install
 
 # Formats the code using ruff
 [group: 'format']

@@ -7,7 +7,7 @@ import typer
 from rich.prompt import Confirm
 
 from ezhpcy import console
-from ezhpcy.cli.tunnel.common import (
+from ezhpcy.cli.common import (
     ProfileContext,
     with_profile_options,
 )

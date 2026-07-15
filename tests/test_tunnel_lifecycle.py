@@ -7,18 +7,18 @@ import paramiko
 import pytest
 from typer.testing import CliRunner
 
-from ezhpcy.cli import app
-from ezhpcy.cli.tunnel import common
-from ezhpcy.cli.tunnel.provision import (
+from ezhpcy.cli import app, common
+from ezhpcy.cli.provision import (
     WORKER_HOST_ALIAS,
     ProvisioningError,
     _ensure_local_ssh_keys,
     _pin_worker_host_key,
     provision_openssh,
     provision_pixi,
+    provision_sshd_files,
     validate_worker_infrastructure,
 )
-from ezhpcy.cli.tunnel.prune import (
+from ezhpcy.cli.prune import (
     prune_stale_installations,
     prune_stale_pixi_data,
 )
@@ -123,12 +123,12 @@ def configured_client(tmp_path: Path) -> Config:
 
 
 def test_provision_help_describes_idempotent_provisioning() -> None:
-    result = CliRunner().invoke(app, ["tunnel", "provision", "--help"])
+    result = CliRunner().invoke(app, ["provision", "--help"])
 
     assert result.exit_code == 0
     assert "Provision ezhpcy worker infrastructure" in result.stdout
 
-    prune_help = CliRunner().invoke(app, ["tunnel", "prune", "--help"])
+    prune_help = CliRunner().invoke(app, ["prune", "--help"])
     assert prune_help.exit_code == 0
     assert "--all" in prune_help.stdout
     assert "-a" in prune_help.stdout
@@ -152,10 +152,14 @@ def test_provision_is_repeatable_and_never_invokes_remote_python(
     with (
         patch("ezhpcy.utils.machineid.hashed_id", return_value="machine-id"),
         patch.object(common, "config", config),
-        patch("ezhpcy.cli.tunnel.provision.config", config),
-        patch("ezhpcy.cli.tunnel.provision.InteractiveSSHClient", return_value=ssh),
+        patch("ezhpcy.cli.provision.config", config),
+        patch("ezhpcy.cli.provision.InteractiveSSHClient", return_value=ssh),
         patch(
-            "ezhpcy.cli.tunnel.provision._ensure_local_ssh_keys",
+            "ezhpcy.cli.provision.provision_sshd_files",
+            wraps=provision_sshd_files,
+        ) as provision_files,
+        patch(
+            "ezhpcy.cli.provision._ensure_local_ssh_keys",
             return_value=(
                 private_key,
                 public_key,
@@ -164,11 +168,12 @@ def test_provision_is_repeatable_and_never_invokes_remote_python(
             ),
         ),
     ):
-        first = CliRunner().invoke(app, ["tunnel", "provision", "--yes"])
-        second = CliRunner().invoke(app, ["tunnel", "provision", "--yes"])
+        first = CliRunner().invoke(app, ["provision", "--yes"])
+        second = CliRunner().invoke(app, ["provision", "--yes"])
 
     assert first.exit_code == 0, first.output
     assert second.exit_code == 0, second.output
+    assert provision_files.call_count == 2
     assert len(ssh.commands) == 2
     assert all(command[:2] == ["bash", "-c"] for command in ssh.commands)
     for _bash, _option, command in ssh.commands:
@@ -362,7 +367,7 @@ def test_validate_worker_infrastructure_is_read_only() -> None:
 def test_validate_worker_infrastructure_reports_missing_files() -> None:
     ssh = StubSSH()
 
-    with pytest.raises(ProvisioningError, match="tunnel provision") as exc_info:
+    with pytest.raises(ProvisioningError, match="ezhpcy provision") as exc_info:
         validate_worker_infrastructure(  # type: ignore[arg-type]
             ssh,
             ssh.remote_state,
@@ -386,17 +391,17 @@ def test_prune_all_removes_the_package_cache_directory(tmp_path: Path) -> None:
 
     with (
         patch.object(common, "config", config),
-        patch("ezhpcy.cli.tunnel.prune.InteractiveSSHClient", return_value=ssh),
+        patch("ezhpcy.cli.prune.InteractiveSSHClient", return_value=ssh),
     ):
-        result = CliRunner().invoke(app, ["tunnel", "prune", "--all", "--yes"])
+        result = CliRunner().invoke(app, ["prune", "--all", "--yes"])
 
     assert result.exit_code == 0, result.output
     assert ssh.commands == [["rm", "-rf", "--", "/home/alice/.cache/ezhpcy"]]
 
 
-def test_install_and_uninstall_commands_have_been_removed() -> None:
-    for command in ("install", "uninstall"):
-        result = CliRunner().invoke(app, ["tunnel", command, "--help"])
+def test_tunnel_and_legacy_lifecycle_commands_have_been_removed() -> None:
+    for command in ("tunnel", "t", "install", "uninstall"):
+        result = CliRunner().invoke(app, [command, "--help"])
         assert result.exit_code == 2
 
 

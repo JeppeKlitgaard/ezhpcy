@@ -89,7 +89,7 @@ class AuthenticatedIPCBackend:
             )
         except OSError as error:
             raise BrokerUnavailableError(
-                "foreground broker is not running; start `ezhpcy tunnel broker`"
+                "foreground broker is not running; start `ezhpcy broker`"
             ) from error
 
         try:

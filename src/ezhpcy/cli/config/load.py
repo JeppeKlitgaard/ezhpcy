@@ -2,7 +2,7 @@ import difflib
 import tomllib
 from importlib import resources
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 import typer
 from jinja2 import Environment, StrictUndefined, TemplateError
@@ -27,6 +27,13 @@ def _available_presets() -> dict[str, tuple[str, resources.abc.Traversable]]:
         for resource in preset_directory.iterdir()
         if resource.is_file() and resource.name.endswith(PRESET_SUFFIX)
     }
+
+
+_AVAILABLE_PRESET_NAMES = sorted(
+    (name for name, _resource in _available_presets().values()),
+    key=str.casefold,
+)
+PresetName = Literal[*_AVAILABLE_PRESET_NAMES]
 
 
 def _render_preset(template_text: str, *, preset: str, user: str) -> str:
@@ -66,8 +73,11 @@ def _diff_text(
 
 def load_cmd(
     preset: Annotated[
-        str,
-        typer.Argument(help="Name of the packaged configuration preset to load."),
+        PresetName,
+        typer.Argument(
+            help="Packaged configuration preset to load.",
+            case_sensitive=False,
+        ),
     ],
     user: Annotated[
         str | None,

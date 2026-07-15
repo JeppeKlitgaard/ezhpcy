@@ -2,7 +2,7 @@ import sys
 
 import typer
 
-from ezhpcy.cli.tunnel.common import ProfileOpt
+from ezhpcy.cli.common import ProfileOpt
 from ezhpcy.cli.utils.bad_parameter import RichBadParameter
 from ezhpcy.config import config
 from ezhpcy.ipc import load_broker_backend

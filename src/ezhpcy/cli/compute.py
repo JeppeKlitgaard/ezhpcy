@@ -13,11 +13,11 @@ import paramiko
 import typer
 from pydantic import ValidationError
 
-from ezhpcy.cli.tunnel.common import (
+from ezhpcy.cli.common import (
     ProfileContext,
     with_profile_options,
 )
-from ezhpcy.cli.tunnel.provision import (
+from ezhpcy.cli.provision import (
     provision_worker_infrastructure,
     validate_worker_infrastructure,
 )
@@ -115,7 +115,7 @@ def _ensure_local_worker_credentials(conn_info: ConnectionInfo) -> None:
     missing = [str(path) for path in required_files if not path.is_file()]
     if missing:
         raise ComputeTunnelError(
-            "worker SSH credentials are missing; run `ezhpcy tunnel provision` first "
+            "worker SSH credentials are missing; run `ezhpcy provision` first "
             f"(missing: {', '.join(missing)})"
         )
 

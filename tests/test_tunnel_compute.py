@@ -9,9 +9,8 @@ import pytest
 from pydantic import ValidationError
 from typer.testing import CliRunner
 
-from ezhpcy.cli import app
-from ezhpcy.cli.tunnel import compute as compute_module
-from ezhpcy.cli.tunnel.compute import (
+from ezhpcy.cli import app, compute as compute_module
+from ezhpcy.cli.compute import (
     ComputeTunnelError,
     _run_compute_tunnel,
     _wait_for_running_job,
@@ -283,7 +282,7 @@ def test_wait_for_running_job_reports_transitions_and_returns_host() -> None:
     )
     transitions: list[JobState] = []
 
-    with patch("ezhpcy.cli.tunnel.compute.time.sleep"):
+    with patch("ezhpcy.cli.compute.time.sleep"):
         info = _wait_for_running_job(
             scheduler,  # type: ignore[arg-type]
             "42",
@@ -313,7 +312,7 @@ def test_worker_endpoint_waits_for_an_ssh_banner() -> None:
     transport_logger.setLevel(logging.WARNING)
 
     try:
-        with patch("ezhpcy.cli.tunnel.compute.time.sleep"):
+        with patch("ezhpcy.cli.compute.time.sleep"):
             _wait_for_worker_endpoint(
                 transport,  # type: ignore[arg-type]
                 ("node42", 54321),
@@ -340,26 +339,26 @@ def test_compute_tunnel_submits_worker_starts_broker_and_cancels() -> None:
 
     with (
         patch(
-            "ezhpcy.cli.tunnel.compute.InteractiveSSHClient",
+            "ezhpcy.cli.compute.InteractiveSSHClient",
             return_value=ssh,
         ),
-        patch("ezhpcy.cli.tunnel.compute.local_machine_id", return_value="machine-id"),
+        patch("ezhpcy.cli.compute.local_machine_id", return_value="machine-id"),
         patch(
-            "ezhpcy.cli.tunnel.compute.LSFScheduler",
+            "ezhpcy.cli.compute.LSFScheduler",
             return_value=scheduler,
         ) as scheduler_constructor,
         patch(
-            "ezhpcy.cli.tunnel.compute.provision_worker_infrastructure",
+            "ezhpcy.cli.compute.provision_worker_infrastructure",
             return_value=None,
         ),
         patch(
-            "ezhpcy.cli.tunnel.compute.read_ed25519_public_key",
+            "ezhpcy.cli.compute.read_ed25519_public_key",
             return_value=("ssh-ed25519", "WORKERKEY"),
         ),
-        patch("ezhpcy.cli.tunnel.compute._wait_for_worker_endpoint"),
-        patch("ezhpcy.cli.tunnel.compute.create_broker_backend", return_value=object()),
-        patch("ezhpcy.cli.tunnel.compute.ForegroundBroker", side_effect=make_broker),
-        patch("ezhpcy.cli.tunnel.compute.logger") as logger,
+        patch("ezhpcy.cli.compute._wait_for_worker_endpoint"),
+        patch("ezhpcy.cli.compute.create_broker_backend", return_value=object()),
+        patch("ezhpcy.cli.compute.ForegroundBroker", side_effect=make_broker),
+        patch("ezhpcy.cli.compute.logger") as logger,
     ):
         _run_compute_tunnel(
             profile_name="default",
@@ -436,24 +435,24 @@ def test_compute_tunnel_cancels_job_when_worker_startup_fails() -> None:
 
     with (
         patch(
-            "ezhpcy.cli.tunnel.compute.InteractiveSSHClient",
+            "ezhpcy.cli.compute.InteractiveSSHClient",
             return_value=ssh,
         ),
-        patch("ezhpcy.cli.tunnel.compute.local_machine_id", return_value="machine-id"),
+        patch("ezhpcy.cli.compute.local_machine_id", return_value="machine-id"),
         patch(
-            "ezhpcy.cli.tunnel.compute.LSFScheduler",
+            "ezhpcy.cli.compute.LSFScheduler",
             return_value=scheduler,
         ),
         patch(
-            "ezhpcy.cli.tunnel.compute.provision_worker_infrastructure",
+            "ezhpcy.cli.compute.provision_worker_infrastructure",
             return_value=None,
         ),
         patch(
-            "ezhpcy.cli.tunnel.compute.read_ed25519_public_key",
+            "ezhpcy.cli.compute.read_ed25519_public_key",
             return_value=("ssh-ed25519", "WORKERKEY"),
         ),
         patch(
-            "ezhpcy.cli.tunnel.compute._wait_for_worker_endpoint",
+            "ezhpcy.cli.compute._wait_for_worker_endpoint",
             side_effect=ComputeTunnelError("worker did not listen"),
         ),
         pytest.raises(ComputeTunnelError, match="did not listen"),
@@ -485,23 +484,23 @@ def test_compute_tunnel_uses_explicit_pbs_and_linuxsh_defaults() -> None:
     scheduler = StubScheduler([snapshot(JobState.RUNNING, "R", "node42")])
 
     with (
-        patch("ezhpcy.cli.tunnel.compute.InteractiveSSHClient", return_value=ssh),
-        patch("ezhpcy.cli.tunnel.compute.local_machine_id", return_value="machine-id"),
+        patch("ezhpcy.cli.compute.InteractiveSSHClient", return_value=ssh),
+        patch("ezhpcy.cli.compute.local_machine_id", return_value="machine-id"),
         patch(
-            "ezhpcy.cli.tunnel.compute.PBSScheduler", return_value=scheduler
+            "ezhpcy.cli.compute.PBSScheduler", return_value=scheduler
         ) as scheduler_constructor,
         patch(
-            "ezhpcy.cli.tunnel.compute.provision_worker_infrastructure",
+            "ezhpcy.cli.compute.provision_worker_infrastructure",
             return_value=None,
         ),
         patch(
-            "ezhpcy.cli.tunnel.compute.read_ed25519_public_key",
+            "ezhpcy.cli.compute.read_ed25519_public_key",
             return_value=("ssh-ed25519", "WORKERKEY"),
         ),
-        patch("ezhpcy.cli.tunnel.compute._wait_for_worker_endpoint"),
-        patch("ezhpcy.cli.tunnel.compute.create_broker_backend", return_value=object()),
-        patch("ezhpcy.cli.tunnel.compute.ForegroundBroker", StubBroker),
-        patch("ezhpcy.cli.tunnel.compute.logger") as logger,
+        patch("ezhpcy.cli.compute._wait_for_worker_endpoint"),
+        patch("ezhpcy.cli.compute.create_broker_backend", return_value=object()),
+        patch("ezhpcy.cli.compute.ForegroundBroker", StubBroker),
+        patch("ezhpcy.cli.compute.logger") as logger,
     ):
         _run_compute_tunnel(
             profile_name="pbs",
@@ -539,9 +538,11 @@ def test_compute_tunnel_uses_explicit_pbs_and_linuxsh_defaults() -> None:
 
 
 def test_compute_tunnel_help_exposes_scheduler_and_resource_options() -> None:
-    result = CliRunner().invoke(app, ["tunnel", "compute", "--help"])
+    result = CliRunner().invoke(app, ["compute", "--help"])
+    alias_result = CliRunner().invoke(app, ["c", "--help"])
 
     assert result.exit_code == 0
+    assert alias_result.exit_code == 0
     assert "--scheduler" in result.stdout
     assert "--queue" in result.stdout
     assert "--cores" in result.stdout
@@ -592,7 +593,6 @@ def test_compute_command_resolves_profile_and_applies_cli_overrides(
     result = CliRunner().invoke(
         app,
         [
-            "tunnel",
             "compute",
             "--profile",
             "gpu",
@@ -648,7 +648,7 @@ def test_compute_command_can_disable_auto_provision(
         lambda **kwargs: captured.update(kwargs),
     )
 
-    result = CliRunner().invoke(app, ["tunnel", "compute", "--no-auto-provision"])
+    result = CliRunner().invoke(app, ["compute", "--no-auto-provision"])
 
     assert result.exit_code == 0, result.output
     assert credentials_checked
@@ -676,7 +676,7 @@ def test_compute_command_can_enable_auto_provision_when_config_disables_it(
         lambda **kwargs: captured.update(kwargs),
     )
 
-    result = CliRunner().invoke(app, ["tunnel", "compute", "--auto-provision"])
+    result = CliRunner().invoke(app, ["compute", "--auto-provision"])
 
     assert result.exit_code == 0, result.output
     assert captured["auto_provision"] is True
@@ -698,7 +698,7 @@ def test_compute_command_rejects_conflicting_auto_provision_flags(
 
     result = CliRunner().invoke(
         app,
-        ["tunnel", "compute", "--auto-provision", "--no-auto-provision"],
+        ["compute", "--auto-provision", "--no-auto-provision"],
     )
 
     assert result.exit_code == 2
@@ -722,7 +722,7 @@ def test_compute_command_rejects_unknown_profile_before_starting(
 
     monkeypatch.setattr(compute_module, "_ensure_local_worker_credentials", start)
 
-    result = CliRunner().invoke(app, ["tunnel", "compute", "--profile", "missing"])
+    result = CliRunner().invoke(app, ["compute", "--profile", "missing"])
 
     assert result.exit_code == 2
     assert "unknown profile 'missing'" in result.stderr

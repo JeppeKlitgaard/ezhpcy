@@ -3,7 +3,7 @@ from typing import Annotated
 import paramiko
 import typer
 
-from ezhpcy.cli.tunnel.common import (
+from ezhpcy.cli.common import (
     ProfileContext,
     with_profile_options,
 )

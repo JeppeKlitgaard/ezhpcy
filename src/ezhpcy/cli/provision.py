@@ -12,7 +12,7 @@ from cryptography.hazmat.primitives.asymmetric import ed25519
 from rich.prompt import Confirm
 
 from ezhpcy import console
-from ezhpcy.cli.tunnel.common import (
+from ezhpcy.cli.common import (
     ProfileContext,
     with_profile_options,
 )
@@ -164,7 +164,7 @@ def provision_openssh(ssh: SSHClient, remote_state: RemoteState) -> None:
     )
 
 
-def provision_worker_infrastructure(
+def provision_sshd_files(
     ssh: SSHClient,
     remote_state: RemoteState,
     *,
@@ -172,7 +172,7 @@ def provision_worker_infrastructure(
     remote_host: str,
     machine_id: str | None = None,
 ) -> None:
-    """Idempotently provision everything needed by a compute worker."""
+    """Provision worker SSH keys and validate the resulting sshd configuration."""
     machine_id = machine_id or local_machine_id()
     connection_id = ssh_connection_id(remote_username, remote_host)
     remote_root = remote_state.package_cache_dir()
@@ -180,9 +180,6 @@ def provision_worker_infrastructure(
     local_ssh_dir = config.local_file.ssh_dir(
         machine_id, user=remote_username, host=remote_host
     )
-
-    provision_pixi(ssh, remote_state)
-    provision_openssh(ssh, remote_state)
 
     with ssh.sftp_client() as sftp:
         sftp.mkdir(remote_root, parents=True, exist_ok=True)
@@ -223,6 +220,26 @@ def provision_worker_infrastructure(
         _pin_worker_host_key(host_public_key.read_text(encoding="utf-8"), known_hosts)
 
 
+def provision_worker_infrastructure(
+    ssh: SSHClient,
+    remote_state: RemoteState,
+    *,
+    remote_username: str,
+    remote_host: str,
+    machine_id: str | None = None,
+) -> None:
+    """Idempotently provision everything needed by a compute worker."""
+    provision_pixi(ssh, remote_state)
+    provision_openssh(ssh, remote_state)
+    provision_sshd_files(
+        ssh,
+        remote_state,
+        remote_username=remote_username,
+        remote_host=remote_host,
+        machine_id=machine_id,
+    )
+
+
 def validate_worker_infrastructure(
     ssh: SSHClient,
     remote_state: RemoteState,
@@ -255,7 +272,7 @@ def validate_worker_infrastructure(
 
     if missing:
         raise ProvisioningError(
-            "worker infrastructure is incomplete; run `ezhpcy tunnel provision` "
+            "worker infrastructure is incomplete; run `ezhpcy provision` "
             f"(missing: {', '.join(missing)})"
         )
 

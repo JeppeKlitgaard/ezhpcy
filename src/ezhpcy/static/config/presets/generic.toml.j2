@@ -1,0 +1,15 @@
+# {{ preset }} HPC configuration for ezhpcy.
+
+default_profile = "default"
+log_level = "INFO"
+auto_provision = true
+
+[profile.default]
+host = "login.hpc.com"
+user = {{ user | tojson }}
+
+scheduler = "LSF"
+queue = "hpcint"
+
+queue_timeout_seconds = 900
+worker_startup_timeout_seconds = 60

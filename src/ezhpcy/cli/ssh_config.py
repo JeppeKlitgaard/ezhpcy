@@ -4,7 +4,7 @@ from typing import Annotated
 
 import typer
 
-from ezhpcy.cli.tunnel.common import HostOpt, ProfileOpt, UserOpt
+from ezhpcy.cli.common import HostOpt, UserOpt
 from ezhpcy.cli.utils.bad_parameter import RichBadParameter
 from ezhpcy.cli.utils.resolve import resolve_forbidden_none
 from ezhpcy.config import config
@@ -31,14 +31,14 @@ def render_worker_ssh_config(
     *,
     user: str,
     profile_name: str,
-    alias: str = WORKER_HOST_ALIAS,
+    alias: str | None = None,
     ssh_dir: Path,
     python_executable: Path = Path(sys.executable),
 ) -> str:
     """Render the stable worker alias consumed by OpenSSH and VS Code."""
     user = _single_token(user, name="--user")
-    profile_name = _single_token(profile_name, name="--profile")
-    alias = _single_token(alias, name="--alias")
+    profile_name = _single_token(profile_name, name="PROFILE")
+    alias = _single_token(profile_name if alias is None else alias, name="--alias")
     identity = ssh_dir / WORKER_CLIENT_KEY_NAME
     known_hosts = ssh_dir / "worker_known_hosts"
     return "\n".join(
@@ -60,24 +60,26 @@ def render_worker_ssh_config(
 
 
 def ssh_config_cmd(
-    profile: ProfileOpt = None,
+    profile: Annotated[
+        str,
+        typer.Argument(help="Configured EzHPCy profile to use."),
+    ],
     user: UserOpt = None,
     host: HostOpt = None,
     alias: Annotated[
-        str,
+        str | None,
         typer.Option(
             "--alias",
             help="Stable Host alias to expose to OpenSSH and VS Code.",
         ),
-    ] = WORKER_HOST_ALIAS,
+    ] = None,
 ) -> None:
     """Print an OpenSSH Host block for the broker-backed worker connection."""
     try:
         resolved_profile = config.resolve_profile(profile)
     except ValueError as error:
-        raise RichBadParameter(str(error), param_hint="--profile") from error
-    profile_name = profile or config.default_profile
-    assert profile_name is not None
+        raise RichBadParameter(str(error), param_hint="PROFILE") from error
+    profile_name = profile
     resolved_user = resolve_forbidden_none(
         cli_value=user,
         config_value=resolved_profile.user,

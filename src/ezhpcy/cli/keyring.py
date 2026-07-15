@@ -3,7 +3,7 @@ import typer
 from keyring.errors import KeyringError
 from rich.prompt import Prompt
 
-from ezhpcy.cli.tunnel.common import (
+from ezhpcy.cli.common import (
     KEYRING_SERVICE_NAME,
     with_direct_connection_options,
 )

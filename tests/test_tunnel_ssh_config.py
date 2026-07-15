@@ -3,9 +3,8 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from ezhpcy.cli import app
-from ezhpcy.cli.tunnel import ssh_config
-from ezhpcy.cli.tunnel.ssh_config import render_worker_ssh_config
+from ezhpcy.cli import app, ssh_config
+from ezhpcy.cli.ssh_config import render_worker_ssh_config
 from ezhpcy.types import ProfileConfig
 
 
@@ -20,8 +19,8 @@ def test_render_worker_ssh_config_contains_complete_strict_proxy_configuration(
     )
 
     assert rendered == (
-        "Host ezhpcy-worker\n"
-        "    HostName ezhpcy-worker\n"
+        "Host gpu\n"
+        "    HostName gpu\n"
         "    User alice\n"
         f'    IdentityFile "{(tmp_path / "config with spaces" / "ssh" / "worker_client_ed25519").as_posix()}"\n'
         "    IdentitiesOnly yes\n"
@@ -44,11 +43,11 @@ def test_ssh_config_command_is_available_and_uses_current_python(monkeypatch) ->
     )
     result = CliRunner().invoke(
         app,
-        ["tunnel", "ssh-config", "--alias", "cluster-worker"],
+        ["ssh-config", "default"],
     )
 
     assert result.exit_code == 0
-    assert result.stdout.startswith("Host cluster-worker\n")
+    assert result.stdout.startswith("Host default\n")
     assert "    User alice\n" in result.stdout
     assert f'    ProxyCommand "{Path(sys.executable).as_posix()}"' in result.stdout
     assert "proxy --profile default" in result.stdout
@@ -59,3 +58,30 @@ def test_ssh_config_command_is_available_and_uses_current_python(monkeypatch) ->
         / "alice@login.example.com"
     ).resolve()
     assert f'    IdentityFile "{expected_ssh_dir.as_posix()}/' in result.stdout
+
+
+def test_ssh_config_command_accepts_an_alias_override(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "ezhpcy.utils.machineid.hashed_id", lambda _app_id: "machine-id"
+    )
+    monkeypatch.setattr(
+        ssh_config.config,
+        "profile",
+        {"gpu": ProfileConfig(host="login.example.com", user="alice")},
+    )
+
+    result = CliRunner().invoke(
+        app,
+        ["ssh-config", "gpu", "--alias", "cluster-worker"],
+    )
+
+    assert result.exit_code == 0
+    assert result.stdout.startswith("Host cluster-worker\n")
+    assert "proxy --profile gpu" in result.stdout
+
+
+def test_ssh_config_command_requires_a_profile_argument() -> None:
+    result = CliRunner().invoke(app, ["ssh-config"])
+
+    assert result.exit_code == 2
+    assert "Missing argument 'PROFILE'" in result.stderr

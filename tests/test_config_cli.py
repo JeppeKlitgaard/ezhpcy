@@ -155,7 +155,7 @@ def test_config_load_creates_dtu_config_case_insensitively(
         'queue = "workq"\n'
         'pbs_command_directory = "/opt/pbspro/bin"\n'
         "\n"
-        "[profile.gpul40s]\n"
+        "[profile.dtu-gpul40s]\n"
         'description = "DTU L40S GPU queue"\n'
         'inherit = "default"\n'
         "\n"
@@ -167,7 +167,7 @@ def test_config_load_creates_dtu_config_case_insensitively(
     loaded = tomllib.loads(contents)
     loaded_config = Config.from_mapping(loaded)
     assert str(loaded_config.resolve_profile().host) == "login2.hpc.dtu.dk"
-    assert loaded_config.resolve_profile("gpul40s").cores == 8
+    assert loaded_config.resolve_profile("dtu-gpul40s").cores == 8
     assert str(loaded_config.resolve_profile("pbs").pbs_command_directory) == (
         "/opt/pbspro/bin"
     )
@@ -220,8 +220,19 @@ def test_config_load_rejects_unknown_preset() -> None:
     result = runner.invoke(app, ["config", "load", "unknown"])
 
     assert result.exit_code == 2
-    assert "Unknown preset 'unknown'" in result.output
-    assert "DTU" in result.output
+    output = result.output.casefold()
+    assert "invalid value for 'preset:{" in output
+    assert "'unknown' is not one of" in output
+    assert "'dtu'" in output
+
+
+def test_config_load_help_lists_available_presets() -> None:
+    result = runner.invoke(app, ["config", "load", "--help"])
+
+    assert result.exit_code == 0
+    output = result.output.casefold()
+    assert "preset:{" in output
+    assert "dtu" in output
 
 
 def test_config_edit_creates_file_and_uses_platform_editor_by_default(

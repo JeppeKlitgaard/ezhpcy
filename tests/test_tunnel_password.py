@@ -5,8 +5,7 @@ import pytest
 from keyring.errors import KeyringError
 from typer.testing import CliRunner
 
-from ezhpcy.cli import app
-from ezhpcy.cli.tunnel import common
+from ezhpcy.cli import app, common
 from ezhpcy.cli.utils.bad_parameter import RichBadParameter
 from ezhpcy.types import ProfileConfig
 
@@ -96,7 +95,6 @@ def test_password_env_cli_fails_loudly_when_variable_is_unset() -> None:
     result = CliRunner().invoke(
         app,
         [
-            "tunnel",
             "compute",
             "--scheduler",
             "lsf",
@@ -172,14 +170,14 @@ def test_explicit_password_sources_are_mutually_exclusive(tmp_path: Path) -> Non
 @pytest.mark.parametrize(
     "command",
     [
-        ["tunnel", "provision"],
-        ["tunnel", "prune"],
-        ["tunnel", "compute"],
-        ["tunnel", "relay"],
-        ["tunnel", "broker"],
+        ["provision"],
+        ["prune"],
+        ["compute"],
+        ["relay"],
+        ["broker"],
     ],
 )
-def test_tunnel_command_help_includes_every_password_source(
+def test_remote_command_help_includes_every_password_source(
     command: list[str],
 ) -> None:
     result = CliRunner().invoke(app, [*command, "--help"])

@@ -20,7 +20,6 @@ def info_cmd(json: bool = False) -> None:
             "value": local_machine_id(),
             "description": "Unique identifier for the local machine.",
         },
-        # {"key": "Payload Hash", "value": "TODO", "description": "Hash of the payload used for provisioning."},
     ]
 
     if json:
@@ -34,7 +33,6 @@ def info_cmd(json: bool = False) -> None:
     table.add_column("Description", justify="left", style="green", no_wrap=False)
 
     table.add_row("EZHPCY Version", ezhpcy_version(), "Current version of ezhpcy.")
-    # table.add_row("Payload Hash")  # TODO When payload is not dependent on args
     table.add_row(
         "Machine ID", local_machine_id(), "Unique identifier for the local machine."
     )

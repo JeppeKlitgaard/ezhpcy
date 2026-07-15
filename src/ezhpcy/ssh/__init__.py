@@ -7,9 +7,9 @@ from pathlib import PurePosixPath
 
 import paramiko
 
-from ezhpcy.config import ConnectionInfo, RemoteFileConfig
-from ezhpcy.constants import PACKAGE_NAME
+from ezhpcy.config import ConnectionInfo
 from ezhpcy.scheduler.base import RemoteProcess
+from ezhpcy.types import RemoteState
 
 logger = logging.getLogger(__name__)
 
@@ -135,20 +135,19 @@ class SSHClient(paramiko.SSHClient):
     def run_pixi(
         self,
         args: list[str],
-        file_config: RemoteFileConfig | None = None,
+        remote_state: RemoteState,
         **run_kwargs,
     ) -> str:
-        """Run private Pixi remotely with ezhpcy's XDG-resolved home and cache."""
-        file_config = file_config or self.get_file_config()
-        pixi_home = file_config.data_dir / PACKAGE_NAME / "pixi_home"
-        pixi_cache_dir = file_config.cache_dir / PACKAGE_NAME / "pixi_cache"
-        pixi = pixi_home / "bin/pixi"
+        """Run the pinned private Pixi with ezhpcy's XDG-resolved cache."""
+        home = remote_state.pixi_home()
+        cache = remote_state.pixi_cache_dir()
+        pixi = remote_state.pixi_executable()
 
         return self.run(
             [
                 "env",
-                f"PIXI_HOME={pixi_home}",
-                f"PIXI_CACHE_DIR={pixi_cache_dir}",
+                f"PIXI_HOME={home}",
+                f"PIXI_CACHE_DIR={cache}",
                 str(pixi),
                 *args,
             ],
@@ -173,26 +172,16 @@ class SSHClient(paramiko.SSHClient):
             raise
         return channel
 
-    def get_file_config(self) -> RemoteFileConfig:
+    def get_remote_state(self) -> RemoteState:
         """
-        Get the FileConfig from the remote host.
+        Discover the state of the remote host.
 
         Respects XDG directory specifications.
         """
 
-        cmd = (
-            'if [ -n "${XDG_RUNTIME_DIR:-}" ]; then '
-            'runtime_dir="$XDG_RUNTIME_DIR/ezhpcy"; '
-            'else runtime_dir="${TMPDIR:-/tmp}/ezhpcy-$(id -u)"; fi; '
-            'printf \'{"cache_dir":"%s","config_dir":"%s","data_dir":"%s",'
-            '"runtime_dir":"%s"}\' '
-            '"${XDG_CACHE_HOME:-$HOME/.cache}" '
-            '"${XDG_CONFIG_HOME:-$HOME/.config}" '
-            '"${XDG_DATA_HOME:-$HOME/.local/share}" '
-            '"$runtime_dir"'
-        )
+        cmd = 'printf \'{"cache_dir":"%s"}\' "${XDG_CACHE_HOME:-$HOME/.cache}"'
         raw = self.run(["bash", "-lc", cmd]).strip()
 
-        file_config = RemoteFileConfig.model_validate_json(raw, strict=True)
-        logger.debug("Resolved remote file locations: %s", file_config)
-        return file_config
+        remote_state = RemoteState.model_validate_json(raw, strict=True)
+        logger.debug("Discovered remote state: %s", remote_state)
+        return remote_state

@@ -1,4 +1,5 @@
 import logging
+from contextlib import contextmanager
 from datetime import timedelta
 from pathlib import PurePosixPath
 from unittest.mock import call, patch
@@ -16,13 +17,10 @@ from ezhpcy.cli.tunnel.compute import (
     _wait_for_running_job,
     _wait_for_worker_endpoint,
 )
-from ezhpcy.config import (
-    ConnectionInfo,
-    RemoteFileConfig,
-)
+from ezhpcy.config import ConnectionInfo
 from ezhpcy.scheduler.base import InteractiveJob, JobInfo, JobSpec, JobState
 from ezhpcy.scheduler.types import SchedulerType
-from ezhpcy.types import ProfileConfig, ResolvedProfileConfig
+from ezhpcy.types import ProfileConfig, RemoteState, ResolvedProfileConfig
 
 _MEBIBYTE = 1024**2
 
@@ -152,6 +150,7 @@ class StubSSH:
     def __init__(self, transport: StubTransport) -> None:
         self.transport = transport
         self.commands: list[list[str]] = []
+        self.directories: list[PurePosixPath] = []
 
     def __enter__(self):
         return self
@@ -165,13 +164,20 @@ class StubSSH:
     def get_transport(self) -> StubTransport:
         return self.transport
 
-    def get_file_config(self) -> RemoteFileConfig:
-        return RemoteFileConfig(
+    def get_remote_state(self) -> RemoteState:
+        return RemoteState(
             cache_dir=PurePosixPath("/home/alice/.cache"),
-            config_dir=PurePosixPath("/home/alice/.config"),
-            data_dir=PurePosixPath("/home/alice/.local/share"),
-            runtime_dir=PurePosixPath("/tmp/ezhpcy-1000"),
         )
+
+    @contextmanager
+    def sftp_client(self):
+        ssh = self
+
+        class StubSFTP:
+            def mkdir(self, path, **_kwargs) -> None:
+                ssh.directories.append(PurePosixPath(path))
+
+        yield StubSFTP()
 
     def run(self, args: list[str]) -> str:
         self.commands.append(args)
@@ -307,7 +313,7 @@ def test_compute_tunnel_submits_worker_starts_broker_and_cancels() -> None:
         patch(
             "ezhpcy.cli.tunnel.compute.provision_worker_infrastructure",
             return_value=PurePosixPath(
-                "/home/alice/.local/share/ezhpcy/payloads/abc123/ssh-serve"
+                "/home/alice/.cache/ezhpcy/payloads/abc123/ssh-serve"
             ),
         ),
         patch("ezhpcy.cli.tunnel.compute._wait_for_worker_endpoint"),
@@ -335,7 +341,7 @@ def test_compute_tunnel_submits_worker_starts_broker_and_cancels() -> None:
     assert len(scheduler.submitted) == 1
     spec = scheduler.submitted[0]
     assert tuple(spec.command) == (
-        "/home/alice/.local/share/ezhpcy/payloads/abc123/ssh-serve",
+        "/home/alice/.cache/ezhpcy/payloads/abc123/ssh-serve",
         "54321",
     )
     assert spec.queue == "normal"
@@ -344,9 +350,18 @@ def test_compute_tunnel_submits_worker_starts_broker_and_cancels() -> None:
     assert spec.gpus == 2
     assert spec.exclusive
     assert scheduler_constructor.call_args.kwargs["resource_reserve_per_task"]
-    assert spec.working_directory == PurePosixPath("/home/alice/.local/share/ezhpcy")
+    assert ssh.directories == [
+        PurePosixPath("/home/alice/.cache/ezhpcy/worker_cwd"),
+        PurePosixPath("/home/alice/.cache/ezhpcy/logs/worker"),
+    ]
+    assert spec.working_directory == PurePosixPath(
+        "/home/alice/.cache/ezhpcy/worker_cwd"
+    )
     assert spec.stdout_path == PurePosixPath(
-        "/home/alice/.local/share/ezhpcy/worker-%J.out"
+        "/home/alice/.cache/ezhpcy/logs/worker/worker-%J.out"
+    )
+    assert spec.stderr_path == PurePosixPath(
+        "/home/alice/.cache/ezhpcy/logs/worker/worker-%J.err"
     )
     assert brokers[0].destination == ("node42", 54321)
     assert brokers[0].closed
@@ -383,7 +398,7 @@ def test_compute_tunnel_cancels_job_when_worker_startup_fails() -> None:
         patch(
             "ezhpcy.cli.tunnel.compute.provision_worker_infrastructure",
             return_value=PurePosixPath(
-                "/home/alice/.local/share/ezhpcy/payloads/abc123/ssh-serve"
+                "/home/alice/.cache/ezhpcy/payloads/abc123/ssh-serve"
             ),
         ),
         patch(
@@ -426,7 +441,7 @@ def test_compute_tunnel_uses_explicit_pbs_and_linuxsh_defaults() -> None:
         patch(
             "ezhpcy.cli.tunnel.compute.provision_worker_infrastructure",
             return_value=PurePosixPath(
-                "/home/alice/.local/share/ezhpcy/payloads/abc123/ssh-serve"
+                "/home/alice/.cache/ezhpcy/payloads/abc123/ssh-serve"
             ),
         ),
         patch("ezhpcy.cli.tunnel.compute._wait_for_worker_endpoint"),

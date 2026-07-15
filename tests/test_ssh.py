@@ -4,8 +4,10 @@ from unittest.mock import MagicMock, call, patch
 
 import paramiko
 
-from ezhpcy.config import ConnectionInfo, RemoteFileConfig
+from ezhpcy.config import ConnectionInfo
+from ezhpcy.constants import PIXI_VERSION
 from ezhpcy.ssh import SFTPClient, SSHClient
+from ezhpcy.types import RemoteState
 
 
 def test_sftp_read_and_write_bytes() -> None:
@@ -105,26 +107,23 @@ def test_sftp_mkdir_allows_existing_directory() -> None:
 
 def test_run_pixi_uses_ezhpcy_xdg_directories() -> None:
     client = SSHClient(ConnectionInfo(host="login.example.com"))
-    file_config = RemoteFileConfig(
+    remote_state = RemoteState(
         cache_dir=PurePosixPath("/cache"),
-        config_dir=PurePosixPath("/config"),
-        data_dir=PurePosixPath("/data"),
-        runtime_dir=PurePosixPath("/runtime/ezhpcy"),
     )
 
     with patch.object(client, "run", return_value="pixi output") as run:
         output = client.run_pixi(
             ["exec", "--spec=openssh", "sshd", "-V"],
-            file_config=file_config,
+            remote_state=remote_state,
         )
 
     assert output == "pixi output"
     run.assert_called_once_with(
         [
             "env",
-            "PIXI_HOME=/data/ezhpcy/pixi_home",
-            "PIXI_CACHE_DIR=/cache/ezhpcy/pixi_cache",
-            "/data/ezhpcy/pixi_home/bin/pixi",
+            f"PIXI_HOME=/cache/ezhpcy/pixi/{PIXI_VERSION}",
+            f"PIXI_CACHE_DIR=/cache/ezhpcy/pixi_cache/{PIXI_VERSION}",
+            f"/cache/ezhpcy/pixi/{PIXI_VERSION}/bin/pixi",
             "exec",
             "--spec=openssh",
             "sshd",
@@ -172,20 +171,13 @@ def test_start_login_shell_opens_pty_and_keeps_channel_running() -> None:
     )
 
 
-def test_get_file_config_maps_xdg_directories_to_the_correct_fields() -> None:
+def test_get_remote_state_maps_the_xdg_cache_directory() -> None:
     client = SSHClient(ConnectionInfo(host="login.example.com"))
-    response = (
-        '{"cache_dir":"/cache","config_dir":"/config",'
-        '"data_dir":"/data","runtime_dir":"/runtime/ezhpcy"}'
-    )
+    response = '{"cache_dir":"/cache"}'
 
     with patch.object(client, "run", return_value=response) as run:
-        file_config = client.get_file_config()
+        remote_state = client.get_remote_state()
 
-    assert file_config.cache_dir == PurePosixPath("/cache")
-    assert file_config.config_dir == PurePosixPath("/config")
-    assert file_config.runtime_dir == PurePosixPath("/runtime/ezhpcy")
+    assert remote_state.cache_dir == PurePosixPath("/cache")
     remote_script = run.call_args.args[0][2]
-    assert "XDG_RUNTIME_DIR" in remote_script
-    assert "TMPDIR" in remote_script
-    assert "ezhpcy-$(id -u)" in remote_script
+    assert "XDG_CACHE_HOME" in remote_script

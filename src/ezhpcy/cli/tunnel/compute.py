@@ -24,7 +24,6 @@ from ezhpcy.cli.tunnel.provision import (
 from ezhpcy.cli.utils.ssh import InteractiveSSHClient
 from ezhpcy.config import ConnectionInfo, get_config
 from ezhpcy.constants import (
-    PACKAGE_NAME,
     SSH_DIRECTORY_NAME,
     WORKER_CLIENT_KEY_NAME,
     WORKER_HOST_ALIAS,
@@ -241,17 +240,17 @@ def _run_compute_tunnel(
         if transport is None or not transport.is_active():
             raise paramiko.SSHException("Login-node SSH session is not active")
 
-        remote_files = ssh.get_file_config()
+        remote_state = ssh.get_remote_state()
         if auto_provision:
             remote_username = conn_info.user
             assert remote_username is not None
             payload_path = provision_worker_infrastructure(
                 ssh,
-                remote_files,
+                remote_state,
                 remote_username=remote_username,
             )
         else:
-            payload_path = validate_worker_infrastructure(ssh, remote_files)
+            payload_path = validate_worker_infrastructure(ssh, remote_state)
         match scheduler_type:
             case SchedulerType.LSF:
                 scheduler: Scheduler = LSFScheduler(
@@ -286,7 +285,13 @@ def _run_compute_tunnel(
             memory_bytes,
             worker_port,
         )
-        worker_directory = remote_files.data_dir / PACKAGE_NAME
+        worker_cwd_dir = remote_state.worker_cwd_dir()
+        worker_logs_dir = remote_state.worker_logs_dir()
+
+        with ssh.sftp_client() as sftp:
+            sftp.mkdir(worker_cwd_dir, parents=True, exist_ok=True)
+            sftp.mkdir(worker_logs_dir, parents=True, exist_ok=True)
+
         spec = JobSpec(
             command=(str(payload_path), str(worker_port)),
             name="ezhpcy-worker",
@@ -296,9 +301,9 @@ def _run_compute_tunnel(
             gpus=gpus,
             exclusive=exclusive,
             queue=queue,
-            working_directory=worker_directory,
-            stdout_path=worker_directory / "worker-%J.out",
-            stderr_path=worker_directory / "worker-%J.err",
+            working_directory=worker_cwd_dir,
+            stdout_path=worker_logs_dir / "worker-%J.out",
+            stderr_path=worker_logs_dir / "worker-%J.err",
         )
 
         interactive_job = scheduler.submit_interactive(

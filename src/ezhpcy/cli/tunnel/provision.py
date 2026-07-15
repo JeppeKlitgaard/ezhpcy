@@ -17,20 +17,20 @@ from ezhpcy.cli.tunnel.common import (
     with_profile_options,
 )
 from ezhpcy.cli.utils.ssh import InteractiveSSHClient, absolute_sshd_command
-from ezhpcy.config import RemoteFileConfig, get_config
+from ezhpcy.config import get_config
 from ezhpcy.constants import (
     OPENSSH_MATCHSPEC,
-    PACKAGE_NAME,
+    PIXI_INSTALLER_URL,
+    PIXI_VERSION,
     SSH_DIRECTORY_NAME,
     WORKER_CLIENT_KEY_NAME,
     WORKER_HOST_ALIAS,
     WORKER_HOST_KEY_NAME,
 )
 from ezhpcy.ssh import SSHClient
+from ezhpcy.types import RemoteState
 from ezhpcy.worker_payload import ensure_worker_payload, require_worker_payload
 
-REMOTE_ROOT_NAME = PACKAGE_NAME
-PROVISION_SCRIPT_RESOURCE = "static/data/provision.sh.j2"
 SSHD_CONFIG_RESOURCE = "static/config/ssh_remote/sshd_config"
 
 logger = logging.getLogger(__name__)
@@ -81,12 +81,6 @@ def _render_sshd_config(
     )
 
 
-def _render_shell_script(template_text: str, **variables: str) -> str:
-    """Render a self-contained shell script from its packaged template."""
-    quoted_variables = {name: shlex.quote(value) for name, value in variables.items()}
-    return Template(template_text, undefined=StrictUndefined).render(**quoted_variables)
-
-
 def _pin_worker_host_key(host_public_key: str, known_hosts: Path) -> None:
     """Replace ezhpcy's stable alias entry without touching unrelated hosts."""
     fields = host_public_key.strip().split()
@@ -103,34 +97,77 @@ def _pin_worker_host_key(host_public_key: str, known_hosts: Path) -> None:
     os.chmod(known_hosts, 0o600)
 
 
+def provision_pixi(ssh: SSHClient, remote_state: RemoteState) -> None:
+    """Install the pinned private Pixi version when it is not already present."""
+    home = remote_state.pixi_home()
+    pixi = remote_state.pixi_executable()
+    download = shlex.join(
+        [
+            "curl",
+            "--fail",
+            "--location",
+            "--show-error",
+            "--silent",
+            PIXI_INSTALLER_URL,
+        ]
+    )
+    install = shlex.join(
+        [
+            "env",
+            f"PIXI_HOME={home}",
+            f"PIXI_VERSION={PIXI_VERSION}",
+            "PIXI_NO_PATH_UPDATE=1",
+            "bash",
+        ]
+    )
+    command = (
+        "set -euo pipefail\n"
+        f"if [ ! -x {shlex.quote(str(pixi))} ]; then\n"
+        f"    {download} | {install}\n"
+        "fi"
+    )
+
+    logger.info("Ensuring Pixi %s is installed at %s.", PIXI_VERSION, home)
+    ssh.run(["bash", "-c", command])
+
+
+def provision_openssh(ssh: SSHClient, remote_state: RemoteState) -> None:
+    """Download and cache the pinned OpenSSH environment through Pixi."""
+    logger.info("Caching the worker OpenSSH environment.")
+    ssh.run_pixi(
+        [
+            "exec",
+            f"--spec={OPENSSH_MATCHSPEC}",
+            "sh",
+            "-c",
+            'sshd_path="$(command -v sshd)" || exit; '
+            'case "$sshd_path" in '
+            '/*) exec "$sshd_path" -V;; '
+            '*) echo "sshd must resolve to an absolute path" >&2; exit 1;; '
+            "esac",
+        ],
+        remote_state=remote_state,
+    )
+
+
 def provision_worker_infrastructure(
     ssh: SSHClient,
-    remote_file_config: RemoteFileConfig,
+    remote_state: RemoteState,
     *,
     remote_username: str,
 ) -> PurePosixPath:
     """Idempotently provision everything needed by a compute worker."""
-    remote_root = remote_file_config.data_dir / REMOTE_ROOT_NAME
-    remote_ssh_dir = (
-        remote_file_config.config_dir / REMOTE_ROOT_NAME / SSH_DIRECTORY_NAME
-    )
+    remote_root = remote_state.package_cache_dir()
+    remote_ssh_dir = remote_root / SSH_DIRECTORY_NAME
     local_ssh_dir = get_config().local_file.config_dir / SSH_DIRECTORY_NAME
 
-    provision_template = resources.files("ezhpcy").joinpath(PROVISION_SCRIPT_RESOURCE)
     sshd_config_traversable = resources.files("ezhpcy").joinpath(SSHD_CONFIG_RESOURCE)
-    provision_script = _render_shell_script(
-        provision_template.read_text(encoding="utf-8"),
-        openssh_matchspec=OPENSSH_MATCHSPEC,
-    )
+
+    provision_pixi(ssh, remote_state)
+    provision_openssh(ssh, remote_state)
 
     with ssh.sftp_client() as sftp:
         sftp.mkdir(remote_root, parents=True, exist_ok=True)
-        remote_provision_script = remote_root / "provision.sh"
-        sftp.write_text(remote_provision_script, provision_script)
-        sftp.chmod(str(remote_provision_script), 0o755)
-
-        logger.info("Provisioning remote Pixi and OpenSSH infrastructure.")
-        ssh.run(["bash", str(remote_provision_script)])
 
         _private_key, public_key = _ensure_local_client_key(local_ssh_dir)
         known_hosts = local_ssh_dir / "worker_known_hosts"
@@ -163,7 +200,7 @@ def provision_worker_infrastructure(
                     "-f",
                     str(remote_host_key),
                 ],
-                file_config=remote_file_config,
+                remote_state=remote_state,
             )
 
         with resources.as_file(sshd_config_traversable) as sshd_config_template:
@@ -184,25 +221,22 @@ def provision_worker_infrastructure(
                 f"--spec={OPENSSH_MATCHSPEC}",
                 *absolute_sshd_command(["-t", "-f", str(remote_sshd_config)]),
             ],
-            file_config=remote_file_config,
+            remote_state=remote_state,
         )
 
         host_public_key = sftp.read_text(remote_host_public_key)
         _pin_worker_host_key(host_public_key, known_hosts)
 
-    return ensure_worker_payload(ssh, remote_file_config)
+    return ensure_worker_payload(ssh, remote_state)
 
 
 def validate_worker_infrastructure(
-    ssh: SSHClient, remote_file_config: RemoteFileConfig
+    ssh: SSHClient, remote_state: RemoteState
 ) -> PurePosixPath:
     """Validate provisioned files without changing remote state."""
-    remote_root = remote_file_config.data_dir / REMOTE_ROOT_NAME
-    remote_ssh_dir = (
-        remote_file_config.config_dir / REMOTE_ROOT_NAME / SSH_DIRECTORY_NAME
-    )
+    remote_ssh_dir = remote_state.package_cache_dir() / SSH_DIRECTORY_NAME
     required = (
-        remote_root / "pixi_home/bin/pixi",
+        remote_state.pixi_executable(),
         remote_ssh_dir / "authorized_keys",
         remote_ssh_dir / WORKER_HOST_KEY_NAME,
         PurePosixPath(f"{remote_ssh_dir / WORKER_HOST_KEY_NAME}.pub"),
@@ -221,7 +255,7 @@ def validate_worker_infrastructure(
             "worker infrastructure is incomplete; run `ezhpcy tunnel provision` "
             f"(missing: {', '.join(missing)})"
         )
-    return require_worker_payload(ssh, remote_file_config)
+    return require_worker_payload(ssh, remote_state)
 
 
 @with_profile_options
@@ -240,8 +274,8 @@ def provision_cmd(
     local_machine_or_fail()
     ssh = InteractiveSSHClient(profile_context.connection)
     ssh.interactive_connect()
-    remote_file_config = ssh.get_file_config()
-    remote_root = remote_file_config.data_dir / REMOTE_ROOT_NAME
+    remote_state = ssh.get_remote_state()
+    remote_root = remote_state.package_cache_dir()
 
     user_accepts = yes or Confirm.ask(
         "This will provision or repair [bold purple]ezhpcy[/bold purple] worker "
@@ -257,7 +291,7 @@ def provision_cmd(
     assert remote_username is not None
     payload_path = provision_worker_infrastructure(
         ssh,
-        remote_file_config,
+        remote_state,
         remote_username=remote_username,
     )
     console.print(f"Worker payload ready: [bold blue]{payload_path}[/bold blue]")

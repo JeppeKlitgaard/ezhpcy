@@ -2,8 +2,8 @@ import os
 import re
 import tempfile
 from functools import cache
-from pathlib import Path, PurePath, PurePosixPath
-from typing import Generic, Self, TypeVar
+from pathlib import Path
+from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic_extra_types.domain import DomainStr
@@ -61,24 +61,7 @@ def _default_config_file() -> Path:
     return _get_default_config_dir() / "ezhpcy.toml"
 
 
-PathT = TypeVar("PathT", bound=PurePath)
-
-
-class FileConfig(BaseModel, Generic[PathT]):
-    """
-    The file locations required for ezhpcy.
-
-    Generic over the path type so local (Path) and remote (PurePosixPath)
-    configs can share structure without violating Liskov substitution.
-    """
-
-    cache_dir: PathT
-    config_dir: PathT
-    data_dir: PathT
-    runtime_dir: PathT
-
-
-class LocalFileConfig(FileConfig[Path]):
+class LocalFileConfig(BaseModel):
     """File locations for ezhpcy on the local system."""
 
     cache_dir: Path = Field(default_factory=_get_default_cache_dir)
@@ -86,15 +69,6 @@ class LocalFileConfig(FileConfig[Path]):
     data_dir: Path = Field(default_factory=_get_default_data_dir)
     runtime_dir: Path = Field(default_factory=_get_default_runtime_dir)
     config_file: Path = Field(default_factory=_default_config_file)
-
-
-class RemoteFileConfig(FileConfig[PurePosixPath]):
-    """File locations for ezhpcy on a POSIX remote system."""
-
-    cache_dir: PurePosixPath
-    config_dir: PurePosixPath
-    data_dir: PurePosixPath
-    runtime_dir: PurePosixPath
 
 
 class ConnectionInfo(BaseModel):

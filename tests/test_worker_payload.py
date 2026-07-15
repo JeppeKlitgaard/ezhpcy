@@ -6,8 +6,8 @@ from pathlib import PurePosixPath
 
 import pytest
 
-from ezhpcy.config import RemoteFileConfig
-from ezhpcy.constants import OPENSSH_MATCHSPEC
+from ezhpcy.constants import OPENSSH_MATCHSPEC, PIXI_VERSION
+from ezhpcy.types import RemoteState
 from ezhpcy.worker_payload import (
     WorkerPayloadError,
     ensure_worker_payload,
@@ -18,17 +18,20 @@ from ezhpcy.worker_payload import (
 
 
 def require_bash() -> None:
-    result = subprocess.run(["bash", "-c", "exit 0"], capture_output=True)
+    if os.name == "nt":
+        pytest.skip("the worker payload targets POSIX compute nodes")
+
+    try:
+        result = subprocess.run(["bash", "-c", "exit 0"], capture_output=True)
+    except FileNotFoundError:
+        pytest.skip("a functional Bash installation is required")
     if result.returncode != 0:
         pytest.skip("a functional Bash installation is required")
 
 
-def remote_file_config() -> RemoteFileConfig:
-    return RemoteFileConfig(
+def remote_state() -> RemoteState:
+    return RemoteState(
         cache_dir=PurePosixPath("/home/alice/.cache"),
-        config_dir=PurePosixPath("/home/alice/.config"),
-        data_dir=PurePosixPath("/home/alice/.local/share"),
-        runtime_dir=PurePosixPath("/tmp/ezhpcy-1000"),
     )
 
 
@@ -93,8 +96,9 @@ def test_worker_payload_path_hashes_the_exact_rendered_bytes() -> None:
     payload = render_worker_payload()
     digest = hashlib.sha256(payload).hexdigest()
 
-    assert worker_payload_path(remote_file_config(), payload) == PurePosixPath(
-        f"/home/alice/.local/share/ezhpcy/payloads/{digest}/ssh-serve"
+    assert f"ezhpcy/pixi/{PIXI_VERSION}".encode() in payload
+    assert worker_payload_path(remote_state(), payload) == PurePosixPath(
+        f"/home/alice/.cache/ezhpcy/payloads/{digest}/ssh-serve"
     )
 
 
@@ -103,11 +107,11 @@ def test_ensure_worker_payload_atomically_uploads_missing_or_corrupt_content(
     existing: bytes | None,
 ) -> None:
     payload = render_worker_payload()
-    remote_path = worker_payload_path(remote_file_config(), payload)
+    remote_path = worker_payload_path(remote_state(), payload)
     initial = {str(remote_path): existing} if existing is not None else {}
     sftp = StubSFTP(initial)
 
-    resolved = ensure_worker_payload(StubSSH(sftp), remote_file_config())  # type: ignore[arg-type]
+    resolved = ensure_worker_payload(StubSSH(sftp), remote_state())  # type: ignore[arg-type]
 
     assert resolved == remote_path
     assert sftp.files[str(remote_path)] == payload
@@ -120,10 +124,10 @@ def test_ensure_worker_payload_atomically_uploads_missing_or_corrupt_content(
 
 def test_ensure_worker_payload_reuses_verified_content() -> None:
     payload = render_worker_payload()
-    remote_path = worker_payload_path(remote_file_config(), payload)
+    remote_path = worker_payload_path(remote_state(), payload)
     sftp = StubSFTP({str(remote_path): payload})
 
-    resolved = ensure_worker_payload(StubSSH(sftp), remote_file_config())  # type: ignore[arg-type]
+    resolved = ensure_worker_payload(StubSSH(sftp), remote_state())  # type: ignore[arg-type]
 
     assert resolved == remote_path
     assert sftp.writes == []
@@ -133,10 +137,10 @@ def test_ensure_worker_payload_reuses_verified_content() -> None:
 
 def test_require_worker_payload_is_read_only() -> None:
     payload = render_worker_payload()
-    remote_path = worker_payload_path(remote_file_config(), payload)
+    remote_path = worker_payload_path(remote_state(), payload)
     sftp = StubSFTP({str(remote_path): payload})
 
-    resolved = require_worker_payload(StubSSH(sftp), remote_file_config())  # type: ignore[arg-type]
+    resolved = require_worker_payload(StubSSH(sftp), remote_state())  # type: ignore[arg-type]
 
     assert resolved == remote_path
     assert sftp.writes == []
@@ -147,12 +151,12 @@ def test_require_worker_payload_is_read_only() -> None:
 def test_require_worker_payload_rejects_missing_or_corrupt_content(
     existing: bytes | None,
 ) -> None:
-    remote_path = worker_payload_path(remote_file_config())
+    remote_path = worker_payload_path(remote_state())
     files = {str(remote_path): existing} if existing is not None else {}
 
     with pytest.raises(WorkerPayloadError, match="tunnel provision"):
         require_worker_payload(  # type: ignore[arg-type]
-            StubSSH(StubSFTP(files)), remote_file_config()
+            StubSSH(StubSFTP(files)), remote_state()
         )
 
 
@@ -202,12 +206,10 @@ def test_worker_payload_requires_a_compute_allocation(tmp_path) -> None:
 
 def test_worker_payload_validates_then_executes_sshd_through_pixi(tmp_path) -> None:
     require_bash()
-    data_home = tmp_path / "data"
     cache_home = tmp_path / "cache"
-    config_home = tmp_path / "config"
     runtime_home = tmp_path / "runtime"
-    pixi = data_home / "ezhpcy" / "pixi_home" / "bin" / "pixi"
-    sshd_config = config_home / "ezhpcy" / "ssh" / "sshd_config"
+    pixi = cache_home / "ezhpcy" / "pixi" / PIXI_VERSION / "bin" / "pixi"
+    sshd_config = cache_home / "ezhpcy" / "ssh" / "sshd_config"
     capture = tmp_path / "pixi-arguments"
     pixi.parent.mkdir(parents=True)
     sshd_config.parent.mkdir(parents=True)
@@ -224,9 +226,7 @@ def test_worker_payload_validates_then_executes_sshd_through_pixi(tmp_path) -> N
         env={
             **os.environ,
             "PBS_JOBID": "42",
-            "XDG_DATA_HOME": data_home.as_posix(),
             "XDG_CACHE_HOME": cache_home.as_posix(),
-            "XDG_CONFIG_HOME": config_home.as_posix(),
             "XDG_RUNTIME_DIR": runtime_home.as_posix(),
             "CAPTURE": capture.as_posix(),
         },

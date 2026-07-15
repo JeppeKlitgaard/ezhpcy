@@ -7,9 +7,9 @@ from pathlib import PurePosixPath
 
 from jinja2 import StrictUndefined, Template
 
-from ezhpcy.config import RemoteFileConfig
-from ezhpcy.constants import OPENSSH_MATCHSPEC, PACKAGE_NAME
+from ezhpcy.constants import OPENSSH_MATCHSPEC, PACKAGE_NAME, PIXI_VERSION
 from ezhpcy.ssh import SSHClient
+from ezhpcy.types import RemoteState
 
 SSH_SERVE_RESOURCE = "static/data/ssh-serve.sh.j2"
 PAYLOAD_DIRECTORY_NAME = "payloads"
@@ -25,7 +25,10 @@ def render_worker_payload() -> bytes:
     template = resources.files("ezhpcy").joinpath(SSH_SERVE_RESOURCE)
     rendered = Template(
         template.read_text(encoding="utf-8"), undefined=StrictUndefined
-    ).render(openssh_matchspec=shlex.quote(OPENSSH_MATCHSPEC))
+    ).render(
+        openssh_matchspec=shlex.quote(OPENSSH_MATCHSPEC),
+        pixi_version=shlex.quote(PIXI_VERSION),
+    )
     normalized = rendered.replace("\r\n", "\n").replace("\r", "\n")
     if not normalized.endswith("\n"):
         normalized += "\n"
@@ -33,13 +36,13 @@ def render_worker_payload() -> bytes:
 
 
 def worker_payload_path(
-    file_config: RemoteFileConfig, payload: bytes | None = None
+    remote_state: RemoteState, payload: bytes | None = None
 ) -> PurePosixPath:
     """Return the absolute content-addressed path for a rendered payload."""
     payload = payload if payload is not None else render_worker_payload()
     digest = hashlib.sha256(payload).hexdigest()
     return (
-        file_config.data_dir
+        remote_state.cache_dir
         / PACKAGE_NAME
         / PAYLOAD_DIRECTORY_NAME
         / digest
@@ -47,12 +50,10 @@ def worker_payload_path(
     )
 
 
-def require_worker_payload(
-    ssh: SSHClient, file_config: RemoteFileConfig
-) -> PurePosixPath:
+def require_worker_payload(ssh: SSHClient, remote_state: RemoteState) -> PurePosixPath:
     """Return the current payload path only when its remote bytes are exact."""
     payload = render_worker_payload()
-    remote_path = worker_payload_path(file_config, payload)
+    remote_path = worker_payload_path(remote_state, payload)
     try:
         with ssh.sftp_client() as sftp:
             existing = sftp.read_bytes(remote_path)
@@ -67,12 +68,10 @@ def require_worker_payload(
     return remote_path
 
 
-def ensure_worker_payload(
-    ssh: SSHClient, file_config: RemoteFileConfig
-) -> PurePosixPath:
+def ensure_worker_payload(ssh: SSHClient, remote_state: RemoteState) -> PurePosixPath:
     """Upload the current worker payload atomically unless it already matches."""
     payload = render_worker_payload()
-    remote_path = worker_payload_path(file_config, payload)
+    remote_path = worker_payload_path(remote_state, payload)
     remote_directory = remote_path.parent
 
     with ssh.sftp_client() as sftp:

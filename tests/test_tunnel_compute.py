@@ -18,6 +18,7 @@ from ezhpcy.cli.tunnel.compute import (
     _wait_for_worker_endpoint,
 )
 from ezhpcy.config import ConnectionInfo
+from ezhpcy.constants import EZHPCY_VERSION
 from ezhpcy.scheduler.base import InteractiveJob, JobInfo, JobSpec, JobState
 from ezhpcy.scheduler.types import SchedulerType
 from ezhpcy.types import ProfileConfig, RemoteState, ResolvedProfileConfig
@@ -314,7 +315,7 @@ def test_compute_tunnel_submits_worker_starts_broker_and_cancels() -> None:
         patch(
             "ezhpcy.cli.tunnel.compute.provision_worker_infrastructure",
             return_value=PurePosixPath(
-                "/home/alice/.cache/ezhpcy/payloads/abc123/ssh-serve"
+                f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/payloads/abc123/ssh-serve"
             ),
         ),
         patch("ezhpcy.cli.tunnel.compute._wait_for_worker_endpoint"),
@@ -342,7 +343,7 @@ def test_compute_tunnel_submits_worker_starts_broker_and_cancels() -> None:
     assert len(scheduler.submitted) == 1
     spec = scheduler.submitted[0]
     assert tuple(spec.command) == (
-        "/home/alice/.cache/ezhpcy/payloads/abc123/ssh-serve",
+        f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/payloads/abc123/ssh-serve",
         "54321",
         "machine-id",
     )
@@ -353,17 +354,17 @@ def test_compute_tunnel_submits_worker_starts_broker_and_cancels() -> None:
     assert spec.exclusive
     assert scheduler_constructor.call_args.kwargs["resource_reserve_per_task"]
     assert ssh.directories == [
-        PurePosixPath("/home/alice/.cache/ezhpcy/worker_cwd"),
-        PurePosixPath("/home/alice/.cache/ezhpcy/logs/worker"),
+        PurePosixPath(f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/worker_cwd"),
+        PurePosixPath(f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/logs/worker"),
     ]
     assert spec.working_directory == PurePosixPath(
-        "/home/alice/.cache/ezhpcy/worker_cwd"
+        f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/worker_cwd"
     )
     assert spec.stdout_path == PurePosixPath(
-        "/home/alice/.cache/ezhpcy/logs/worker/worker-%J.out"
+        f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/logs/worker/worker-%J.out"
     )
     assert spec.stderr_path == PurePosixPath(
-        "/home/alice/.cache/ezhpcy/logs/worker/worker-%J.err"
+        f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/logs/worker/worker-%J.err"
     )
     assert brokers[0].destination == ("node42", 54321)
     assert brokers[0].closed
@@ -401,7 +402,7 @@ def test_compute_tunnel_cancels_job_when_worker_startup_fails() -> None:
         patch(
             "ezhpcy.cli.tunnel.compute.provision_worker_infrastructure",
             return_value=PurePosixPath(
-                "/home/alice/.cache/ezhpcy/payloads/abc123/ssh-serve"
+                f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/payloads/abc123/ssh-serve"
             ),
         ),
         patch(
@@ -445,7 +446,7 @@ def test_compute_tunnel_uses_explicit_pbs_and_linuxsh_defaults() -> None:
         patch(
             "ezhpcy.cli.tunnel.compute.provision_worker_infrastructure",
             return_value=PurePosixPath(
-                "/home/alice/.cache/ezhpcy/payloads/abc123/ssh-serve"
+                f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/payloads/abc123/ssh-serve"
             ),
         ),
         patch("ezhpcy.cli.tunnel.compute._wait_for_worker_endpoint"),

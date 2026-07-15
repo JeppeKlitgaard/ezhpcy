@@ -34,16 +34,17 @@ if [ -z "${LSB_JOBID+x}" ] && [ -z "${LSF_ENVDIR+x}" ] && [ -z "${PBS_JOBID+x}" 
 fi
 
 xdg_cache_home="${XDG_CACHE_HOME:-$HOME/.cache}"
+ezhpcy_cache_dir="$xdg_cache_home/ezhpcy/{{ ezhpcy_version }}"
 if [ -n "${XDG_RUNTIME_DIR:-}" ]; then
     runtime_dir="$XDG_RUNTIME_DIR/ezhpcy"
 else
     runtime_dir="${TMPDIR:-/tmp}/ezhpcy-$(id -u)"
 fi
 
-pixi_home="$xdg_cache_home/ezhpcy/pixi/{{ pixi_version }}"
-pixi_cache_dir="$xdg_cache_home/ezhpcy/pixi_cache/{{ pixi_version }}"
+pixi_home="$ezhpcy_cache_dir/pixi/{{ pixi_version }}"
+pixi_cache_dir="$ezhpcy_cache_dir/pixi_cache/{{ pixi_version }}"
 pixi="$pixi_home/bin/pixi"
-sshd_config="$xdg_cache_home/ezhpcy/ssh/$machine_id/sshd_config"
+sshd_config="$ezhpcy_cache_dir/ssh/$machine_id/sshd_config"
 sshd_pid="$runtime_dir/sshd-$$.pid"
 
 if [ ! -x "$pixi" ]; then

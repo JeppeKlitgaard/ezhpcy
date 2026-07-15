@@ -6,7 +6,7 @@ from pathlib import PurePosixPath
 
 import pytest
 
-from ezhpcy.constants import OPENSSH_MATCHSPEC, PIXI_VERSION
+from ezhpcy.constants import EZHPCY_VERSION, OPENSSH_MATCHSPEC, PIXI_VERSION
 from ezhpcy.types import RemoteState
 from ezhpcy.worker_payload import (
     WorkerPayloadError,
@@ -98,9 +98,13 @@ def test_worker_payload_path_hashes_the_exact_rendered_bytes() -> None:
     payload = render_worker_payload()
     digest = hashlib.sha256(payload).hexdigest()
 
-    assert f"ezhpcy/pixi/{PIXI_VERSION}".encode() in payload
+    assert (
+        f'ezhpcy_cache_dir="$xdg_cache_home/ezhpcy/{EZHPCY_VERSION}"'.encode()
+        in payload
+    )
+    assert f'pixi_home="$ezhpcy_cache_dir/pixi/{PIXI_VERSION}"'.encode() in payload
     assert worker_payload_path(remote_state(), payload) == PurePosixPath(
-        f"/home/alice/.cache/ezhpcy/payloads/{digest}/ssh-serve"
+        f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/payloads/{digest}/ssh-serve"
     )
 
 
@@ -211,8 +215,9 @@ def test_worker_payload_validates_then_executes_sshd_through_pixi(tmp_path) -> N
     require_bash()
     cache_home = tmp_path / "cache"
     runtime_home = tmp_path / "runtime"
-    pixi = cache_home / "ezhpcy" / "pixi" / PIXI_VERSION / "bin" / "pixi"
-    sshd_config = cache_home / "ezhpcy" / "ssh" / MACHINE_ID / "sshd_config"
+    version_cache = cache_home / "ezhpcy" / EZHPCY_VERSION
+    pixi = version_cache / "pixi" / PIXI_VERSION / "bin" / "pixi"
+    sshd_config = version_cache / "ssh" / MACHINE_ID / "sshd_config"
     capture = tmp_path / "pixi-arguments"
     pixi.parent.mkdir(parents=True)
     sshd_config.parent.mkdir(parents=True)

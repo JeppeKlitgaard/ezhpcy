@@ -19,10 +19,15 @@ from ezhpcy.cli.tunnel.provision import (
     provision_pixi,
     validate_worker_infrastructure,
 )
-from ezhpcy.cli.tunnel.prune import prune_stale_payloads
+from ezhpcy.cli.tunnel.prune import (
+    prune_stale_installations,
+    prune_stale_payloads,
+    prune_stale_pixi_data,
+)
 from ezhpcy.cli.utils.ssh import absolute_sshd_command
 from ezhpcy.config import Config
 from ezhpcy.constants import (
+    EZHPCY_VERSION,
     OPENSSH_MATCHSPEC,
     PIXI_INSTALLER_URL,
     PIXI_VERSION,
@@ -145,7 +150,9 @@ def test_provision_is_repeatable_and_never_invokes_remote_python(
     host_public_key.write_text("ssh-ed25519 LOCAL-HOST\n", encoding="utf-8")
     machine_ssh_dir = config.local_file.config_dir / "ssh" / "machine-id"
     machine_ssh_dir.mkdir(parents=True)
-    payload_path = PurePosixPath("/home/alice/.cache/ezhpcy/payloads/abc123/ssh-serve")
+    payload_path = PurePosixPath(
+        f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/payloads/abc123/ssh-serve"
+    )
 
     with (
         patch("ezhpcy.utils.machineid.hashed_id", return_value="machine-id"),
@@ -176,7 +183,7 @@ def test_provision_is_repeatable_and_never_invokes_remote_python(
     for _bash, _option, command in ssh.commands:
         assert PIXI_INSTALLER_URL in command
         assert f"PIXI_VERSION={PIXI_VERSION}" in command
-        assert f"/ezhpcy/pixi/{PIXI_VERSION}/bin/pixi" in command
+        assert f"/ezhpcy/{EZHPCY_VERSION}/pixi/{PIXI_VERSION}/bin/pixi" in command
         assert "curl --fail --location --show-error --silent" in command
         assert "provision.sh" not in command
     assert not any(command[0] == "ezhpcy" for command in ssh.commands)
@@ -184,7 +191,7 @@ def test_provision_is_repeatable_and_never_invokes_remote_python(
         "uv" in argument for command in ssh.pixi_commands for argument in command
     )
     assert not any("ssh-keygen" in command for command in ssh.pixi_commands)
-    remote_ssh = "/home/alice/.cache/ezhpcy/ssh/machine-id"
+    remote_ssh = f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/ssh/machine-id"
     assert (
         ssh.sftp.puts
         == [
@@ -257,7 +264,7 @@ def test_provision_pixi_installs_the_pinned_version_in_a_versioned_cache() -> No
     command = ssh.commands[0]
     assert command[:2] == ["bash", "-c"]
     inline_script = command[2]
-    expected_home = f"/home/alice/.cache/ezhpcy/pixi/{PIXI_VERSION}"
+    expected_home = f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/pixi/{PIXI_VERSION}"
     assert f"if [ ! -x {expected_home}/bin/pixi ]" in inline_script
     assert f"PIXI_HOME={expected_home}" in inline_script
     assert f"PIXI_VERSION={PIXI_VERSION}" in inline_script
@@ -286,16 +293,58 @@ def test_default_prune_removes_only_stale_hashed_payloads() -> None:
 
     removed = prune_stale_payloads(ssh, ssh.remote_state)  # type: ignore[arg-type]
 
-    stale_path = PurePosixPath(f"/home/alice/.cache/ezhpcy/payloads/{stale_hash}")
+    stale_path = PurePosixPath(
+        f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/payloads/{stale_hash}"
+    )
     assert removed == (stale_path,)
     assert ssh.commands == [["rm", "-rf", "--", str(stale_path)]]
 
 
+def test_default_prune_removes_stale_ezhpcy_installations() -> None:
+    ssh = StubSSH()
+    ssh.sftp.directory_entries = [EZHPCY_VERSION, "0.0.9", "legacy"]
+
+    removed = prune_stale_installations(  # type: ignore[arg-type]
+        ssh, ssh.remote_state
+    )
+
+    remote_root = PurePosixPath("/home/alice/.cache/ezhpcy")
+    assert removed == (remote_root / "0.0.9", remote_root / "legacy")
+    assert ssh.commands == [
+        [
+            "rm",
+            "-rf",
+            "--",
+            str(remote_root / "0.0.9"),
+            str(remote_root / "legacy"),
+        ]
+    ]
+
+
+def test_default_prune_removes_stale_pixi_homes_and_caches() -> None:
+    ssh = StubSSH()
+    ssh.sftp.directory_entries = [PIXI_VERSION, "0.72.0", "keep me"]
+
+    removed = prune_stale_pixi_data(  # type: ignore[arg-type]
+        ssh, ssh.remote_state
+    )
+
+    package_root = PurePosixPath(f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}")
+    stale_home = package_root / "pixi" / "0.72.0"
+    stale_cache = package_root / "pixi_cache" / "0.72.0"
+    assert removed == (stale_home, stale_cache)
+    assert ssh.commands == [["rm", "-rf", "--", str(stale_home), str(stale_cache)]]
+
+
 def test_validate_worker_infrastructure_is_read_only() -> None:
     ssh = StubSSH()
-    remote_ssh = PurePosixPath("/home/alice/.cache/ezhpcy/ssh/machine-id")
+    remote_ssh = PurePosixPath(
+        f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/ssh/machine-id"
+    )
     required = (
-        PurePosixPath(f"/home/alice/.cache/ezhpcy/pixi/{PIXI_VERSION}/bin/pixi"),
+        PurePosixPath(
+            f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/pixi/{PIXI_VERSION}/bin/pixi"
+        ),
         remote_ssh / "authorized_keys",
         remote_ssh / "ssh_host_ed25519_key",
         remote_ssh / "ssh_host_ed25519_key.pub",
@@ -322,8 +371,12 @@ def test_validate_worker_infrastructure_reports_missing_files() -> None:
             ssh, ssh.remote_state, machine_id="machine-id"
         )
 
-    assert f"/ezhpcy/pixi/{PIXI_VERSION}/bin/pixi" in str(exc_info.value)
-    assert "/ezhpcy/ssh/machine-id/authorized_keys" in str(exc_info.value)
+    assert f"/ezhpcy/{EZHPCY_VERSION}/pixi/{PIXI_VERSION}/bin/pixi" in str(
+        exc_info.value
+    )
+    assert f"/ezhpcy/{EZHPCY_VERSION}/ssh/machine-id/authorized_keys" in str(
+        exc_info.value
+    )
 
 
 def test_prune_all_removes_the_package_cache_directory(tmp_path: Path) -> None:

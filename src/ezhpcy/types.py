@@ -6,7 +6,7 @@ from typing import Annotated
 from pydantic import BaseModel, ByteSize, Field, field_validator
 from pydantic_extra_types.domain import DomainStr
 
-from ezhpcy.constants import PACKAGE_NAME, PIXI_VERSION
+from ezhpcy.constants import EZHPCY_VERSION, PACKAGE_NAME, PIXI_VERSION
 from ezhpcy.scheduler.types import SchedulerType
 
 _TIME_LIMIT_PATTERN = re.compile(r"^(?P<hours>\d+):(?P<minutes>\d{1,2})$")
@@ -113,8 +113,11 @@ class RemoteState(BaseModel):
 
     cache_dir: PurePosixPath
 
-    def package_cache_dir(self) -> PurePosixPath:
+    def package_cache_root(self) -> PurePosixPath:
         return self.cache_dir / PACKAGE_NAME
+
+    def package_cache_dir(self) -> PurePosixPath:
+        return self.package_cache_root() / EZHPCY_VERSION
 
     def pixi_home(self) -> PurePosixPath:
         return self.package_cache_dir() / "pixi" / PIXI_VERSION

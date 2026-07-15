@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, call, patch
 import paramiko
 
 from ezhpcy.config import ConnectionInfo
-from ezhpcy.constants import PIXI_VERSION
+from ezhpcy.constants import EZHPCY_VERSION, PIXI_VERSION
 from ezhpcy.ssh import SFTPClient, SSHClient
 from ezhpcy.types import RemoteState
 
@@ -121,9 +121,9 @@ def test_run_pixi_uses_ezhpcy_xdg_directories() -> None:
     run.assert_called_once_with(
         [
             "env",
-            f"PIXI_HOME=/cache/ezhpcy/pixi/{PIXI_VERSION}",
-            f"PIXI_CACHE_DIR=/cache/ezhpcy/pixi_cache/{PIXI_VERSION}",
-            f"/cache/ezhpcy/pixi/{PIXI_VERSION}/bin/pixi",
+            f"PIXI_HOME=/cache/ezhpcy/{EZHPCY_VERSION}/pixi/{PIXI_VERSION}",
+            f"PIXI_CACHE_DIR=/cache/ezhpcy/{EZHPCY_VERSION}/pixi_cache/{PIXI_VERSION}",
+            f"/cache/ezhpcy/{EZHPCY_VERSION}/pixi/{PIXI_VERSION}/bin/pixi",
             "exec",
             "--spec=openssh",
             "sshd",

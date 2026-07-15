@@ -1,4 +1,7 @@
+from ezhpcy.utils import ezhpcy_version
+
 PACKAGE_NAME = "ezhpcy"
+EZHPCY_VERSION = ezhpcy_version()
 SSH_DIRECTORY_NAME = "ssh"
 WORKER_CLIENT_KEY_NAME = "worker_client_ed25519"
 WORKER_HOST_ALIAS = "ezhpcy-worker"

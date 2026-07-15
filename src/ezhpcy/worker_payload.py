@@ -7,7 +7,7 @@ from pathlib import PurePosixPath
 
 from jinja2 import StrictUndefined, Template
 
-from ezhpcy.constants import OPENSSH_MATCHSPEC, PACKAGE_NAME, PIXI_VERSION
+from ezhpcy.constants import EZHPCY_VERSION, OPENSSH_MATCHSPEC, PIXI_VERSION
 from ezhpcy.ssh import SSHClient
 from ezhpcy.types import RemoteState
 
@@ -27,6 +27,7 @@ def render_worker_payload() -> bytes:
         template.read_text(encoding="utf-8"), undefined=StrictUndefined
     ).render(
         openssh_matchspec=shlex.quote(OPENSSH_MATCHSPEC),
+        ezhpcy_version=EZHPCY_VERSION,
         pixi_version=shlex.quote(PIXI_VERSION),
     )
     normalized = rendered.replace("\r\n", "\n").replace("\r", "\n")
@@ -42,11 +43,7 @@ def worker_payload_path(
     payload = payload if payload is not None else render_worker_payload()
     digest = hashlib.sha256(payload).hexdigest()
     return (
-        remote_state.cache_dir
-        / PACKAGE_NAME
-        / PAYLOAD_DIRECTORY_NAME
-        / digest
-        / "ssh-serve"
+        remote_state.package_cache_dir() / PAYLOAD_DIRECTORY_NAME / digest / "ssh-serve"
     )
 
 

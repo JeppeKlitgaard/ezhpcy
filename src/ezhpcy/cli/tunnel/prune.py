@@ -17,8 +17,81 @@ from ezhpcy.types import RemoteState
 from ezhpcy.worker_payload import PAYLOAD_DIRECTORY_NAME, worker_payload_path
 
 _PAYLOAD_HASH_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_INSTALLATION_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+!-]*$")
 
 logger = logging.getLogger(__name__)
+
+
+def prune_stale_installations(
+    ssh: SSHClient, remote_state: RemoteState
+) -> tuple[PurePosixPath, ...]:
+    """Remove remote ezhpcy installations other than the current version."""
+    current_directory = remote_state.package_cache_dir()
+    remote_root = remote_state.package_cache_root()
+    try:
+        with ssh.sftp_client() as sftp:
+            entries = sftp.listdir_attr(str(remote_root))
+    except FileNotFoundError:
+        logger.info("No remote ezhpcy cache exists at %s.", remote_root)
+        return ()
+
+    stale: list[PurePosixPath] = []
+    for entry in entries:
+        name = entry.filename
+        if name == current_directory.name:
+            continue
+        if _INSTALLATION_NAME_PATTERN.fullmatch(name) is None:
+            logger.warning(
+                "Retaining unrecognized ezhpcy cache entry %s/%s.", remote_root, name
+            )
+            continue
+        stale.append(remote_root / name)
+
+    if stale:
+        ssh.run(["rm", "-rf", "--", *(str(path) for path in stale)])
+        for path in stale:
+            logger.info("Pruned stale ezhpcy installation %s.", path)
+    else:
+        logger.info("Remote ezhpcy installation cache is current.")
+    return tuple(stale)
+
+
+def prune_stale_pixi_data(
+    ssh: SSHClient, remote_state: RemoteState
+) -> tuple[PurePosixPath, ...]:
+    """Remove Pixi homes and caches other than the pinned Pixi version."""
+    current_directories = (
+        remote_state.pixi_home(),
+        remote_state.pixi_cache_dir(),
+    )
+    stale: list[PurePosixPath] = []
+    with ssh.sftp_client() as sftp:
+        for current_directory in current_directories:
+            root = current_directory.parent
+            try:
+                entries = sftp.listdir_attr(str(root))
+            except FileNotFoundError:
+                logger.info("No remote Pixi cache exists at %s.", root)
+                continue
+
+            for entry in entries:
+                name = entry.filename
+                if name == current_directory.name:
+                    continue
+                if _INSTALLATION_NAME_PATTERN.fullmatch(name) is None:
+                    logger.warning(
+                        "Retaining unrecognized Pixi cache entry %s/%s.", root, name
+                    )
+                    continue
+                stale.append(root / name)
+
+    if stale:
+        ssh.run(["rm", "-rf", "--", *(str(path) for path in stale)])
+        for path in stale:
+            logger.info("Pruned stale Pixi data %s.", path)
+    else:
+        logger.info("Remote Pixi homes and caches are current.")
+    return tuple(stale)
 
 
 def prune_stale_payloads(
@@ -57,7 +130,7 @@ def prune_stale_payloads(
 
 def prune_all_remote_data(ssh: SSHClient, remote_state: RemoteState) -> None:
     """Remove the complete ezhpcy-managed remote footprint."""
-    remote_root = remote_state.package_cache_dir()
+    remote_root = remote_state.package_cache_root()
     ssh.run(["rm", "-rf", "--", str(remote_root)])
 
 
@@ -81,16 +154,18 @@ def prune_cmd(
         ),
     ] = False,
 ) -> None:
-    """Prune stale payloads, or remove all managed remote data."""
+    """Prune stale installations, Pixi data, and payloads."""
     ssh = InteractiveSSHClient(profile_context.connection)
     ssh.interactive_connect()
     remote_state = ssh.get_remote_state()
 
     if not all_data:
+        prune_stale_installations(ssh, remote_state)
+        prune_stale_pixi_data(ssh, remote_state)
         prune_stale_payloads(ssh, remote_state)
         return
 
-    remote_root = remote_state.package_cache_dir()
+    remote_root = remote_state.package_cache_root()
     user_accepts = yes or Confirm.ask(
         "This will remove [bold red]all[/bold red] ezhpcy-managed remote "
         f"infrastructure and data under [bold blue]{remote_root}[/bold blue]. Proceed?",

@@ -1,9 +1,9 @@
 import os
 import re
-import tempfile
 from pathlib import Path
 from typing import Self
 
+from platformdirs import PlatformDirs
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic_extra_types.domain import DomainStr
 from pydantic_settings import (
@@ -13,62 +13,29 @@ from pydantic_settings import (
     TomlConfigSettingsSource,
 )
 
-from ezhpcy.constants import SSH_DIRECTORY_NAME
+from ezhpcy.constants import PACKAGE_NAME, SSH_DIRECTORY_NAME
 from ezhpcy.logging import LogLevel, configure_logging
 from ezhpcy.types import ProfileConfig, ResolvedProfileConfig
 from ezhpcy.utils import ssh_connection_id
 
+_DIRS = PlatformDirs(PACKAGE_NAME, appauthor=False)
 _PROFILE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
-
-
-def _get_default_config_dir() -> Path:
-    xdg_config_home = os.environ.get("XDG_CONFIG_HOME")
-    config_home = Path(xdg_config_home) if xdg_config_home else Path.home() / ".config"
-    return config_home / "ezhpcy"
-
-
-def _get_default_cache_dir() -> Path:
-    xdg_cache_home = os.environ.get("XDG_CACHE_HOME")
-    cache_home = Path(xdg_cache_home) if xdg_cache_home else Path.home() / ".cache"
-    return cache_home / "ezhpcy"
-
-
-def _get_default_data_dir() -> Path:
-    xdg_data_home = os.environ.get("XDG_DATA_HOME")
-    data_home = (
-        Path(xdg_data_home) if xdg_data_home else Path.home() / ".local" / "share"
-    )
-    return data_home / "ezhpcy"
-
-
-def _get_default_runtime_dir() -> Path:
-    xdg_runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
-    if xdg_runtime_dir:
-        return Path(xdg_runtime_dir) / "ezhpcy"
-
-    # Unlike XDG_RUNTIME_DIR, the system temporary directory is commonly shared.
-    # Include the numeric uid so another user cannot reserve our predictable
-    # fallback directory first. Windows temporary directories are already scoped
-    # to the user and os.getuid() is not available there.
-    getuid = getattr(os, "getuid", None)
-    directory_name = f"ezhpcy-{getuid()}" if getuid is not None else "ezhpcy"
-    return Path(tempfile.gettempdir()) / directory_name
 
 
 def _default_config_file() -> Path:
     if config_file := os.environ.get("EZHPCY_CONFIG_FILE"):
         return Path(config_file).expanduser()
 
-    return _get_default_config_dir() / "ezhpcy.toml"
+    return _DIRS.user_config_path / "ezhpcy.toml"
 
 
 class LocalFileConfig(BaseModel):
     """File locations for ezhpcy on the local system."""
 
-    cache_dir: Path = Field(default_factory=_get_default_cache_dir)
-    config_dir: Path = Field(default_factory=_get_default_config_dir)
-    data_dir: Path = Field(default_factory=_get_default_data_dir)
-    runtime_dir: Path = Field(default_factory=_get_default_runtime_dir)
+    cache_dir: Path = _DIRS.user_cache_path
+    config_dir: Path = _DIRS.user_config_path
+    data_dir: Path = _DIRS.user_data_path
+    runtime_dir: Path = _DIRS.user_runtime_path
     config_file: Path = Field(default_factory=_default_config_file)
 
     def ssh_dir(self, machine_id: str, *, user: str, host: str) -> Path:

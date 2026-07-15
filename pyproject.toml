@@ -20,6 +20,7 @@ dependencies = [
     "secretstorage>=3.5.0 ; sys_platform == 'linux'",
     # Utils
     "py-machineid>=1.0.0",
+    "platformdirs>=4.9.4",
 ]
 
 [project.scripts]

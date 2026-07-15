@@ -14,7 +14,7 @@ from ezhpcy.cli.tunnel.provision import (
     ProvisioningError,
     _ensure_local_ssh_keys,
     _pin_worker_host_key,
-    _render_sshd_config,
+    _sshd_config_arguments,
     provision_openssh,
     provision_pixi,
     validate_worker_infrastructure,
@@ -200,7 +200,6 @@ def test_provision_is_repeatable_and_never_invokes_remote_python(
     assert (
         ssh.sftp.puts
         == [
-            (str(public_key), f"{remote_ssh}/authorized_keys"),
             (str(host_private_key), f"{remote_ssh}/ssh_host_ed25519_key"),
             (str(host_public_key), f"{remote_ssh}/ssh_host_ed25519_key.pub"),
         ]
@@ -209,10 +208,16 @@ def test_provision_is_repeatable_and_never_invokes_remote_python(
     assert (machine_ssh_dir / "worker_known_hosts").read_text(
         encoding="utf-8"
     ) == f"{WORKER_HOST_ALIAS} ssh-ed25519 LOCAL-HOST\n"
-    assert (
-        f"HostKey {remote_ssh}/ssh_host_ed25519_key"
-        in ssh.sftp.files[f"{remote_ssh}/sshd_config"]
-    )
+    assert f"{remote_ssh}/authorized_keys" not in ssh.sftp.files
+    assert f"{remote_ssh}/sshd_config" not in ssh.sftp.files
+    validation_commands = [command for command in ssh.pixi_commands if "-t" in command]
+    assert len(validation_commands) == 2
+    for command in validation_commands:
+        assert "-f" in command
+        assert "/dev/null" in command
+        assert f"HostKey={remote_ssh}/ssh_host_ed25519_key" in command
+        assert "AuthorizedKeysFile=none" in command
+        assert "AuthorizedKeysCommand=/bin/echo ssh-ed25519 LOCAL" in command
     assert ensure_payload.call_count == 2
     assert "/home/alice/.cache/ezhpcy/provision.sh" not in ssh.sftp.files
 
@@ -363,10 +368,8 @@ def test_validate_worker_infrastructure_is_read_only() -> None:
         PurePosixPath(
             f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/pixi/{PIXI_VERSION}/bin/pixi"
         ),
-        remote_ssh / "authorized_keys",
         remote_ssh / "ssh_host_ed25519_key",
         remote_ssh / "ssh_host_ed25519_key.pub",
-        remote_ssh / "sshd_config",
     )
     for path in required:
         ssh.sftp.files[str(path)] = b"present"
@@ -402,7 +405,7 @@ def test_validate_worker_infrastructure_reports_missing_files() -> None:
     )
     assert (
         f"/ezhpcy/{EZHPCY_VERSION}/ssh/machine-id/"
-        "alice@login.example.com/authorized_keys"
+        "alice@login.example.com/ssh_host_ed25519_key"
     ) in str(exc_info.value)
 
 
@@ -426,14 +429,21 @@ def test_install_and_uninstall_commands_have_been_removed() -> None:
         assert result.exit_code == 2
 
 
-def test_render_sshd_config_replaces_remote_values() -> None:
-    rendered = _render_sshd_config(
-        "AllowUsers {{ remote_username }}\nHostKey {{ remote_config_dir }}/host\n",
+def test_sshd_config_is_expressed_as_cli_arguments() -> None:
+    arguments = _sshd_config_arguments(
+        host_key=PurePosixPath("/home/alice/.config/ezhpcy/ssh/host"),
         remote_username="alice",
-        remote_config_dir=PurePosixPath("/home/alice/.config/ezhpcy/ssh"),
+        authorized_key=("ssh-ed25519", "PUBLICKEY"),
     )
 
-    assert rendered == ("AllowUsers alice\nHostKey /home/alice/.config/ezhpcy/ssh/host")
+    assert arguments[:2] == ["-f", "/dev/null"]
+    settings = arguments[3::2]
+    assert "HostKey=/home/alice/.config/ezhpcy/ssh/host" in settings
+    assert "AuthorizedKeysFile=none" in settings
+    assert "AuthorizedKeysCommand=/bin/echo ssh-ed25519 PUBLICKEY" in settings
+    assert "AuthorizedKeysCommandUser=alice" in settings
+    assert "AllowUsers=alice" in settings
+    assert "Subsystem=sftp internal-sftp" in settings
 
 
 def test_pin_worker_host_key_preserves_unrelated_entries(tmp_path: Path) -> None:

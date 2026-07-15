@@ -318,6 +318,10 @@ def test_compute_tunnel_submits_worker_starts_broker_and_cancels() -> None:
                 f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/payloads/abc123/ssh-serve"
             ),
         ),
+        patch(
+            "ezhpcy.cli.tunnel.compute.read_ed25519_public_key",
+            return_value=("ssh-ed25519", "WORKERKEY"),
+        ),
         patch("ezhpcy.cli.tunnel.compute._wait_for_worker_endpoint"),
         patch("ezhpcy.cli.tunnel.compute.create_broker_backend", return_value=object()),
         patch("ezhpcy.cli.tunnel.compute.ForegroundBroker", side_effect=make_broker),
@@ -347,6 +351,8 @@ def test_compute_tunnel_submits_worker_starts_broker_and_cancels() -> None:
         "54321",
         "machine-id",
         "alice@login.example.com",
+        "ssh-ed25519",
+        "WORKERKEY",
     )
     assert spec.queue == "normal"
     assert spec.memory_bytes == 2048 * _MEBIBYTE
@@ -407,6 +413,10 @@ def test_compute_tunnel_cancels_job_when_worker_startup_fails() -> None:
             ),
         ),
         patch(
+            "ezhpcy.cli.tunnel.compute.read_ed25519_public_key",
+            return_value=("ssh-ed25519", "WORKERKEY"),
+        ),
+        patch(
             "ezhpcy.cli.tunnel.compute._wait_for_worker_endpoint",
             side_effect=ComputeTunnelError("worker did not listen"),
         ),
@@ -449,6 +459,10 @@ def test_compute_tunnel_uses_explicit_pbs_and_linuxsh_defaults() -> None:
             return_value=PurePosixPath(
                 f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/payloads/abc123/ssh-serve"
             ),
+        ),
+        patch(
+            "ezhpcy.cli.tunnel.compute.read_ed25519_public_key",
+            return_value=("ssh-ed25519", "WORKERKEY"),
         ),
         patch("ezhpcy.cli.tunnel.compute._wait_for_worker_endpoint"),
         patch("ezhpcy.cli.tunnel.compute.create_broker_backend", return_value=object()),

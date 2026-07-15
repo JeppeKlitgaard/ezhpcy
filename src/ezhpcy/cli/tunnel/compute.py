@@ -20,7 +20,7 @@ from ezhpcy.cli.tunnel.provision import (
     provision_worker_infrastructure,
     validate_worker_infrastructure,
 )
-from ezhpcy.cli.utils.ssh import InteractiveSSHClient
+from ezhpcy.cli.utils.ssh import InteractiveSSHClient, read_ed25519_public_key
 from ezhpcy.config import ConnectionInfo, config
 from ezhpcy.constants import (
     WORKER_CLIENT_KEY_NAME,
@@ -70,6 +70,7 @@ def _ensure_local_worker_credentials(conn_info: ConnectionInfo) -> None:
     )
     required_files = (
         ssh_directory / WORKER_CLIENT_KEY_NAME,
+        ssh_directory / f"{WORKER_CLIENT_KEY_NAME}.pub",
         ssh_directory / "worker_known_hosts",
     )
     missing = [str(path) for path in required_files if not path.is_file()]
@@ -265,6 +266,13 @@ def _run_compute_tunnel(
                 remote_host=remote_host,
                 machine_id=machine_id,
             )
+        client_public_key = (
+            config.local_file.ssh_dir(
+                machine_id, user=remote_username, host=remote_host
+            )
+            / f"{WORKER_CLIENT_KEY_NAME}.pub"
+        )
+        key_type, key_blob = read_ed25519_public_key(client_public_key)
         match scheduler_type:
             case SchedulerType.LSF:
                 scheduler: Scheduler = LSFScheduler(
@@ -307,7 +315,14 @@ def _run_compute_tunnel(
             sftp.mkdir(worker_logs_dir, parents=True, exist_ok=True)
 
         spec = JobSpec(
-            command=(str(payload_path), str(worker_port), machine_id, connection_id),
+            command=(
+                str(payload_path),
+                str(worker_port),
+                machine_id,
+                connection_id,
+                key_type,
+                key_blob,
+            ),
             name="ezhpcy-worker",
             time_limit=time_limit,
             memory_bytes=memory_bytes,

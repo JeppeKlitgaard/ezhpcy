@@ -18,6 +18,9 @@ from ezhpcy.worker_payload import (
 
 MACHINE_ID = "a" * 64
 CONNECTION_ID = "alice@login2.hpc.dtu.dk"
+KEY_TYPE = "ssh-ed25519"
+KEY_BLOB = "AAAAC3NzaC1lZDI1NTE5AAAAITestKey="
+VALID_ARGUMENTS = ["23456", MACHINE_ID, CONNECTION_ID, KEY_TYPE, KEY_BLOB]
 
 
 def require_bash() -> None:
@@ -170,16 +173,39 @@ def test_require_worker_payload_rejects_missing_or_corrupt_content(
 @pytest.mark.parametrize(
     ("arguments", "message"),
     [
-        ([], "Usage: ssh-serve PORT MACHINE_ID CONNECTION_ID"),
-        (["not-a-port", MACHINE_ID, CONNECTION_ID], "must be numeric"),
-        (["1023", MACHINE_ID, CONNECTION_ID], "must be between 1024 and 65535"),
-        (["65536", MACHINE_ID, CONNECTION_ID], "must be between 1024 and 65535"),
+        ([], "Usage: ssh-serve PORT MACHINE_ID CONNECTION_ID KEY_TYPE KEY_BLOB"),
         (
-            ["23456", "not-a-machine-id", CONNECTION_ID],
+            ["not-a-port", MACHINE_ID, CONNECTION_ID, KEY_TYPE, KEY_BLOB],
+            "must be numeric",
+        ),
+        (
+            ["1023", MACHINE_ID, CONNECTION_ID, KEY_TYPE, KEY_BLOB],
+            "must be between 1024 and 65535",
+        ),
+        (
+            ["65536", MACHINE_ID, CONNECTION_ID, KEY_TYPE, KEY_BLOB],
+            "must be between 1024 and 65535",
+        ),
+        (
+            ["23456", "not-a-machine-id", CONNECTION_ID, KEY_TYPE, KEY_BLOB],
             "must be lowercase hexadecimal",
         ),
-        (["23456", MACHINE_ID, "../../other"], "contains invalid characters"),
-        (["23456", MACHINE_ID, ".."], "contains invalid characters"),
+        (
+            ["23456", MACHINE_ID, "../../other", KEY_TYPE, KEY_BLOB],
+            "contains invalid characters",
+        ),
+        (
+            ["23456", MACHINE_ID, "..", KEY_TYPE, KEY_BLOB],
+            "contains invalid characters",
+        ),
+        (
+            ["23456", MACHINE_ID, CONNECTION_ID, "ssh-rsa", KEY_BLOB],
+            "must be ssh-ed25519",
+        ),
+        (
+            ["23456", MACHINE_ID, CONNECTION_ID, KEY_TYPE, "bad key"],
+            "public key is malformed",
+        ),
     ],
 )
 def test_worker_payload_rejects_invalid_arguments(tmp_path, arguments, message) -> None:
@@ -207,7 +233,7 @@ def test_worker_payload_requires_a_compute_allocation(tmp_path) -> None:
         environment.pop(name, None)
 
     result = subprocess.run(
-        ["bash", str(script), "23456", MACHINE_ID, CONNECTION_ID],
+        ["bash", str(script), *VALID_ARGUMENTS],
         capture_output=True,
         text=True,
         env=environment,
@@ -223,18 +249,20 @@ def test_worker_payload_validates_then_executes_sshd_through_pixi(tmp_path) -> N
     runtime_home = tmp_path / "runtime"
     version_cache = cache_home / "ezhpcy" / EZHPCY_VERSION
     pixi = version_cache / "pixi" / PIXI_VERSION / "bin" / "pixi"
-    sshd_config = version_cache / "ssh" / MACHINE_ID / CONNECTION_ID / "sshd_config"
+    host_key = (
+        version_cache / "ssh" / MACHINE_ID / CONNECTION_ID / "ssh_host_ed25519_key"
+    )
     capture = tmp_path / "pixi-arguments"
     pixi.parent.mkdir(parents=True)
-    sshd_config.parent.mkdir(parents=True)
-    sshd_config.write_text("test config\n", encoding="utf-8")
+    host_key.parent.mkdir(parents=True)
+    host_key.write_text("test host key\n", encoding="utf-8")
     pixi.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$CAPTURE"\n', encoding="utf-8")
     pixi.chmod(0o755)
     script = tmp_path / "ssh-serve"
     script.write_bytes(render_worker_payload())
 
     result = subprocess.run(
-        ["bash", str(script), "23456", MACHINE_ID, CONNECTION_ID],
+        ["bash", str(script), *VALID_ARGUMENTS],
         capture_output=True,
         text=True,
         env={
@@ -251,6 +279,10 @@ def test_worker_payload_validates_then_executes_sshd_through_pixi(tmp_path) -> N
     assert validation.startswith(f"exec --spec={OPENSSH_MATCHSPEC} sh -c")
     assert "sshd -t" in validation
     assert "-p 23456 -o ListenAddress=0.0.0.0" in validation
+    assert "-f /dev/null" in validation
+    assert f"-o HostKey={host_key.as_posix()}" in validation
+    assert "-o AuthorizedKeysFile=none" in validation
+    assert f"-o AuthorizedKeysCommand=/bin/echo {KEY_TYPE} {KEY_BLOB}" in validation
     assert serving.startswith(f"exec --spec={OPENSSH_MATCHSPEC} sh -c")
     assert "sshd -D -e" in serving
     assert runtime_home.joinpath("ezhpcy").stat().st_mode & 0o777 == 0o700

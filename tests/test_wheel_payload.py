@@ -20,7 +20,7 @@ def test_wheel_contains_local_only_runtime() -> None:
     assert "ezhpcy/static/data/provision.sh.j2" not in names
     assert "ezhpcy/static/data/prune-all.sh.j2" not in names
     assert "ezhpcy/static/data/ssh-serve.sh.j2" in names
-    assert "ezhpcy/static/config/ssh_remote/sshd_config" in names
+    assert "ezhpcy/static/config/ssh_remote/sshd_config" not in names
     assert "ezhpcy/static/config/presets/DTU.toml.j2" in names
     assert not any("_payload" in Path(name).parts for name in names)
     assert "ezhpcy/patch/sdist.py" not in names

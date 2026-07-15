@@ -2,7 +2,6 @@ import io
 import logging
 import os
 import shlex
-from importlib import resources
 from pathlib import Path, PurePosixPath
 from typing import Annotated
 
@@ -10,7 +9,6 @@ import paramiko
 import typer
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519
-from jinja2 import StrictUndefined, Template
 from rich.prompt import Confirm
 
 from ezhpcy import console
@@ -18,7 +16,11 @@ from ezhpcy.cli.tunnel.common import (
     ProfileContext,
     with_profile_options,
 )
-from ezhpcy.cli.utils.ssh import InteractiveSSHClient, absolute_sshd_command
+from ezhpcy.cli.utils.ssh import (
+    InteractiveSSHClient,
+    absolute_sshd_command,
+    read_ed25519_public_key,
+)
 from ezhpcy.config import config
 from ezhpcy.constants import (
     OPENSSH_MATCHSPEC,
@@ -33,8 +35,6 @@ from ezhpcy.ssh import SSHClient
 from ezhpcy.types import RemoteState
 from ezhpcy.utils import local_machine_id, ssh_connection_id
 from ezhpcy.worker_payload import ensure_worker_payload, require_worker_payload
-
-SSHD_CONFIG_RESOURCE = "static/config/ssh_remote/sshd_config"
 
 logger = logging.getLogger(__name__)
 
@@ -101,13 +101,43 @@ def _ensure_local_ssh_keys(
     return *client_keys, *host_keys
 
 
-def _render_sshd_config(
-    template_text: str, *, remote_username: str, remote_config_dir: PurePosixPath
-) -> str:
-    return Template(template_text, undefined=StrictUndefined).render(
-        remote_username=remote_username,
-        remote_config_dir=str(remote_config_dir),
+def _sshd_config_arguments(
+    *,
+    host_key: PurePosixPath,
+    remote_username: str,
+    authorized_key: tuple[str, str],
+) -> list[str]:
+    """Return the complete worker sshd configuration as command-line options."""
+    key_type, key_blob = authorized_key
+    settings = (
+        f"HostKey={host_key}",
+        "AuthorizedKeysFile=none",
+        f"AuthorizedKeysCommand=/bin/echo {key_type} {key_blob}",
+        f"AuthorizedKeysCommandUser={remote_username}",
+        "StrictModes=yes",
+        "PubkeyAuthentication=yes",
+        "AuthenticationMethods=publickey",
+        "PasswordAuthentication=no",
+        "KbdInteractiveAuthentication=no",
+        "PermitEmptyPasswords=no",
+        "PermitRootLogin=no",
+        f"AllowUsers={remote_username}",
+        "HostbasedAuthentication=no",
+        "PermitUserEnvironment=no",
+        "AllowTcpForwarding=yes",
+        "GatewayPorts=no",
+        "AllowAgentForwarding=no",
+        "X11Forwarding=no",
+        "PermitTunnel=no",
+        "UseDNS=no",
+        "LogLevel=INFO",
+        "Subsystem=sftp internal-sftp",
     )
+    return [
+        "-f",
+        "/dev/null",
+        *(part for setting in settings for part in ("-o", setting)),
+    ]
 
 
 def _pin_worker_host_key(host_public_key: str, known_hosts: Path) -> None:
@@ -190,8 +220,6 @@ def provision_worker_infrastructure(
         machine_id, user=remote_username, host=remote_host
     )
 
-    sshd_config_traversable = resources.files("ezhpcy").joinpath(SSHD_CONFIG_RESOURCE)
-
     provision_pixi(ssh, remote_state)
     provision_openssh(ssh, remote_state)
 
@@ -209,33 +237,24 @@ def provision_worker_infrastructure(
         sftp.mkdir(remote_ssh_dir, mode=0o700, parents=True, exist_ok=True)
         sftp.chmod(str(remote_ssh_dir), 0o700)
 
-        remote_authorized_keys = remote_ssh_dir / "authorized_keys"
-        sftp.put(str(client_public_key), str(remote_authorized_keys))
-        sftp.chmod(str(remote_authorized_keys), 0o600)
-
         remote_host_key = remote_ssh_dir / WORKER_HOST_KEY_NAME
         remote_host_public_key = PurePosixPath(f"{remote_host_key}.pub")
-        remote_sshd_config = remote_ssh_dir / "sshd_config"
         sftp.put(str(host_private_key), str(remote_host_key))
         sftp.put(str(host_public_key), str(remote_host_public_key))
 
-        with resources.as_file(sshd_config_traversable) as sshd_config_template:
-            rendered_config = _render_sshd_config(
-                sshd_config_template.read_text(encoding="utf-8"),
-                remote_username=remote_username,
-                remote_config_dir=remote_ssh_dir,
-            )
-        sftp.write_text(remote_sshd_config, rendered_config)
-
         sftp.chmod(str(remote_host_key), 0o600)
-        sftp.chmod(str(remote_sshd_config), 0o600)
         sftp.chmod(str(remote_host_public_key), 0o644)
 
+        sshd_arguments = _sshd_config_arguments(
+            host_key=remote_host_key,
+            remote_username=remote_username,
+            authorized_key=read_ed25519_public_key(client_public_key),
+        )
         ssh.run_pixi(
             [
                 "exec",
                 f"--spec={OPENSSH_MATCHSPEC}",
-                *absolute_sshd_command(["-t", "-f", str(remote_sshd_config)]),
+                *absolute_sshd_command(["-t", *sshd_arguments]),
             ],
             remote_state=remote_state,
         )
@@ -264,10 +283,8 @@ def validate_worker_infrastructure(
     )
     required = (
         remote_state.pixi_executable(),
-        remote_ssh_dir / "authorized_keys",
         remote_ssh_dir / WORKER_HOST_KEY_NAME,
         PurePosixPath(f"{remote_ssh_dir / WORKER_HOST_KEY_NAME}.pub"),
-        remote_ssh_dir / "sshd_config",
     )
     missing: list[str] = []
     with ssh.sftp_client() as sftp:

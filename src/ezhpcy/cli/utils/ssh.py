@@ -1,4 +1,5 @@
 from binascii import hexlify
+from pathlib import Path
 
 import paramiko
 from paramiko.common import DEBUG
@@ -18,6 +19,26 @@ _EXEC_ABSOLUTE_SSHD = (
 def absolute_sshd_command(arguments: list[str]) -> list[str]:
     """Run ``sshd`` by its resolved absolute path within a Pixi environment."""
     return ["sh", "-c", _EXEC_ABSOLUTE_SSHD, "sshd", *arguments]
+
+
+def read_ed25519_public_key(path: Path) -> tuple[str, str]:
+    """Read the two fields needed to authorize a generated worker key."""
+    try:
+        fields = path.read_text(encoding="ascii").split()
+    except (OSError, UnicodeError) as error:
+        raise RuntimeError(
+            f"Could not read worker public key at {path}: {error}"
+        ) from error
+    if len(fields) < 2 or fields[0] != "ssh-ed25519":
+        raise RuntimeError(f"The worker public key at {path} is malformed.")
+    key_type, key_blob = fields[:2]
+    if not key_blob or any(
+        character
+        not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/="
+        for character in key_blob
+    ):
+        raise RuntimeError(f"The worker public key at {path} is malformed.")
+    return key_type, key_blob
 
 
 class PromptMissingHostKeyPolicy(paramiko.MissingHostKeyPolicy):

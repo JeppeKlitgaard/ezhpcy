@@ -3,14 +3,16 @@ set -eu
 
 openssh_matchspec={{ openssh_matchspec }}
 
-if [ "$#" -ne 3 ]; then
-    echo "Usage: ssh-serve PORT MACHINE_ID CONNECTION_ID" >&2
+if [ "$#" -ne 5 ]; then
+    echo "Usage: ssh-serve PORT MACHINE_ID CONNECTION_ID KEY_TYPE KEY_BLOB" >&2
     exit 2
 fi
 
 port=$1
 machine_id=$2
 connection_id=$3
+key_type=$4
+key_blob=$5
 case "$port" in
     ''|*[!0-9]*)
         echo "Worker SSH port must be numeric." >&2
@@ -36,6 +38,17 @@ case "$connection_id" in
         ;;
 esac
 
+if [ "$key_type" != "ssh-ed25519" ]; then
+    echo "Worker SSH key type must be ssh-ed25519." >&2
+    exit 2
+fi
+case "$key_blob" in
+    ''|*[!A-Za-z0-9+/=]*)
+        echo "Worker SSH public key is malformed." >&2
+        exit 2
+        ;;
+esac
+
 if [ -z "${LSB_JOBID+x}" ] && [ -z "${LSF_ENVDIR+x}" ] && [ -z "${PBS_JOBID+x}" ]; then
     echo "Worker SSH must run inside an LSF or PBS compute allocation." >&2
     exit 1
@@ -52,15 +65,15 @@ fi
 pixi_home="$ezhpcy_cache_dir/pixi/{{ pixi_version }}"
 pixi_cache_dir="$ezhpcy_cache_dir/pixi_cache/{{ pixi_version }}"
 pixi="$pixi_home/bin/pixi"
-sshd_config="$ezhpcy_cache_dir/ssh/$machine_id/$connection_id/sshd_config"
+host_key="$ezhpcy_cache_dir/ssh/$machine_id/$connection_id/ssh_host_ed25519_key"
 sshd_pid="$runtime_dir/sshd-$$.pid"
 
 if [ ! -x "$pixi" ]; then
     echo "Private Pixi executable was not found at $pixi." >&2
     exit 1
 fi
-if [ ! -f "$sshd_config" ]; then
-    echo "Provisioned SSH configuration was not found at $sshd_config." >&2
+if [ ! -f "$host_key" ]; then
+    echo "Provisioned SSH host key was not found at $host_key." >&2
     exit 1
 fi
 
@@ -69,6 +82,32 @@ mkdir -p "$runtime_dir"
 chmod 0700 "$runtime_dir"
 export PIXI_HOME="$pixi_home"
 export PIXI_CACHE_DIR="$pixi_cache_dir"
+
+remote_username=$(id -un)
+set -- \
+    -f /dev/null \
+    -o "HostKey=$host_key" \
+    -o AuthorizedKeysFile=none \
+    -o "AuthorizedKeysCommand=/bin/echo $key_type $key_blob" \
+    -o "AuthorizedKeysCommandUser=$remote_username" \
+    -o StrictModes=yes \
+    -o PubkeyAuthentication=yes \
+    -o AuthenticationMethods=publickey \
+    -o PasswordAuthentication=no \
+    -o KbdInteractiveAuthentication=no \
+    -o PermitEmptyPasswords=no \
+    -o PermitRootLogin=no \
+    -o "AllowUsers=$remote_username" \
+    -o HostbasedAuthentication=no \
+    -o PermitUserEnvironment=no \
+    -o AllowTcpForwarding=yes \
+    -o GatewayPorts=no \
+    -o AllowAgentForwarding=no \
+    -o X11Forwarding=no \
+    -o PermitTunnel=no \
+    -o UseDNS=no \
+    -o LogLevel=INFO \
+    -o "Subsystem=sftp internal-sftp"
 
 run_sshd() {
     "$pixi" exec --spec="$openssh_matchspec" sh -c '
@@ -80,8 +119,8 @@ run_sshd() {
     ' sshd "$@"
 }
 
-run_sshd -t -f "$sshd_config" -p "$port" \
-    -o ListenAddress=0.0.0.0 -o "PidFile=$sshd_pid"
+run_sshd -t -p "$port" \
+    -o ListenAddress=0.0.0.0 -o "PidFile=$sshd_pid" "$@"
 
 echo "Worker SSH endpoint: 0.0.0.0:$port" >&2
 exec "$pixi" exec --spec="$openssh_matchspec" sh -c '
@@ -90,5 +129,5 @@ exec "$pixi" exec --spec="$openssh_matchspec" sh -c '
         /*) exec "$sshd_path" "$@" ;;
         *) echo "sshd must resolve to an absolute path" >&2; exit 1 ;;
     esac
-' sshd -D -e -f "$sshd_config" -p "$port" \
-    -o ListenAddress=0.0.0.0 -o "PidFile=$sshd_pid"
+' sshd -D -e -p "$port" \
+    -o ListenAddress=0.0.0.0 -o "PidFile=$sshd_pid" "$@"

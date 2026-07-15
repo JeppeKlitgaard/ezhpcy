@@ -1,3 +1,4 @@
+import logging
 import shlex
 import stat
 from collections.abc import Iterator
@@ -10,9 +11,22 @@ from ezhpcy.config import ConnectionInfo, RemoteFileConfig
 from ezhpcy.constants import PACKAGE_NAME
 from ezhpcy.scheduler.base import RemoteProcess
 
+logger = logging.getLogger(__name__)
+
 
 class SFTPClient(paramiko.SFTPClient):
     """SFTP client with convenience methods for ezhpcy's remote operations."""
+
+    def read_bytes(self, path: str | PurePosixPath) -> bytes:
+        """Read a remote file as bytes."""
+        with self.file(str(path), "rb") as remote_file:
+            return remote_file.read()
+
+    def write_bytes(self, path: str | PurePosixPath, content: bytes) -> int:
+        """Write bytes to a remote file."""
+        with self.file(str(path), "wb") as remote_file:
+            remote_file.write(content)
+        return len(content)
 
     def read_text(
         self,
@@ -180,4 +194,5 @@ class SSHClient(paramiko.SSHClient):
         raw = self.run(["bash", "-lc", cmd]).strip()
 
         file_config = RemoteFileConfig.model_validate_json(raw, strict=True)
+        logger.debug("Resolved remote file locations: %s", file_config)
         return file_config

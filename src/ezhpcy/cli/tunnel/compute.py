@@ -17,6 +17,10 @@ from ezhpcy.cli.tunnel.common import (
     local_machine_or_fail,
     with_profile_options,
 )
+from ezhpcy.cli.tunnel.provision import (
+    provision_worker_infrastructure,
+    validate_worker_infrastructure,
+)
 from ezhpcy.cli.utils.ssh import InteractiveSSHClient
 from ezhpcy.config import ConnectionInfo, get_config
 from ezhpcy.constants import (
@@ -47,6 +51,7 @@ _LAST_DYNAMIC_PORT = 65535
 _JOB_POLL_INTERVAL = 1.0
 _JOB_MONITOR_INTERVAL = 5.0
 _SSH_BANNER_LIMIT = 255
+logger = logging.getLogger(__name__)
 
 
 class ComputeTunnelError(RuntimeError):
@@ -68,7 +73,7 @@ def _ensure_local_worker_credentials() -> None:
     missing = [str(path) for path in required_files if not path.is_file()]
     if missing:
         raise ComputeTunnelError(
-            "worker SSH credentials are missing; run `ezhpcy tunnel install` first "
+            "worker SSH credentials are missing; run `ezhpcy tunnel provision` first "
             f"(missing: {', '.join(missing)})"
         )
 
@@ -186,14 +191,14 @@ def _monitor_job(
             info = scheduler.inspect(job_id)
         except SchedulerError as error:
             errors.append(error)
+            logger.error("Could not inspect worker job %s: %s", job_id, error)
             broker.close()
             return
 
         if info.state.is_terminal or info.state is JobState.UNKNOWN:
             job_finished.set()
-            typer.echo(
-                f"Worker job {job_id} ended in scheduler state {info.raw_state}.",
-                err=True,
+            logger.info(
+                "Worker job %s ended in scheduler state %s.", job_id, info.raw_state
             )
             broker.close()
             return
@@ -228,6 +233,7 @@ def _run_compute_tunnel(
     queue_timeout_seconds: float,
     startup_timeout_seconds: float,
     worker_port: int,
+    auto_provision: bool,
 ) -> None:
     with InteractiveSSHClient(conn_info) as ssh:
         ssh.interactive_connect()
@@ -235,15 +241,17 @@ def _run_compute_tunnel(
         if transport is None or not transport.is_active():
             raise paramiko.SSHException("Login-node SSH session is not active")
 
-        try:
-            ssh.run(["ezhpcy", "compute", "ssh-serve", "--help"])
-        except RuntimeError as error:
-            raise ComputeTunnelError(
-                "the remote ezhpcy installation does not provide worker SSH; run "
-                "`ezhpcy tunnel reinstall`"
-            ) from error
-
         remote_files = ssh.get_file_config()
+        if auto_provision:
+            remote_username = conn_info.user
+            assert remote_username is not None
+            payload_path = provision_worker_infrastructure(
+                ssh,
+                remote_files,
+                remote_username=remote_username,
+            )
+        else:
+            payload_path = validate_worker_infrastructure(ssh, remote_files)
         match scheduler_type:
             case SchedulerType.LSF:
                 scheduler: Scheduler = LSFScheduler(
@@ -264,12 +272,23 @@ def _run_compute_tunnel(
                 )
             case _:
                 raise UnsupportedSchedulerError(scheduler_type)
-        typer.echo(
-            f"Using profile {profile_name!r} with {scheduler_type.value} scheduler."
+        logger.info(
+            "Using profile %r with %s scheduler.", profile_name, scheduler_type.value
+        )
+        logger.debug(
+            "Worker request: queue=%r cores=%d gpus=%d exclusive=%s "
+            "time_limit=%s memory_bytes=%s port=%d",
+            queue,
+            cores,
+            gpus,
+            exclusive,
+            time_limit,
+            memory_bytes,
+            worker_port,
         )
         worker_directory = remote_files.data_dir / PACKAGE_NAME
         spec = JobSpec(
-            command=("ezhpcy", "compute", "ssh-serve", str(worker_port)),
+            command=(str(payload_path), str(worker_port)),
             name="ezhpcy-worker",
             time_limit=time_limit,
             memory_bytes=memory_bytes,
@@ -287,16 +306,17 @@ def _run_compute_tunnel(
             startup_timeout=startup_timeout_seconds,
         )
         job_id = interactive_job.job_id
-        typer.echo(f"Submitted worker job {job_id}.")
+        logger.info("Submitted worker job %s.", job_id)
         if interactive_job.submission_command:
-            typer.echo(
-                f"Submission command: {shlex.join(interactive_job.submission_command)}"
+            logger.debug(
+                "Submission command: %s",
+                shlex.join(interactive_job.submission_command),
             )
         if scheduler_type is SchedulerType.LSF:
-            typer.echo(
-                "Worker logs: "
-                f"{str(spec.stdout_path).replace('%J', job_id)} and "
-                f"{str(spec.stderr_path).replace('%J', job_id)}."
+            logger.info(
+                "Worker logs: %s and %s.",
+                str(spec.stdout_path).replace("%J", job_id),
+                str(spec.stderr_path).replace("%J", job_id),
             )
         job_finished = threading.Event()
         output_stop = threading.Event()
@@ -312,9 +332,11 @@ def _run_compute_tunnel(
                 scheduler,
                 job_id,
                 timeout_seconds=queue_timeout_seconds,
-                state_handler=lambda snapshot: typer.echo(
-                    f"Worker job {job_id}: {snapshot.state.value} "
-                    f"({snapshot.raw_state})."
+                state_handler=lambda snapshot: logger.info(
+                    "Worker job %s: %s (%s).",
+                    job_id,
+                    snapshot.state.value,
+                    snapshot.raw_state,
                 ),
             )
             worker_host = info.primary_host
@@ -324,7 +346,9 @@ def _run_compute_tunnel(
                 )
             interactive_job.start_payload()
             destination = (worker_host, worker_port)
-            typer.echo(f"Waiting for worker SSH endpoint {worker_host}:{worker_port}.")
+            logger.info(
+                "Waiting for worker SSH endpoint %s:%d.", worker_host, worker_port
+            )
             _wait_for_worker_endpoint(
                 transport,
                 destination,
@@ -336,8 +360,8 @@ def _run_compute_tunnel(
                 transport,
                 destination,
                 backend,
-                error_handler=lambda error: typer.echo(
-                    f"Broker client error: {error}", err=True
+                error_handler=lambda error: logger.error(
+                    "Broker client error: %s", error
                 ),
             )
             monitor_stop = threading.Event()
@@ -357,13 +381,16 @@ def _run_compute_tunnel(
             )
             monitor.start()
 
-            typer.echo(
-                f"Tunnel ready for `{WORKER_HOST_ALIAS}` via worker "
-                f"{worker_host}:{worker_port} (press Ctrl+C to stop)."
+            logger.info(
+                "Tunnel ready for %s via worker %s:%d (press Ctrl+C to stop).",
+                WORKER_HOST_ALIAS,
+                worker_host,
+                worker_port,
             )
-            typer.echo(
-                f"Connect with `ssh {WORKER_HOST_ALIAS}` or select "
-                f"`{WORKER_HOST_ALIAS}` in VS Code Remote-SSH."
+            logger.info(
+                "Connect with `ssh %s` or select `%s` in VS Code Remote-SSH.",
+                WORKER_HOST_ALIAS,
+                WORKER_HOST_ALIAS,
             )
             previous_sigbreak_handler = None
             if hasattr(signal, "SIGBREAK"):
@@ -373,7 +400,7 @@ def _run_compute_tunnel(
             try:
                 broker.serve_forever()
             except KeyboardInterrupt:
-                typer.echo("Stopping compute-node tunnel...", err=True)
+                logger.info("Stopping compute-node tunnel...")
             finally:
                 monitor_stop.set()
                 broker.close()
@@ -389,12 +416,9 @@ def _run_compute_tunnel(
             if not job_finished.is_set():
                 try:
                     scheduler.cancel(job_id)
-                    typer.echo(f"Cancelled worker job {job_id}.", err=True)
+                    logger.info("Cancelled worker job %s.", job_id)
                 except SchedulerError as error:
-                    typer.echo(
-                        f"Warning: could not cancel worker job {job_id}: {error}",
-                        err=True,
-                    )
+                    logger.warning("Could not cancel worker job %s: %s", job_id, error)
             output_stop.set()
             interactive_job.close()
             output_thread.join(timeout=1)
@@ -483,6 +507,20 @@ def compute_cmd(
             help="Worker SSH port; defaults to a random dynamic port.",
         ),
     ] = None,
+    auto_provision: Annotated[
+        bool,
+        typer.Option(
+            "--auto-provision",
+            help="Provision or repair worker infrastructure before submission.",
+        ),
+    ] = False,
+    no_auto_provision: Annotated[
+        bool,
+        typer.Option(
+            "--no-auto-provision",
+            help="Do not provision or repair worker infrastructure before submission.",
+        ),
+    ] = False,
 ) -> None:
     """Allocate a compute node and expose its SSH service through the broker."""
     local_machine_or_fail()
@@ -522,7 +560,19 @@ def compute_cmd(
                 "scheduler must be set by --scheduler or the selected profile",
                 param_hint="--scheduler",
             )
-        _ensure_local_worker_credentials()
+        if auto_provision and no_auto_provision:
+            raise typer.BadParameter(
+                "--auto-provision and --no-auto-provision cannot be used together",
+                param_hint="--auto-provision/--no-auto-provision",
+            )
+        if auto_provision:
+            auto_provision_enabled = True
+        elif no_auto_provision:
+            auto_provision_enabled = False
+        else:
+            auto_provision_enabled = get_config().auto_provision
+        if not auto_provision_enabled:
+            _ensure_local_worker_credentials()
         _run_compute_tunnel(
             profile_name=profile_context.name,
             profile=resolved,
@@ -537,9 +587,14 @@ def compute_cmd(
             queue_timeout_seconds=resolved.queue_timeout_seconds,
             startup_timeout_seconds=resolved.worker_startup_timeout_seconds,
             worker_port=worker_port or _select_worker_port(),
+            auto_provision=auto_provision_enabled,
         )
     except KeyboardInterrupt:
-        typer.echo("Compute-node tunnel stopped.", err=True)
+        logger.info("Compute-node tunnel stopped.")
     except (IPCError, RuntimeError, paramiko.SSHException) as error:
-        typer.echo(f"Could not start compute-node tunnel: {error}", err=True)
+        logger.error(
+            "Could not start compute-node tunnel: %s",
+            error,
+            exc_info=logger.isEnabledFor(logging.DEBUG),
+        )
         raise typer.Exit(code=1) from error

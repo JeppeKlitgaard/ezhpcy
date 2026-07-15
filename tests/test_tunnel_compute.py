@@ -1,7 +1,7 @@
 import logging
 from datetime import timedelta
 from pathlib import PurePosixPath
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 import paramiko
 import pytest
@@ -284,7 +284,7 @@ def test_worker_endpoint_waits_for_an_ssh_banner() -> None:
         transport_logger.setLevel(previous_level)
 
 
-def test_compute_tunnel_submits_worker_starts_broker_and_cancels(capsys) -> None:
+def test_compute_tunnel_submits_worker_starts_broker_and_cancels() -> None:
     transport = StubTransport()
     ssh = StubSSH(transport)
     scheduler = StubScheduler([snapshot(JobState.RUNNING, "RUN", "node42")])
@@ -304,9 +304,16 @@ def test_compute_tunnel_submits_worker_starts_broker_and_cancels(capsys) -> None
             "ezhpcy.cli.tunnel.compute.LSFScheduler",
             return_value=scheduler,
         ) as scheduler_constructor,
+        patch(
+            "ezhpcy.cli.tunnel.compute.provision_worker_infrastructure",
+            return_value=PurePosixPath(
+                "/home/alice/.local/share/ezhpcy/payloads/abc123/ssh-serve"
+            ),
+        ),
         patch("ezhpcy.cli.tunnel.compute._wait_for_worker_endpoint"),
         patch("ezhpcy.cli.tunnel.compute.create_broker_backend", return_value=object()),
         patch("ezhpcy.cli.tunnel.compute.ForegroundBroker", side_effect=make_broker),
+        patch("ezhpcy.cli.tunnel.compute.logger") as logger,
     ):
         _run_compute_tunnel(
             profile_name="default",
@@ -322,11 +329,15 @@ def test_compute_tunnel_submits_worker_starts_broker_and_cancels(capsys) -> None
             queue_timeout_seconds=10,
             startup_timeout_seconds=10,
             worker_port=54321,
+            auto_provision=True,
         )
 
     assert len(scheduler.submitted) == 1
     spec = scheduler.submitted[0]
-    assert tuple(spec.command) == ("ezhpcy", "compute", "ssh-serve", "54321")
+    assert tuple(spec.command) == (
+        "/home/alice/.local/share/ezhpcy/payloads/abc123/ssh-serve",
+        "54321",
+    )
     assert spec.queue == "normal"
     assert spec.memory_bytes == 2048 * _MEBIBYTE
     assert spec.cores == 32
@@ -342,10 +353,16 @@ def test_compute_tunnel_submits_worker_starts_broker_and_cancels(capsys) -> None
     assert scheduler.cancelled == ["42"]
     assert scheduler.process.closed
     assert scheduler.payload_starts == 1
-    assert ssh.commands == [["ezhpcy", "compute", "ssh-serve", "--help"]]
-    assert (
-        "Submission command: bsub -Is -q hpcint echo 'hello world'"
-        in capsys.readouterr().out
+    assert ssh.commands == []
+    logger.debug.assert_any_call(
+        "Submission command: %s", "bsub -Is -q hpcint echo 'hello world'"
+    )
+    logger.info.assert_any_call("Submitted worker job %s.", "42")
+    logger.info.assert_any_call(
+        "Tunnel ready for %s via worker %s:%d (press Ctrl+C to stop).",
+        "ezhpcy-worker",
+        "node42",
+        54321,
     )
 
 
@@ -362,6 +379,12 @@ def test_compute_tunnel_cancels_job_when_worker_startup_fails() -> None:
         patch(
             "ezhpcy.cli.tunnel.compute.LSFScheduler",
             return_value=scheduler,
+        ),
+        patch(
+            "ezhpcy.cli.tunnel.compute.provision_worker_infrastructure",
+            return_value=PurePosixPath(
+                "/home/alice/.local/share/ezhpcy/payloads/abc123/ssh-serve"
+            ),
         ),
         patch(
             "ezhpcy.cli.tunnel.compute._wait_for_worker_endpoint",
@@ -383,13 +406,14 @@ def test_compute_tunnel_cancels_job_when_worker_startup_fails() -> None:
             queue_timeout_seconds=10,
             startup_timeout_seconds=10,
             worker_port=54321,
+            auto_provision=True,
         )
 
     assert scheduler.cancelled == ["42"]
     assert scheduler.process.closed
 
 
-def test_compute_tunnel_uses_explicit_pbs_and_linuxsh_defaults(capsys) -> None:
+def test_compute_tunnel_uses_explicit_pbs_and_linuxsh_defaults() -> None:
     transport = StubTransport()
     ssh = StubSSH(transport)
     scheduler = StubScheduler([snapshot(JobState.RUNNING, "R", "node42")])
@@ -399,9 +423,16 @@ def test_compute_tunnel_uses_explicit_pbs_and_linuxsh_defaults(capsys) -> None:
         patch(
             "ezhpcy.cli.tunnel.compute.PBSScheduler", return_value=scheduler
         ) as scheduler_constructor,
+        patch(
+            "ezhpcy.cli.tunnel.compute.provision_worker_infrastructure",
+            return_value=PurePosixPath(
+                "/home/alice/.local/share/ezhpcy/payloads/abc123/ssh-serve"
+            ),
+        ),
         patch("ezhpcy.cli.tunnel.compute._wait_for_worker_endpoint"),
         patch("ezhpcy.cli.tunnel.compute.create_broker_backend", return_value=object()),
         patch("ezhpcy.cli.tunnel.compute.ForegroundBroker", StubBroker),
+        patch("ezhpcy.cli.tunnel.compute.logger") as logger,
     ):
         _run_compute_tunnel(
             profile_name="pbs",
@@ -417,6 +448,7 @@ def test_compute_tunnel_uses_explicit_pbs_and_linuxsh_defaults(capsys) -> None:
             queue_timeout_seconds=10,
             startup_timeout_seconds=10,
             worker_port=54321,
+            auto_provision=True,
         )
 
     assert scheduler.submitted[0].cores == 1
@@ -428,9 +460,13 @@ def test_compute_tunnel_uses_explicit_pbs_and_linuxsh_defaults(capsys) -> None:
     assert scheduler.submitted[0].queue == "workq"
     assert scheduler.submitted[0].memory_bytes is None
     assert scheduler.payload_starts == 1
-    output = capsys.readouterr().out
-    assert "Using profile 'pbs' with PBS scheduler." in output
-    assert "Worker logs:" not in output
+    assert call("Using profile %r with %s scheduler.", "pbs", "PBS") in (
+        logger.info.call_args_list
+    )
+    assert not any(
+        log_call.args[0].startswith("Worker logs:")
+        for log_call in logger.info.call_args_list
+    )
 
 
 def test_compute_tunnel_help_exposes_scheduler_and_resource_options() -> None:
@@ -447,6 +483,8 @@ def test_compute_tunnel_help_exposes_scheduler_and_resource_options() -> None:
     assert "--queue-timeout" in result.stdout
     assert "--startup-timeout" in result.stdout
     assert "--worker-port" in result.stdout
+    assert "--auto-provision" in result.stdout
+    assert "--no-auto-provision" in result.stdout
     assert "--profile" in result.stdout
 
 
@@ -509,6 +547,93 @@ def test_compute_command_resolves_profile_and_applies_cli_overrides(
     assert captured["conn_info"] == ConnectionInfo(
         host="login.example.com", user="alice"
     )
+    assert captured["auto_provision"] is True
+
+
+def test_compute_command_can_disable_auto_provision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(compute_module.get_config(), "default_profile", "default")
+    monkeypatch.setattr(
+        compute_module.get_config(),
+        "profile",
+        {
+            "default": ProfileConfig(
+                host="login.example.com", user="alice", scheduler="LSF"
+            )
+        },
+    )
+    credentials_checked = False
+    captured: dict[str, object] = {}
+
+    def check_credentials() -> None:
+        nonlocal credentials_checked
+        credentials_checked = True
+
+    monkeypatch.setattr(
+        compute_module, "_ensure_local_worker_credentials", check_credentials
+    )
+    monkeypatch.setattr(
+        compute_module,
+        "_run_compute_tunnel",
+        lambda **kwargs: captured.update(kwargs),
+    )
+
+    result = CliRunner().invoke(app, ["tunnel", "compute", "--no-auto-provision"])
+
+    assert result.exit_code == 0, result.output
+    assert credentials_checked
+    assert captured["auto_provision"] is False
+
+
+def test_compute_command_can_enable_auto_provision_when_config_disables_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(compute_module.get_config(), "default_profile", "default")
+    monkeypatch.setattr(compute_module.get_config(), "auto_provision", False)
+    monkeypatch.setattr(
+        compute_module.get_config(),
+        "profile",
+        {
+            "default": ProfileConfig(
+                host="login.example.com", user="alice", scheduler="LSF"
+            )
+        },
+    )
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        compute_module,
+        "_run_compute_tunnel",
+        lambda **kwargs: captured.update(kwargs),
+    )
+
+    result = CliRunner().invoke(app, ["tunnel", "compute", "--auto-provision"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["auto_provision"] is True
+
+
+def test_compute_command_rejects_conflicting_auto_provision_flags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(compute_module.get_config(), "default_profile", "default")
+    monkeypatch.setattr(
+        compute_module.get_config(),
+        "profile",
+        {
+            "default": ProfileConfig(
+                host="login.example.com", user="alice", scheduler="LSF"
+            )
+        },
+    )
+
+    result = CliRunner().invoke(
+        app,
+        ["tunnel", "compute", "--auto-provision", "--no-auto-provision"],
+    )
+
+    assert result.exit_code == 2
+    assert "cannot be used together" in result.output
 
 
 def test_compute_command_rejects_unknown_profile_before_starting(

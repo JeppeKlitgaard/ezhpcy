@@ -5,7 +5,7 @@ from functools import cache
 from pathlib import Path, PurePath, PurePosixPath
 from typing import Generic, Self, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic_extra_types.domain import DomainStr
 from pydantic_settings import (
     BaseSettings,
@@ -14,6 +14,7 @@ from pydantic_settings import (
     TomlConfigSettingsSource,
 )
 
+from ezhpcy.logging import LogLevel, configure_logging
 from ezhpcy.types import ProfileConfig, ResolvedProfileConfig
 
 _PROFILE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
@@ -105,10 +106,17 @@ class ConnectionInfo(BaseModel):
 
 class _LocalConfigValues(BaseModel):
     local_file: LocalFileConfig = LocalFileConfig()
+    log_level: LogLevel = LogLevel.INFO
+    auto_provision: bool = True
     default_profile: str | None = None
     profile: dict[str, ProfileConfig] = Field(default_factory=dict)
 
     model_config = ConfigDict(extra="forbid")
+
+    @field_validator("log_level", mode="before")
+    @classmethod
+    def normalize_log_level(cls, value: object) -> object:
+        return value.upper() if isinstance(value, str) else value
 
     @model_validator(mode="after")
     def validate_profiles(self) -> Self:
@@ -194,6 +202,8 @@ class LocalConfig(BaseSettings, _LocalConfigValues):
         validated = _LocalConfigValues.model_validate(values)
         return cls.model_construct(
             local_file=validated.local_file,
+            log_level=validated.log_level,
+            auto_provision=validated.auto_provision,
             default_profile=validated.default_profile,
             profile=validated.profile,
         )
@@ -202,4 +212,6 @@ class LocalConfig(BaseSettings, _LocalConfigValues):
 @cache
 def get_config() -> LocalConfig:
     """Load the workstation-only configuration on first local use."""
-    return LocalConfig()
+    config = LocalConfig()
+    configure_logging(config.log_level)
+    return config

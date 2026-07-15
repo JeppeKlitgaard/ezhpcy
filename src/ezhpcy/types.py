@@ -105,6 +105,14 @@ class ResolvedProfileConfig(_ResolvedConfigBase):
     user: str | None = None
 
 
+class RemoteState(BaseModel):
+    """
+    The state of the remote machine (login node) as discovered by ezhpcy.
+    """
+
+    cache_dir: PurePosixPath
+
+
 class ResolvedConfig(_ResolvedConfigBase):
     """
     A profile after required environment and CLI values are applied.

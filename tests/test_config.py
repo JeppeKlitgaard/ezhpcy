@@ -1,3 +1,4 @@
+import logging
 from datetime import timedelta
 from pathlib import Path
 
@@ -5,6 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from ezhpcy import config as config_module
+from ezhpcy.logging import LOG_LEVEL_ENVIRONMENT_VARIABLE, LogLevel
 from ezhpcy.scheduler.types import SchedulerType
 from ezhpcy.types import ResolvedConfig
 
@@ -42,6 +44,50 @@ def test_default_runtime_dir_falls_back_to_per_user_temp(monkeypatch) -> None:
     monkeypatch.setattr(config_module.os, "getuid", lambda: 1234, raising=False)
 
     assert config_module._get_default_runtime_dir() == Path("/tmp/ezhpcy-1234")
+
+
+def test_log_level_is_case_insensitive() -> None:
+    config = config_module.LocalConfig.from_mapping({"log_level": "debug"})
+
+    assert config.log_level is LogLevel.DEBUG
+
+
+def test_log_level_can_be_overridden_from_the_environment(monkeypatch) -> None:
+    monkeypatch.setenv(LOG_LEVEL_ENVIRONMENT_VARIABLE, "warning")
+
+    config = config_module.LocalConfig()
+
+    assert config.log_level is LogLevel.WARNING
+
+
+def test_invalid_log_level_is_rejected() -> None:
+    with pytest.raises(ValidationError, match="log_level"):
+        config_module.LocalConfig.from_mapping({"log_level": "verbose"})
+
+
+def test_auto_provision_defaults_to_true() -> None:
+    assert config_module.LocalConfig.from_mapping({}).auto_provision is True
+
+
+def test_auto_provision_can_be_disabled_from_the_environment(monkeypatch) -> None:
+    monkeypatch.setenv("EZHPCY_AUTO_PROVISION", "FALSE")
+
+    config = config_module.LocalConfig()
+
+    assert config.auto_provision is False
+
+
+def test_get_config_applies_the_configured_log_level(monkeypatch) -> None:
+    config = config_module.LocalConfig.from_mapping({"log_level": "ERROR"})
+    monkeypatch.setattr(config_module, "LocalConfig", lambda: config)
+    config_module.get_config.cache_clear()
+
+    try:
+        assert config_module.get_config() is config
+        assert logging.getLogger("ezhpcy").level == logging.ERROR
+    finally:
+        config_module.get_config.cache_clear()
+        logging.getLogger("ezhpcy").setLevel(logging.INFO)
 
 
 def test_nested_profile_inheritance_resolves_all_ancestor_values() -> None:

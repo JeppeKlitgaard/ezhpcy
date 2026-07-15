@@ -1,6 +1,5 @@
 PACKAGE_NAME = "ezhpcy"
 OPENSSH_MATCHSPEC = "openssh==10.4p1"
-UV_MATCHSPEC = "uv==0.11.26"
 SSH_DIRECTORY_NAME = "ssh"
 WORKER_CLIENT_KEY_NAME = "worker_client_ed25519"
 WORKER_HOST_ALIAS = "ezhpcy-worker"

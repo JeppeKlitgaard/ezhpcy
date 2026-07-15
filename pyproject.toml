@@ -7,22 +7,18 @@ dependencies = [
     "pydantic-extra-types>=2.11.1",
     "pydantic-settings>=2.14.2",
     "pydantic>=2.13.4",
-
-    # Build system
-    "hatchling>=1.31.0",
+    # Templates
     "jinja2>=3.1.6",
-
     # Networking
     "paramiko>=4.0.0",
     "requests>=2.34.2",
-
     # CLI
     "rich>=15.0.0",
     "typer>=0.26.8",
-
     # Keyring, secretstorage is for keyring on Linux
     "keyring>=25.7.0",
     "secretstorage>=3.5.0 ; sys_platform == 'linux'",
+    "py-machineid>=1.0.0",
 ]
 
 [project.scripts]
@@ -46,9 +42,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/ezhpcy"]
-
-[tool.hatch.build.targets.wheel.hooks.custom]
-path = "hatch_build.py"
 
 [tool.hatch.build.targets.sdist]
 exclude = [

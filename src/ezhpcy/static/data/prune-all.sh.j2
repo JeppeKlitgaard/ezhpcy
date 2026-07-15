@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+xdg_data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
+xdg_cache_home="${XDG_CACHE_HOME:-$HOME/.cache}"
+xdg_config_home="${XDG_CONFIG_HOME:-$HOME/.config}"
+remote_root="${EZHPCY_REMOTE_ROOT:-$xdg_data_home/ezhpcy}"
+ezhpcy_cache_dir="${EZHPCY_CACHE_DIR:-$xdg_cache_home/ezhpcy}"
+ezhpcy_config_dir="${EZHPCY_CONFIG_DIR:-$xdg_config_home/ezhpcy}"
+
+echo "Removing ezhpcy's SSH configuration: $ezhpcy_config_dir"
+rm -rf -- "$ezhpcy_config_dir"
+
+echo "Removing ezhpcy's cache: $ezhpcy_cache_dir"
+rm -rf -- "$ezhpcy_cache_dir"
+
+echo "Removing ezhpcy-managed data: $remote_root"
+exec rm -rf -- "$remote_root"

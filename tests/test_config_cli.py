@@ -111,6 +111,8 @@ def test_config_load_creates_dtu_config_case_insensitively(
         "# DTU HPC configuration for ezhpcy.\n"
         "\n"
         'default_profile = "default"\n'
+        'log_level = "INFO"\n'
+        "auto_provision = true\n"
         "\n"
         "[profile.default]\n"
         'description = "DTU LSF interactive queue"\n'

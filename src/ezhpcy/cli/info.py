@@ -1,14 +1,42 @@
 import typer
+from rich.table import Table
 
+from ezhpcy import console
 from ezhpcy.cli.version import ezhpcy_version
-from ezhpcy.detect.host_type import get_host_type
-from ezhpcy.detect.scheduler_type import get_scheduler_type
+from ezhpcy.utils import local_machine_id
 
 
-def info_cmd() -> None:
+def info_cmd(json: bool = False) -> None:
     """Show debug information for ezhpcy."""
-    typer.echo(f"EZHPCY Version: {ezhpcy_version()}")
-    typer.echo(f"Host Type: {get_host_type().value}")
-    scheduler_type = get_scheduler_type()
-    scheduler_name = scheduler_type.value if scheduler_type is not None else "UNKNOWN"
-    typer.echo(f"Scheduler Type: {scheduler_name}")
+
+    data = [
+        {
+            "key": "EZHPCY Version",
+            "value": ezhpcy_version(),
+            "description": "Current version of ezhpcy.",
+        },
+        {
+            "key": "Machine ID",
+            "value": local_machine_id(),
+            "description": "Unique identifier for the local machine.",
+        },
+        # {"key": "Payload Hash", "value": "TODO", "description": "Hash of the payload used for provisioning."},
+    ]
+
+    if json:
+        typer.echo(json.dumps(data, indent=4))
+        return
+
+    table = Table(title="EzHPCy Information")
+
+    table.add_column("Key", justify="left", style="cyan", no_wrap=True)
+    table.add_column("Value", justify="left", style="white", no_wrap=True)
+    table.add_column("Description", justify="left", style="green", no_wrap=False)
+
+    table.add_row("EZHPCY Version", ezhpcy_version(), "Current version of ezhpcy.")
+    # table.add_row("Payload Hash")  # TODO When payload is not dependent on args
+    table.add_row(
+        "Machine ID", local_machine_id(), "Unique identifier for the local machine."
+    )
+
+    console.print(table)

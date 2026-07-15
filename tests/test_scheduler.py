@@ -16,6 +16,7 @@ from ezhpcy.scheduler.lsf import LSFScheduler
 from ezhpcy.scheduler.pbs import PBSScheduler
 
 _MEBIBYTE = 1024**2
+_PAYLOAD = "/home/user/.local/share/ezhpcy/payloads/abc123/ssh-serve"
 
 
 class FakeRunner:
@@ -76,7 +77,7 @@ def test_lsf_submission_builds_portable_job_spec() -> None:
     runner = FakeRunner("Job <31415> is submitted to queue <normal>.\n")
     scheduler = LSFScheduler(runner)
     spec = JobSpec(
-        command=("ezhpcy", "compute", "ssh-serve", "34321"),
+        command=(_PAYLOAD, "34321"),
         name="ezhpcy-worker",
         time_limit=timedelta(hours=1, seconds=1),
         memory_bytes=1024 * _MEBIBYTE,
@@ -117,9 +118,7 @@ def test_lsf_submission_builds_portable_job_spec() -> None:
             "/home/user/worker.err",
             "env",
             "EZHPCY_PROFILE=default",
-            "ezhpcy",
-            "compute",
-            "ssh-serve",
+            _PAYLOAD,
             "34321",
         ]
     ]
@@ -147,7 +146,7 @@ def test_lsf_interactive_submission_keeps_process_and_uses_site_profile() -> Non
         resource_reserve_per_task=True,
     )
     spec = JobSpec(
-        command=("ezhpcy", "compute", "ssh-serve", "54321"),
+        command=(_PAYLOAD, "54321"),
         name="ezhpcy-worker",
         time_limit=timedelta(minutes=60),
         memory_bytes=1024 * _MEBIBYTE,
@@ -185,9 +184,7 @@ def test_lsf_interactive_submission_keeps_process_and_uses_site_profile() -> Non
             "rusage[mem=256MB]",
             "-q",
             "hpcint",
-            "ezhpcy",
-            "compute",
-            "ssh-serve",
+            _PAYLOAD,
             "54321",
         ]
     ]
@@ -210,7 +207,7 @@ def test_lsf_interactive_submission_sets_explicit_core_and_host_defaults() -> No
 
     scheduler.submit_interactive(
         JobSpec(
-            command=("ezhpcy", "compute", "ssh-serve", "54321"),
+            command=(_PAYLOAD, "54321"),
             name="ezhpcy-worker",
             queue="hpcint",
         )
@@ -236,9 +233,7 @@ def test_lsf_interactive_submission_sets_explicit_core_and_host_defaults() -> No
             "ezhpcy-worker",
             "-q",
             "hpcint",
-            "ezhpcy",
-            "compute",
-            "ssh-serve",
+            _PAYLOAD,
             "54321",
         ]
     ]
@@ -335,7 +330,7 @@ def test_pbs_submission_builds_portable_job_spec() -> None:
     runner = FakeRunner("31415.hnode41\n")
     scheduler = PBSScheduler(runner)
     spec = JobSpec(
-        command=("ezhpcy", "compute", "ssh-serve", "34321"),
+        command=(_PAYLOAD, "34321"),
         name="ezhpcy-worker",
         time_limit=timedelta(hours=1, seconds=1),
         memory_bytes=1024 * _MEBIBYTE,
@@ -370,8 +365,7 @@ def test_pbs_submission_builds_portable_job_spec() -> None:
             "--",
             "bash",
             "-lc",
-            "cd /home/user && exec env EZHPCY_PROFILE=default ezhpcy compute "
-            "ssh-serve 34321",
+            f"cd /home/user && exec env EZHPCY_PROFILE=default {_PAYLOAD} 34321",
         ]
     ]
 
@@ -384,7 +378,7 @@ def test_pbs_interactive_submission_uses_site_queue_and_starts_payload() -> None
         lambda command: commands.append(command) or process,
     )
     spec = JobSpec(
-        command=("ezhpcy", "compute", "ssh-serve", "54321"),
+        command=(_PAYLOAD, "54321"),
         name="ezhpcy-worker",
         memory_bytes=256 * 1024 * _MEBIBYTE,
         cores=32,
@@ -412,8 +406,7 @@ def test_pbs_interactive_submission_uses_site_queue_and_starts_payload() -> None
         ]
     ]
     assert process.sent == [
-        "cd /home/user && exec env EZHPCY_PROFILE=interactive ezhpcy compute "
-        "ssh-serve 54321\n"
+        f"cd /home/user && exec env EZHPCY_PROFILE=interactive {_PAYLOAD} 54321\n"
     ]
 
 

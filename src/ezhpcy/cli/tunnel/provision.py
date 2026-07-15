@@ -1,3 +1,4 @@
+import logging
 import os
 import shlex
 import subprocess
@@ -16,41 +17,27 @@ from ezhpcy.cli.tunnel.common import (
     with_profile_options,
 )
 from ezhpcy.cli.utils.ssh import InteractiveSSHClient, absolute_sshd_command
-from ezhpcy.config import get_config
+from ezhpcy.config import RemoteFileConfig, get_config
 from ezhpcy.constants import (
     OPENSSH_MATCHSPEC,
+    PACKAGE_NAME,
     SSH_DIRECTORY_NAME,
-    UV_MATCHSPEC,
     WORKER_CLIENT_KEY_NAME,
     WORKER_HOST_ALIAS,
     WORKER_HOST_KEY_NAME,
 )
-from ezhpcy.patch.sdist import sdist_for_current_installation
+from ezhpcy.ssh import SSHClient
+from ezhpcy.worker_payload import ensure_worker_payload, require_worker_payload
 
-INSTALL_DIR_NAME = "ezhpcy"
-INSTALL_SCRIPT_RESOURCE = "static/data/install.sh.j2"
-UNINSTALL_SCRIPT_RESOURCE = "static/data/uninstall.sh.j2"
+REMOTE_ROOT_NAME = PACKAGE_NAME
+PROVISION_SCRIPT_RESOURCE = "static/data/provision.sh.j2"
 SSHD_CONFIG_RESOURCE = "static/config/ssh_remote/sshd_config"
 
-
-def _ensure_not_installed(ssh: InteractiveSSHClient) -> None:
-    """Abort installation when ezhpcy is already available remotely."""
-    try:
-        ssh.run(["ezhpcy", "version"])
-    except RuntimeError:
-        return
-
-    console.print(
-        "[bold yellow]Aborted[/bold yellow]: ezhpcy is already installed on the "
-        "remote host. Use [bold blue]ezhpcy tunnel reinstall[/bold blue] instead, "
-        "or run [bold blue]ezhpcy tunnel uninstall[/bold blue] first."
-    )
-    raise typer.Exit(code=1)
+logger = logging.getLogger(__name__)
 
 
-def _check_existing_installation(ssh: InteractiveSSHClient, *, force: bool) -> None:
-    if not force:
-        _ensure_not_installed(ssh)
+class ProvisioningError(RuntimeError):
+    pass
 
 
 def _ensure_local_client_key(ssh_dir: Path) -> tuple[Path, Path]:
@@ -116,113 +103,35 @@ def _pin_worker_host_key(host_public_key: str, known_hosts: Path) -> None:
     os.chmod(known_hosts, 0o600)
 
 
-@with_profile_options
-def install_cmd(
-    profile_context: ProfileContext,
-    force: Annotated[
-        bool,
-        typer.Option(
-            "--force",
-            "-f",
-            help="Install even if ezhpcy is already installed on the remote host.",
-        ),
-    ] = False,
-    yes: Annotated[
-        bool,
-        typer.Option(
-            "--yes",
-            "-y",
-            help="Proceed with installation without asking for confirmation.",
-        ),
-    ] = False,
-) -> None:
-    """Install ezhpcy and provision worker SSH on the remote HPC host."""
-    local_machine_or_fail()
-
-    # Connect
-    ssh = InteractiveSSHClient(profile_context.connection)
-    ssh.interactive_connect()
-
-    _check_existing_installation(ssh, force=force)
-
-    # Get remote file_config
-    remote_file_config = ssh.get_file_config()
-
-    console.print("[bold green]Success[/bold green]: connected to host.")
-    remote_install_dir = remote_file_config.data_dir / INSTALL_DIR_NAME
+def provision_worker_infrastructure(
+    ssh: SSHClient,
+    remote_file_config: RemoteFileConfig,
+    *,
+    remote_username: str,
+) -> PurePosixPath:
+    """Idempotently provision everything needed by a compute worker."""
+    remote_root = remote_file_config.data_dir / REMOTE_ROOT_NAME
     remote_ssh_dir = (
-        remote_file_config.config_dir / INSTALL_DIR_NAME / SSH_DIRECTORY_NAME
+        remote_file_config.config_dir / REMOTE_ROOT_NAME / SSH_DIRECTORY_NAME
     )
     local_ssh_dir = get_config().local_file.config_dir / SSH_DIRECTORY_NAME
 
-    # User consent
-    user_accepts = yes or Confirm.ask(
-        f"This will install [bold purple]ezhpcy[/bold purple] on the remote host into [bold blue]{remote_install_dir}[/bold blue]. Proceed?",
-        console=console,
-        default=True,
-    )
-
-    if not user_accepts:
-        console.print(
-            "[bold yellow]Aborted[/bold yellow]: installation cancelled by user."
-        )
-        raise typer.Exit(code=1)
-
-    install_script_traversable = resources.files("ezhpcy").joinpath(
-        INSTALL_SCRIPT_RESOURCE
-    )
-    uninstall_script_traversable = resources.files("ezhpcy").joinpath(
-        UNINSTALL_SCRIPT_RESOURCE
-    )
+    provision_template = resources.files("ezhpcy").joinpath(PROVISION_SCRIPT_RESOURCE)
     sshd_config_traversable = resources.files("ezhpcy").joinpath(SSHD_CONFIG_RESOURCE)
-
-    install_script = _render_shell_script(
-        install_script_traversable.read_text(encoding="utf-8"),
-        uv_matchspec=UV_MATCHSPEC,
+    provision_script = _render_shell_script(
+        provision_template.read_text(encoding="utf-8"),
         openssh_matchspec=OPENSSH_MATCHSPEC,
-    )
-    uninstall_script = _render_shell_script(
-        uninstall_script_traversable.read_text(encoding="utf-8"),
-        uv_matchspec=UV_MATCHSPEC,
     )
 
     with ssh.sftp_client() as sftp:
-        console.print(
-            f"Creating remote install directory: [bold blue]{remote_install_dir}[/bold blue]"
-        )
-        sftp.mkdir(remote_install_dir, parents=True, exist_ok=True)
+        sftp.mkdir(remote_root, parents=True, exist_ok=True)
+        remote_provision_script = remote_root / "provision.sh"
+        sftp.write_text(remote_provision_script, provision_script)
+        sftp.chmod(str(remote_provision_script), 0o755)
 
-        remote_install_script = remote_install_dir / "install.sh"
-        console.print(
-            f"Uploading install script: [bold blue]{remote_install_script}[/bold blue]"
-        )
-        sftp.write_text(remote_install_script, install_script)
+        logger.info("Provisioning remote Pixi and OpenSSH infrastructure.")
+        ssh.run(["bash", str(remote_provision_script)])
 
-        remote_uninstall_script = remote_install_dir / "uninstall.sh"
-        console.print(
-            f"Uploading uninstall script: [bold blue]{remote_uninstall_script}[/bold blue]"
-        )
-        sftp.write_text(remote_uninstall_script, uninstall_script)
-
-        sftp.chmod(str(remote_install_script), 0o755)
-        sftp.chmod(str(remote_uninstall_script), 0o755)
-
-        with sdist_for_current_installation() as sdist:
-            remote_sdist = remote_install_dir / sdist.name
-            console.print(f"Uploading sdist: [bold blue]{remote_sdist}[/bold blue]")
-            sftp.put(str(sdist), str(remote_sdist))
-
-        console.print("Running remote installer.")
-        install_output = ssh.run(
-            [
-                "bash",
-                str(remote_install_script),
-            ]
-        )
-        if install_output:
-            console.print(install_output.rstrip())
-
-        console.print("Provisioning worker SSH keys and configuration.")
         _private_key, public_key = _ensure_local_client_key(local_ssh_dir)
         known_hosts = local_ssh_dir / "worker_known_hosts"
 
@@ -260,7 +169,7 @@ def install_cmd(
         with resources.as_file(sshd_config_traversable) as sshd_config_template:
             rendered_config = _render_sshd_config(
                 sshd_config_template.read_text(encoding="utf-8"),
-                remote_username=profile_context.connection.user,
+                remote_username=remote_username,
                 remote_config_dir=remote_ssh_dir,
             )
         sftp.write_text(remote_sshd_config, rendered_config)
@@ -281,4 +190,75 @@ def install_cmd(
         host_public_key = sftp.read_text(remote_host_public_key)
         _pin_worker_host_key(host_public_key, known_hosts)
 
-    console.print("[bold green]Success[/bold green]: remote installation completed.")
+    return ensure_worker_payload(ssh, remote_file_config)
+
+
+def validate_worker_infrastructure(
+    ssh: SSHClient, remote_file_config: RemoteFileConfig
+) -> PurePosixPath:
+    """Validate provisioned files without changing remote state."""
+    remote_root = remote_file_config.data_dir / REMOTE_ROOT_NAME
+    remote_ssh_dir = (
+        remote_file_config.config_dir / REMOTE_ROOT_NAME / SSH_DIRECTORY_NAME
+    )
+    required = (
+        remote_root / "pixi_home/bin/pixi",
+        remote_ssh_dir / "authorized_keys",
+        remote_ssh_dir / WORKER_HOST_KEY_NAME,
+        PurePosixPath(f"{remote_ssh_dir / WORKER_HOST_KEY_NAME}.pub"),
+        remote_ssh_dir / "sshd_config",
+    )
+    missing: list[str] = []
+    with ssh.sftp_client() as sftp:
+        for path in required:
+            try:
+                sftp.stat(str(path))
+            except FileNotFoundError:
+                missing.append(str(path))
+
+    if missing:
+        raise ProvisioningError(
+            "worker infrastructure is incomplete; run `ezhpcy tunnel provision` "
+            f"(missing: {', '.join(missing)})"
+        )
+    return require_worker_payload(ssh, remote_file_config)
+
+
+@with_profile_options
+def provision_cmd(
+    profile_context: ProfileContext,
+    yes: Annotated[
+        bool,
+        typer.Option(
+            "--yes",
+            "-y",
+            help="Proceed with provisioning without asking for confirmation.",
+        ),
+    ] = False,
+) -> None:
+    """Idempotently provision worker infrastructure on the remote HPC host."""
+    local_machine_or_fail()
+    ssh = InteractiveSSHClient(profile_context.connection)
+    ssh.interactive_connect()
+    remote_file_config = ssh.get_file_config()
+    remote_root = remote_file_config.data_dir / REMOTE_ROOT_NAME
+
+    user_accepts = yes or Confirm.ask(
+        "This will provision or repair [bold purple]ezhpcy[/bold purple] worker "
+        f"infrastructure under [bold blue]{remote_root}[/bold blue]. Proceed?",
+        console=console,
+        default=True,
+    )
+    if not user_accepts:
+        console.print("[bold yellow]Aborted[/bold yellow]: provisioning cancelled.")
+        raise typer.Exit(code=1)
+
+    remote_username = profile_context.connection.user
+    assert remote_username is not None
+    payload_path = provision_worker_infrastructure(
+        ssh,
+        remote_file_config,
+        remote_username=remote_username,
+    )
+    console.print(f"Worker payload ready: [bold blue]{payload_path}[/bold blue]")
+    console.print("[bold green]Success[/bold green]: remote provisioning completed.")

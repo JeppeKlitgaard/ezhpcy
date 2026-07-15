@@ -172,9 +172,8 @@ def test_explicit_password_sources_are_mutually_exclusive(tmp_path: Path) -> Non
 @pytest.mark.parametrize(
     "command",
     [
-        ["tunnel", "install"],
-        ["tunnel", "reinstall"],
-        ["tunnel", "uninstall"],
+        ["tunnel", "provision"],
+        ["tunnel", "prune"],
         ["tunnel", "compute"],
         ["tunnel", "relay"],
         ["tunnel", "broker"],

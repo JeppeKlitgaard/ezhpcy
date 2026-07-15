@@ -4,12 +4,11 @@ set -euo pipefail
 pixi_install_script_url="https://pixi.sh/install.sh"
 xdg_data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
 xdg_cache_home="${XDG_CACHE_HOME:-$HOME/.cache}"
-install_root="${EZHPCY_INSTALL_ROOT:-$xdg_data_home/ezhpcy}"
-pixi_home="${PIXI_HOME:-$install_root/pixi_home}"
+remote_root="${EZHPCY_REMOTE_ROOT:-$xdg_data_home/ezhpcy}"
+pixi_home="${PIXI_HOME:-$remote_root/pixi_home}"
 pixi_cache_dir="${PIXI_CACHE_DIR:-$xdg_cache_home/ezhpcy/pixi_cache}"
 pixi_bin="$pixi_home/bin/pixi"
-pixi_install_script="$install_root/pixi-install.sh"
-uv_matchspec={{ uv_matchspec }}
+pixi_install_script="$remote_root/pixi-install.sh"
 openssh_matchspec={{ openssh_matchspec }}
 
 download_file() {
@@ -30,14 +29,13 @@ download_file() {
     exit 1
 }
 
-### pixi
 install_pixi() {
     if [[ -x "$pixi_bin" ]]; then
         echo "Pixi is already installed at: $pixi_bin"
         return
     fi
 
-    mkdir -p "$install_root" "$pixi_home"
+    mkdir -p "$remote_root" "$pixi_home"
     download_file "$pixi_install_script_url" "$pixi_install_script"
     chmod +x "$pixi_install_script"
 
@@ -56,25 +54,5 @@ mkdir -p "$pixi_cache_dir"
 install_pixi
 run_pixi --version
 
-# Resolve OpenSSH during setup so later worker jobs can reuse Pixi's cache.
 echo "Caching the worker OpenSSH environment..."
 run_pixi exec --spec="$openssh_matchspec" sh -c 'sshd_path="$(command -v sshd)" || exit; case "$sshd_path" in /*) exec "$sshd_path" -V;; *) echo "sshd must resolve to an absolute path" >&2; exit 1;; esac'
-
-### sdist of ezhpcy
-mkdir -p "$install_root"
-sdist_path="$(find "$install_root" -maxdepth 1 -type f -name 'ezhpcy-*.tar.gz' -print -quit)"
-
-if [[ -z "$sdist_path" || ! -f "$sdist_path" ]]; then
-    echo "No bundled ezhpcy sdist found in $install_root" >&2
-    exit 1
-fi
-
-echo "Bundled ezhpcy sdist staged at: $sdist_path"
-
-# Install ezhpcy from the sdist using pixi
-echo "Installing ezhpcy from sdist..."
-run_pixi exec --spec="$uv_matchspec" uv tool install "$sdist_path" --no-config --force-reinstall
-
-# Validate installation
-echo "Validating ezhpcy installation..."
-echo "ezhpcy version: $(ezhpcy version)"

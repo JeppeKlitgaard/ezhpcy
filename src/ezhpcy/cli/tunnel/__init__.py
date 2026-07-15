@@ -2,11 +2,10 @@ import typer
 
 from ezhpcy.cli.tunnel.broker import broker_cmd
 from ezhpcy.cli.tunnel.compute import compute_cmd
-from ezhpcy.cli.tunnel.install import install_cmd
-from ezhpcy.cli.tunnel.reinstall import reinstall_cmd
+from ezhpcy.cli.tunnel.provision import provision_cmd
+from ezhpcy.cli.tunnel.prune import prune_cmd
 from ezhpcy.cli.tunnel.relay import relay_cmd
 from ezhpcy.cli.tunnel.ssh_config import ssh_config_cmd
-from ezhpcy.cli.tunnel.uninstall import uninstall_cmd
 from ezhpcy.cli.utils.alias import AliasGroup
 
 tunnel_app = typer.Typer(
@@ -16,11 +15,10 @@ tunnel_app = typer.Typer(
 )
 
 
-tunnel_app.command(name="install", help="Install ezhpcy on HPC.")(install_cmd)
-tunnel_app.command(name="reinstall", help="Uninstall, then install ezhpcy on HPC.")(
-    reinstall_cmd
+tunnel_app.command(name="provision", help="Provision ezhpcy worker infrastructure.")(
+    provision_cmd
 )
-tunnel_app.command(name="uninstall", help="Uninstall ezhpcy from HPC.")(uninstall_cmd)
+tunnel_app.command(name="prune", help="Prune ezhpcy-managed remote data.")(prune_cmd)
 tunnel_app.command(
     name="compute, c",
     help="Allocate a compute node and start its SSH tunnel.",

@@ -8,6 +8,21 @@ from ezhpcy.config import ConnectionInfo, RemoteFileConfig
 from ezhpcy.ssh import SFTPClient, SSHClient
 
 
+def test_sftp_read_and_write_bytes() -> None:
+    sftp = MagicMock(spec=SFTPClient)
+    remote_file = MagicMock()
+    remote_file.read.return_value = b"payload"
+    sftp.file.return_value.__enter__.return_value = remote_file
+
+    assert SFTPClient.read_bytes(sftp, "/remote/payload") == b"payload"
+    sftp.file.assert_called_once_with("/remote/payload", "rb")
+
+    sftp.file.reset_mock()
+    assert SFTPClient.write_bytes(sftp, "/remote/payload", b"new") == 3
+    sftp.file.assert_called_once_with("/remote/payload", "wb")
+    remote_file.write.assert_called_once_with(b"new")
+
+
 def test_sftp_client_context_manager_closes_custom_client() -> None:
     client = SSHClient(ConnectionInfo(host="login.example.com"))
     transport = MagicMock()

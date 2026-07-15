@@ -33,6 +33,9 @@ def test_render_worker_ssh_config_contains_complete_strict_proxy_configuration(
 
 
 def test_ssh_config_command_is_available_and_uses_current_python(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "ezhpcy.utils.machineid.hashed_id", lambda _app_id: "machine-id"
+    )
     monkeypatch.setattr(ssh_config.get_config(), "default_profile", "default")
     monkeypatch.setattr(
         ssh_config.get_config(),
@@ -49,3 +52,7 @@ def test_ssh_config_command_is_available_and_uses_current_python(monkeypatch) ->
     assert "    User alice\n" in result.stdout
     assert f'    ProxyCommand "{Path(sys.executable).as_posix()}"' in result.stdout
     assert "proxy --profile default" in result.stdout
+    expected_ssh_dir = (
+        ssh_config.get_config().local_file.config_dir / "ssh" / "machine-id"
+    ).resolve()
+    assert f'    IdentityFile "{expected_ssh_dir.as_posix()}/' in result.stdout

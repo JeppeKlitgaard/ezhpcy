@@ -9,10 +9,10 @@ from ezhpcy.cli.utils.bad_parameter import RichBadParameter
 from ezhpcy.cli.utils.resolve import resolve_forbidden_none
 from ezhpcy.config import get_config
 from ezhpcy.constants import (
-    SSH_DIRECTORY_NAME,
     WORKER_CLIENT_KEY_NAME,
     WORKER_HOST_ALIAS,
 )
+from ezhpcy.utils import local_machine_id
 
 
 def _config_path(path: Path) -> str:
@@ -85,7 +85,7 @@ def ssh_config_cmd(
         cli_param="--user",
         config_param=f"profile.{profile_name}.user",
     )
-    ssh_dir = config.local_file.config_dir / SSH_DIRECTORY_NAME
+    ssh_dir = config.local_file.ssh_dir(local_machine_id())
     typer.echo(
         render_worker_ssh_config(
             user=resolved_user,

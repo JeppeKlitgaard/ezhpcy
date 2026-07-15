@@ -16,6 +16,8 @@ from ezhpcy.worker_payload import (
     worker_payload_path,
 )
 
+MACHINE_ID = "a" * 64
+
 
 def require_bash() -> None:
     if os.name == "nt":
@@ -163,13 +165,14 @@ def test_require_worker_payload_rejects_missing_or_corrupt_content(
 @pytest.mark.parametrize(
     ("arguments", "message"),
     [
-        ([], "Usage: ssh-serve PORT"),
-        (["not-a-port"], "must be numeric"),
-        (["1023"], "must be between 1024 and 65535"),
-        (["65536"], "must be between 1024 and 65535"),
+        ([], "Usage: ssh-serve PORT MACHINE_ID"),
+        (["not-a-port", MACHINE_ID], "must be numeric"),
+        (["1023", MACHINE_ID], "must be between 1024 and 65535"),
+        (["65536", MACHINE_ID], "must be between 1024 and 65535"),
+        (["23456", "not-a-machine-id"], "must be lowercase hexadecimal"),
     ],
 )
-def test_worker_payload_rejects_invalid_ports(tmp_path, arguments, message) -> None:
+def test_worker_payload_rejects_invalid_arguments(tmp_path, arguments, message) -> None:
     require_bash()
     script = tmp_path / "ssh-serve"
     script.write_bytes(render_worker_payload())
@@ -194,7 +197,7 @@ def test_worker_payload_requires_a_compute_allocation(tmp_path) -> None:
         environment.pop(name, None)
 
     result = subprocess.run(
-        ["bash", str(script), "23456"],
+        ["bash", str(script), "23456", MACHINE_ID],
         capture_output=True,
         text=True,
         env=environment,
@@ -209,7 +212,7 @@ def test_worker_payload_validates_then_executes_sshd_through_pixi(tmp_path) -> N
     cache_home = tmp_path / "cache"
     runtime_home = tmp_path / "runtime"
     pixi = cache_home / "ezhpcy" / "pixi" / PIXI_VERSION / "bin" / "pixi"
-    sshd_config = cache_home / "ezhpcy" / "ssh" / "sshd_config"
+    sshd_config = cache_home / "ezhpcy" / "ssh" / MACHINE_ID / "sshd_config"
     capture = tmp_path / "pixi-arguments"
     pixi.parent.mkdir(parents=True)
     sshd_config.parent.mkdir(parents=True)
@@ -220,7 +223,7 @@ def test_worker_payload_validates_then_executes_sshd_through_pixi(tmp_path) -> N
     script.write_bytes(render_worker_payload())
 
     result = subprocess.run(
-        ["bash", str(script), "23456"],
+        ["bash", str(script), "23456", MACHINE_ID],
         capture_output=True,
         text=True,
         env={

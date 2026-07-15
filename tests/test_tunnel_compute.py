@@ -306,6 +306,7 @@ def test_compute_tunnel_submits_worker_starts_broker_and_cancels() -> None:
             "ezhpcy.cli.tunnel.compute.InteractiveSSHClient",
             return_value=ssh,
         ),
+        patch("ezhpcy.cli.tunnel.compute.local_machine_id", return_value="machine-id"),
         patch(
             "ezhpcy.cli.tunnel.compute.LSFScheduler",
             return_value=scheduler,
@@ -343,6 +344,7 @@ def test_compute_tunnel_submits_worker_starts_broker_and_cancels() -> None:
     assert tuple(spec.command) == (
         "/home/alice/.cache/ezhpcy/payloads/abc123/ssh-serve",
         "54321",
+        "machine-id",
     )
     assert spec.queue == "normal"
     assert spec.memory_bytes == 2048 * _MEBIBYTE
@@ -391,6 +393,7 @@ def test_compute_tunnel_cancels_job_when_worker_startup_fails() -> None:
             "ezhpcy.cli.tunnel.compute.InteractiveSSHClient",
             return_value=ssh,
         ),
+        patch("ezhpcy.cli.tunnel.compute.local_machine_id", return_value="machine-id"),
         patch(
             "ezhpcy.cli.tunnel.compute.LSFScheduler",
             return_value=scheduler,
@@ -435,6 +438,7 @@ def test_compute_tunnel_uses_explicit_pbs_and_linuxsh_defaults() -> None:
 
     with (
         patch("ezhpcy.cli.tunnel.compute.InteractiveSSHClient", return_value=ssh),
+        patch("ezhpcy.cli.tunnel.compute.local_machine_id", return_value="machine-id"),
         patch(
             "ezhpcy.cli.tunnel.compute.PBSScheduler", return_value=scheduler
         ) as scheduler_constructor,

@@ -24,7 +24,6 @@ from ezhpcy.cli.tunnel.provision import (
 from ezhpcy.cli.utils.ssh import InteractiveSSHClient
 from ezhpcy.config import ConnectionInfo, get_config
 from ezhpcy.constants import (
-    SSH_DIRECTORY_NAME,
     WORKER_CLIENT_KEY_NAME,
     WORKER_HOST_ALIAS,
 )
@@ -44,6 +43,7 @@ from ezhpcy.scheduler.pbs import PBSScheduler
 from ezhpcy.scheduler.types import SchedulerType
 from ezhpcy.tunnel.broker import ForegroundBroker
 from ezhpcy.types import ResolvedConfig, ResolvedProfileConfig
+from ezhpcy.utils import local_machine_id
 
 _FIRST_DYNAMIC_PORT = 49152
 _LAST_DYNAMIC_PORT = 65535
@@ -64,7 +64,8 @@ def _select_worker_port() -> int:
 
 
 def _ensure_local_worker_credentials() -> None:
-    ssh_directory = get_config().local_file.config_dir / SSH_DIRECTORY_NAME
+    config = get_config()
+    ssh_directory = config.local_file.ssh_dir(local_machine_id())
     required_files = (
         ssh_directory / WORKER_CLIENT_KEY_NAME,
         ssh_directory / "worker_known_hosts",
@@ -234,6 +235,7 @@ def _run_compute_tunnel(
     worker_port: int,
     auto_provision: bool,
 ) -> None:
+    machine_id = local_machine_id()
     with InteractiveSSHClient(conn_info) as ssh:
         ssh.interactive_connect()
         transport = ssh.get_transport()
@@ -248,9 +250,12 @@ def _run_compute_tunnel(
                 ssh,
                 remote_state,
                 remote_username=remote_username,
+                machine_id=machine_id,
             )
         else:
-            payload_path = validate_worker_infrastructure(ssh, remote_state)
+            payload_path = validate_worker_infrastructure(
+                ssh, remote_state, machine_id=machine_id
+            )
         match scheduler_type:
             case SchedulerType.LSF:
                 scheduler: Scheduler = LSFScheduler(
@@ -293,7 +298,7 @@ def _run_compute_tunnel(
             sftp.mkdir(worker_logs_dir, parents=True, exist_ok=True)
 
         spec = JobSpec(
-            command=(str(payload_path), str(worker_port)),
+            command=(str(payload_path), str(worker_port), machine_id),
             name="ezhpcy-worker",
             time_limit=time_limit,
             memory_bytes=memory_bytes,

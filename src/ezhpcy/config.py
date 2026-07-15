@@ -14,6 +14,7 @@ from pydantic_settings import (
     TomlConfigSettingsSource,
 )
 
+from ezhpcy.constants import SSH_DIRECTORY_NAME
 from ezhpcy.logging import LogLevel, configure_logging
 from ezhpcy.types import ProfileConfig, ResolvedProfileConfig
 
@@ -69,6 +70,10 @@ class LocalFileConfig(BaseModel):
     data_dir: Path = Field(default_factory=_get_default_data_dir)
     runtime_dir: Path = Field(default_factory=_get_default_runtime_dir)
     config_file: Path = Field(default_factory=_default_config_file)
+
+    def ssh_dir(self, machine_id: str) -> Path:
+        """Return the SSH credential directory for the given local machine."""
+        return self.config_dir / SSH_DIRECTORY_NAME / machine_id
 
 
 class ConnectionInfo(BaseModel):

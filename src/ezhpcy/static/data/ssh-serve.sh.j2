@@ -3,12 +3,13 @@ set -eu
 
 openssh_matchspec={{ openssh_matchspec }}
 
-if [ "$#" -ne 1 ]; then
-    echo "Usage: ssh-serve PORT" >&2
+if [ "$#" -ne 2 ]; then
+    echo "Usage: ssh-serve PORT MACHINE_ID" >&2
     exit 2
 fi
 
 port=$1
+machine_id=$2
 case "$port" in
     ''|*[!0-9]*)
         echo "Worker SSH port must be numeric." >&2
@@ -19,6 +20,13 @@ if [ "$port" -lt 1024 ] || [ "$port" -gt 65535 ]; then
     echo "Worker SSH port must be between 1024 and 65535." >&2
     exit 2
 fi
+
+case "$machine_id" in
+    ''|*[!0-9a-f]*)
+        echo "Local machine ID must be lowercase hexadecimal." >&2
+        exit 2
+        ;;
+esac
 
 if [ -z "${LSB_JOBID+x}" ] && [ -z "${LSF_ENVDIR+x}" ] && [ -z "${PBS_JOBID+x}" ]; then
     echo "Worker SSH must run inside an LSF or PBS compute allocation." >&2
@@ -35,7 +43,7 @@ fi
 pixi_home="$xdg_cache_home/ezhpcy/pixi/{{ pixi_version }}"
 pixi_cache_dir="$xdg_cache_home/ezhpcy/pixi_cache/{{ pixi_version }}"
 pixi="$pixi_home/bin/pixi"
-sshd_config="$xdg_cache_home/ezhpcy/ssh/sshd_config"
+sshd_config="$xdg_cache_home/ezhpcy/ssh/$machine_id/sshd_config"
 sshd_pid="$runtime_dir/sshd-$$.pid"
 
 if [ ! -x "$pixi" ]; then

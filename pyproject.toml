@@ -12,13 +12,15 @@ dependencies = [
     # Networking
     "paramiko>=4.0.0",
     "requests>=2.34.2",
+    # Cryptography
+    "cryptography>=46.0.5",
+    "py-machineid>=1.0.0",
     # CLI
     "rich>=15.0.0",
     "typer>=0.26.8",
     # Keyring, secretstorage is for keyring on Linux
     "keyring>=25.7.0",
     "secretstorage>=3.5.0 ; sys_platform == 'linux'",
-    "py-machineid>=1.0.0",
 ]
 
 [project.scripts]

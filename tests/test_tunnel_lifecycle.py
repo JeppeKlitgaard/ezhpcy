@@ -3,6 +3,7 @@ from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import paramiko
 import pytest
 from typer.testing import CliRunner
 
@@ -11,16 +12,22 @@ from ezhpcy.cli.tunnel import common
 from ezhpcy.cli.tunnel.provision import (
     WORKER_HOST_ALIAS,
     ProvisioningError,
+    _ensure_local_ssh_keys,
     _pin_worker_host_key,
     _render_sshd_config,
+    provision_openssh,
     provision_pixi,
     validate_worker_infrastructure,
 )
 from ezhpcy.cli.tunnel.prune import prune_stale_payloads
+from ezhpcy.cli.utils.ssh import absolute_sshd_command
 from ezhpcy.config import LocalConfig
 from ezhpcy.constants import (
+    OPENSSH_MATCHSPEC,
     PIXI_INSTALLER_URL,
     PIXI_VERSION,
+    WORKER_CLIENT_KEY_NAME,
+    WORKER_HOST_KEY_NAME,
 )
 from ezhpcy.types import ProfileConfig, RemoteState
 from ezhpcy.worker_payload import render_worker_payload, worker_payload_path
@@ -91,10 +98,6 @@ class StubSSH:
 
     def run_pixi(self, args: list[str], **_kwargs) -> str:
         self.pixi_commands.append(args)
-        if "ssh-keygen" in args:
-            key_path = args[args.index("-f") + 1]
-            self.sftp.files[key_path] = b"private key"
-            self.sftp.files[f"{key_path}.pub"] = b"public key"
         return ""
 
 
@@ -137,16 +140,26 @@ def test_provision_is_repeatable_and_never_invokes_remote_python(
     private_key = tmp_path / "worker_client_ed25519"
     public_key = private_key.with_suffix(".pub")
     public_key.write_text("ssh-ed25519 LOCAL\n", encoding="utf-8")
-    (config.local_file.config_dir / "ssh").mkdir(parents=True)
+    host_private_key = tmp_path / "ssh_host_ed25519_key"
+    host_public_key = host_private_key.with_suffix(".pub")
+    host_public_key.write_text("ssh-ed25519 LOCAL-HOST\n", encoding="utf-8")
+    machine_ssh_dir = config.local_file.config_dir / "ssh" / "machine-id"
+    machine_ssh_dir.mkdir(parents=True)
     payload_path = PurePosixPath("/home/alice/.cache/ezhpcy/payloads/abc123/ssh-serve")
 
     with (
+        patch("ezhpcy.utils.machineid.hashed_id", return_value="machine-id"),
         patch.object(common, "get_config", return_value=config),
         patch("ezhpcy.cli.tunnel.provision.get_config", return_value=config),
         patch("ezhpcy.cli.tunnel.provision.InteractiveSSHClient", return_value=ssh),
         patch(
-            "ezhpcy.cli.tunnel.provision._ensure_local_client_key",
-            return_value=(private_key, public_key),
+            "ezhpcy.cli.tunnel.provision._ensure_local_ssh_keys",
+            return_value=(
+                private_key,
+                public_key,
+                host_private_key,
+                host_public_key,
+            ),
         ),
         patch(
             "ezhpcy.cli.tunnel.provision.ensure_worker_payload",
@@ -170,9 +183,69 @@ def test_provision_is_repeatable_and_never_invokes_remote_python(
     assert not any(
         "uv" in argument for command in ssh.pixi_commands for argument in command
     )
-    assert sum("ssh-keygen" in command for command in ssh.pixi_commands) == 1
+    assert not any("ssh-keygen" in command for command in ssh.pixi_commands)
+    remote_ssh = "/home/alice/.cache/ezhpcy/ssh/machine-id"
+    assert (
+        ssh.sftp.puts
+        == [
+            (str(public_key), f"{remote_ssh}/authorized_keys"),
+            (str(host_private_key), f"{remote_ssh}/ssh_host_ed25519_key"),
+            (str(host_public_key), f"{remote_ssh}/ssh_host_ed25519_key.pub"),
+        ]
+        * 2
+    )
+    assert (machine_ssh_dir / "worker_known_hosts").read_text(
+        encoding="utf-8"
+    ) == f"{WORKER_HOST_ALIAS} ssh-ed25519 LOCAL-HOST\n"
+    assert (
+        f"HostKey {remote_ssh}/ssh_host_ed25519_key"
+        in ssh.sftp.files[f"{remote_ssh}/sshd_config"]
+    )
     assert ensure_payload.call_count == 2
     assert "/home/alice/.cache/ezhpcy/provision.sh" not in ssh.sftp.files
+
+
+def test_local_worker_keys_are_generated_and_reused(
+    tmp_path: Path, monkeypatch
+) -> None:
+    ssh_dir = tmp_path / "config" / "ssh" / "machine-id"
+    generated_keys = 0
+
+    def count_generated_key():
+        nonlocal generated_keys
+        generated_keys += 1
+        return original_generate()
+
+    from cryptography.hazmat.primitives.asymmetric import ed25519
+
+    original_generate = ed25519.Ed25519PrivateKey.generate
+    monkeypatch.setattr(ed25519.Ed25519PrivateKey, "generate", count_generated_key)
+
+    first = _ensure_local_ssh_keys(ssh_dir)
+    initial_contents = [path.read_bytes() for path in first]
+    second = _ensure_local_ssh_keys(ssh_dir)
+
+    assert first == second
+    assert [path.name for path in first] == [
+        WORKER_CLIENT_KEY_NAME,
+        f"{WORKER_CLIENT_KEY_NAME}.pub",
+        WORKER_HOST_KEY_NAME,
+        f"{WORKER_HOST_KEY_NAME}.pub",
+    ]
+    assert all(path.parent == ssh_dir and path.is_file() for path in first)
+    assert generated_keys == 2
+    assert [path.read_bytes() for path in second] == initial_contents
+    assert [
+        path.read_text(encoding="ascii").split(maxsplit=2)[2].strip()
+        for path in (first[1], first[3])
+    ] == [
+        "ezhpcy worker client",
+        "ezhpcy worker host",
+    ]
+    for private_key, public_key in ((first[0], first[1]), (first[2], first[3])):
+        loaded_key = paramiko.Ed25519Key.from_private_key_file(str(private_key))
+        public_fields = public_key.read_text(encoding="ascii").split()
+        assert public_fields[:2] == [loaded_key.get_name(), loaded_key.get_base64()]
 
 
 def test_provision_pixi_installs_the_pinned_version_in_a_versioned_cache() -> None:
@@ -191,6 +264,20 @@ def test_provision_pixi_installs_the_pinned_version_in_a_versioned_cache() -> No
     assert PIXI_INSTALLER_URL in inline_script
 
 
+def test_provision_openssh_reuses_absolute_sshd_command() -> None:
+    ssh = StubSSH()
+
+    provision_openssh(ssh, ssh.remote_state)  # type: ignore[arg-type]
+
+    assert ssh.pixi_commands == [
+        [
+            "exec",
+            f"--spec={OPENSSH_MATCHSPEC}",
+            *absolute_sshd_command(["-V"]),
+        ]
+    ]
+
+
 def test_default_prune_removes_only_stale_hashed_payloads() -> None:
     ssh = StubSSH()
     current = worker_payload_path(ssh.remote_state).parent.name
@@ -206,7 +293,7 @@ def test_default_prune_removes_only_stale_hashed_payloads() -> None:
 
 def test_validate_worker_infrastructure_is_read_only() -> None:
     ssh = StubSSH()
-    remote_ssh = PurePosixPath("/home/alice/.cache/ezhpcy/ssh")
+    remote_ssh = PurePosixPath("/home/alice/.cache/ezhpcy/ssh/machine-id")
     required = (
         PurePosixPath(f"/home/alice/.cache/ezhpcy/pixi/{PIXI_VERSION}/bin/pixi"),
         remote_ssh / "authorized_keys",
@@ -220,7 +307,7 @@ def test_validate_worker_infrastructure_is_read_only() -> None:
     ssh.sftp.files[str(payload_path)] = render_worker_payload()
 
     resolved = validate_worker_infrastructure(  # type: ignore[arg-type]
-        ssh, ssh.remote_state
+        ssh, ssh.remote_state, machine_id="machine-id"
     )
 
     assert resolved == payload_path
@@ -231,9 +318,12 @@ def test_validate_worker_infrastructure_reports_missing_files() -> None:
     ssh = StubSSH()
 
     with pytest.raises(ProvisioningError, match="tunnel provision") as exc_info:
-        validate_worker_infrastructure(ssh, ssh.remote_state)  # type: ignore[arg-type]
+        validate_worker_infrastructure(  # type: ignore[arg-type]
+            ssh, ssh.remote_state, machine_id="machine-id"
+        )
 
     assert f"/ezhpcy/pixi/{PIXI_VERSION}/bin/pixi" in str(exc_info.value)
+    assert "/ezhpcy/ssh/machine-id/authorized_keys" in str(exc_info.value)
 
 
 def test_prune_all_removes_the_package_cache_directory(tmp_path: Path) -> None:

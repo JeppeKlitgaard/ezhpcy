@@ -1,12 +1,15 @@
+import io
 import logging
 import os
 import shlex
-import subprocess
 from importlib import resources
 from pathlib import Path, PurePosixPath
 from typing import Annotated
 
+import paramiko
 import typer
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ed25519
 from jinja2 import StrictUndefined, Template
 from rich.prompt import Confirm
 
@@ -29,6 +32,7 @@ from ezhpcy.constants import (
 )
 from ezhpcy.ssh import SSHClient
 from ezhpcy.types import RemoteState
+from ezhpcy.utils import local_machine_id
 from ezhpcy.worker_payload import ensure_worker_payload, require_worker_payload
 
 SSHD_CONFIG_RESOURCE = "static/config/ssh_remote/sshd_config"
@@ -40,36 +44,62 @@ class ProvisioningError(RuntimeError):
     pass
 
 
-def _ensure_local_client_key(ssh_dir: Path) -> tuple[Path, Path]:
-    """Create ezhpcy's dedicated worker client key if it does not exist."""
-    private_key = ssh_dir / WORKER_CLIENT_KEY_NAME
+def _ensure_local_key_pair(
+    ssh_dir: Path, *, key_name: str, comment: str
+) -> tuple[Path, Path]:
+    """Create one dedicated local Ed25519 key pair if it does not exist."""
+    private_key = ssh_dir / key_name
     public_key = private_key.with_suffix(".pub")
 
     ssh_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(ssh_dir, 0o700)
     if private_key.exists() != public_key.exists():
         raise RuntimeError(
-            f"Incomplete worker client key pair at {private_key}; restore or remove it."
+            f"Incomplete SSH key pair at {private_key}; restore or remove it."
         )
     if not private_key.exists():
-        subprocess.run(
-            [
-                "ssh-keygen",
-                "-q",
-                "-t",
-                "ed25519",
-                "-N",
-                "",
-                "-C",
-                "ezhpcy worker client",
-                "-f",
-                str(private_key),
-            ],
-            check=True,
+        cryptography_key = ed25519.Ed25519PrivateKey.generate()
+        private_key_text = cryptography_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.OpenSSH,
+            encryption_algorithm=serialization.NoEncryption(),
+        ).decode("ascii")
+        paramiko_key = paramiko.Ed25519Key.from_private_key(
+            io.StringIO(private_key_text)
+        )
+        # Create with owner-only permissions immediately and refuse a raced-in file;
+        # writing first and chmodding afterward briefly exposes private key material.
+        private_key_fd = os.open(
+            private_key,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o600,
+        )
+        with os.fdopen(private_key_fd, "w", encoding="ascii", newline="\n") as file:
+            file.write(private_key_text)
+        public_key.write_text(
+            f"{paramiko_key.get_name()} {paramiko_key.get_base64()} {comment}\n",
+            encoding="ascii",
         )
     os.chmod(private_key, 0o600)
     os.chmod(public_key, 0o644)
     return private_key, public_key
+
+
+def _ensure_local_ssh_keys(
+    ssh_dir: Path,
+) -> tuple[Path, Path, Path, Path]:
+    """Ensure both worker client and worker host key pairs exist locally."""
+    client_keys = _ensure_local_key_pair(
+        ssh_dir,
+        key_name=WORKER_CLIENT_KEY_NAME,
+        comment="ezhpcy worker client",
+    )
+    host_keys = _ensure_local_key_pair(
+        ssh_dir,
+        key_name=WORKER_HOST_KEY_NAME,
+        comment="ezhpcy worker host",
+    )
+    return *client_keys, *host_keys
 
 
 def _render_sshd_config(
@@ -138,13 +168,7 @@ def provision_openssh(ssh: SSHClient, remote_state: RemoteState) -> None:
         [
             "exec",
             f"--spec={OPENSSH_MATCHSPEC}",
-            "sh",
-            "-c",
-            'sshd_path="$(command -v sshd)" || exit; '
-            'case "$sshd_path" in '
-            '/*) exec "$sshd_path" -V;; '
-            '*) echo "sshd must resolve to an absolute path" >&2; exit 1;; '
-            "esac",
+            *absolute_sshd_command(["-V"]),
         ],
         remote_state=remote_state,
     )
@@ -155,11 +179,13 @@ def provision_worker_infrastructure(
     remote_state: RemoteState,
     *,
     remote_username: str,
+    machine_id: str | None = None,
 ) -> PurePosixPath:
     """Idempotently provision everything needed by a compute worker."""
+    machine_id = machine_id or local_machine_id()
     remote_root = remote_state.package_cache_dir()
-    remote_ssh_dir = remote_root / SSH_DIRECTORY_NAME
-    local_ssh_dir = get_config().local_file.config_dir / SSH_DIRECTORY_NAME
+    remote_ssh_dir = remote_root / SSH_DIRECTORY_NAME / machine_id
+    local_ssh_dir = get_config().local_file.ssh_dir(machine_id)
 
     sshd_config_traversable = resources.files("ezhpcy").joinpath(SSHD_CONFIG_RESOURCE)
 
@@ -169,39 +195,26 @@ def provision_worker_infrastructure(
     with ssh.sftp_client() as sftp:
         sftp.mkdir(remote_root, parents=True, exist_ok=True)
 
-        _private_key, public_key = _ensure_local_client_key(local_ssh_dir)
+        (
+            _client_private_key,
+            client_public_key,
+            host_private_key,
+            host_public_key,
+        ) = _ensure_local_ssh_keys(local_ssh_dir)
         known_hosts = local_ssh_dir / "worker_known_hosts"
 
         sftp.mkdir(remote_ssh_dir, mode=0o700, parents=True, exist_ok=True)
         sftp.chmod(str(remote_ssh_dir), 0o700)
 
         remote_authorized_keys = remote_ssh_dir / "authorized_keys"
-        sftp.put(str(public_key), str(remote_authorized_keys))
+        sftp.put(str(client_public_key), str(remote_authorized_keys))
         sftp.chmod(str(remote_authorized_keys), 0o600)
 
         remote_host_key = remote_ssh_dir / WORKER_HOST_KEY_NAME
         remote_host_public_key = PurePosixPath(f"{remote_host_key}.pub")
         remote_sshd_config = remote_ssh_dir / "sshd_config"
-        try:
-            sftp.stat(str(remote_host_key))
-        except FileNotFoundError:
-            ssh.run_pixi(
-                [
-                    "exec",
-                    f"--spec={OPENSSH_MATCHSPEC}",
-                    "ssh-keygen",
-                    "-q",
-                    "-t",
-                    "ed25519",
-                    "-N",
-                    "",
-                    "-C",
-                    "ezhpcy worker host",
-                    "-f",
-                    str(remote_host_key),
-                ],
-                remote_state=remote_state,
-            )
+        sftp.put(str(host_private_key), str(remote_host_key))
+        sftp.put(str(host_public_key), str(remote_host_public_key))
 
         with resources.as_file(sshd_config_traversable) as sshd_config_template:
             rendered_config = _render_sshd_config(
@@ -224,17 +237,20 @@ def provision_worker_infrastructure(
             remote_state=remote_state,
         )
 
-        host_public_key = sftp.read_text(remote_host_public_key)
-        _pin_worker_host_key(host_public_key, known_hosts)
+        _pin_worker_host_key(host_public_key.read_text(encoding="utf-8"), known_hosts)
 
     return ensure_worker_payload(ssh, remote_state)
 
 
 def validate_worker_infrastructure(
-    ssh: SSHClient, remote_state: RemoteState
+    ssh: SSHClient,
+    remote_state: RemoteState,
+    *,
+    machine_id: str | None = None,
 ) -> PurePosixPath:
     """Validate provisioned files without changing remote state."""
-    remote_ssh_dir = remote_state.package_cache_dir() / SSH_DIRECTORY_NAME
+    machine_id = machine_id or local_machine_id()
+    remote_ssh_dir = remote_state.package_cache_dir() / SSH_DIRECTORY_NAME / machine_id
     required = (
         remote_state.pixi_executable(),
         remote_ssh_dir / "authorized_keys",
@@ -293,6 +309,7 @@ def provision_cmd(
         ssh,
         remote_state,
         remote_username=remote_username,
+        machine_id=local_machine_id(),
     )
     console.print(f"Worker payload ready: [bold blue]{payload_path}[/bold blue]")
     console.print("[bold green]Success[/bold green]: remote provisioning completed.")

@@ -273,6 +273,7 @@ name = "ezhpcy"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "cryptography" },
     { name = "jinja2" },
     { name = "keyring" },
     { name = "paramiko" },
@@ -296,6 +297,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "cryptography", specifier = ">=46.0.5" },
     { name = "jinja2", specifier = ">=3.1.6" },
     { name = "keyring", specifier = ">=25.7.0" },
     { name = "paramiko", specifier = ">=4.0.0" },

@@ -12,7 +12,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ezhpcy.config import get_config
+from ezhpcy.config import config
 from ezhpcy.ipc.common import (
     LOOPBACK_HOST,
     BrokerUnavailableError,
@@ -121,7 +121,6 @@ class AuthenticatedIPCBackend:
 
 
 def default_descriptor_path(profile_name: str | None = None) -> Path:
-    config = get_config()
     selected = profile_name or config.default_profile
     filename = f"broker-{selected}.json" if selected is not None else "broker.json"
     return config.local_file.runtime_dir / filename

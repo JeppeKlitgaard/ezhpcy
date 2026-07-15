@@ -14,7 +14,6 @@ from pydantic import ValidationError
 
 from ezhpcy.cli.tunnel.common import (
     ProfileContext,
-    local_machine_or_fail,
     with_profile_options,
 )
 from ezhpcy.cli.tunnel.provision import (
@@ -22,7 +21,7 @@ from ezhpcy.cli.tunnel.provision import (
     validate_worker_infrastructure,
 )
 from ezhpcy.cli.utils.ssh import InteractiveSSHClient
-from ezhpcy.config import ConnectionInfo, get_config
+from ezhpcy.config import ConnectionInfo, config
 from ezhpcy.constants import (
     WORKER_CLIENT_KEY_NAME,
     WORKER_HOST_ALIAS,
@@ -64,7 +63,6 @@ def _select_worker_port() -> int:
 
 
 def _ensure_local_worker_credentials() -> None:
-    config = get_config()
     ssh_directory = config.local_file.ssh_dir(local_machine_id())
     required_files = (
         ssh_directory / WORKER_CLIENT_KEY_NAME,
@@ -533,7 +531,6 @@ def compute_cmd(
     ] = False,
 ) -> None:
     """Allocate a compute node and expose its SSH service through the broker."""
-    local_machine_or_fail()
     try:
         profile = profile_context.profile
         try:
@@ -580,7 +577,7 @@ def compute_cmd(
         elif no_auto_provision:
             auto_provision_enabled = False
         else:
-            auto_provision_enabled = get_config().auto_provision
+            auto_provision_enabled = config.auto_provision
         if not auto_provision_enabled:
             _ensure_local_worker_credentials()
         _run_compute_tunnel(

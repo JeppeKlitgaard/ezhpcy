@@ -31,7 +31,7 @@ BIND_ADDRESS = IPCAddress("127.0.0.1", 0, allow_zero_port=True)
 def test_default_descriptor_path_is_namespaced_by_profile(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setattr(ipc.get_config().local_file, "runtime_dir", tmp_path)
+    monkeypatch.setattr(ipc.config.local_file, "runtime_dir", tmp_path)
 
     assert default_descriptor_path("gpu") == tmp_path / "broker-gpu.json"
 

@@ -5,7 +5,6 @@ import typer
 
 from ezhpcy.cli.tunnel.common import (
     ProfileContext,
-    local_machine_or_fail,
     with_profile_options,
 )
 from ezhpcy.cli.utils.ssh import InteractiveSSHClient
@@ -33,8 +32,6 @@ def relay_cmd(
     ] = 0,
 ) -> None:
     """Relay local TCP connections to a manually started worker SSH daemon."""
-    local_machine_or_fail()
-
     with InteractiveSSHClient(profile_context.connection) as ssh:
         ssh.interactive_connect()
         transport = ssh.get_transport()

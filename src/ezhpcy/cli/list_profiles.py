@@ -2,12 +2,11 @@ import typer
 from rich.table import Table
 
 from ezhpcy import console
-from ezhpcy.config import get_config
+from ezhpcy.config import config
 
 
 def list_profiles_cmd() -> None:
     """List the profiles in the local configuration."""
-    config = get_config()
     if not config.profile:
         typer.echo("No profiles configured.")
         return

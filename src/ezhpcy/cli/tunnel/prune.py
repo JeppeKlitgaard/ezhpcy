@@ -9,7 +9,6 @@ from rich.prompt import Confirm
 from ezhpcy import console
 from ezhpcy.cli.tunnel.common import (
     ProfileContext,
-    local_machine_or_fail,
     with_profile_options,
 )
 from ezhpcy.cli.utils.ssh import InteractiveSSHClient
@@ -83,7 +82,6 @@ def prune_cmd(
     ] = False,
 ) -> None:
     """Prune stale payloads, or remove all managed remote data."""
-    local_machine_or_fail()
     ssh = InteractiveSSHClient(profile_context.connection)
     ssh.interactive_connect()
     remote_state = ssh.get_remote_state()

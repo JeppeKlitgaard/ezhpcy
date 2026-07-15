@@ -510,9 +510,9 @@ def test_compute_tunnel_help_exposes_scheduler_and_resource_options() -> None:
 def test_compute_command_resolves_profile_and_applies_cli_overrides(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(compute_module.get_config(), "default_profile", "default")
+    monkeypatch.setattr(compute_module.config, "default_profile", "default")
     monkeypatch.setattr(
-        compute_module.get_config(),
+        compute_module.config,
         "profile",
         {
             "default": ProfileConfig(
@@ -572,9 +572,9 @@ def test_compute_command_resolves_profile_and_applies_cli_overrides(
 def test_compute_command_can_disable_auto_provision(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(compute_module.get_config(), "default_profile", "default")
+    monkeypatch.setattr(compute_module.config, "default_profile", "default")
     monkeypatch.setattr(
-        compute_module.get_config(),
+        compute_module.config,
         "profile",
         {
             "default": ProfileConfig(
@@ -608,10 +608,10 @@ def test_compute_command_can_disable_auto_provision(
 def test_compute_command_can_enable_auto_provision_when_config_disables_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(compute_module.get_config(), "default_profile", "default")
-    monkeypatch.setattr(compute_module.get_config(), "auto_provision", False)
+    monkeypatch.setattr(compute_module.config, "default_profile", "default")
+    monkeypatch.setattr(compute_module.config, "auto_provision", False)
     monkeypatch.setattr(
-        compute_module.get_config(),
+        compute_module.config,
         "profile",
         {
             "default": ProfileConfig(
@@ -635,9 +635,9 @@ def test_compute_command_can_enable_auto_provision_when_config_disables_it(
 def test_compute_command_rejects_conflicting_auto_provision_flags(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(compute_module.get_config(), "default_profile", "default")
+    monkeypatch.setattr(compute_module.config, "default_profile", "default")
     monkeypatch.setattr(
-        compute_module.get_config(),
+        compute_module.config,
         "profile",
         {
             "default": ProfileConfig(
@@ -658,9 +658,9 @@ def test_compute_command_rejects_conflicting_auto_provision_flags(
 def test_compute_command_rejects_unknown_profile_before_starting(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(compute_module.get_config(), "default_profile", "default")
+    monkeypatch.setattr(compute_module.config, "default_profile", "default")
     monkeypatch.setattr(
-        compute_module.get_config(),
+        compute_module.config,
         "profile",
         {"default": ProfileConfig(host="login.example.com", user="alice")},
     )

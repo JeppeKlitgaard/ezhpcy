@@ -7,7 +7,7 @@ import typer
 from ezhpcy.cli.tunnel.common import ProfileOpt, UserOpt
 from ezhpcy.cli.utils.bad_parameter import RichBadParameter
 from ezhpcy.cli.utils.resolve import resolve_forbidden_none
-from ezhpcy.config import get_config
+from ezhpcy.config import config
 from ezhpcy.constants import (
     WORKER_CLIENT_KEY_NAME,
     WORKER_HOST_ALIAS,
@@ -71,7 +71,6 @@ def ssh_config_cmd(
     ] = WORKER_HOST_ALIAS,
 ) -> None:
     """Print an OpenSSH Host block for the broker-backed worker connection."""
-    config = get_config()
     try:
         resolved_profile = config.resolve_profile(profile)
     except ValueError as error:

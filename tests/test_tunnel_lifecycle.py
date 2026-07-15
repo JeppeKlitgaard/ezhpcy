@@ -21,7 +21,7 @@ from ezhpcy.cli.tunnel.provision import (
 )
 from ezhpcy.cli.tunnel.prune import prune_stale_payloads
 from ezhpcy.cli.utils.ssh import absolute_sshd_command
-from ezhpcy.config import LocalConfig
+from ezhpcy.config import Config
 from ezhpcy.constants import (
     OPENSSH_MATCHSPEC,
     PIXI_INSTALLER_URL,
@@ -101,8 +101,8 @@ class StubSSH:
         return ""
 
 
-def configured_client(tmp_path: Path) -> LocalConfig:
-    return LocalConfig.from_mapping(
+def configured_client(tmp_path: Path) -> Config:
+    return Config.from_mapping(
         {
             "local_file": {
                 "config_dir": tmp_path / "config",
@@ -149,8 +149,8 @@ def test_provision_is_repeatable_and_never_invokes_remote_python(
 
     with (
         patch("ezhpcy.utils.machineid.hashed_id", return_value="machine-id"),
-        patch.object(common, "get_config", return_value=config),
-        patch("ezhpcy.cli.tunnel.provision.get_config", return_value=config),
+        patch.object(common, "config", config),
+        patch("ezhpcy.cli.tunnel.provision.config", config),
         patch("ezhpcy.cli.tunnel.provision.InteractiveSSHClient", return_value=ssh),
         patch(
             "ezhpcy.cli.tunnel.provision._ensure_local_ssh_keys",
@@ -331,7 +331,7 @@ def test_prune_all_removes_the_package_cache_directory(tmp_path: Path) -> None:
     config = configured_client(tmp_path)
 
     with (
-        patch.object(common, "get_config", return_value=config),
+        patch.object(common, "config", config),
         patch("ezhpcy.cli.tunnel.prune.InteractiveSSHClient", return_value=ssh),
     ):
         result = CliRunner().invoke(app, ["tunnel", "prune", "--all", "--yes"])

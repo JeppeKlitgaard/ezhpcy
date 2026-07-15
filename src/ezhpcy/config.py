@@ -1,7 +1,6 @@
 import os
 import re
 import tempfile
-from functools import cache
 from pathlib import Path
 from typing import Self
 
@@ -83,7 +82,7 @@ class ConnectionInfo(BaseModel):
     host: DomainStr
 
 
-class _LocalConfigValues(BaseModel):
+class _ConfigValues(BaseModel):
     local_file: LocalFileConfig = LocalFileConfig()
     log_level: LogLevel = LogLevel.INFO
     auto_provision: bool = True
@@ -150,7 +149,7 @@ class _LocalConfigValues(BaseModel):
         return ResolvedProfileConfig.model_validate(merged(selected, ()))
 
 
-class LocalConfig(BaseSettings, _LocalConfigValues):
+class Config(BaseSettings, _ConfigValues):
     """Configuration loaded from the local workstation settings sources."""
 
     model_config = SettingsConfigDict(
@@ -178,7 +177,7 @@ class LocalConfig(BaseSettings, _LocalConfigValues):
     @classmethod
     def from_mapping(cls, values: object) -> Self:
         """Validate explicit values without loading workstation settings sources."""
-        validated = _LocalConfigValues.model_validate(values)
+        validated = _ConfigValues.model_validate(values)
         return cls.model_construct(
             local_file=validated.local_file,
             log_level=validated.log_level,
@@ -188,9 +187,5 @@ class LocalConfig(BaseSettings, _LocalConfigValues):
         )
 
 
-@cache
-def get_config() -> LocalConfig:
-    """Load the workstation-only configuration on first local use."""
-    config = LocalConfig()
-    configure_logging(config.log_level)
-    return config
+config = Config()
+configure_logging(config.log_level)

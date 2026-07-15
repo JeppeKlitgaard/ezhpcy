@@ -11,7 +11,7 @@ from ezhpcy.cli.config import (
     edit as config_edit,
     load as config_load,
 )
-from ezhpcy.config import LocalConfig
+from ezhpcy.config import Config
 
 runner = CliRunner()
 
@@ -19,8 +19,8 @@ runner = CliRunner()
 def use_config_file(
     monkeypatch: pytest.MonkeyPatch, module: ModuleType, config_file: Path
 ) -> None:
-    config = LocalConfig.from_mapping({"local_file": {"config_file": config_file}})
-    monkeypatch.setattr(module, "get_config", lambda: config)
+    config = Config.from_mapping({"local_file": {"config_file": config_file}})
+    monkeypatch.setattr(module, "config", config)
 
 
 @pytest.mark.parametrize("editor", ["code", "C:/Program Files/Editor/editor.exe", None])
@@ -76,8 +76,8 @@ def test_config_dir_prints_config_directory(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     config_directory = tmp_path / "custom config"
-    config = LocalConfig.from_mapping({"local_file": {"config_dir": config_directory}})
-    monkeypatch.setattr(config_dir, "get_config", lambda: config)
+    config = Config.from_mapping({"local_file": {"config_dir": config_directory}})
+    monkeypatch.setattr(config_dir, "config", config)
 
     result = runner.invoke(app, ["config", "dir"])
 
@@ -88,7 +88,7 @@ def test_config_dir_prints_config_directory(
 def test_list_profiles_shows_local_profile_metadata(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    config = LocalConfig.from_mapping(
+    config = Config.from_mapping(
         {
             "default_profile": "default",
             "profile": {
@@ -100,7 +100,7 @@ def test_list_profiles_shows_local_profile_metadata(
             },
         }
     )
-    monkeypatch.setattr(config_list_profiles, "get_config", lambda: config)
+    monkeypatch.setattr(config_list_profiles, "config", config)
 
     result = runner.invoke(app, ["list-profiles"])
 
@@ -165,7 +165,7 @@ def test_config_load_creates_dtu_config_case_insensitively(
         'memory = "32GB"\n'
     )
     loaded = tomllib.loads(contents)
-    loaded_config = LocalConfig.from_mapping(loaded)
+    loaded_config = Config.from_mapping(loaded)
     assert str(loaded_config.resolve_profile().host) == "login2.hpc.dtu.dk"
     assert loaded_config.resolve_profile("gpul40s").cores == 8
     assert str(loaded_config.resolve_profile("pbs").pbs_command_directory) == (

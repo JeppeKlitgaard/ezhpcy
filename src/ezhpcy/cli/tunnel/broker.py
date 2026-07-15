@@ -6,7 +6,6 @@ import typer
 
 from ezhpcy.cli.tunnel.common import (
     ProfileContext,
-    local_machine_or_fail,
     with_profile_options,
 )
 from ezhpcy.cli.utils.ssh import InteractiveSSHClient
@@ -26,7 +25,6 @@ def broker_cmd(
     profile_context: ProfileContext,
 ) -> None:
     """Run the authenticated worker-stream broker in the foreground."""
-    local_machine_or_fail()
     backend = create_broker_backend(profile_name=profile_context.name)
 
     with InteractiveSSHClient(profile_context.connection) as ssh:

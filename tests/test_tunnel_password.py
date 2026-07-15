@@ -35,9 +35,9 @@ def resolve_password(
 @pytest.fixture(autouse=True)
 def without_default_password(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(common.PASSWORD_ENV_VAR, raising=False)
-    monkeypatch.setattr(common.get_config(), "default_profile", "default")
+    monkeypatch.setattr(common.config, "default_profile", "default")
     monkeypatch.setattr(
-        common.get_config(),
+        common.config,
         "profile",
         {
             "default": ProfileConfig(

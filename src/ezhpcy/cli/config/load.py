@@ -11,7 +11,7 @@ from rich.prompt import Confirm, Prompt
 from rich.text import Text
 
 from ezhpcy import console
-from ezhpcy.config import LocalConfig, get_config
+from ezhpcy.config import Config, config
 
 PRESET_DIRECTORY = "static/config/presets"
 PRESET_SUFFIX = ".toml.j2"
@@ -110,13 +110,13 @@ def load_cmd(
         user = Prompt.ask("Username", console=console)
     try:
         rendered = _render_preset(template_text, preset=preset_name, user=user)
-        LocalConfig.from_mapping(tomllib.loads(rendered))
+        Config.from_mapping(tomllib.loads(rendered))
     except (TemplateError, tomllib.TOMLDecodeError, ValidationError) as error:
         raise typer.BadParameter(
             f"Preset {preset_name!r} produced invalid configuration: {error}",
             param_hint="preset",
         ) from error
-    config_file = get_config().local_file.config_file
+    config_file = config.local_file.config_file
 
     if config_file.exists():
         try:

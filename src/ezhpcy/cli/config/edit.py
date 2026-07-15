@@ -5,7 +5,7 @@ from typing import Annotated
 
 import typer
 
-from ezhpcy.config import get_config
+from ezhpcy.config import config
 
 DEFAULT_EDITOR = "notepad" if os.name == "nt" else "vi"
 IS_WINDOWS = os.name == "nt"
@@ -32,7 +32,6 @@ def edit_cmd(
     ] = None,
 ) -> None:
     """Open the ezhpcy configuration file in an editor."""
-    config = get_config()
     config_file = config.local_file.config_file
 
     try:

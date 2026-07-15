@@ -10,9 +10,7 @@ from keyring.errors import KeyringError
 from ezhpcy.cli.utils.bad_parameter import RichBadParameter
 from ezhpcy.cli.utils.options_group import attach_hook
 from ezhpcy.cli.utils.resolve import resolve_forbidden_none
-from ezhpcy.config import ConnectionInfo, get_config
-from ezhpcy.console import console
-from ezhpcy.detect.host_type import HostType, get_host_type
+from ezhpcy.config import ConnectionInfo, config
 from ezhpcy.types import ResolvedConfig
 
 KEYRING_SERVICE_NAME = "ezhpcy"
@@ -198,7 +196,6 @@ def profile_context_from_options(
     password_keyring: PasswordKeyringOpt = False,
     host: HostOpt = None,
 ) -> ProfileContext:
-    config = get_config()
     try:
         resolved_profile = config.resolve_profile(profile)
     except ValueError as error:
@@ -278,15 +275,3 @@ def direct_connection_info_from_options(
 with_direct_connection_options = attach_hook(
     direct_connection_info_from_options, hook_output_kwarg="conn_info"
 )
-
-
-def local_machine_or_fail() -> None:
-    """
-    Fails the command if the current HostType is not OTHER.
-    """
-    host_type = get_host_type()
-    if host_type != HostType.OTHER:
-        console.print(
-            f"[bold red]ERROR[/bold red]: This command should be run on your local machine (detected: [bold blue]{host_type.value}[/bold blue])."
-        )
-        raise typer.Exit(code=1)

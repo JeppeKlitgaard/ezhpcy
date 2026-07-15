@@ -4,7 +4,7 @@ import typer
 
 from ezhpcy.cli.tunnel.common import ProfileOpt
 from ezhpcy.cli.utils.bad_parameter import RichBadParameter
-from ezhpcy.config import get_config
+from ezhpcy.config import config
 from ezhpcy.ipc import load_broker_backend
 from ezhpcy.ipc.common import IPCError
 from ezhpcy.tunnel.broker import relay_proxy_stdio
@@ -13,7 +13,6 @@ from ezhpcy.tunnel.broker import relay_proxy_stdio
 def proxy_cmd(profile: ProfileOpt = None) -> None:
     """Relay ProxyCommand stdin/stdout through a running tunnel broker."""
     try:
-        config = get_config()
         try:
             config.resolve_profile(profile)
         except ValueError as error:

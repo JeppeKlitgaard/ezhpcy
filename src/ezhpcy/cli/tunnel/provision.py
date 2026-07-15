@@ -16,11 +16,10 @@ from rich.prompt import Confirm
 from ezhpcy import console
 from ezhpcy.cli.tunnel.common import (
     ProfileContext,
-    local_machine_or_fail,
     with_profile_options,
 )
 from ezhpcy.cli.utils.ssh import InteractiveSSHClient, absolute_sshd_command
-from ezhpcy.config import get_config
+from ezhpcy.config import config
 from ezhpcy.constants import (
     OPENSSH_MATCHSPEC,
     PIXI_INSTALLER_URL,
@@ -185,7 +184,7 @@ def provision_worker_infrastructure(
     machine_id = machine_id or local_machine_id()
     remote_root = remote_state.package_cache_dir()
     remote_ssh_dir = remote_root / SSH_DIRECTORY_NAME / machine_id
-    local_ssh_dir = get_config().local_file.ssh_dir(machine_id)
+    local_ssh_dir = config.local_file.ssh_dir(machine_id)
 
     sshd_config_traversable = resources.files("ezhpcy").joinpath(SSHD_CONFIG_RESOURCE)
 
@@ -287,7 +286,6 @@ def provision_cmd(
     ] = False,
 ) -> None:
     """Idempotently provision worker infrastructure on the remote HPC host."""
-    local_machine_or_fail()
     ssh = InteractiveSSHClient(profile_context.connection)
     ssh.interactive_connect()
     remote_state = ssh.get_remote_state()

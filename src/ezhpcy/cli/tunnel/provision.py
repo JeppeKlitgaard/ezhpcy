@@ -20,6 +20,7 @@ from ezhpcy.cli.utils.ssh import (
     InteractiveSSHClient,
     absolute_sshd_command,
     read_ed25519_public_key,
+    sshd_config_arguments,
 )
 from ezhpcy.config import config
 from ezhpcy.constants import (
@@ -34,7 +35,6 @@ from ezhpcy.constants import (
 from ezhpcy.ssh import SSHClient
 from ezhpcy.types import RemoteState
 from ezhpcy.utils import local_machine_id, ssh_connection_id
-from ezhpcy.worker_payload import ensure_worker_payload, require_worker_payload
 
 logger = logging.getLogger(__name__)
 
@@ -99,45 +99,6 @@ def _ensure_local_ssh_keys(
         comment="ezhpcy worker host",
     )
     return *client_keys, *host_keys
-
-
-def _sshd_config_arguments(
-    *,
-    host_key: PurePosixPath,
-    remote_username: str,
-    authorized_key: tuple[str, str],
-) -> list[str]:
-    """Return the complete worker sshd configuration as command-line options."""
-    key_type, key_blob = authorized_key
-    settings = (
-        f"HostKey={host_key}",
-        "AuthorizedKeysFile=none",
-        f"AuthorizedKeysCommand=/bin/echo {key_type} {key_blob}",
-        f"AuthorizedKeysCommandUser={remote_username}",
-        "StrictModes=yes",
-        "PubkeyAuthentication=yes",
-        "AuthenticationMethods=publickey",
-        "PasswordAuthentication=no",
-        "KbdInteractiveAuthentication=no",
-        "PermitEmptyPasswords=no",
-        "PermitRootLogin=no",
-        f"AllowUsers={remote_username}",
-        "HostbasedAuthentication=no",
-        "PermitUserEnvironment=no",
-        "AllowTcpForwarding=yes",
-        "GatewayPorts=no",
-        "AllowAgentForwarding=no",
-        "X11Forwarding=no",
-        "PermitTunnel=no",
-        "UseDNS=no",
-        "LogLevel=INFO",
-        "Subsystem=sftp internal-sftp",
-    )
-    return [
-        "-f",
-        "/dev/null",
-        *(part for setting in settings for part in ("-o", setting)),
-    ]
 
 
 def _pin_worker_host_key(host_public_key: str, known_hosts: Path) -> None:
@@ -210,7 +171,7 @@ def provision_worker_infrastructure(
     remote_username: str,
     remote_host: str,
     machine_id: str | None = None,
-) -> PurePosixPath:
+) -> None:
     """Idempotently provision everything needed by a compute worker."""
     machine_id = machine_id or local_machine_id()
     connection_id = ssh_connection_id(remote_username, remote_host)
@@ -245,7 +206,7 @@ def provision_worker_infrastructure(
         sftp.chmod(str(remote_host_key), 0o600)
         sftp.chmod(str(remote_host_public_key), 0o644)
 
-        sshd_arguments = _sshd_config_arguments(
+        sshd_arguments = sshd_config_arguments(
             host_key=remote_host_key,
             remote_username=remote_username,
             authorized_key=read_ed25519_public_key(client_public_key),
@@ -261,8 +222,6 @@ def provision_worker_infrastructure(
 
         _pin_worker_host_key(host_public_key.read_text(encoding="utf-8"), known_hosts)
 
-    return ensure_worker_payload(ssh, remote_state)
-
 
 def validate_worker_infrastructure(
     ssh: SSHClient,
@@ -271,7 +230,7 @@ def validate_worker_infrastructure(
     remote_username: str,
     remote_host: str,
     machine_id: str | None = None,
-) -> PurePosixPath:
+) -> None:
     """Validate provisioned files without changing remote state."""
     machine_id = machine_id or local_machine_id()
     connection_id = ssh_connection_id(remote_username, remote_host)
@@ -299,7 +258,6 @@ def validate_worker_infrastructure(
             "worker infrastructure is incomplete; run `ezhpcy tunnel provision` "
             f"(missing: {', '.join(missing)})"
         )
-    return require_worker_payload(ssh, remote_state)
 
 
 @with_profile_options
@@ -333,12 +291,11 @@ def provision_cmd(
     remote_username = profile_context.connection.user
     assert remote_username is not None
     remote_host = str(profile_context.connection.host)
-    payload_path = provision_worker_infrastructure(
+    provision_worker_infrastructure(
         ssh,
         remote_state,
         remote_username=remote_username,
         remote_host=remote_host,
         machine_id=local_machine_id(),
     )
-    console.print(f"Worker payload ready: [bold blue]{payload_path}[/bold blue]")
     console.print("[bold green]Success[/bold green]: remote provisioning completed.")

@@ -1,3 +1,4 @@
+import shlex
 import stat
 from pathlib import PurePosixPath
 from unittest.mock import MagicMock, call, patch
@@ -134,22 +135,20 @@ def test_run_pixi_uses_ezhpcy_xdg_directories() -> None:
 
 def test_run_login_shell_safely_quotes_the_nested_command() -> None:
     client = SSHClient(ConnectionInfo(host="login.example.com"))
+    command = [
+        "bsub",
+        "-J",
+        "worker name",
+        "/path with spaces/sshd",
+        "single'quote",
+        "$HOME; echo unsafe",
+    ]
 
     with patch.object(client, "run", return_value="submitted") as run:
-        output = client.run_login_shell(
-            ["bsub", "-J", "worker name", "sh", "-c", "echo '$HOME'"],
-            timeout=30,
-        )
+        output = client.run_login_shell(command, timeout=30)
 
     assert output == "submitted"
-    run.assert_called_once_with(
-        [
-            "bash",
-            "-lc",
-            "bsub -J 'worker name' sh -c 'echo '\"'\"'$HOME'\"'\"''",
-        ],
-        timeout=30,
-    )
+    run.assert_called_once_with(["bash", "-lc", shlex.join(command)], timeout=30)
 
 
 def test_start_login_shell_opens_pty_and_keeps_channel_running() -> None:
@@ -158,17 +157,26 @@ def test_start_login_shell_opens_pty_and_keeps_channel_running() -> None:
     transport.is_active.return_value = True
     channel = MagicMock()
     transport.open_session.return_value = channel
+    command = [
+        "bsub",
+        "-Is",
+        "-J",
+        "worker name",
+        "/path with spaces/worker",
+        "single'quote",
+        "$HOME; echo unsafe",
+    ]
 
     with patch.object(client, "get_transport", return_value=transport):
-        process = client.start_login_shell(
-            ["bsub", "-Is", "-J", "worker name", "sleep", "60"]
-        )
+        process = client.start_login_shell(command)
 
     assert process is channel
     channel.get_pty.assert_called_once_with()
-    channel.exec_command.assert_called_once_with(
-        "bash -lc 'bsub -Is -J '\"'\"'worker name'\"'\"' sleep 60'"
-    )
+    serialized = shlex.join(["bash", "-lc", shlex.join(command)])
+    channel.exec_command.assert_called_once_with(serialized)
+    login_argv = shlex.split(serialized)
+    assert login_argv[:2] == ["bash", "-lc"]
+    assert shlex.split(login_argv[2]) == command
 
 
 def test_get_remote_state_maps_the_xdg_cache_directory() -> None:

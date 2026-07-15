@@ -117,8 +117,8 @@ class InteractiveJob:
     process: RemoteProcess
     submission_output: str
     submission_command: tuple[str, ...] = ()
-    payload_starter: Callable[[], None] | None = None
-    payload_started: bool = field(default=False, init=False)
+    command_starter: Callable[[], None] | None = None
+    command_started: bool = field(default=False, init=False)
 
     def read_available(self, size: int = 64 * 1024) -> bytes:
         output = bytearray()
@@ -131,12 +131,12 @@ class InteractiveJob:
     def close(self) -> None:
         self.process.close()
 
-    def start_payload(self) -> None:
-        if self.payload_started:
+    def start_command(self) -> None:
+        if self.command_started:
             return
-        if self.payload_starter is not None:
-            self.payload_starter()
-        self.payload_started = True
+        if self.command_starter is not None:
+            self.command_starter()
+        self.command_started = True
 
 
 class SchedulerError(RuntimeError):

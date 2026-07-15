@@ -95,10 +95,10 @@ class PBSScheduler(Scheduler):
 
                 decoded = output.decode(errors="replace")
                 if match := _INTERACTIVE_JOB_PATTERN.search(decoded):
-                    payload = self._payload_shell_command(spec)
+                    job_command = self._job_shell_command(spec)
 
-                    def start_payload() -> None:
-                        if process.send(f"{payload}\n") <= 0:
+                    def start_command() -> None:
+                        if process.send(f"{job_command}\n") <= 0:
                             raise SchedulerCommandError(
                                 "PBS interactive shell did not accept the worker command"
                             )
@@ -108,7 +108,7 @@ class PBSScheduler(Scheduler):
                         process=process,
                         submission_output=decoded,
                         submission_command=tuple(command),
-                        payload_starter=start_payload,
+                        command_starter=start_command,
                     )
                 if process.exit_status_ready():
                     status = process.recv_exit_status()
@@ -199,15 +199,15 @@ class PBSScheduler(Scheduler):
             if spec.stderr_path is not None:
                 command.extend(["-e", str(spec.stderr_path)])
             if spec.working_directory is None:
-                command.extend(["--", *PBSScheduler._payload_command(spec)])
+                command.extend(["--", *PBSScheduler._job_command(spec)])
             else:
                 command.extend(
-                    ["--", "bash", "-lc", PBSScheduler._payload_shell_command(spec)]
+                    ["--", "bash", "-lc", PBSScheduler._job_shell_command(spec)]
                 )
         return command
 
     @staticmethod
-    def _payload_command(spec: JobSpec) -> list[str]:
+    def _job_command(spec: JobSpec) -> list[str]:
         command = []
         if spec.environment:
             command.extend(
@@ -217,11 +217,12 @@ class PBSScheduler(Scheduler):
         return command
 
     @staticmethod
-    def _payload_shell_command(spec: JobSpec) -> str:
-        payload = f"exec {shlex.join(PBSScheduler._payload_command(spec))}"
+    def _job_shell_command(spec: JobSpec) -> str:
+        command = shlex.join(["exec", *PBSScheduler._job_command(spec)])
         if spec.working_directory is None:
-            return payload
-        return f"cd {shlex.quote(str(spec.working_directory))} && {payload}"
+            return command
+        change_directory = shlex.join(["cd", str(spec.working_directory)])
+        return f"{change_directory} && {command}"
 
     @staticmethod
     def _parse_job_info(job_id: str, output: str) -> JobInfo:

@@ -32,11 +32,11 @@ def test_default_logger_writes_named_records_to_the_terminal() -> None:
     stream = io.StringIO()
     configured = configure_logging("INFO", stream=stream)
 
-    logging.getLogger("ezhpcy.worker_payload").info("Payload ready")
+    logging.getLogger("ezhpcy.cli.tunnel.compute").info("Worker ready")
 
     assert configured is logging.getLogger(PACKAGE_NAME)
     rendered = " ".join(stream.getvalue().split())
-    assert rendered == "INFO [ezhpcy.worker_payload] Payload ready"
+    assert rendered == "INFO [ezhpcy.cli.tunnel.compute] Worker ready"
 
 
 def test_default_logger_uses_a_rich_stderr_handler() -> None:

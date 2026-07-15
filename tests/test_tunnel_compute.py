@@ -16,9 +16,10 @@ from ezhpcy.cli.tunnel.compute import (
     _run_compute_tunnel,
     _wait_for_running_job,
     _wait_for_worker_endpoint,
+    _worker_sshd_command,
 )
 from ezhpcy.config import ConnectionInfo
-from ezhpcy.constants import EZHPCY_VERSION
+from ezhpcy.constants import EZHPCY_VERSION, OPENSSH_MATCHSPEC, PIXI_VERSION
 from ezhpcy.scheduler.base import InteractiveJob, JobInfo, JobSpec, JobState
 from ezhpcy.scheduler.types import SchedulerType
 from ezhpcy.types import ProfileConfig, RemoteState, ResolvedProfileConfig
@@ -48,6 +49,41 @@ def pbs_profile() -> ResolvedProfileConfig:
     )
 
 
+def test_worker_sshd_command_runs_directly_through_pixi() -> None:
+    remote_state = RemoteState(cache_dir=PurePosixPath("/home/alice/.cache"))
+    command = _worker_sshd_command(
+        remote_state,
+        host_key=PurePosixPath("/remote/ssh_host_ed25519_key"),
+        remote_username="alice",
+        authorized_key=("ssh-ed25519", "WORKERKEY"),
+        port=54321,
+    )
+
+    assert command[:6] == (
+        "env",
+        f"PIXI_HOME=/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/pixi/{PIXI_VERSION}",
+        f"PIXI_CACHE_DIR=/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/pixi_cache/"
+        f"{PIXI_VERSION}",
+        f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/pixi/{PIXI_VERSION}/bin/pixi",
+        "exec",
+        f"--spec={OPENSSH_MATCHSPEC}",
+    )
+    assert command[6:11] == (
+        "sh",
+        "-c",
+        command[8],
+        "sshd",
+        "-D",
+    )
+    assert "command -v sshd" in command[8]
+    assert command.count("sh") == 1
+    assert command.count("-c") == 1
+    assert "PidFile=none" in command
+    assert "HostKey=/remote/ssh_host_ed25519_key" in command
+    assert "AuthorizedKeysCommand=/bin/echo ssh-ed25519 WORKERKEY" in command
+    assert not any("ssh-serve" in argument for argument in command)
+
+
 class StubScheduler:
     scheduler_type = SchedulerType.LSF
 
@@ -55,7 +91,7 @@ class StubScheduler:
         self.snapshots = snapshots
         self.submitted: list[JobSpec] = []
         self.cancelled: list[str] = []
-        self.payload_starts = 0
+        self.command_starts = 0
 
     def submit(self, spec: JobSpec) -> str:
         self.submitted.append(spec)
@@ -72,8 +108,8 @@ class StubScheduler:
             self.process,
             "Job <42> is submitted",
             ("bsub", "-Is", "-q", "hpcint", "echo", "hello world"),
-            payload_starter=lambda: setattr(
-                self, "payload_starts", self.payload_starts + 1
+            command_starter=lambda: setattr(
+                self, "command_starts", self.command_starts + 1
             ),
         )
         return job
@@ -314,9 +350,7 @@ def test_compute_tunnel_submits_worker_starts_broker_and_cancels() -> None:
         ) as scheduler_constructor,
         patch(
             "ezhpcy.cli.tunnel.compute.provision_worker_infrastructure",
-            return_value=PurePosixPath(
-                f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/payloads/abc123/ssh-serve"
-            ),
+            return_value=None,
         ),
         patch(
             "ezhpcy.cli.tunnel.compute.read_ed25519_public_key",
@@ -346,14 +380,18 @@ def test_compute_tunnel_submits_worker_starts_broker_and_cancels() -> None:
 
     assert len(scheduler.submitted) == 1
     spec = scheduler.submitted[0]
-    assert tuple(spec.command) == (
-        f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/payloads/abc123/ssh-serve",
-        "54321",
-        "machine-id",
-        "alice@login.example.com",
-        "ssh-ed25519",
-        "WORKERKEY",
+    assert tuple(spec.command) == _worker_sshd_command(
+        ssh.get_remote_state(),
+        host_key=PurePosixPath(
+            f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/ssh/machine-id/"
+            "alice@login.example.com/ssh_host_ed25519_key"
+        ),
+        remote_username="alice",
+        authorized_key=("ssh-ed25519", "WORKERKEY"),
+        port=54321,
     )
+    assert "AuthorizedKeysCommand=/bin/echo ssh-ed25519 WORKERKEY" in spec.command
+    assert not any("payload" in argument for argument in spec.command)
     assert spec.queue == "normal"
     assert spec.memory_bytes == 2048 * _MEBIBYTE
     assert spec.cores == 32
@@ -377,7 +415,7 @@ def test_compute_tunnel_submits_worker_starts_broker_and_cancels() -> None:
     assert brokers[0].closed
     assert scheduler.cancelled == ["42"]
     assert scheduler.process.closed
-    assert scheduler.payload_starts == 1
+    assert scheduler.command_starts == 1
     assert ssh.commands == []
     logger.debug.assert_any_call(
         "Submission command: %s", "bsub -Is -q hpcint echo 'hello world'"
@@ -408,9 +446,7 @@ def test_compute_tunnel_cancels_job_when_worker_startup_fails() -> None:
         ),
         patch(
             "ezhpcy.cli.tunnel.compute.provision_worker_infrastructure",
-            return_value=PurePosixPath(
-                f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/payloads/abc123/ssh-serve"
-            ),
+            return_value=None,
         ),
         patch(
             "ezhpcy.cli.tunnel.compute.read_ed25519_public_key",
@@ -456,9 +492,7 @@ def test_compute_tunnel_uses_explicit_pbs_and_linuxsh_defaults() -> None:
         ) as scheduler_constructor,
         patch(
             "ezhpcy.cli.tunnel.compute.provision_worker_infrastructure",
-            return_value=PurePosixPath(
-                f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/payloads/abc123/ssh-serve"
-            ),
+            return_value=None,
         ),
         patch(
             "ezhpcy.cli.tunnel.compute.read_ed25519_public_key",
@@ -494,7 +528,7 @@ def test_compute_tunnel_uses_explicit_pbs_and_linuxsh_defaults() -> None:
     )
     assert scheduler.submitted[0].queue == "workq"
     assert scheduler.submitted[0].memory_bytes is None
-    assert scheduler.payload_starts == 1
+    assert scheduler.command_starts == 1
     assert call("Using profile %r with %s scheduler.", "pbs", "PBS") in (
         logger.info.call_args_list
     )

@@ -1,5 +1,5 @@
 from binascii import hexlify
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import paramiko
 from paramiko.common import DEBUG
@@ -39,6 +39,53 @@ def read_ed25519_public_key(path: Path) -> tuple[str, str]:
     ):
         raise RuntimeError(f"The worker public key at {path} is malformed.")
     return key_type, key_blob
+
+
+def sshd_config_arguments(
+    *,
+    host_key: PurePosixPath,
+    remote_username: str,
+    authorized_key: tuple[str, str],
+) -> list[str]:
+    """Return the complete worker sshd configuration as command-line options."""
+    key_type, key_blob = authorized_key
+    settings = (
+        "ListenAddress=0.0.0.0",
+        # File Locations
+        f"HostKey={host_key}",
+        "AuthorizedKeysFile=none",
+        "PidFile=none",
+        # Authorized Keys
+        f"AuthorizedKeysCommand=/bin/echo {key_type} {key_blob}",
+        f"AuthorizedKeysCommandUser={remote_username}",
+        # Authentication Schemes
+        "StrictModes=yes",
+        "PubkeyAuthentication=yes",
+        "AuthenticationMethods=publickey",
+        "PasswordAuthentication=no",
+        "KbdInteractiveAuthentication=no",
+        "HostbasedAuthentication=no",
+        "PermitEmptyPasswords=no",
+        # Access Control
+        "PermitRootLogin=no",
+        f"AllowUsers={remote_username}",
+        # Restrictions
+        "PermitUserEnvironment=no",
+        "AllowTcpForwarding=yes",
+        "GatewayPorts=no",
+        "AllowAgentForwarding=no",
+        "X11Forwarding=no",
+        "PermitTunnel=no",
+        # Misc
+        "UseDNS=no",
+        "LogLevel=INFO",
+        "Subsystem=sftp internal-sftp",
+    )
+    return [
+        "-f",
+        "/dev/null",
+        *(part for setting in settings for part in ("-o", setting)),
+    ]
 
 
 class PromptMissingHostKeyPolicy(paramiko.MissingHostKeyPolicy):

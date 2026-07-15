@@ -1,5 +1,6 @@
 import math
 import re
+import shlex
 import time
 from collections.abc import Callable, Mapping, Sequence
 
@@ -115,11 +116,21 @@ class LSFScheduler(Scheduler):
 
                 decoded = output.decode(errors="replace")
                 if match := _SUBMITTED_JOB_PATTERN.search(decoded):
+                    job_command = shlex.join(["exec", *self._job_command(spec)])
+
+                    def start_command() -> None:
+                        if process.send(f"{job_command}\n") <= 0:
+                            raise SchedulerCommandError(
+                                "LSF interactive shell did not accept the worker "
+                                "command"
+                            )
+
                     return InteractiveJob(
                         job_id=match.group("job_id"),
                         process=process,
                         submission_output=decoded,
                         submission_command=tuple(command),
+                        command_starter=start_command,
                     )
                 if process.exit_status_ready():
                     status = process.recv_exit_status()
@@ -207,17 +218,26 @@ class LSFScheduler(Scheduler):
             command.extend(["-o", str(spec.stdout_path)])
         if spec.stderr_path is not None:
             command.extend(["-e", str(spec.stderr_path)])
-        if spec.environment:
-            command.extend(
-                ["env", *(f"{key}={value}" for key, value in spec.environment.items())]
-            )
-        command.extend(spec.command)
+        if interactive:
+            command.append("/bin/sh")
+        else:
+            command.extend(LSFScheduler._job_command(spec))
         if submission_environment:
             command = [
                 "env",
                 *(f"{key}={value}" for key, value in submission_environment.items()),
                 *command,
             ]
+        return command
+
+    @staticmethod
+    def _job_command(spec: JobSpec) -> list[str]:
+        command = []
+        if spec.environment:
+            command.extend(
+                ["env", *(f"{key}={value}" for key, value in spec.environment.items())]
+            )
+        command.extend(spec.command)
         return command
 
     @staticmethod

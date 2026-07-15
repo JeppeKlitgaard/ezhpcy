@@ -14,17 +14,15 @@ from ezhpcy.cli.tunnel.provision import (
     ProvisioningError,
     _ensure_local_ssh_keys,
     _pin_worker_host_key,
-    _sshd_config_arguments,
     provision_openssh,
     provision_pixi,
     validate_worker_infrastructure,
 )
 from ezhpcy.cli.tunnel.prune import (
     prune_stale_installations,
-    prune_stale_payloads,
     prune_stale_pixi_data,
 )
-from ezhpcy.cli.utils.ssh import absolute_sshd_command
+from ezhpcy.cli.utils.ssh import absolute_sshd_command, sshd_config_arguments
 from ezhpcy.config import Config
 from ezhpcy.constants import (
     EZHPCY_VERSION,
@@ -35,7 +33,6 @@ from ezhpcy.constants import (
     WORKER_HOST_KEY_NAME,
 )
 from ezhpcy.types import ProfileConfig, RemoteState
-from ezhpcy.worker_payload import render_worker_payload, worker_payload_path
 
 
 class StubSFTP:
@@ -152,10 +149,6 @@ def test_provision_is_repeatable_and_never_invokes_remote_python(
         config.local_file.config_dir / "ssh" / "machine-id" / "alice@login.example.com"
     )
     machine_ssh_dir.mkdir(parents=True)
-    payload_path = PurePosixPath(
-        f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/payloads/abc123/ssh-serve"
-    )
-
     with (
         patch("ezhpcy.utils.machineid.hashed_id", return_value="machine-id"),
         patch.object(common, "config", config),
@@ -170,10 +163,6 @@ def test_provision_is_repeatable_and_never_invokes_remote_python(
                 host_public_key,
             ),
         ),
-        patch(
-            "ezhpcy.cli.tunnel.provision.ensure_worker_payload",
-            return_value=payload_path,
-        ) as ensure_payload,
     ):
         first = CliRunner().invoke(app, ["tunnel", "provision", "--yes"])
         second = CliRunner().invoke(app, ["tunnel", "provision", "--yes"])
@@ -218,7 +207,6 @@ def test_provision_is_repeatable_and_never_invokes_remote_python(
         assert f"HostKey={remote_ssh}/ssh_host_ed25519_key" in command
         assert "AuthorizedKeysFile=none" in command
         assert "AuthorizedKeysCommand=/bin/echo ssh-ed25519 LOCAL" in command
-    assert ensure_payload.call_count == 2
     assert "/home/alice/.cache/ezhpcy/provision.sh" not in ssh.sftp.files
 
 
@@ -307,21 +295,6 @@ def test_provision_openssh_reuses_absolute_sshd_command() -> None:
     ]
 
 
-def test_default_prune_removes_only_stale_hashed_payloads() -> None:
-    ssh = StubSSH()
-    current = worker_payload_path(ssh.remote_state).parent.name
-    stale_hash = "a" * 64 if current != "a" * 64 else "b" * 64
-    ssh.sftp.directory_entries = [current, stale_hash, "keep-me"]
-
-    removed = prune_stale_payloads(ssh, ssh.remote_state)  # type: ignore[arg-type]
-
-    stale_path = PurePosixPath(
-        f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/payloads/{stale_hash}"
-    )
-    assert removed == (stale_path,)
-    assert ssh.commands == [["rm", "-rf", "--", str(stale_path)]]
-
-
 def test_default_prune_removes_stale_ezhpcy_installations() -> None:
     ssh = StubSSH()
     ssh.sftp.directory_entries = [EZHPCY_VERSION, "0.0.9", "legacy"]
@@ -373,10 +346,7 @@ def test_validate_worker_infrastructure_is_read_only() -> None:
     )
     for path in required:
         ssh.sftp.files[str(path)] = b"present"
-    payload_path = worker_payload_path(ssh.remote_state)
-    ssh.sftp.files[str(payload_path)] = render_worker_payload()
-
-    resolved = validate_worker_infrastructure(  # type: ignore[arg-type]
+    result = validate_worker_infrastructure(  # type: ignore[arg-type]
         ssh,
         ssh.remote_state,
         remote_username="alice",
@@ -384,8 +354,9 @@ def test_validate_worker_infrastructure_is_read_only() -> None:
         machine_id="machine-id",
     )
 
-    assert resolved == payload_path
+    assert result is None
     assert ssh.commands == []
+    assert ssh.pixi_commands == []
 
 
 def test_validate_worker_infrastructure_reports_missing_files() -> None:
@@ -430,7 +401,7 @@ def test_install_and_uninstall_commands_have_been_removed() -> None:
 
 
 def test_sshd_config_is_expressed_as_cli_arguments() -> None:
-    arguments = _sshd_config_arguments(
+    arguments = sshd_config_arguments(
         host_key=PurePosixPath("/home/alice/.config/ezhpcy/ssh/host"),
         remote_username="alice",
         authorized_key=("ssh-ed25519", "PUBLICKEY"),

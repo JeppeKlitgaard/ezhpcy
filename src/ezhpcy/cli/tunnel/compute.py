@@ -6,6 +6,7 @@ import threading
 import time
 from collections.abc import Callable
 from datetime import timedelta
+from pathlib import PurePosixPath
 from typing import Annotated
 
 import paramiko
@@ -20,11 +21,19 @@ from ezhpcy.cli.tunnel.provision import (
     provision_worker_infrastructure,
     validate_worker_infrastructure,
 )
-from ezhpcy.cli.utils.ssh import InteractiveSSHClient, read_ed25519_public_key
+from ezhpcy.cli.utils.ssh import (
+    InteractiveSSHClient,
+    absolute_sshd_command,
+    read_ed25519_public_key,
+    sshd_config_arguments,
+)
 from ezhpcy.config import ConnectionInfo, config
 from ezhpcy.constants import (
+    OPENSSH_MATCHSPEC,
+    SSH_DIRECTORY_NAME,
     WORKER_CLIENT_KEY_NAME,
     WORKER_HOST_ALIAS,
+    WORKER_HOST_KEY_NAME,
 )
 from ezhpcy.ipc import create_broker_backend
 from ezhpcy.ipc.common import IPCError
@@ -41,7 +50,7 @@ from ezhpcy.scheduler.lsf import LSFScheduler
 from ezhpcy.scheduler.pbs import PBSScheduler
 from ezhpcy.scheduler.types import SchedulerType
 from ezhpcy.tunnel.broker import ForegroundBroker
-from ezhpcy.types import ResolvedConfig, ResolvedProfileConfig
+from ezhpcy.types import RemoteState, ResolvedConfig, ResolvedProfileConfig
 from ezhpcy.utils import local_machine_id, ssh_connection_id
 
 _FIRST_DYNAMIC_PORT = 49152
@@ -54,6 +63,36 @@ logger = logging.getLogger(__name__)
 
 class ComputeTunnelError(RuntimeError):
     pass
+
+
+def _worker_sshd_command(
+    remote_state: RemoteState,
+    *,
+    host_key: PurePosixPath,
+    remote_username: str,
+    authorized_key: tuple[str, str],
+    port: int,
+) -> tuple[str, ...]:
+    sshd_arguments = [
+        "-D",
+        "-e",
+        "-p",
+        str(port),
+        *sshd_config_arguments(
+            host_key=host_key,
+            remote_username=remote_username,
+            authorized_key=authorized_key,
+        ),
+    ]
+    return (
+        "env",
+        f"PIXI_HOME={remote_state.pixi_home()}",
+        f"PIXI_CACHE_DIR={remote_state.pixi_cache_dir()}",
+        str(remote_state.pixi_executable()),
+        "exec",
+        f"--spec={OPENSSH_MATCHSPEC}",
+        *absolute_sshd_command(sshd_arguments),
+    )
 
 
 def _select_worker_port() -> int:
@@ -251,7 +290,7 @@ def _run_compute_tunnel(
         remote_host = str(conn_info.host)
         connection_id = ssh_connection_id(remote_username, remote_host)
         if auto_provision:
-            payload_path = provision_worker_infrastructure(
+            provision_worker_infrastructure(
                 ssh,
                 remote_state,
                 remote_username=remote_username,
@@ -259,7 +298,7 @@ def _run_compute_tunnel(
                 machine_id=machine_id,
             )
         else:
-            payload_path = validate_worker_infrastructure(
+            validate_worker_infrastructure(
                 ssh,
                 remote_state,
                 remote_username=remote_username,
@@ -309,19 +348,25 @@ def _run_compute_tunnel(
         )
         worker_cwd_dir = remote_state.worker_cwd_dir()
         worker_logs_dir = remote_state.worker_logs_dir()
+        remote_host_key = (
+            remote_state.package_cache_dir()
+            / SSH_DIRECTORY_NAME
+            / machine_id
+            / connection_id
+            / WORKER_HOST_KEY_NAME
+        )
 
         with ssh.sftp_client() as sftp:
             sftp.mkdir(worker_cwd_dir, parents=True, exist_ok=True)
             sftp.mkdir(worker_logs_dir, parents=True, exist_ok=True)
 
         spec = JobSpec(
-            command=(
-                str(payload_path),
-                str(worker_port),
-                machine_id,
-                connection_id,
-                key_type,
-                key_blob,
+            command=_worker_sshd_command(
+                remote_state,
+                host_key=remote_host_key,
+                remote_username=remote_username,
+                authorized_key=(key_type, key_blob),
+                port=worker_port,
             ),
             name="ezhpcy-worker",
             time_limit=time_limit,
@@ -378,7 +423,7 @@ def _run_compute_tunnel(
                 raise ComputeTunnelError(
                     f"scheduler did not report a host for running job {job_id}"
                 )
-            interactive_job.start_payload()
+            interactive_job.start_command()
             destination = (worker_host, worker_port)
             logger.info(
                 "Waiting for worker SSH endpoint %s:%d.", worker_host, worker_port

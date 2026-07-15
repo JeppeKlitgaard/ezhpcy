@@ -53,6 +53,9 @@ def test_ssh_config_command_is_available_and_uses_current_python(monkeypatch) ->
     assert f'    ProxyCommand "{Path(sys.executable).as_posix()}"' in result.stdout
     assert "proxy --profile default" in result.stdout
     expected_ssh_dir = (
-        ssh_config.config.local_file.config_dir / "ssh" / "machine-id"
+        ssh_config.config.local_file.config_dir
+        / "ssh"
+        / "machine-id"
+        / "alice@login.example.com"
     ).resolve()
     assert f'    IdentityFile "{expected_ssh_dir.as_posix()}/' in result.stdout

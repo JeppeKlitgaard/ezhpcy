@@ -148,7 +148,9 @@ def test_provision_is_repeatable_and_never_invokes_remote_python(
     host_private_key = tmp_path / "ssh_host_ed25519_key"
     host_public_key = host_private_key.with_suffix(".pub")
     host_public_key.write_text("ssh-ed25519 LOCAL-HOST\n", encoding="utf-8")
-    machine_ssh_dir = config.local_file.config_dir / "ssh" / "machine-id"
+    machine_ssh_dir = (
+        config.local_file.config_dir / "ssh" / "machine-id" / "alice@login.example.com"
+    )
     machine_ssh_dir.mkdir(parents=True)
     payload_path = PurePosixPath(
         f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/payloads/abc123/ssh-serve"
@@ -191,7 +193,10 @@ def test_provision_is_repeatable_and_never_invokes_remote_python(
         "uv" in argument for command in ssh.pixi_commands for argument in command
     )
     assert not any("ssh-keygen" in command for command in ssh.pixi_commands)
-    remote_ssh = f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/ssh/machine-id"
+    remote_ssh = (
+        f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/ssh/machine-id/"
+        "alice@login.example.com"
+    )
     assert (
         ssh.sftp.puts
         == [
@@ -215,7 +220,7 @@ def test_provision_is_repeatable_and_never_invokes_remote_python(
 def test_local_worker_keys_are_generated_and_reused(
     tmp_path: Path, monkeypatch
 ) -> None:
-    ssh_dir = tmp_path / "config" / "ssh" / "machine-id"
+    ssh_dir = tmp_path / "config" / "ssh" / "machine-id" / "alice@login.example.com"
     generated_keys = 0
 
     def count_generated_key():
@@ -253,6 +258,18 @@ def test_local_worker_keys_are_generated_and_reused(
         loaded_key = paramiko.Ed25519Key.from_private_key_file(str(private_key))
         public_fields = public_key.read_text(encoding="ascii").split()
         assert public_fields[:2] == [loaded_key.get_name(), loaded_key.get_base64()]
+
+
+def test_local_worker_host_keys_differ_between_login_endpoints(
+    tmp_path: Path,
+) -> None:
+    machine_ssh_dir = tmp_path / "config" / "ssh" / "machine-id"
+    login1_keys = _ensure_local_ssh_keys(machine_ssh_dir / "alice@login1.hpc.dtu.dk")
+    login2_keys = _ensure_local_ssh_keys(machine_ssh_dir / "alice@login2.hpc.dtu.dk")
+
+    assert login1_keys[3].read_text(encoding="ascii") != login2_keys[3].read_text(
+        encoding="ascii"
+    )
 
 
 def test_provision_pixi_installs_the_pinned_version_in_a_versioned_cache() -> None:
@@ -339,7 +356,8 @@ def test_default_prune_removes_stale_pixi_homes_and_caches() -> None:
 def test_validate_worker_infrastructure_is_read_only() -> None:
     ssh = StubSSH()
     remote_ssh = PurePosixPath(
-        f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/ssh/machine-id"
+        f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/ssh/machine-id/"
+        "alice@login.example.com"
     )
     required = (
         PurePosixPath(
@@ -356,7 +374,11 @@ def test_validate_worker_infrastructure_is_read_only() -> None:
     ssh.sftp.files[str(payload_path)] = render_worker_payload()
 
     resolved = validate_worker_infrastructure(  # type: ignore[arg-type]
-        ssh, ssh.remote_state, machine_id="machine-id"
+        ssh,
+        ssh.remote_state,
+        remote_username="alice",
+        remote_host="login.example.com",
+        machine_id="machine-id",
     )
 
     assert resolved == payload_path
@@ -368,15 +390,20 @@ def test_validate_worker_infrastructure_reports_missing_files() -> None:
 
     with pytest.raises(ProvisioningError, match="tunnel provision") as exc_info:
         validate_worker_infrastructure(  # type: ignore[arg-type]
-            ssh, ssh.remote_state, machine_id="machine-id"
+            ssh,
+            ssh.remote_state,
+            remote_username="alice",
+            remote_host="login.example.com",
+            machine_id="machine-id",
         )
 
     assert f"/ezhpcy/{EZHPCY_VERSION}/pixi/{PIXI_VERSION}/bin/pixi" in str(
         exc_info.value
     )
-    assert f"/ezhpcy/{EZHPCY_VERSION}/ssh/machine-id/authorized_keys" in str(
-        exc_info.value
-    )
+    assert (
+        f"/ezhpcy/{EZHPCY_VERSION}/ssh/machine-id/"
+        "alice@login.example.com/authorized_keys"
+    ) in str(exc_info.value)
 
 
 def test_prune_all_removes_the_package_cache_directory(tmp_path: Path) -> None:

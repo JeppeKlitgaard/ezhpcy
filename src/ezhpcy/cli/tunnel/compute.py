@@ -42,7 +42,7 @@ from ezhpcy.scheduler.pbs import PBSScheduler
 from ezhpcy.scheduler.types import SchedulerType
 from ezhpcy.tunnel.broker import ForegroundBroker
 from ezhpcy.types import ResolvedConfig, ResolvedProfileConfig
-from ezhpcy.utils import local_machine_id
+from ezhpcy.utils import local_machine_id, ssh_connection_id
 
 _FIRST_DYNAMIC_PORT = 49152
 _LAST_DYNAMIC_PORT = 65535
@@ -62,8 +62,12 @@ def _select_worker_port() -> int:
     )
 
 
-def _ensure_local_worker_credentials() -> None:
-    ssh_directory = config.local_file.ssh_dir(local_machine_id())
+def _ensure_local_worker_credentials(conn_info: ConnectionInfo) -> None:
+    remote_username = conn_info.user
+    assert remote_username is not None
+    ssh_directory = config.local_file.ssh_dir(
+        local_machine_id(), user=remote_username, host=str(conn_info.host)
+    )
     required_files = (
         ssh_directory / WORKER_CLIENT_KEY_NAME,
         ssh_directory / "worker_known_hosts",
@@ -241,18 +245,25 @@ def _run_compute_tunnel(
             raise paramiko.SSHException("Login-node SSH session is not active")
 
         remote_state = ssh.get_remote_state()
+        remote_username = conn_info.user
+        assert remote_username is not None
+        remote_host = str(conn_info.host)
+        connection_id = ssh_connection_id(remote_username, remote_host)
         if auto_provision:
-            remote_username = conn_info.user
-            assert remote_username is not None
             payload_path = provision_worker_infrastructure(
                 ssh,
                 remote_state,
                 remote_username=remote_username,
+                remote_host=remote_host,
                 machine_id=machine_id,
             )
         else:
             payload_path = validate_worker_infrastructure(
-                ssh, remote_state, machine_id=machine_id
+                ssh,
+                remote_state,
+                remote_username=remote_username,
+                remote_host=remote_host,
+                machine_id=machine_id,
             )
         match scheduler_type:
             case SchedulerType.LSF:
@@ -296,7 +307,7 @@ def _run_compute_tunnel(
             sftp.mkdir(worker_logs_dir, parents=True, exist_ok=True)
 
         spec = JobSpec(
-            command=(str(payload_path), str(worker_port), machine_id),
+            command=(str(payload_path), str(worker_port), machine_id, connection_id),
             name="ezhpcy-worker",
             time_limit=time_limit,
             memory_bytes=memory_bytes,
@@ -579,7 +590,7 @@ def compute_cmd(
         else:
             auto_provision_enabled = config.auto_provision
         if not auto_provision_enabled:
-            _ensure_local_worker_credentials()
+            _ensure_local_worker_credentials(profile_context.connection)
         _run_compute_tunnel(
             profile_name=profile_context.name,
             profile=resolved,

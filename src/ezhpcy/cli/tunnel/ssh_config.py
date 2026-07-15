@@ -4,7 +4,7 @@ from typing import Annotated
 
 import typer
 
-from ezhpcy.cli.tunnel.common import ProfileOpt, UserOpt
+from ezhpcy.cli.tunnel.common import HostOpt, ProfileOpt, UserOpt
 from ezhpcy.cli.utils.bad_parameter import RichBadParameter
 from ezhpcy.cli.utils.resolve import resolve_forbidden_none
 from ezhpcy.config import config
@@ -62,6 +62,7 @@ def render_worker_ssh_config(
 def ssh_config_cmd(
     profile: ProfileOpt = None,
     user: UserOpt = None,
+    host: HostOpt = None,
     alias: Annotated[
         str,
         typer.Option(
@@ -84,7 +85,16 @@ def ssh_config_cmd(
         cli_param="--user",
         config_param=f"profile.{profile_name}.user",
     )
-    ssh_dir = config.local_file.ssh_dir(local_machine_id())
+    resolved_host = resolve_forbidden_none(
+        cli_value=host,
+        config_value=(str(resolved_profile.host) if resolved_profile.host else None),
+        name="host",
+        cli_param="--host",
+        config_param=f"profile.{profile_name}.host",
+    )
+    ssh_dir = config.local_file.ssh_dir(
+        local_machine_id(), user=resolved_user, host=resolved_host
+    )
     typer.echo(
         render_worker_ssh_config(
             user=resolved_user,

@@ -346,6 +346,7 @@ def test_compute_tunnel_submits_worker_starts_broker_and_cancels() -> None:
         f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/payloads/abc123/ssh-serve",
         "54321",
         "machine-id",
+        "alice@login.example.com",
     )
     assert spec.queue == "normal"
     assert spec.memory_bytes == 2048 * _MEBIBYTE
@@ -532,7 +533,7 @@ def test_compute_command_resolves_profile_and_applies_cli_overrides(
     )
     captured: dict[str, object] = {}
     monkeypatch.setattr(
-        compute_module, "_ensure_local_worker_credentials", lambda: None
+        compute_module, "_ensure_local_worker_credentials", lambda _connection: None
     )
     monkeypatch.setattr(
         compute_module,
@@ -586,7 +587,7 @@ def test_compute_command_can_disable_auto_provision(
     credentials_checked = False
     captured: dict[str, object] = {}
 
-    def check_credentials() -> None:
+    def check_credentials(_connection: ConnectionInfo) -> None:
         nonlocal credentials_checked
         credentials_checked = True
 
@@ -667,7 +668,7 @@ def test_compute_command_rejects_unknown_profile_before_starting(
     )
     started = False
 
-    def start() -> None:
+    def start(_connection: ConnectionInfo) -> None:
         nonlocal started
         started = True
 

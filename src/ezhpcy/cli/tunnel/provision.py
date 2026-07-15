@@ -31,7 +31,7 @@ from ezhpcy.constants import (
 )
 from ezhpcy.ssh import SSHClient
 from ezhpcy.types import RemoteState
-from ezhpcy.utils import local_machine_id
+from ezhpcy.utils import local_machine_id, ssh_connection_id
 from ezhpcy.worker_payload import ensure_worker_payload, require_worker_payload
 
 SSHD_CONFIG_RESOURCE = "static/config/ssh_remote/sshd_config"
@@ -178,13 +178,17 @@ def provision_worker_infrastructure(
     remote_state: RemoteState,
     *,
     remote_username: str,
+    remote_host: str,
     machine_id: str | None = None,
 ) -> PurePosixPath:
     """Idempotently provision everything needed by a compute worker."""
     machine_id = machine_id or local_machine_id()
+    connection_id = ssh_connection_id(remote_username, remote_host)
     remote_root = remote_state.package_cache_dir()
-    remote_ssh_dir = remote_root / SSH_DIRECTORY_NAME / machine_id
-    local_ssh_dir = config.local_file.ssh_dir(machine_id)
+    remote_ssh_dir = remote_root / SSH_DIRECTORY_NAME / machine_id / connection_id
+    local_ssh_dir = config.local_file.ssh_dir(
+        machine_id, user=remote_username, host=remote_host
+    )
 
     sshd_config_traversable = resources.files("ezhpcy").joinpath(SSHD_CONFIG_RESOURCE)
 
@@ -245,11 +249,19 @@ def validate_worker_infrastructure(
     ssh: SSHClient,
     remote_state: RemoteState,
     *,
+    remote_username: str,
+    remote_host: str,
     machine_id: str | None = None,
 ) -> PurePosixPath:
     """Validate provisioned files without changing remote state."""
     machine_id = machine_id or local_machine_id()
-    remote_ssh_dir = remote_state.package_cache_dir() / SSH_DIRECTORY_NAME / machine_id
+    connection_id = ssh_connection_id(remote_username, remote_host)
+    remote_ssh_dir = (
+        remote_state.package_cache_dir()
+        / SSH_DIRECTORY_NAME
+        / machine_id
+        / connection_id
+    )
     required = (
         remote_state.pixi_executable(),
         remote_ssh_dir / "authorized_keys",
@@ -303,10 +315,12 @@ def provision_cmd(
 
     remote_username = profile_context.connection.user
     assert remote_username is not None
+    remote_host = str(profile_context.connection.host)
     payload_path = provision_worker_infrastructure(
         ssh,
         remote_state,
         remote_username=remote_username,
+        remote_host=remote_host,
         machine_id=local_machine_id(),
     )
     console.print(f"Worker payload ready: [bold blue]{payload_path}[/bold blue]")

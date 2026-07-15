@@ -3,13 +3,14 @@ set -eu
 
 openssh_matchspec={{ openssh_matchspec }}
 
-if [ "$#" -ne 2 ]; then
-    echo "Usage: ssh-serve PORT MACHINE_ID" >&2
+if [ "$#" -ne 3 ]; then
+    echo "Usage: ssh-serve PORT MACHINE_ID CONNECTION_ID" >&2
     exit 2
 fi
 
 port=$1
 machine_id=$2
+connection_id=$3
 case "$port" in
     ''|*[!0-9]*)
         echo "Worker SSH port must be numeric." >&2
@@ -24,6 +25,13 @@ fi
 case "$machine_id" in
     ''|*[!0-9a-f]*)
         echo "Local machine ID must be lowercase hexadecimal." >&2
+        exit 2
+        ;;
+esac
+
+case "$connection_id" in
+    ''|.|..|*[!A-Za-z0-9._@%-]*)
+        echo "SSH connection ID contains invalid characters." >&2
         exit 2
         ;;
 esac
@@ -44,7 +52,7 @@ fi
 pixi_home="$ezhpcy_cache_dir/pixi/{{ pixi_version }}"
 pixi_cache_dir="$ezhpcy_cache_dir/pixi_cache/{{ pixi_version }}"
 pixi="$pixi_home/bin/pixi"
-sshd_config="$ezhpcy_cache_dir/ssh/$machine_id/sshd_config"
+sshd_config="$ezhpcy_cache_dir/ssh/$machine_id/$connection_id/sshd_config"
 sshd_pid="$runtime_dir/sshd-$$.pid"
 
 if [ ! -x "$pixi" ]; then

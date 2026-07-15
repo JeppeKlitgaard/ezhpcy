@@ -17,6 +17,7 @@ from ezhpcy.worker_payload import (
 )
 
 MACHINE_ID = "a" * 64
+CONNECTION_ID = "alice@login2.hpc.dtu.dk"
 
 
 def require_bash() -> None:
@@ -169,11 +170,16 @@ def test_require_worker_payload_rejects_missing_or_corrupt_content(
 @pytest.mark.parametrize(
     ("arguments", "message"),
     [
-        ([], "Usage: ssh-serve PORT MACHINE_ID"),
-        (["not-a-port", MACHINE_ID], "must be numeric"),
-        (["1023", MACHINE_ID], "must be between 1024 and 65535"),
-        (["65536", MACHINE_ID], "must be between 1024 and 65535"),
-        (["23456", "not-a-machine-id"], "must be lowercase hexadecimal"),
+        ([], "Usage: ssh-serve PORT MACHINE_ID CONNECTION_ID"),
+        (["not-a-port", MACHINE_ID, CONNECTION_ID], "must be numeric"),
+        (["1023", MACHINE_ID, CONNECTION_ID], "must be between 1024 and 65535"),
+        (["65536", MACHINE_ID, CONNECTION_ID], "must be between 1024 and 65535"),
+        (
+            ["23456", "not-a-machine-id", CONNECTION_ID],
+            "must be lowercase hexadecimal",
+        ),
+        (["23456", MACHINE_ID, "../../other"], "contains invalid characters"),
+        (["23456", MACHINE_ID, ".."], "contains invalid characters"),
     ],
 )
 def test_worker_payload_rejects_invalid_arguments(tmp_path, arguments, message) -> None:
@@ -201,7 +207,7 @@ def test_worker_payload_requires_a_compute_allocation(tmp_path) -> None:
         environment.pop(name, None)
 
     result = subprocess.run(
-        ["bash", str(script), "23456", MACHINE_ID],
+        ["bash", str(script), "23456", MACHINE_ID, CONNECTION_ID],
         capture_output=True,
         text=True,
         env=environment,
@@ -217,7 +223,7 @@ def test_worker_payload_validates_then_executes_sshd_through_pixi(tmp_path) -> N
     runtime_home = tmp_path / "runtime"
     version_cache = cache_home / "ezhpcy" / EZHPCY_VERSION
     pixi = version_cache / "pixi" / PIXI_VERSION / "bin" / "pixi"
-    sshd_config = version_cache / "ssh" / MACHINE_ID / "sshd_config"
+    sshd_config = version_cache / "ssh" / MACHINE_ID / CONNECTION_ID / "sshd_config"
     capture = tmp_path / "pixi-arguments"
     pixi.parent.mkdir(parents=True)
     sshd_config.parent.mkdir(parents=True)
@@ -228,7 +234,7 @@ def test_worker_payload_validates_then_executes_sshd_through_pixi(tmp_path) -> N
     script.write_bytes(render_worker_payload())
 
     result = subprocess.run(
-        ["bash", str(script), "23456", MACHINE_ID],
+        ["bash", str(script), "23456", MACHINE_ID, CONNECTION_ID],
         capture_output=True,
         text=True,
         env={

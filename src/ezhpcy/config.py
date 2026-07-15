@@ -16,6 +16,7 @@ from pydantic_settings import (
 from ezhpcy.constants import SSH_DIRECTORY_NAME
 from ezhpcy.logging import LogLevel, configure_logging
 from ezhpcy.types import ProfileConfig, ResolvedProfileConfig
+from ezhpcy.utils import ssh_connection_id
 
 _PROFILE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
@@ -70,9 +71,14 @@ class LocalFileConfig(BaseModel):
     runtime_dir: Path = Field(default_factory=_get_default_runtime_dir)
     config_file: Path = Field(default_factory=_default_config_file)
 
-    def ssh_dir(self, machine_id: str) -> Path:
-        """Return the SSH credential directory for the given local machine."""
-        return self.config_dir / SSH_DIRECTORY_NAME / machine_id
+    def ssh_dir(self, machine_id: str, *, user: str, host: str) -> Path:
+        """Return the SSH credential directory for one machine and endpoint."""
+        return (
+            self.config_dir
+            / SSH_DIRECTORY_NAME
+            / machine_id
+            / ssh_connection_id(user, host)
+        )
 
 
 class ConnectionInfo(BaseModel):

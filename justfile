@@ -1,6 +1,12 @@
 set minimum-version := '1.55.0'
 set default-list := true
 
+# Run all checks
+all:
+    just test
+    just format
+    just lint
+
 # Installs the project dependencies and pre-commit hooks
 [group: 'dev']
 install:

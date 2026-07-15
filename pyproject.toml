@@ -38,14 +38,5 @@ extend-select = ["I"]
 isort.combine-as-imports = true
 
 [build-system]
-requires = ["hatchling>=1.31,<2"]
-build-backend = "hatchling.build"
-
-[tool.hatch.build.targets.wheel]
-packages = ["src/ezhpcy"]
-
-[tool.hatch.build.targets.sdist]
-exclude = [
-    "/PKG-INFO",
-    "/dist",
-]
+requires = ["uv_build>=0.11.28,<0.12"]
+build-backend = "uv_build"

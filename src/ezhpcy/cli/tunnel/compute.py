@@ -1,5 +1,4 @@
 import logging
-import re
 import secrets
 import shlex
 import signal
@@ -7,15 +6,19 @@ import threading
 import time
 from collections.abc import Callable
 from datetime import timedelta
-from decimal import ROUND_CEILING, Decimal
 from typing import Annotated
 
 import paramiko
 import typer
+from pydantic import ValidationError
 
-from ezhpcy.cli.tunnel.common import local_machine_or_fail, with_connection_options
+from ezhpcy.cli.tunnel.common import (
+    ProfileContext,
+    local_machine_or_fail,
+    with_profile_options,
+)
 from ezhpcy.cli.utils.ssh import InteractiveSSHClient
-from ezhpcy.config import ConnectionInfo, config
+from ezhpcy.config import ConnectionInfo, get_config
 from ezhpcy.constants import (
     PACKAGE_NAME,
     SSH_DIRECTORY_NAME,
@@ -37,49 +40,17 @@ from ezhpcy.scheduler.lsf import LSFScheduler
 from ezhpcy.scheduler.pbs import PBSScheduler
 from ezhpcy.scheduler.types import SchedulerType
 from ezhpcy.tunnel.broker import ForegroundBroker
+from ezhpcy.types import ResolvedConfig, ResolvedProfileConfig
 
 _FIRST_DYNAMIC_PORT = 49152
 _LAST_DYNAMIC_PORT = 65535
 _JOB_POLL_INTERVAL = 1.0
 _JOB_MONITOR_INTERVAL = 5.0
 _SSH_BANNER_LIMIT = 255
-_MEMORY_PATTERN = re.compile(
-    r"^(?P<amount>(?:\d+(?:\.\d*)?|\.\d+))\s*(?P<unit>[KMGT]?I?B)?$",
-    re.IGNORECASE,
-)
-_MEMORY_UNIT_IN_BYTES = {
-    "B": 1,
-    "KB": 1000,
-    "KIB": 1024,
-    "MB": 1000**2,
-    "MIB": 1024**2,
-    "GB": 1000**3,
-    "GIB": 1024**3,
-    "TB": 1000**4,
-    "TIB": 1024**4,
-}
 
 
 class ComputeTunnelError(RuntimeError):
     pass
-
-
-def _parse_memory_bytes(value: str | None) -> int | None:
-    if value is None:
-        return None
-    match = _MEMORY_PATTERN.fullmatch(value.strip())
-    if match is None:
-        raise ValueError(
-            "memory must be a positive number optionally followed by "
-            "B, KB, KiB, MB, MiB, GB, GiB, TB, or TiB"
-        )
-
-    amount = Decimal(match.group("amount"))
-    if amount <= 0:
-        raise ValueError("memory must be positive")
-    unit = (match.group("unit") or "MIB").upper()
-    memory_bytes = amount * _MEMORY_UNIT_IN_BYTES[unit]
-    return int(memory_bytes.to_integral_value(rounding=ROUND_CEILING))
 
 
 def _select_worker_port() -> int:
@@ -89,7 +60,7 @@ def _select_worker_port() -> int:
 
 
 def _ensure_local_worker_credentials() -> None:
-    ssh_directory = config.local_file.config_dir / SSH_DIRECTORY_NAME
+    ssh_directory = get_config().local_file.config_dir / SSH_DIRECTORY_NAME
     required_files = (
         ssh_directory / WORKER_CLIENT_KEY_NAME,
         ssh_directory / "worker_known_hosts",
@@ -244,13 +215,15 @@ def _drain_interactive_job(
 
 def _run_compute_tunnel(
     *,
+    profile_name: str,
+    profile: ResolvedProfileConfig,
     conn_info: ConnectionInfo,
     scheduler_type: SchedulerType,
     queue: str | None,
     cores: int,
     gpus: int,
     exclusive: bool,
-    time_limit_minutes: int | None,
+    time_limit: timedelta | None,
     memory_bytes: int | None,
     queue_timeout_seconds: float,
     startup_timeout_seconds: float,
@@ -273,45 +246,37 @@ def _run_compute_tunnel(
         remote_files = ssh.get_file_config()
         match scheduler_type:
             case SchedulerType.LSF:
-                effective_queue = queue or config.hpc.lsf_queue
                 scheduler: Scheduler = LSFScheduler(
                     ssh.run_login_shell,
                     ssh.start_login_shell,
-                    interactive_application_profile=(
-                        config.hpc.lsf_application_profile
-                    ),
+                    interactive_application_profile=(profile.lsf_application_profile),
                     interactive_submission_environment=(
-                        config.hpc.lsf_submission_environment
+                        profile.lsf_submission_environment
                     ),
-                    interactive_export_environment=(config.hpc.lsf_export_environment),
-                    resource_reserve_per_task=(
-                        config.hpc.lsf_resource_reserve_per_task
-                    ),
+                    interactive_export_environment=(profile.lsf_export_environment),
+                    resource_reserve_per_task=(profile.lsf_resource_reserve_per_task),
                 )
             case SchedulerType.PBS:
-                effective_queue = queue or config.hpc.pbs_queue
                 scheduler = PBSScheduler(
                     ssh.run_login_shell,
                     ssh.start_login_shell,
-                    command_directory=config.hpc.pbs_command_directory,
+                    command_directory=profile.pbs_command_directory,
                 )
             case _:
                 raise UnsupportedSchedulerError(scheduler_type)
-        typer.echo(f"Using {scheduler_type.value} scheduler.")
+        typer.echo(
+            f"Using profile {profile_name!r} with {scheduler_type.value} scheduler."
+        )
         worker_directory = remote_files.data_dir / PACKAGE_NAME
         spec = JobSpec(
             command=("ezhpcy", "compute", "ssh-serve", str(worker_port)),
             name="ezhpcy-worker",
-            time_limit=(
-                timedelta(minutes=time_limit_minutes)
-                if time_limit_minutes is not None
-                else None
-            ),
+            time_limit=time_limit,
             memory_bytes=memory_bytes,
             cores=cores,
             gpus=gpus,
             exclusive=exclusive,
-            queue=effective_queue,
+            queue=queue,
             working_directory=worker_directory,
             stdout_path=worker_directory / "worker-%J.out",
             stderr_path=worker_directory / "worker-%J.err",
@@ -366,7 +331,7 @@ def _run_compute_tunnel(
                 timeout_seconds=startup_timeout_seconds,
             )
 
-            backend = create_broker_backend()
+            backend = create_broker_backend(profile_name=profile_name)
             broker = ForegroundBroker(
                 transport,
                 destination,
@@ -435,51 +400,51 @@ def _run_compute_tunnel(
             output_thread.join(timeout=1)
 
 
-@with_connection_options
+@with_profile_options
 def compute_cmd(
-    conn_info: ConnectionInfo,
+    profile_context: ProfileContext,
     scheduler_type: Annotated[
-        SchedulerType,
+        SchedulerType | None,
         typer.Option(
             "--scheduler",
             case_sensitive=False,
             help="Scheduler used to allocate the compute node.",
         ),
-    ],
+    ] = None,
     queue: Annotated[
         str | None,
         typer.Option("--queue", "-q", help="Scheduler queue for the worker job."),
     ] = None,
     cores: Annotated[
-        int,
+        int | None,
         typer.Option(
             "--cores",
             "-n",
             min=1,
             help="Scheduler CPU cores reserved on the worker host.",
         ),
-    ] = 1,
+    ] = None,
     gpus: Annotated[
-        int,
+        int | None,
         typer.Option(
             "--gpus",
             min=0,
             help="Number of GPUs reserved on the worker host.",
         ),
-    ] = 0,
+    ] = None,
     exclusive: Annotated[
-        bool,
+        bool | None,
         typer.Option(
-            "--exclusive",
+            "--exclusive/--shared",
             help="Reserve the worker host exclusively.",
         ),
-    ] = False,
-    time_limit_minutes: Annotated[
-        int | None,
+    ] = None,
+    time_limit: Annotated[
+        str | None,
         typer.Option(
             "--time-limit",
-            min=1,
-            help="Optional worker lifetime override in minutes.",
+            metavar="H:MM",
+            help="Optional worker lifetime override.",
         ),
     ] = None,
     memory: Annotated[
@@ -488,27 +453,27 @@ def compute_cmd(
             "--memory",
             metavar="SIZE",
             help=(
-                "Optional total worker memory. Bare values are MiB; SI (GB) and "
-                "IEC (GiB) units are distinguished."
+                "Optional total worker memory parsed as a Pydantic byte size. "
+                "Bare values are bytes; SI (GB) and IEC (GiB) units differ."
             ),
         ),
     ] = None,
     queue_timeout_seconds: Annotated[
-        float,
+        float | None,
         typer.Option(
             "--queue-timeout",
             min=1,
             help="Maximum time to wait for the scheduler allocation.",
         ),
-    ] = config.hpc.queue_timeout_seconds,
+    ] = None,
     startup_timeout_seconds: Annotated[
-        float,
+        float | None,
         typer.Option(
             "--startup-timeout",
             min=1,
             help="Maximum time to wait for worker SSH after allocation.",
         ),
-    ] = config.hpc.worker_startup_timeout_seconds,
+    ] = None,
     worker_port: Annotated[
         int | None,
         typer.Option(
@@ -522,22 +487,55 @@ def compute_cmd(
     """Allocate a compute node and expose its SSH service through the broker."""
     local_machine_or_fail()
     try:
+        profile = profile_context.profile
         try:
-            memory_bytes = _parse_memory_bytes(memory)
-        except ValueError as error:
-            raise typer.BadParameter(str(error), param_hint="--memory") from error
+            resolved = ResolvedConfig.model_validate(
+                {
+                    **profile.model_dump(),
+                    "scheduler": scheduler_type or profile.scheduler,
+                    "queue": queue if queue is not None else profile.queue,
+                    "cores": cores if cores is not None else profile.cores,
+                    "gpus": gpus if gpus is not None else profile.gpus,
+                    "exclusive": (
+                        exclusive if exclusive is not None else profile.exclusive
+                    ),
+                    "time_limit": (
+                        time_limit if time_limit is not None else profile.time_limit
+                    ),
+                    "memory": memory if memory is not None else profile.memory,
+                    "queue_timeout_seconds": (
+                        queue_timeout_seconds
+                        if queue_timeout_seconds is not None
+                        else profile.queue_timeout_seconds
+                    ),
+                    "worker_startup_timeout_seconds": (
+                        startup_timeout_seconds
+                        if startup_timeout_seconds is not None
+                        else profile.worker_startup_timeout_seconds
+                    ),
+                }
+            )
+        except ValidationError as error:
+            raise typer.BadParameter(str(error)) from error
+        if resolved.scheduler is None:
+            raise typer.BadParameter(
+                "scheduler must be set by --scheduler or the selected profile",
+                param_hint="--scheduler",
+            )
         _ensure_local_worker_credentials()
         _run_compute_tunnel(
-            conn_info=conn_info,
-            scheduler_type=scheduler_type,
-            queue=queue,
-            cores=cores,
-            gpus=gpus,
-            exclusive=exclusive,
-            time_limit_minutes=time_limit_minutes,
-            memory_bytes=memory_bytes,
-            queue_timeout_seconds=queue_timeout_seconds,
-            startup_timeout_seconds=startup_timeout_seconds,
+            profile_name=profile_context.name,
+            profile=resolved,
+            conn_info=profile_context.connection,
+            scheduler_type=resolved.scheduler,
+            queue=resolved.queue,
+            cores=resolved.cores,
+            gpus=resolved.gpus,
+            exclusive=resolved.exclusive,
+            time_limit=resolved.time_limit_delta,
+            memory_bytes=int(resolved.memory) if resolved.memory is not None else None,
+            queue_timeout_seconds=resolved.queue_timeout_seconds,
+            startup_timeout_seconds=resolved.worker_startup_timeout_seconds,
             worker_port=worker_port or _select_worker_port(),
         )
     except KeyboardInterrupt:

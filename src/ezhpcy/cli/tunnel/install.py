@@ -10,9 +10,13 @@ from jinja2 import StrictUndefined, Template
 from rich.prompt import Confirm
 
 from ezhpcy import console
-from ezhpcy.cli.tunnel.common import local_machine_or_fail, with_connection_options
+from ezhpcy.cli.tunnel.common import (
+    ProfileContext,
+    local_machine_or_fail,
+    with_profile_options,
+)
 from ezhpcy.cli.utils.ssh import InteractiveSSHClient, absolute_sshd_command
-from ezhpcy.config import ConnectionInfo, config
+from ezhpcy.config import get_config
 from ezhpcy.constants import (
     OPENSSH_MATCHSPEC,
     SSH_DIRECTORY_NAME,
@@ -112,9 +116,9 @@ def _pin_worker_host_key(host_public_key: str, known_hosts: Path) -> None:
     os.chmod(known_hosts, 0o600)
 
 
-@with_connection_options
+@with_profile_options
 def install_cmd(
-    conn_info: ConnectionInfo,
+    profile_context: ProfileContext,
     force: Annotated[
         bool,
         typer.Option(
@@ -136,7 +140,7 @@ def install_cmd(
     local_machine_or_fail()
 
     # Connect
-    ssh = InteractiveSSHClient(conn_info)
+    ssh = InteractiveSSHClient(profile_context.connection)
     ssh.interactive_connect()
 
     _check_existing_installation(ssh, force=force)
@@ -149,7 +153,7 @@ def install_cmd(
     remote_ssh_dir = (
         remote_file_config.config_dir / INSTALL_DIR_NAME / SSH_DIRECTORY_NAME
     )
-    local_ssh_dir = config.local_file.config_dir / SSH_DIRECTORY_NAME
+    local_ssh_dir = get_config().local_file.config_dir / SSH_DIRECTORY_NAME
 
     # User consent
     user_accepts = yes or Confirm.ask(
@@ -256,7 +260,7 @@ def install_cmd(
         with resources.as_file(sshd_config_traversable) as sshd_config_template:
             rendered_config = _render_sshd_config(
                 sshd_config_template.read_text(encoding="utf-8"),
-                remote_username=conn_info.user,
+                remote_username=profile_context.connection.user,
                 remote_config_dir=remote_ssh_dir,
             )
         sftp.write_text(remote_sshd_config, rendered_config)

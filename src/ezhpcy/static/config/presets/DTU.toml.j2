@@ -1,19 +1,35 @@
 # {{ preset }} HPC configuration for ezhpcy.
 
-[connection]
+default_profile = "default"
+
+[profile.default]
+description = "DTU LSF interactive queue"
 host = "login2.hpc.dtu.dk"
+user = {{ user | tojson }}
 
-[hpc]
-login_node_pattern = "^hpclogin\\d+$"
+scheduler = "LSF"
+queue = "hpcint"
 
-lsf_queue = "hpcint"
 lsf_resource_reserve_per_task = true
 lsf_application_profile = "qrsh"
 lsf_submission_environment = { ESUB_BYPASS = "1", ESUB_QUIET = "1", LSF_QRSH = "true" }
 lsf_export_environment = ["TERM", "LSF_QRSH"]
 
-pbs_queue = "workq"
-pbs_command_directory = "/opt/pbspro/bin"
-
 queue_timeout_seconds = 900
 worker_startup_timeout_seconds = 60
+
+[profile.pbs]
+description = "DTU PBS work queue"
+inherit = "default"
+scheduler = "PBS"
+queue = "workq"
+pbs_command_directory = "/opt/pbspro/bin"
+
+[profile.gpul40s]
+description = "DTU L40S GPU queue"
+inherit = "default"
+
+queue = "gpul40s"
+cores = 8
+time_limit = "1:00"
+memory = "32GB"

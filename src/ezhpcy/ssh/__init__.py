@@ -171,12 +171,11 @@ class SSHClient(paramiko.SSHClient):
             'runtime_dir="$XDG_RUNTIME_DIR/ezhpcy"; '
             'else runtime_dir="${TMPDIR:-/tmp}/ezhpcy-$(id -u)"; fi; '
             'printf \'{"cache_dir":"%s","config_dir":"%s","data_dir":"%s",'
-            '"runtime_dir":"%s","config_file":"%s"}\' '
+            '"runtime_dir":"%s"}\' '
             '"${XDG_CACHE_HOME:-$HOME/.cache}" '
             '"${XDG_CONFIG_HOME:-$HOME/.config}" '
             '"${XDG_DATA_HOME:-$HOME/.local/share}" '
-            '"$runtime_dir" '
-            '"${EZHPCY_CONFIG_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/ezhpcy/ezhpcy.toml}"'
+            '"$runtime_dir"'
         )
         raw = self.run(["bash", "-lc", cmd]).strip()
 

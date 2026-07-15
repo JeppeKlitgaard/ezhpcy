@@ -2,15 +2,14 @@ from typing import Annotated
 
 import typer
 
-from ezhpcy.cli.tunnel.common import with_connection_options
+from ezhpcy.cli.tunnel.common import ProfileContext, with_profile_options
 from ezhpcy.cli.tunnel.install import install_cmd
 from ezhpcy.cli.tunnel.uninstall import uninstall_cmd
-from ezhpcy.config import ConnectionInfo
 
 
-@with_connection_options
+@with_profile_options
 def reinstall_cmd(
-    conn_info: ConnectionInfo,
+    profile_context: ProfileContext,
     yes: Annotated[
         bool,
         typer.Option(
@@ -24,14 +23,16 @@ def reinstall_cmd(
     # Resolve one-shot sources such as file descriptors and keyrings once, then
     # reuse the resulting credentials for both halves of the operation.
     uninstall_cmd(
-        user=conn_info.user,
-        password=conn_info.password,
-        host=str(conn_info.host),
+        profile=profile_context.name,
+        user=profile_context.connection.user,
+        password=profile_context.connection.password,
+        host=str(profile_context.connection.host),
         yes=yes,
     )
     install_cmd(
-        user=conn_info.user,
-        password=conn_info.password,
-        host=str(conn_info.host),
+        profile=profile_context.name,
+        user=profile_context.connection.user,
+        password=profile_context.connection.password,
+        host=str(profile_context.connection.host),
         yes=yes,
     )

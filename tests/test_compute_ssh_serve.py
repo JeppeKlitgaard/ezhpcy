@@ -1,5 +1,6 @@
 import os
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -88,7 +89,10 @@ def test_ssh_serve_validates_then_replaces_process(tmp_path: Path) -> None:
 
     with (
         patch("ezhpcy.cli.compute.ssh_serve.compute_node_or_fail") as guard,
-        patch("ezhpcy.cli.compute.ssh_serve.config.local_file", file_config),
+        patch(
+            "ezhpcy.cli.compute.ssh_serve.LocalFileConfig",
+            return_value=file_config,
+        ),
         patch("ezhpcy.cli.compute.ssh_serve.subprocess.run") as run,
         patch("ezhpcy.cli.compute.ssh_serve.os.execve") as execve,
     ):
@@ -129,7 +133,10 @@ def test_ssh_serve_defaults_to_all_ipv4_interfaces(tmp_path: Path) -> None:
 
     with (
         patch("ezhpcy.cli.compute.ssh_serve.compute_node_or_fail"),
-        patch("ezhpcy.cli.compute.ssh_serve.config.local_file", file_config),
+        patch(
+            "ezhpcy.cli.compute.ssh_serve.LocalFileConfig",
+            return_value=file_config,
+        ),
         patch("ezhpcy.cli.compute.ssh_serve.subprocess.run"),
         patch("ezhpcy.cli.compute.ssh_serve.os.execve") as execve,
     ):
@@ -176,7 +183,10 @@ def test_ssh_serve_propagates_validation_failure(tmp_path: Path) -> None:
 
     with (
         patch("ezhpcy.cli.compute.ssh_serve.compute_node_or_fail"),
-        patch("ezhpcy.cli.compute.ssh_serve.config.local_file", file_config),
+        patch(
+            "ezhpcy.cli.compute.ssh_serve.LocalFileConfig",
+            return_value=file_config,
+        ),
         patch("ezhpcy.cli.compute.ssh_serve.subprocess.run", side_effect=failure),
         patch("ezhpcy.cli.compute.ssh_serve.os.execve") as execve,
         pytest.raises(typer.Exit) as exc_info,
@@ -185,3 +195,32 @@ def test_ssh_serve_propagates_validation_failure(tmp_path: Path) -> None:
 
     assert exc_info.value.exit_code == failure.returncode
     execve.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected_output"),
+    [
+        (["version"], "0.1.0"),
+        (["compute", "ssh-serve", "--help"], "Start an SSH server"),
+    ],
+)
+def test_cluster_commands_do_not_load_workstation_config(
+    tmp_path: Path, arguments: list[str], expected_output: str
+) -> None:
+    invalid_config = tmp_path / "incompatible.toml"
+    invalid_config.write_text("this is not valid TOML = [", encoding="utf-8")
+    environment = {
+        **os.environ,
+        "EZHPCY_CONFIG_FILE": str(invalid_config),
+    }
+
+    result = subprocess.run(
+        [sys.executable, "-m", "ezhpcy.cli.entry", *arguments],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert expected_output in result.stdout

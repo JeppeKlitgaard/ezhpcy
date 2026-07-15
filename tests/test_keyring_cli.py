@@ -3,7 +3,6 @@ from keyring.errors import KeyringError
 from typer.testing import CliRunner
 
 from ezhpcy.cli import app, keyring as keyring_cli
-from ezhpcy.cli.tunnel import common
 
 
 def test_keyring_set_is_available_with_connection_options() -> None:
@@ -52,7 +51,6 @@ def test_keyring_set_prompts_for_missing_password(
 ) -> None:
     calls: list[tuple[str, str, str]] = []
     prompt_calls: list[tuple[str, bool]] = []
-    monkeypatch.setattr(common.config.connection, "password", None)
 
     def prompt(prompt: str, *, password: bool, **_kwargs) -> str:
         prompt_calls.append((prompt, password))
@@ -83,7 +81,16 @@ def test_keyring_set_reports_backend_errors(monkeypatch: pytest.MonkeyPatch) -> 
 
     result = CliRunner().invoke(
         app,
-        ["keyring", "set", "--user", "alice", "--password", "secret"],
+        [
+            "keyring",
+            "set",
+            "--user",
+            "alice",
+            "--host",
+            "login.example.com",
+            "--password",
+            "secret",
+        ],
     )
 
     assert result.exit_code == 1

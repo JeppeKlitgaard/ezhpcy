@@ -9,7 +9,7 @@ from ezhpcy.ssh import SFTPClient, SSHClient
 
 
 def test_sftp_client_context_manager_closes_custom_client() -> None:
-    client = SSHClient(ConnectionInfo())
+    client = SSHClient(ConnectionInfo(host="login.example.com"))
     transport = MagicMock()
     transport.is_active.return_value = True
     sftp = MagicMock(spec=SFTPClient)
@@ -89,13 +89,12 @@ def test_sftp_mkdir_allows_existing_directory() -> None:
 
 
 def test_run_pixi_uses_ezhpcy_xdg_directories() -> None:
-    client = SSHClient(ConnectionInfo())
+    client = SSHClient(ConnectionInfo(host="login.example.com"))
     file_config = RemoteFileConfig(
         cache_dir=PurePosixPath("/cache"),
         config_dir=PurePosixPath("/config"),
         data_dir=PurePosixPath("/data"),
         runtime_dir=PurePosixPath("/runtime/ezhpcy"),
-        config_file=PurePosixPath("/config/ezhpcy/ezhpcy.toml"),
     )
 
     with patch.object(client, "run", return_value="pixi output") as run:
@@ -120,7 +119,7 @@ def test_run_pixi_uses_ezhpcy_xdg_directories() -> None:
 
 
 def test_run_login_shell_safely_quotes_the_nested_command() -> None:
-    client = SSHClient(ConnectionInfo())
+    client = SSHClient(ConnectionInfo(host="login.example.com"))
 
     with patch.object(client, "run", return_value="submitted") as run:
         output = client.run_login_shell(
@@ -140,7 +139,7 @@ def test_run_login_shell_safely_quotes_the_nested_command() -> None:
 
 
 def test_start_login_shell_opens_pty_and_keeps_channel_running() -> None:
-    client = SSHClient(ConnectionInfo())
+    client = SSHClient(ConnectionInfo(host="login.example.com"))
     transport = MagicMock()
     transport.is_active.return_value = True
     channel = MagicMock()
@@ -159,11 +158,10 @@ def test_start_login_shell_opens_pty_and_keeps_channel_running() -> None:
 
 
 def test_get_file_config_maps_xdg_directories_to_the_correct_fields() -> None:
-    client = SSHClient(ConnectionInfo())
+    client = SSHClient(ConnectionInfo(host="login.example.com"))
     response = (
         '{"cache_dir":"/cache","config_dir":"/config",'
-        '"data_dir":"/data","runtime_dir":"/runtime/ezhpcy",'
-        '"config_file":"/config/ezhpcy/ezhpcy.toml"}'
+        '"data_dir":"/data","runtime_dir":"/runtime/ezhpcy"}'
     )
 
     with patch.object(client, "run", return_value=response) as run:

@@ -1,4 +1,5 @@
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated
 
@@ -9,9 +10,10 @@ from keyring.errors import KeyringError
 from ezhpcy.cli.utils.bad_parameter import RichBadParameter
 from ezhpcy.cli.utils.options_group import attach_hook
 from ezhpcy.cli.utils.resolve import resolve_forbidden_none
-from ezhpcy.config import ConnectionInfo, config
+from ezhpcy.config import ConnectionInfo, get_config
 from ezhpcy.console import console
 from ezhpcy.detect.host_type import HostType, get_host_type
+from ezhpcy.types import ResolvedConfig
 
 KEYRING_SERVICE_NAME = "ezhpcy"
 PASSWORD_ENV_VAR = "EZHPCY_PASSWORD"
@@ -19,11 +21,14 @@ PASSWORD_ENV_VAR = "EZHPCY_PASSWORD"
 UserOpt = Annotated[
     str | None, typer.Option("--user", "-u", help="Username for the login node.")
 ]
+ProfileOpt = Annotated[
+    str | None,
+    typer.Option("--profile", "-p", help="Configured EzHPCy profile to use."),
+]
 PasswordOpt = Annotated[
     str | None,
     typer.Option(
         "--password",
-        "-p",
         help=(
             "Password for the login node. "
             "Note: Specifying this is potentially a security risk."
@@ -70,6 +75,20 @@ PasswordKeyringOpt = Annotated[
 HostOpt = Annotated[
     str | None, typer.Option("--host", "-h", help="Login node address.")
 ]
+
+
+@dataclass(frozen=True)
+class ProfileContext:
+    name: str
+    profile: ResolvedConfig
+
+    @property
+    def connection(self) -> ConnectionInfo:
+        return ConnectionInfo(
+            user=self.profile.user,
+            password=self.profile.password,
+            host=self.profile.host,
+        )
 
 
 def _without_trailing_line_endings(value: str) -> str:
@@ -128,6 +147,7 @@ def resolve_password(
     password_keyring: bool,
     user: str,
     host: str,
+    config_password: str | None = None,
 ) -> str | None:
     """Resolve one explicit password source, followed by environment and config."""
     explicit_sources = [
@@ -164,27 +184,42 @@ def resolve_password(
     if password_keyring:
         return _read_password_keyring(user=user, host=host)
 
-    return config.connection.password
+    return config_password
 
 
-def connection_info_from_options(
+def profile_context_from_options(
     *,
-    user: UserOpt = config.connection.user,
+    profile: ProfileOpt = None,
+    user: UserOpt = None,
     password: PasswordOpt = None,
     password_env: PasswordEnvOpt = False,
     password_file: PasswordFileOpt = None,
     password_fd: PasswordFdOpt = None,
     password_keyring: PasswordKeyringOpt = False,
-    host: HostOpt = config.connection.host,
-) -> ConnectionInfo:
+    host: HostOpt = None,
+) -> ProfileContext:
+    config = get_config()
+    try:
+        resolved_profile = config.resolve_profile(profile)
+    except ValueError as error:
+        raise RichBadParameter(str(error), param_hint="--profile") from error
+    profile_name = profile or config.default_profile
+    assert profile_name is not None
+
     user = resolve_forbidden_none(
         cli_value=user,
-        config_value=config.connection.user,
+        config_value=resolved_profile.user,
         name="user",
         cli_param="--user",
-        config_param="connection.user",
+        config_param=f"profile.{profile_name}.user",
     )
-    resolved_host = str(host or config.connection.host)
+    resolved_host = resolve_forbidden_none(
+        cli_value=host,
+        config_value=(str(resolved_profile.host) if resolved_profile.host else None),
+        name="host",
+        cli_param="--host",
+        config_param=f"profile.{profile_name}.host",
+    )
     resolved_password = resolve_password(
         password=password,
         password_env=password_env,
@@ -193,16 +228,55 @@ def connection_info_from_options(
         password_keyring=password_keyring,
         user=user,
         host=resolved_host,
+        config_password=resolved_profile.password,
     )
+    resolved_config = ResolvedConfig.model_validate(
+        {
+            **resolved_profile.model_dump(),
+            "user": user,
+            "password": resolved_password,
+            "host": resolved_host,
+        }
+    )
+    return ProfileContext(name=profile_name, profile=resolved_config)
+
+
+with_profile_options = attach_hook(
+    profile_context_from_options, hook_output_kwarg="profile_context"
+)
+
+
+def direct_connection_info_from_options(
+    *,
+    user: UserOpt = None,
+    password: PasswordOpt = None,
+    password_env: PasswordEnvOpt = False,
+    password_file: PasswordFileOpt = None,
+    password_fd: PasswordFdOpt = None,
+    password_keyring: PasswordKeyringOpt = False,
+    host: HostOpt = None,
+) -> ConnectionInfo:
+    if user is None:
+        raise RichBadParameter("user must be set via --user", param_hint="--user")
+    if host is None:
+        raise RichBadParameter("host must be set via --host", param_hint="--host")
     return ConnectionInfo(
         user=user,
-        password=resolved_password,
-        host=resolved_host,
+        host=host,
+        password=resolve_password(
+            password=password,
+            password_env=password_env,
+            password_file=password_file,
+            password_fd=password_fd,
+            password_keyring=password_keyring,
+            user=user,
+            host=host,
+        ),
     )
 
 
-with_connection_options = attach_hook(
-    connection_info_from_options, hook_output_kwarg="conn_info"
+with_direct_connection_options = attach_hook(
+    direct_connection_info_from_options, hook_output_kwarg="conn_info"
 )
 
 

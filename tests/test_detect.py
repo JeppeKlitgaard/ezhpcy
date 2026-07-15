@@ -13,10 +13,7 @@ def test_pbs_job_environment_takes_precedence_over_lsf_installation() -> None:
 
 
 def test_pbs_job_environment_marks_non_login_host_as_compute_node() -> None:
-    with (
-        patch.dict("os.environ", {"PBS_JOBID": "42.server"}, clear=True),
-        patch("ezhpcy.detect.host_type.platform.node", return_value="node42"),
-    ):
+    with patch.dict("os.environ", {"PBS_JOBID": "42.server"}, clear=True):
         assert get_host_type() is HostType.COMPUTE_NODE
 
 

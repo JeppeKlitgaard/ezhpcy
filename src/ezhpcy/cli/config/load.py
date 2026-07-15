@@ -1,15 +1,17 @@
 import difflib
+import tomllib
 from importlib import resources
 from pathlib import Path
 from typing import Annotated
 
 import typer
-from jinja2 import Environment, StrictUndefined
-from rich.prompt import Confirm
+from jinja2 import Environment, StrictUndefined, TemplateError
+from pydantic import ValidationError
+from rich.prompt import Confirm, Prompt
 from rich.text import Text
 
 from ezhpcy import console
-from ezhpcy.config import config
+from ezhpcy.config import LocalConfig, get_config
 
 PRESET_DIRECTORY = "static/config/presets"
 PRESET_SUFFIX = ".toml.j2"
@@ -27,13 +29,13 @@ def _available_presets() -> dict[str, tuple[str, resources.abc.Traversable]]:
     }
 
 
-def _render_preset(template_text: str, *, preset: str) -> str:
+def _render_preset(template_text: str, *, preset: str, user: str) -> str:
     environment = Environment(
         autoescape=False,
         keep_trailing_newline=True,
         undefined=StrictUndefined,
     )
-    return environment.from_string(template_text).render(preset=preset)
+    return environment.from_string(template_text).render(preset=preset, user=user)
 
 
 def _diff_text(
@@ -67,6 +69,10 @@ def load_cmd(
         str,
         typer.Argument(help="Name of the packaged configuration preset to load."),
     ],
+    user: Annotated[
+        str | None,
+        typer.Option("--user", "-u", help="Username to store in the preset."),
+    ] = None,
     yes: Annotated[
         bool,
         typer.Option(
@@ -100,8 +106,17 @@ def load_cmd(
             param_hint="preset",
         ) from error
 
-    rendered = _render_preset(template_text, preset=preset_name)
-    config_file = config.local_file.config_file
+    if user is None:
+        user = Prompt.ask("Username", console=console)
+    try:
+        rendered = _render_preset(template_text, preset=preset_name, user=user)
+        LocalConfig.from_mapping(tomllib.loads(rendered))
+    except (TemplateError, tomllib.TOMLDecodeError, ValidationError) as error:
+        raise typer.BadParameter(
+            f"Preset {preset_name!r} produced invalid configuration: {error}",
+            param_hint="preset",
+        ) from error
+    config_file = get_config().local_file.config_file
 
     if config_file.exists():
         try:

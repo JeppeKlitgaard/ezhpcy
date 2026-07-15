@@ -4,9 +4,10 @@ from typing import Annotated
 
 import typer
 
-from ezhpcy.cli.tunnel.common import UserOpt
+from ezhpcy.cli.tunnel.common import ProfileOpt, UserOpt
+from ezhpcy.cli.utils.bad_parameter import RichBadParameter
 from ezhpcy.cli.utils.resolve import resolve_forbidden_none
-from ezhpcy.config import config
+from ezhpcy.config import get_config
 from ezhpcy.constants import (
     SSH_DIRECTORY_NAME,
     WORKER_CLIENT_KEY_NAME,
@@ -29,12 +30,14 @@ def _single_token(value: str, *, name: str) -> str:
 def render_worker_ssh_config(
     *,
     user: str,
+    profile_name: str,
     alias: str = WORKER_HOST_ALIAS,
     ssh_dir: Path,
     python_executable: Path = Path(sys.executable),
 ) -> str:
     """Render the stable worker alias consumed by OpenSSH and VS Code."""
     user = _single_token(user, name="--user")
+    profile_name = _single_token(profile_name, name="--profile")
     alias = _single_token(alias, name="--alias")
     identity = ssh_dir / WORKER_CLIENT_KEY_NAME
     known_hosts = ssh_dir / "worker_known_hosts"
@@ -49,14 +52,16 @@ def render_worker_ssh_config(
             f"    HostKeyAlias {WORKER_HOST_ALIAS}",
             "    StrictHostKeyChecking yes",
             "    ProxyCommand "
-            f"{_config_path(python_executable)} -m ezhpcy.cli.entry proxy",
+            f"{_config_path(python_executable)} -m ezhpcy.cli.entry proxy "
+            f"--profile {profile_name}",
             "",
         )
     )
 
 
 def ssh_config_cmd(
-    user: UserOpt = config.connection.user,
+    profile: ProfileOpt = None,
+    user: UserOpt = None,
     alias: Annotated[
         str,
         typer.Option(
@@ -66,17 +71,25 @@ def ssh_config_cmd(
     ] = WORKER_HOST_ALIAS,
 ) -> None:
     """Print an OpenSSH Host block for the broker-backed worker connection."""
+    config = get_config()
+    try:
+        resolved_profile = config.resolve_profile(profile)
+    except ValueError as error:
+        raise RichBadParameter(str(error), param_hint="--profile") from error
+    profile_name = profile or config.default_profile
+    assert profile_name is not None
     resolved_user = resolve_forbidden_none(
         cli_value=user,
-        config_value=config.connection.user,
+        config_value=resolved_profile.user,
         name="user",
         cli_param="--user",
-        config_param="connection.user",
+        config_param=f"profile.{profile_name}.user",
     )
     ssh_dir = config.local_file.config_dir / SSH_DIRECTORY_NAME
     typer.echo(
         render_worker_ssh_config(
             user=resolved_user,
+            profile_name=profile_name,
             alias=alias,
             ssh_dir=ssh_dir,
         ),

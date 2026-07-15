@@ -8,6 +8,7 @@ from typer.testing import CliRunner
 from ezhpcy.cli import app
 from ezhpcy.cli.tunnel import common
 from ezhpcy.cli.utils.bad_parameter import RichBadParameter
+from ezhpcy.types import ProfileConfig
 
 
 def resolve_password(
@@ -17,6 +18,7 @@ def resolve_password(
     password_file: Path | None = None,
     password_fd: int | None = None,
     password_keyring: bool = False,
+    config_password: str | None = None,
 ) -> str | None:
     return common.resolve_password(
         password=password,
@@ -26,13 +28,23 @@ def resolve_password(
         password_keyring=password_keyring,
         user="alice",
         host="login.example.com",
+        config_password=config_password,
     )
 
 
 @pytest.fixture(autouse=True)
 def without_default_password(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(common.PASSWORD_ENV_VAR, raising=False)
-    monkeypatch.setattr(common.config.connection, "password", None)
+    monkeypatch.setattr(common.get_config(), "default_profile", "default")
+    monkeypatch.setattr(
+        common.get_config(),
+        "profile",
+        {
+            "default": ProfileConfig(
+                host="login.example.com", user="alice", scheduler="LSF"
+            )
+        },
+    )
 
 
 def test_password_file_is_read_as_utf8_and_trailing_newlines_are_removed(
@@ -62,7 +74,6 @@ def test_password_fd_is_read_without_closing_callers_descriptor() -> None:
 def test_password_env_reads_environment_variable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(common.config.connection, "password", "from-config")
     monkeypatch.setenv(common.PASSWORD_ENV_VAR, "from-environment")
 
     assert resolve_password(password_env=True) == "from-environment"
@@ -71,10 +82,9 @@ def test_password_env_reads_environment_variable(
 def test_environment_variable_is_ignored_without_password_env(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(common.config.connection, "password", "from-config")
     monkeypatch.setenv(common.PASSWORD_ENV_VAR, "from-environment")
 
-    assert resolve_password() == "from-config"
+    assert resolve_password(config_password="from-config") == "from-config"
 
 
 def test_password_env_fails_when_environment_variable_is_unset() -> None:
@@ -101,10 +111,8 @@ def test_password_env_cli_fails_loudly_when_variable_is_unset() -> None:
     assert "not set" in result.stderr
 
 
-def test_password_falls_back_to_config(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(common.config.connection, "password", "from-config")
-
-    assert resolve_password() == "from-config"
+def test_password_falls_back_to_profile() -> None:
+    assert resolve_password(config_password="from-profile") == "from-profile"
 
 
 def test_explicit_password_source_does_not_implicitly_read_environment(
@@ -184,3 +192,4 @@ def test_tunnel_command_help_includes_every_password_source(
     assert "--password-fd" in result.stdout
     assert "--password-keyring" in result.stdout
     assert common.PASSWORD_ENV_VAR in result.stdout
+    assert "--profile" in result.stdout

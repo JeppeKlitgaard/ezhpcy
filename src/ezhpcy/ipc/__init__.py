@@ -12,7 +12,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ezhpcy.config import config
+from ezhpcy.config import get_config
 from ezhpcy.ipc.common import (
     LOOPBACK_HOST,
     BrokerUnavailableError,
@@ -120,8 +120,11 @@ class AuthenticatedIPCBackend:
             )
 
 
-def default_descriptor_path() -> Path:
-    return config.local_file.runtime_dir / "broker.json"
+def default_descriptor_path(profile_name: str | None = None) -> Path:
+    config = get_config()
+    selected = profile_name or config.default_profile
+    filename = f"broker-{selected}.json" if selected is not None else "broker.json"
+    return config.local_file.runtime_dir / filename
 
 
 def create_broker_backend(
@@ -129,9 +132,10 @@ def create_broker_backend(
     address: IPCAddress = _DEFAULT_BIND_ADDRESS,
     descriptor_path: Path | None = None,
     authkey: bytes | None = None,
+    profile_name: str | None = None,
 ) -> AuthenticatedIPCBackend:
     """Create the server backend and its per-run authentication capability."""
-    descriptor = descriptor_path or default_descriptor_path()
+    descriptor = descriptor_path or default_descriptor_path(profile_name)
     return AuthenticatedIPCBackend(
         address=address,
         authkey=authkey or secrets.token_bytes(32),
@@ -142,9 +146,11 @@ def create_broker_backend(
 
 def load_broker_backend(
     descriptor_path: Path | None = None,
+    *,
+    profile_name: str | None = None,
 ) -> AuthenticatedIPCBackend:
     """Load the broker endpoint and capability without exposing either in argv."""
-    path = descriptor_path or default_descriptor_path()
+    path = descriptor_path or default_descriptor_path(profile_name)
     descriptor = load_runtime_descriptor(path)
     try:
         return AuthenticatedIPCBackend(

@@ -5,7 +5,7 @@ from rich.prompt import Prompt
 
 from ezhpcy.cli.tunnel.common import (
     KEYRING_SERVICE_NAME,
-    with_connection_options,
+    with_direct_connection_options,
 )
 from ezhpcy.cli.utils.alias import AliasGroup
 from ezhpcy.config import ConnectionInfo
@@ -18,7 +18,7 @@ keyring_app = typer.Typer(
 )
 
 
-@with_connection_options
+@with_direct_connection_options
 def set_cmd(conn_info: ConnectionInfo) -> None:
     """Store the login-node password in the system keyring."""
     account = f"{conn_info.user}@{conn_info.host}"

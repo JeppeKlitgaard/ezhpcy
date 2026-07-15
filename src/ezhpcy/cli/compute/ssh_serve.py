@@ -8,7 +8,7 @@ import typer
 
 from ezhpcy.cli.compute.common import compute_node_or_fail
 from ezhpcy.cli.utils.ssh import absolute_sshd_command
-from ezhpcy.config import LocalFileConfig, config
+from ezhpcy.config import LocalFileConfig
 from ezhpcy.constants import (
     OPENSSH_MATCHSPEC,
     SSH_DIRECTORY_NAME,
@@ -107,7 +107,7 @@ def ssh_serve_cmd(
     port = _validate_port(port)
     listen_address = _validate_listen_address(listen_address)
 
-    sshd_config, sshd_pid, pixi_home, pixi_cache = _worker_ssh_paths(config.local_file)
+    sshd_config, sshd_pid, pixi_home, pixi_cache = _worker_ssh_paths(LocalFileConfig())
     pixi = pixi_home / "bin" / "pixi"
     if not sshd_config.is_file():
         raise typer.BadParameter(

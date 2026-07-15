@@ -1,24 +1,52 @@
 import logging
+from datetime import timedelta
 from pathlib import PurePosixPath
 from unittest.mock import patch
 
 import paramiko
 import pytest
+from pydantic import ValidationError
 from typer.testing import CliRunner
 
 from ezhpcy.cli import app
+from ezhpcy.cli.tunnel import compute as compute_module
 from ezhpcy.cli.tunnel.compute import (
     ComputeTunnelError,
-    _parse_memory_bytes,
     _run_compute_tunnel,
     _wait_for_running_job,
     _wait_for_worker_endpoint,
 )
-from ezhpcy.config import ConnectionInfo, RemoteFileConfig
+from ezhpcy.config import (
+    ConnectionInfo,
+    RemoteFileConfig,
+)
 from ezhpcy.scheduler.base import InteractiveJob, JobInfo, JobSpec, JobState
 from ezhpcy.scheduler.types import SchedulerType
+from ezhpcy.types import ProfileConfig, ResolvedProfileConfig
 
 _MEBIBYTE = 1024**2
+
+
+def lsf_profile() -> ResolvedProfileConfig:
+    return ResolvedProfileConfig(
+        host="login.example.com",
+        user="alice",
+        scheduler="LSF",
+        lsf_resource_reserve_per_task=True,
+        lsf_application_profile="qrsh",
+        lsf_submission_environment={"LSF_QRSH": "true"},
+        lsf_export_environment=["TERM", "LSF_QRSH"],
+    )
+
+
+def pbs_profile() -> ResolvedProfileConfig:
+    return ResolvedProfileConfig(
+        host="login.example.com",
+        user="alice",
+        scheduler="PBS",
+        queue="workq",
+        pbs_command_directory=PurePosixPath("/opt/pbspro/bin"),
+    )
 
 
 class StubScheduler:
@@ -143,7 +171,6 @@ class StubSSH:
             config_dir=PurePosixPath("/home/alice/.config"),
             data_dir=PurePosixPath("/home/alice/.local/share"),
             runtime_dir=PurePosixPath("/tmp/ezhpcy-1000"),
-            config_file=PurePosixPath("/home/alice/.config/ezhpcy/ezhpcy.toml"),
         )
 
     def run(self, args: list[str]) -> str:
@@ -183,7 +210,7 @@ def snapshot(state: JobState, raw_state: str, host: str | None = None) -> JobInf
     ("value", "expected_bytes"),
     [
         (None, None),
-        ("2048", 2048 * _MEBIBYTE),
+        ("2048", 2048),
         ("2048MB", 2_048_000_000),
         ("256GB", 256_000_000_000),
         ("1.5 GiB", 1_610_612_736),
@@ -194,13 +221,14 @@ def snapshot(state: JobState, raw_state: str, host: str | None = None) -> JobInf
 def test_parse_memory_normalizes_sizes_to_bytes(
     value: str | None, expected_bytes: int | None
 ) -> None:
-    assert _parse_memory_bytes(value) == expected_bytes
+    memory = ResolvedProfileConfig(memory=value).memory
+    assert (int(memory) if memory is not None else None) == expected_bytes
 
 
-@pytest.mark.parametrize("value", ["0", "-1GB", "GB", "12PB", "lots"])
+@pytest.mark.parametrize("value", ["0", "-1GB", "GB", "12QQ", "lots"])
 def test_parse_memory_rejects_invalid_sizes(value: str) -> None:
-    with pytest.raises(ValueError, match="memory"):
-        _parse_memory_bytes(value)
+    with pytest.raises(ValidationError, match="memory"):
+        ResolvedProfileConfig(memory=value)
 
 
 def test_wait_for_running_job_reports_transitions_and_returns_host() -> None:
@@ -281,13 +309,15 @@ def test_compute_tunnel_submits_worker_starts_broker_and_cancels(capsys) -> None
         patch("ezhpcy.cli.tunnel.compute.ForegroundBroker", side_effect=make_broker),
     ):
         _run_compute_tunnel(
+            profile_name="default",
+            profile=lsf_profile(),
             conn_info=ConnectionInfo(user="alice", host="login.example.com"),
             scheduler_type=SchedulerType.LSF,
             queue="normal",
             cores=32,
             gpus=2,
             exclusive=True,
-            time_limit_minutes=90,
+            time_limit=timedelta(minutes=90),
             memory_bytes=2048 * _MEBIBYTE,
             queue_timeout_seconds=10,
             startup_timeout_seconds=10,
@@ -340,13 +370,15 @@ def test_compute_tunnel_cancels_job_when_worker_startup_fails() -> None:
         pytest.raises(ComputeTunnelError, match="did not listen"),
     ):
         _run_compute_tunnel(
+            profile_name="default",
+            profile=lsf_profile(),
             conn_info=ConnectionInfo(user="alice", host="login.example.com"),
             scheduler_type=SchedulerType.LSF,
             queue=None,
             cores=4,
             gpus=0,
             exclusive=False,
-            time_limit_minutes=60,
+            time_limit=timedelta(minutes=60),
             memory_bytes=1024 * _MEBIBYTE,
             queue_timeout_seconds=10,
             startup_timeout_seconds=10,
@@ -372,13 +404,15 @@ def test_compute_tunnel_uses_explicit_pbs_and_linuxsh_defaults(capsys) -> None:
         patch("ezhpcy.cli.tunnel.compute.ForegroundBroker", StubBroker),
     ):
         _run_compute_tunnel(
+            profile_name="pbs",
+            profile=pbs_profile(),
             conn_info=ConnectionInfo(user="alice", host="login.example.com"),
             scheduler_type=SchedulerType.PBS,
-            queue=None,
+            queue="workq",
             cores=1,
             gpus=0,
             exclusive=False,
-            time_limit_minutes=None,
+            time_limit=None,
             memory_bytes=None,
             queue_timeout_seconds=10,
             startup_timeout_seconds=10,
@@ -395,7 +429,7 @@ def test_compute_tunnel_uses_explicit_pbs_and_linuxsh_defaults(capsys) -> None:
     assert scheduler.submitted[0].memory_bytes is None
     assert scheduler.payload_starts == 1
     output = capsys.readouterr().out
-    assert "Using PBS scheduler." in output
+    assert "Using profile 'pbs' with PBS scheduler." in output
     assert "Worker logs:" not in output
 
 
@@ -413,3 +447,89 @@ def test_compute_tunnel_help_exposes_scheduler_and_resource_options() -> None:
     assert "--queue-timeout" in result.stdout
     assert "--startup-timeout" in result.stdout
     assert "--worker-port" in result.stdout
+    assert "--profile" in result.stdout
+
+
+def test_compute_command_resolves_profile_and_applies_cli_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(compute_module.get_config(), "default_profile", "default")
+    monkeypatch.setattr(
+        compute_module.get_config(),
+        "profile",
+        {
+            "default": ProfileConfig(
+                host="login.example.com",
+                user="alice",
+                scheduler="LSF",
+                queue="normal",
+                cores=4,
+                gpus=1,
+                exclusive=True,
+                time_limit="1:00",
+                memory="32GB",
+            ),
+            "gpu": ProfileConfig(inherit="default", queue="gpu", cores=8),
+        },
+    )
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        compute_module, "_ensure_local_worker_credentials", lambda: None
+    )
+    monkeypatch.setattr(
+        compute_module,
+        "_run_compute_tunnel",
+        lambda **kwargs: captured.update(kwargs),
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "tunnel",
+            "compute",
+            "--profile",
+            "gpu",
+            "--cores",
+            "12",
+            "--memory",
+            "64GB",
+            "--shared",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["profile_name"] == "gpu"
+    assert captured["scheduler_type"] is SchedulerType.LSF
+    assert captured["queue"] == "gpu"
+    assert captured["cores"] == 12
+    assert captured["gpus"] == 1
+    assert captured["exclusive"] is False
+    assert captured["memory_bytes"] == 64_000_000_000
+    assert captured["time_limit"] == timedelta(hours=1)
+    assert captured["conn_info"] == ConnectionInfo(
+        host="login.example.com", user="alice"
+    )
+
+
+def test_compute_command_rejects_unknown_profile_before_starting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(compute_module.get_config(), "default_profile", "default")
+    monkeypatch.setattr(
+        compute_module.get_config(),
+        "profile",
+        {"default": ProfileConfig(host="login.example.com", user="alice")},
+    )
+    started = False
+
+    def start() -> None:
+        nonlocal started
+        started = True
+
+    monkeypatch.setattr(compute_module, "_ensure_local_worker_credentials", start)
+
+    result = CliRunner().invoke(app, ["tunnel", "compute", "--profile", "missing"])
+
+    assert result.exit_code == 2
+    assert "unknown profile 'missing'" in result.stderr
+    assert not started

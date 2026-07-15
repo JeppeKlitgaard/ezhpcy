@@ -4,14 +4,17 @@ from typing import Annotated
 import paramiko
 import typer
 
-from ezhpcy.cli.tunnel.common import local_machine_or_fail, with_connection_options
+from ezhpcy.cli.tunnel.common import (
+    ProfileContext,
+    local_machine_or_fail,
+    with_profile_options,
+)
 from ezhpcy.cli.utils.ssh import InteractiveSSHClient
-from ezhpcy.config import ConnectionInfo
 from ezhpcy.ipc import create_broker_backend
 from ezhpcy.tunnel.broker import ForegroundBroker
 
 
-@with_connection_options
+@with_profile_options
 def broker_cmd(
     worker_host: Annotated[
         str, typer.Argument(help="Hostname or internal address of the worker node.")
@@ -20,13 +23,13 @@ def broker_cmd(
         int,
         typer.Option("--worker-port", min=1024, max=65535, help="Worker SSH port."),
     ],
-    conn_info: ConnectionInfo,
+    profile_context: ProfileContext,
 ) -> None:
     """Run the authenticated worker-stream broker in the foreground."""
     local_machine_or_fail()
-    backend = create_broker_backend()
+    backend = create_broker_backend(profile_name=profile_context.name)
 
-    with InteractiveSSHClient(conn_info) as ssh:
+    with InteractiveSSHClient(profile_context.connection) as ssh:
         ssh.interactive_connect()
         transport = ssh.get_transport()
         if transport is None or not transport.is_active():

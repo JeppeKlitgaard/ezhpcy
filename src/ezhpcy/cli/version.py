@@ -12,7 +12,7 @@ def version_cmd(
         typer.Option("--json", help="Output version information as JSON."),
     ] = False,
 ) -> None:
-    """Show the ezhpcy version."""
+    """Show the EzHPCy version."""
     current_version = ezhpcy_version()
     if json:
         typer.echo(json_lib.dumps({"version": current_version}))

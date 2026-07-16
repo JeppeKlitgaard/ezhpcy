@@ -23,12 +23,12 @@ app = typer.Typer(
 app.add_typer(config_app, name="config")
 app.add_typer(keyring_app, name="keyring")
 app.command(name="info", help="Show debug information.")(info_cmd)
-app.command(name="version", help="Show the ezhpcy version.")(version_cmd)
+app.command(name="version", help="Show the EzHPCy version.")(version_cmd)
 app.command(name="list-profiles", help="List configured profiles.")(list_profiles_cmd)
-app.command(name="provision", help="Provision ezhpcy worker infrastructure.")(
+app.command(name="provision", help="Provision EzHPCy worker infrastructure.")(
     provision_cmd
 )
-app.command(name="prune", help="Prune ezhpcy-managed remote data.")(prune_cmd)
+app.command(name="prune", help="Prune EzHPCy-managed remote data.")(prune_cmd)
 app.command(
     name="compute, c",
     help="Allocate a compute node and start its SSH tunnel.",

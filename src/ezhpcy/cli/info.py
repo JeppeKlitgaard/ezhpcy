@@ -7,13 +7,13 @@ from ezhpcy.utils import local_machine_id
 
 
 def info_cmd(json: bool = False) -> None:
-    """Show debug information for ezhpcy."""
+    """Show debug information for EzHPCy."""
 
     data = [
         {
             "key": "EZHPCY Version",
             "value": ezhpcy_version(),
-            "description": "Current version of ezhpcy.",
+            "description": "Current version of EzHPCy.",
         },
         {
             "key": "Machine ID",
@@ -32,7 +32,7 @@ def info_cmd(json: bool = False) -> None:
     table.add_column("Value", justify="left", style="white", no_wrap=True)
     table.add_column("Description", justify="left", style="green", no_wrap=False)
 
-    table.add_row("EZHPCY Version", ezhpcy_version(), "Current version of ezhpcy.")
+    table.add_row("EzHPCy Version", ezhpcy_version(), "Current version of EzHPCy.")
     table.add_row(
         "Machine ID", local_machine_id(), "Unique identifier for the local machine."
     )

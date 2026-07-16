@@ -126,7 +126,7 @@ def test_provision_help_describes_idempotent_provisioning() -> None:
     result = CliRunner().invoke(app, ["provision", "--help"])
 
     assert result.exit_code == 0
-    assert "Provision ezhpcy worker infrastructure" in result.stdout
+    assert "Provision EzHPCy worker infrastructure" in result.stdout
 
     prune_help = CliRunner().invoke(app, ["prune", "--help"])
     assert prune_help.exit_code == 0

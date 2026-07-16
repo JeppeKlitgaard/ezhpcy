@@ -119,7 +119,7 @@ def _read_password_file(path: Path) -> str:
 
 def _read_password_fd(fd: int) -> str:
     try:
-        # Read through a duplicate so ezhpcy never closes a descriptor owned by
+        # Read through a duplicate so EzHPCy never closes a descriptor owned by
         # its caller. The duplicate intentionally shares the original offset.
         with os.fdopen(os.dup(fd), encoding="utf-8") as password_stream:
             return _without_trailing_line_endings(password_stream.read())

@@ -14,7 +14,7 @@ install:
     uv sync --all-extras
     uv run prek install
 
-# Override ezhpcy config with default. Works best with a .dotenv containing EZHPCY_USER
+# Override EzHPCy config with default. Works best with a .dotenv containing EZHPCY_USER
 override-config:
     uv run ezhpcy config load --yes DTU
 

@@ -23,14 +23,14 @@ logger = logging.getLogger(__name__)
 def prune_stale_installations(
     ssh: SSHClient, remote_state: RemoteState
 ) -> tuple[PurePosixPath, ...]:
-    """Remove remote ezhpcy installations other than the current version."""
+    """Remove remote EzHPCy installations other than the current version."""
     current_directory = remote_state.package_cache_dir()
     remote_root = remote_state.package_cache_root()
     try:
         with ssh.sftp_client() as sftp:
             entries = sftp.listdir_attr(str(remote_root))
     except FileNotFoundError:
-        logger.info("No remote ezhpcy cache exists at %s.", remote_root)
+        logger.info("No remote EzHPCy cache exists at %s.", remote_root)
         return ()
 
     stale: list[PurePosixPath] = []
@@ -40,7 +40,7 @@ def prune_stale_installations(
             continue
         if _INSTALLATION_NAME_PATTERN.fullmatch(name) is None:
             logger.warning(
-                "Retaining unrecognized ezhpcy cache entry %s/%s.", remote_root, name
+                "Retaining unrecognized EzHPCy cache entry %s/%s.", remote_root, name
             )
             continue
         stale.append(remote_root / name)
@@ -48,9 +48,9 @@ def prune_stale_installations(
     if stale:
         ssh.run(["rm", "-rf", "--", *(str(path) for path in stale)])
         for path in stale:
-            logger.info("Pruned stale ezhpcy installation %s.", path)
+            logger.info("Pruned stale EzHPCy installation %s.", path)
     else:
-        logger.info("Remote ezhpcy installation cache is current.")
+        logger.info("Remote EzHPCy installation cache is current.")
     return tuple(stale)
 
 
@@ -93,7 +93,7 @@ def prune_stale_pixi_data(
 
 
 def prune_all_remote_data(ssh: SSHClient, remote_state: RemoteState) -> None:
-    """Remove the complete ezhpcy-managed remote footprint."""
+    """Remove the complete EzHPCy-managed remote footprint."""
     remote_root = remote_state.package_cache_root()
     ssh.run(["rm", "-rf", "--", str(remote_root)])
 
@@ -106,7 +106,7 @@ def prune_cmd(
         typer.Option(
             "--all",
             "-a",
-            help="Remove all ezhpcy-managed remote infrastructure and data.",
+            help="Remove all EzHPCy-managed remote infrastructure and data.",
         ),
     ] = False,
     yes: Annotated[
@@ -130,7 +130,7 @@ def prune_cmd(
 
     remote_root = remote_state.package_cache_root()
     user_accepts = yes or Confirm.ask(
-        "This will remove [bold red]all[/bold red] ezhpcy-managed remote "
+        "This will remove [bold red]all[/bold red] EzHPCy-managed remote "
         f"infrastructure and data under [bold blue]{remote_root}[/bold blue]. Proceed?",
         console=console,
         default=False,

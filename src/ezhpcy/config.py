@@ -42,7 +42,7 @@ def _default_config_file() -> Path:
 
 
 class LocalFileConfig(BaseModel):
-    """File locations for ezhpcy on the local system."""
+    """File locations for EzHPCy on the local system."""
 
     cache_dir: Path = _DIRS.user_cache_path
     config_dir: Path = _DIRS.user_config_path

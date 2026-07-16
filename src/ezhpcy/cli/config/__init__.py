@@ -7,7 +7,7 @@ from ezhpcy.cli.utils.alias import AliasGroup
 
 config_app = typer.Typer(
     cls=AliasGroup,
-    help="Manage the ezhpcy configuration file.",
+    help="Manage the EzHPCy configuration file.",
     no_args_is_help=True,
 )
 

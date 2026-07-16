@@ -90,7 +90,7 @@ def load_cmd(
         ),
     ] = False,
 ) -> None:
-    """Render a packaged preset into the ezhpcy configuration file."""
+    """Render a packaged preset into the EzHPCy configuration file."""
     presets = _available_presets()
     preset_entry = presets.get(preset.casefold())
     if preset_entry is None:

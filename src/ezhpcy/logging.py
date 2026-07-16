@@ -42,7 +42,7 @@ def _resolve_log_level(level: int | str | LogLevel | None) -> int:
 def configure_logging(
     level: int | str | LogLevel | None = None, *, stream: TextIO | None = None
 ) -> logging.Logger:
-    """Configure ezhpcy's default terminal logger and return it.
+    """Configure EzHPCy's default terminal logger and return it.
 
     Repeated calls reuse the same handler, allowing entry points and tests to adjust
     the level without duplicating each emitted record.

@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 class SFTPClient(paramiko.SFTPClient):
-    """SFTP client with convenience methods for ezhpcy's remote operations."""
+    """SFTP client with convenience methods for EzHPCy's remote operations."""
 
     def read_bytes(self, path: str | PurePosixPath) -> bytes:
         """Read a remote file as bytes."""
@@ -88,7 +88,7 @@ class SSHClient(paramiko.SSHClient):
 
     @contextmanager
     def sftp_client(self) -> Iterator[SFTPClient]:
-        """Open an ezhpcy SFTP client for this SSH connection."""
+        """Open an EzHPCy SFTP client for this SSH connection."""
         transport = self.get_transport()
         if transport is None or not transport.is_active():
             raise paramiko.SSHException("SSH session is not active")
@@ -138,7 +138,7 @@ class SSHClient(paramiko.SSHClient):
         remote_state: RemoteState,
         **run_kwargs,
     ) -> str:
-        """Run the pinned private Pixi with ezhpcy's XDG-resolved cache."""
+        """Run the pinned private Pixi with EzHPCy's XDG-resolved cache."""
         home = remote_state.pixi_home()
         cache = remote_state.pixi_cache_dir()
         pixi = remote_state.pixi_executable()

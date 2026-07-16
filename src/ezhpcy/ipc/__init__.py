@@ -1,5 +1,5 @@
 """
-This module hosts the interprocess communication (IPC) protocol for the ezhpcy tunnel.
+This module hosts the interprocess communication (IPC) protocol for the EzHPCy tunnel.
 
 A long-lived tunnel listens for connections on a loopback socket, which short-lived proxy processes can connect to.
 The tunnel forwards the requests to a target SSH server.

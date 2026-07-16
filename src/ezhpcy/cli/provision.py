@@ -156,7 +156,7 @@ def _ensure_local_ssh_keys(
 
 
 def _pin_worker_host_key(host_public_key: str, known_hosts: Path) -> None:
-    """Replace ezhpcy's stable alias entry without touching unrelated hosts."""
+    """Replace EzHPCy's stable alias entry without touching unrelated hosts."""
     fields = host_public_key.strip().split()
     if len(fields) < 2:
         raise RuntimeError("The remote worker host public key is malformed.")
@@ -350,7 +350,7 @@ def provision_cmd(
     remote_root = remote_state.package_cache_dir()
 
     user_accepts = yes or Confirm.ask(
-        "This will provision or repair [bold purple]ezhpcy[/bold purple] worker "
+        "This will provision or repair [bold purple]EzHPCy[/bold purple] worker "
         f"infrastructure under [bold blue]{remote_root}[/bold blue]. Proceed?",
         console=console,
         default=True,

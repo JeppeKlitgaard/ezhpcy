@@ -119,7 +119,7 @@ class ResolvedProfileConfig(_ResolvedConfigBase):
 
 class RemoteState(BaseModel):
     """
-    The state of the remote machine (login node) as discovered by ezhpcy.
+    The state of the remote machine (login node) as discovered by EzHPCy.
     """
 
     cache_dir: PurePosixPath

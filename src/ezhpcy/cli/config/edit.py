@@ -31,7 +31,7 @@ def edit_cmd(
         ),
     ] = None,
 ) -> None:
-    """Open the ezhpcy configuration file in an editor."""
+    """Open the EzHPCy configuration file in an editor."""
     config_file = config.local_file.config_file
 
     try:

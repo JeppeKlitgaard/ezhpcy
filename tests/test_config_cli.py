@@ -125,7 +125,7 @@ def test_config_load_creates_dtu_config_case_insensitively(
     assert "loaded the DTU preset" in result.output
     contents = config_file.read_text(encoding="utf-8")
     expected = (
-        "# DTU HPC configuration for ezhpcy.\n"
+        "# DTU HPC configuration for EzHPCy.\n"
         "\n"
         'log_level = "INFO"\n'
         "auto_provision = true\n"
@@ -175,7 +175,7 @@ def test_config_load_creates_dtu_config_case_insensitively(
         'scheduler = "LSF"\n'
         'interactive_submission_command = ["/lsf/local/bin/a100sh"]\n'
     )
-    assert contents.startswith("# DTU HPC configuration for ezhpcy.\n")
+    assert contents.startswith("# DTU HPC configuration for EzHPCy.\n")
     assert tomllib.loads(contents) == tomllib.loads(expected)
     loaded = tomllib.loads(contents)
     loaded_config = Config.from_mapping(loaded)

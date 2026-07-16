@@ -24,6 +24,13 @@ PASSWORD_FILE_ENV_VAR = "EZHPCY_PASSWORD_FILE"
 PASSWORD_FD_ENV_VAR = "EZHPCY_PASSWORD_FD"
 PASSWORD_KEYRING_ENV_VAR = "EZHPCY_PASSWORD_KEYRING"
 
+ProfileArg = Annotated[
+    str,
+    typer.Argument(
+        help="Configured EzHPCy profile to use.",
+        envvar=PROFILE_ENV_VAR,
+    ),
+]
 HostOpt = Annotated[
     str | None,
     typer.Option("--host", "-h", help="Login node address.", envvar=HOST_ENV_VAR),
@@ -32,22 +39,6 @@ UserOpt = Annotated[
     str | None,
     typer.Option(
         "--user", "-u", help="Username for the login node.", envvar=USER_ENV_VAR
-    ),
-]
-ProfileOpt = Annotated[
-    str | None,
-    typer.Option(
-        "--profile",
-        "-p",
-        help="Configured EzHPCy profile to use.",
-        envvar=PROFILE_ENV_VAR,
-    ),
-]
-ProfileArg = Annotated[
-    str,
-    typer.Argument(
-        help="Configured EzHPCy profile to use.",
-        envvar=PROFILE_ENV_VAR,
     ),
 ]
 PasswordOpt = Annotated[
@@ -220,9 +211,9 @@ def resolve_password(
     return None
 
 
-def profile_context_from_options(
+def profile_context_from_cli(
     *,
-    profile: ProfileOpt = None,
+    profile: ProfileArg = ...,
     user: UserOpt = None,
     password: PasswordOpt = None,
     password_file: PasswordFileOpt = None,
@@ -235,8 +226,7 @@ def profile_context_from_options(
     except ProfilePasswordSourceError as error:
         raise RichBadParameter(error.rich_message()) from error
     except ValueError as error:
-        raise RichBadParameter(str(error), param_hint="--profile") from error
-    assert profile is not None
+        raise RichBadParameter(str(error), param_hint="PROFILE") from error
 
     user = resolve_forbidden_none(
         cli_value=user,
@@ -279,8 +269,8 @@ def profile_context_from_options(
     )
 
 
-with_profile_options = attach_hook(
-    profile_context_from_options, hook_output_kwarg="profile_context"
+with_profile_context = attach_hook(
+    profile_context_from_cli, hook_output_kwarg="profile_context"
 )
 
 

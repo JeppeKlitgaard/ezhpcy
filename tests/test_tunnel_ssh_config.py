@@ -27,7 +27,7 @@ def test_render_worker_ssh_config_contains_complete_strict_proxy_configuration(
         f'    UserKnownHostsFile "{(tmp_path / "config with spaces" / "ssh" / "worker_known_hosts").as_posix()}"\n'
         "    HostKeyAlias ezhpcy-worker\n"
         "    StrictHostKeyChecking yes\n"
-        f'    ProxyCommand "{(tmp_path / "runtime with spaces" / "python.exe").as_posix()}" -m ezhpcy.cli proxy --profile gpu\n'
+        f'    ProxyCommand "{(tmp_path / "runtime with spaces" / "python.exe").as_posix()}" -m ezhpcy.cli proxy gpu\n'
     )
 
 
@@ -49,7 +49,7 @@ def test_ssh_config_command_is_available_and_uses_current_python(monkeypatch) ->
     assert result.stdout.startswith("Host default\n")
     assert "    User alice\n" in result.stdout
     assert f'    ProxyCommand "{Path(sys.executable).as_posix()}"' in result.stdout
-    assert "proxy --profile default" in result.stdout
+    assert "proxy default" in result.stdout
     expected_ssh_dir = (
         ssh_config.config.local_file.config_dir
         / "ssh"
@@ -76,7 +76,7 @@ def test_ssh_config_command_accepts_an_alias_override(monkeypatch) -> None:
 
     assert result.exit_code == 0
     assert result.stdout.startswith("Host cluster-worker\n")
-    assert "proxy --profile gpu" in result.stdout
+    assert "proxy gpu" in result.stdout
 
 
 def test_ssh_config_command_requires_a_profile_argument() -> None:

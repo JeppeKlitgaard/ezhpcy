@@ -5,16 +5,18 @@ import paramiko
 import typer
 
 from ezhpcy.cli.common import (
+    ProfileArg,
     ProfileContext,
-    with_profile_options,
+    with_profile_context,
 )
 from ezhpcy.cli.utils.ssh import InteractiveSSHClient
 from ezhpcy.ipc import create_broker_backend
 from ezhpcy.tunnel.broker import ForegroundBroker
 
 
-@with_profile_options
+@with_profile_context
 def broker_cmd(
+    profile: ProfileArg,
     worker_host: Annotated[
         str, typer.Argument(help="Hostname or internal address of the worker node.")
     ],

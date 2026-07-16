@@ -9,7 +9,7 @@ from rich.prompt import Confirm
 from ezhpcy import console
 from ezhpcy.cli.common import (
     ProfileContext,
-    with_profile_options,
+    with_profile_context,
 )
 from ezhpcy.cli.utils.ssh import InteractiveSSHClient
 from ezhpcy.ssh import SSHClient
@@ -98,7 +98,7 @@ def prune_all_remote_data(ssh: SSHClient, remote_state: RemoteState) -> None:
     ssh.run(["rm", "-rf", "--", str(remote_root)])
 
 
-@with_profile_options
+@with_profile_context
 def prune_cmd(
     profile_context: ProfileContext,
     all_data: Annotated[

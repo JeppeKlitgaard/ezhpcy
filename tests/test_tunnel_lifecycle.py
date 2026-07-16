@@ -168,8 +168,8 @@ def test_provision_is_repeatable_and_never_invokes_remote_python(
             ),
         ),
     ):
-        first = CliRunner().invoke(app, ["provision", "--profile", "base", "--yes"])
-        second = CliRunner().invoke(app, ["provision", "--profile", "base", "--yes"])
+        first = CliRunner().invoke(app, ["provision", "base", "--yes"])
+        second = CliRunner().invoke(app, ["provision", "base", "--yes"])
 
     assert first.exit_code == 0, first.output
     assert second.exit_code == 0, second.output
@@ -421,9 +421,7 @@ def test_prune_all_removes_the_package_cache_directory(tmp_path: Path) -> None:
         patch.object(common, "config", config),
         patch("ezhpcy.cli.prune.InteractiveSSHClient", return_value=ssh),
     ):
-        result = CliRunner().invoke(
-            app, ["prune", "--profile", "base", "--all", "--yes"]
-        )
+        result = CliRunner().invoke(app, ["prune", "base", "--all", "--yes"])
 
     assert result.exit_code == 0, result.output
     assert ssh.commands == [["rm", "-rf", "--", "/home/alice/.cache/ezhpcy"]]

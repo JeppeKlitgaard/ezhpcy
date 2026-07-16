@@ -16,7 +16,7 @@ from rich.prompt import Confirm
 from ezhpcy import console
 from ezhpcy.cli.common import (
     ProfileContext,
-    with_profile_options,
+    with_profile_context,
 )
 from ezhpcy.cli.utils.ssh import (
     InteractiveSSHClient,
@@ -331,7 +331,7 @@ def validate_worker_infrastructure(
         )
 
 
-@with_profile_options
+@with_profile_context
 def provision_cmd(
     profile_context: ProfileContext,
     yes: Annotated[

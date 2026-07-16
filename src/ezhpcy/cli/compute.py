@@ -17,7 +17,7 @@ from pydantic import ValidationError
 from ezhpcy.cli.common import (
     ProfileArg,
     ProfileContext,
-    with_profile_options,
+    with_profile_context,
 )
 from ezhpcy.cli.provision import (
     provision_worker_infrastructure,
@@ -579,7 +579,7 @@ def _run_compute_tunnel(
             output_thread.join(timeout=1)
 
 
-@with_profile_options
+@with_profile_context
 def compute_cmd(
     profile_context: ProfileContext,
     profile: ProfileArg,

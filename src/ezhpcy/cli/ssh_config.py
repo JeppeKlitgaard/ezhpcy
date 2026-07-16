@@ -52,8 +52,7 @@ def render_worker_ssh_config(
             f"    HostKeyAlias {WORKER_HOST_ALIAS}",
             "    StrictHostKeyChecking yes",
             "    ProxyCommand "
-            f"{_config_path(python_executable)} -m ezhpcy.cli proxy "
-            f"--profile {profile_name}",
+            f"{_config_path(python_executable)} -m ezhpcy.cli proxy {profile_name}",
             "",
         )
     )

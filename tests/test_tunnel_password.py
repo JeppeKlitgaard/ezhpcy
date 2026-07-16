@@ -170,24 +170,23 @@ def test_invalid_profile_password_sources_are_reported_as_a_cli_parameter_error(
     )
 
     with pytest.raises(RichBadParameter):
-        common.profile_context_from_options(profile="base")
+        common.profile_context_from_cli(profile="base")
 
     result = CliRunner().invoke(
         app,
         [
             "broker",
+            "base",
             "worker.example.com",
             "--worker-port",
             "2222",
-            "--profile",
-            "base",
         ],
         color=True,
     )
 
     assert result.exit_code == 2
     assert "Invalid value:" in result.output
-    assert "Invalid value for --profile" not in result.output
+    assert "Invalid value for PROFILE" not in result.output
     assert "password_file, password_keyring" in result.output
 
 
@@ -295,7 +294,7 @@ def test_connection_options_read_password_keyring_from_environment(
     assert calls == [("ezhpcy", "alice@login.example.com", "from-keyring")]
 
 
-@pytest.mark.parametrize("command", [["provision"], ["prune"], ["broker"]])
+@pytest.mark.parametrize("command", [["provision"], ["prune"], ["compute"], ["broker"]])
 def test_remote_command_help_includes_every_password_source(
     command: list[str],
 ) -> None:
@@ -306,16 +305,13 @@ def test_remote_command_help_includes_every_password_source(
     assert "--password-file" in result.stdout
     assert "--password-fd" in result.stdout
     assert "--password-keyring" in result.stdout
-    assert "--profile" in result.stdout
+    assert "PROFILE" in result.stdout
+    assert "--profile" not in result.stdout
 
 
-def test_compute_help_includes_every_password_source_and_profile_argument() -> None:
-    result = CliRunner().invoke(app, ["compute", "--help"])
+def test_proxy_help_includes_a_profile_argument() -> None:
+    result = CliRunner().invoke(app, ["proxy", "--help"])
 
     assert result.exit_code == 0
-    assert "--password" in result.stdout
-    assert "--password-file" in result.stdout
-    assert "--password-fd" in result.stdout
-    assert "--password-keyring" in result.stdout
     assert "PROFILE" in result.stdout
     assert "--profile" not in result.stdout

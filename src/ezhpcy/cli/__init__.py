@@ -9,7 +9,6 @@ from ezhpcy.cli.list_profiles import list_profiles_cmd
 from ezhpcy.cli.provision import provision_cmd
 from ezhpcy.cli.proxy import proxy_cmd
 from ezhpcy.cli.prune import prune_cmd
-from ezhpcy.cli.relay import relay_cmd
 from ezhpcy.cli.ssh_config import ssh_config_cmd
 from ezhpcy.cli.utils.group import EzhpcyTyperGroup
 from ezhpcy.cli.version import version_cmd
@@ -29,9 +28,6 @@ app.command(
     name="compute, c",
     help="Allocate a compute node and start its SSH tunnel.",
 )(compute_cmd)
-app.command(name="relay", help="Relay OpenSSH to a worker through the login node.")(
-    relay_cmd
-)
 app.command(name="broker", help="Run the foreground worker-stream broker.")(broker_cmd)
 app.command(name="proxy", help="Proxy SSH bytes through a running tunnel broker.")(
     proxy_cmd
@@ -65,7 +61,6 @@ EzhpcyTyperGroup.command_order = (
     "provision",
     "prune",
     "compute, c",
-    "relay",
     "broker",
     "proxy",
     # Configuration Commands

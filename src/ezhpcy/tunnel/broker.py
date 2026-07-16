@@ -16,9 +16,17 @@ from ezhpcy.ipc.protocol import (
     reject_worker_stream,
     wait_for_worker_stream,
 )
-from ezhpcy.tunnel.relay import _shutdown_write
 
 ErrorHandler = Callable[[Exception], None]
+
+
+def _shutdown_write(stream: socket.socket | paramiko.Channel) -> None:
+    """Half-close a socket or Paramiko channel without masking relay errors."""
+    shutdown_write = getattr(stream, "shutdown_write", None)
+    if shutdown_write is not None:
+        shutdown_write()
+    else:
+        stream.shutdown(socket.SHUT_WR)  # type: ignore[attr-defined]
 
 
 def _channel_to_socket(channel: paramiko.Channel, stream: socket.socket) -> None:

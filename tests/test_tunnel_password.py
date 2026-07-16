@@ -175,7 +175,7 @@ def test_invalid_profile_password_sources_are_reported_as_a_cli_parameter_error(
     result = CliRunner().invoke(
         app,
         [
-            "relay",
+            "broker",
             "worker.example.com",
             "--worker-port",
             "2222",
@@ -301,7 +301,6 @@ def test_connection_options_read_password_keyring_from_environment(
         ["provision"],
         ["prune"],
         ["compute"],
-        ["relay"],
         ["broker"],
     ],
 )

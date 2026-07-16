@@ -1,5 +1,6 @@
 import logging
 from datetime import timedelta
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -39,6 +40,56 @@ def test_auto_provision_can_be_disabled_from_the_environment(monkeypatch) -> Non
     config = config_module.Config()
 
     assert config.auto_provision is False
+
+
+def test_profile_password_keyring_can_be_enabled() -> None:
+    config = config_module.Config.from_mapping(
+        {"profile": {"base": {"password_keyring": True}}}
+    )
+
+    assert config.resolve_profile("base").password_keyring is True
+
+
+def test_profile_password_sources_are_mutually_exclusive() -> None:
+    config = config_module.Config.from_mapping(
+        {
+            "profile": {
+                "base": {
+                    "password_file": "password.txt",
+                    "password_keyring": True,
+                }
+            }
+        }
+    )
+
+    with pytest.raises(ValueError, match=r"password_file, password_keyring"):
+        config.resolve_profile("base")
+
+
+def test_profile_password_is_rejected_to_keep_secrets_out_of_configuration() -> None:
+    config = config_module.Config.from_mapping(
+        {"profile": {"base": {"password": "not-a-secret"}}}
+    )
+
+    with pytest.raises(
+        config_module.ProfilePasswordSourceError, match="must not be stored"
+    ):
+        config.resolve_profile("base")
+
+
+def test_profile_password_source_overrides_the_inherited_source() -> None:
+    config = config_module.Config.from_mapping(
+        {
+            "profile": {
+                "base": {"password_keyring": True},
+                "child": {"inherit": "base", "password_file": "password.txt"},
+            }
+        }
+    )
+
+    profile = config.resolve_profile("child")
+    assert profile.password_keyring is False
+    assert profile.password_file == Path("password.txt")
 
 
 def test_config_singleton_applies_its_log_level() -> None:

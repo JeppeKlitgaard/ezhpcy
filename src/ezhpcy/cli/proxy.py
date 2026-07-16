@@ -4,7 +4,7 @@ import typer
 
 from ezhpcy.cli.common import ProfileOpt
 from ezhpcy.cli.utils.bad_parameter import RichBadParameter
-from ezhpcy.config import config
+from ezhpcy.config import ProfilePasswordSourceError, config
 from ezhpcy.ipc import load_broker_backend
 from ezhpcy.ipc.common import IPCError
 from ezhpcy.tunnel.broker import relay_proxy_stdio
@@ -15,6 +15,8 @@ def proxy_cmd(profile: ProfileOpt = None) -> None:
     try:
         try:
             config.resolve_profile(profile)
+        except ProfilePasswordSourceError as error:
+            raise RichBadParameter(error.rich_message()) from error
         except ValueError as error:
             raise RichBadParameter(str(error), param_hint="--profile") from error
         assert profile is not None

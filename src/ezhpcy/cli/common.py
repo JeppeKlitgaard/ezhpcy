@@ -10,7 +10,7 @@ from keyring.errors import KeyringError
 from ezhpcy.cli.utils.bad_parameter import RichBadParameter
 from ezhpcy.cli.utils.options_group import attach_hook
 from ezhpcy.cli.utils.resolve import resolve_forbidden_none
-from ezhpcy.config import ConnectionInfo, config
+from ezhpcy.config import ConnectionInfo, ProfilePasswordSourceError, config
 from ezhpcy.constants import PACKAGE_NAME
 from ezhpcy.types import ResolvedConfig
 
@@ -157,9 +157,11 @@ def resolve_password(
     password_keyring: bool,
     user: str,
     host: str,
-    config_password: str | None = None,
+    config_password_file: Path | None = None,
+    config_password_fd: int | None = None,
+    config_password_keyring: bool = False,
 ) -> str | None:
-    """Resolve one explicit password source, followed by environment and config."""
+    """Resolve an explicit password source, then the profile's source."""
     explicit_sources = [
         name
         for name, selected in (
@@ -185,7 +187,27 @@ def resolve_password(
     if password_keyring:
         return _read_password_keyring(user=user, host=host)
 
-    return config_password
+    configured_sources = [
+        name
+        for name, selected in (
+            ("password_file", config_password_file is not None),
+            ("password_fd", config_password_fd is not None),
+            ("password_keyring", config_password_keyring),
+        )
+        if selected
+    ]
+    if len(configured_sources) > 1:
+        raise RichBadParameter(
+            "profile password source options are mutually exclusive: "
+            + ", ".join(configured_sources)
+        )
+    if config_password_file is not None:
+        return _read_password_file(config_password_file)
+    if config_password_fd is not None:
+        return _read_password_fd(config_password_fd)
+    if config_password_keyring:
+        return _read_password_keyring(user=user, host=host)
+    return None
 
 
 def profile_context_from_options(
@@ -200,6 +222,8 @@ def profile_context_from_options(
 ) -> ProfileContext:
     try:
         resolved_profile = config.resolve_profile(profile)
+    except ProfilePasswordSourceError as error:
+        raise RichBadParameter(error.rich_message()) from error
     except ValueError as error:
         raise RichBadParameter(str(error), param_hint="--profile") from error
     assert profile is not None
@@ -225,7 +249,9 @@ def profile_context_from_options(
         password_keyring=password_keyring,
         user=user,
         host=resolved_host,
-        config_password=resolved_profile.password,
+        config_password_file=resolved_profile.password_file,
+        config_password_fd=resolved_profile.password_fd,
+        config_password_keyring=resolved_profile.password_keyring,
     )
     resolved_config = ResolvedConfig.model_validate(
         {

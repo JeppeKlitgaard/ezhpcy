@@ -1,6 +1,6 @@
 import re
 from datetime import timedelta
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Annotated
 
 from pydantic import BaseModel, ByteSize, Field, field_validator
@@ -11,6 +11,9 @@ from ezhpcy.scheduler.types import SchedulerType
 
 _TIME_LIMIT_PATTERN = re.compile(r"^(?P<hours>\d+):(?P<minutes>\d{1,2})$")
 PositiveByteSize = Annotated[ByteSize, Field(gt=0)]
+PASSWORD_SOURCE_FIELDS = frozenset(
+    {"password", "password_file", "password_fd", "password_keyring"}
+)
 
 
 def parse_time_limit(value: str | None) -> timedelta | None:
@@ -36,6 +39,9 @@ class ProfileConfig(BaseModel):
     host: DomainStr | None = None
     user: str | None = Field(default=None, min_length=1)
     password: str | None = None
+    password_file: Path | None = None
+    password_fd: int | None = Field(default=None, ge=0)
+    password_keyring: bool | None = None
 
     scheduler: SchedulerType | None = None
     queue: str | None = Field(default=None, min_length=1)
@@ -69,6 +75,9 @@ class _ResolvedConfigBase(BaseModel):
 
     description: str | None = None
     password: str | None = None
+    password_file: Path | None = None
+    password_fd: int | None = None
+    password_keyring: bool = False
 
     scheduler: SchedulerType | None = None
     queue: str | None = None

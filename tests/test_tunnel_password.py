@@ -16,7 +16,9 @@ def resolve_password(
     password_file: Path | None = None,
     password_fd: int | None = None,
     password_keyring: bool = False,
-    config_password: str | None = None,
+    config_password_file: Path | None = None,
+    config_password_fd: int | None = None,
+    config_password_keyring: bool = False,
 ) -> str | None:
     return common.resolve_password(
         password=password,
@@ -25,7 +27,9 @@ def resolve_password(
         password_keyring=password_keyring,
         user="alice",
         host="login.example.com",
-        config_password=config_password,
+        config_password_file=config_password_file,
+        config_password_fd=config_password_fd,
+        config_password_keyring=config_password_keyring,
     )
 
 
@@ -75,8 +79,25 @@ def test_password_fd_is_read_without_closing_callers_descriptor() -> None:
             os.close(write_fd)
 
 
-def test_password_falls_back_to_profile() -> None:
-    assert resolve_password(config_password="from-profile") == "from-profile"
+def test_password_without_an_explicit_or_profile_source_is_none() -> None:
+    assert resolve_password() is None
+
+
+def test_profile_password_keyring_can_read_from_keyring(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(common.keyring, "get_password", lambda *_args: "from-keyring")
+
+    assert resolve_password(config_password_keyring=True) == "from-keyring"
+
+
+def test_explicit_password_source_overrides_profile_password_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert (
+        resolve_password(password="from-command-line", config_password_keyring=True)
+        == "from-command-line"
+    )
 
 
 def test_password_file_is_an_explicit_password_source(
@@ -130,6 +151,44 @@ def test_explicit_password_sources_are_mutually_exclusive(tmp_path: Path) -> Non
 
     with pytest.raises(RichBadParameter, match="mutually exclusive"):
         resolve_password(password="secret", password_file=password_file)
+
+
+def test_invalid_profile_password_sources_are_reported_as_a_cli_parameter_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        common.config,
+        "profile",
+        {
+            "base": ProfileConfig(
+                host="login.example.com",
+                user="alice",
+                password_file=Path("password.txt"),
+                password_keyring=True,
+            )
+        },
+    )
+
+    with pytest.raises(RichBadParameter):
+        common.profile_context_from_options(profile="base")
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "relay",
+            "worker.example.com",
+            "--worker-port",
+            "2222",
+            "--profile",
+            "base",
+        ],
+        color=True,
+    )
+
+    assert result.exit_code == 2
+    assert "Invalid value:" in result.output
+    assert "Invalid value for --profile" not in result.output
+    assert "password_file, password_keyring" in result.output
 
 
 def test_connection_options_read_password_from_environment(

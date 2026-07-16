@@ -12,14 +12,26 @@ from pydantic_settings import (
     SettingsConfigDict,
     TomlConfigSettingsSource,
 )
+from rich.text import Text
 
 from ezhpcy.constants import PACKAGE_NAME, SSH_DIRECTORY_NAME
 from ezhpcy.logging import LogLevel, configure_logging
-from ezhpcy.types import ProfileConfig, ResolvedProfileConfig
+from ezhpcy.types import PASSWORD_SOURCE_FIELDS, ProfileConfig, ResolvedProfileConfig
 from ezhpcy.utils import ssh_connection_id
 
 _DIRS = PlatformDirs(PACKAGE_NAME, appauthor=False)
 _PROFILE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+
+
+class ProfilePasswordSourceError(ValueError):
+    """A profile's configured password sources are invalid."""
+
+    def __init__(self, profile_name: str, message: str) -> None:
+        self._rich_message = f"profile [bold blue]{profile_name}[/bold blue] {message}"
+        super().__init__(Text.from_markup(self._rich_message).plain)
+
+    def rich_message(self) -> str:
+        return self._rich_message
 
 
 def _default_config_file() -> Path:
@@ -82,10 +94,15 @@ class _ConfigValues(BaseModel):
             )
 
         for name in self.profile:
-            self.resolve_profile(name)
+            self.resolve_profile(name, validate_password_source=False)
         return self
 
-    def resolve_profile(self, name: str | None = None) -> ResolvedProfileConfig:
+    def resolve_profile(
+        self,
+        name: str | None = None,
+        *,
+        validate_password_source: bool = True,
+    ) -> ResolvedProfileConfig:
         if name is None:
             raise ValueError("no profile was selected")
         if name not in self.profile:
@@ -106,10 +123,49 @@ class _ConfigValues(BaseModel):
             values: dict[str, object] = {}
             if current.inherit is not None:
                 values.update(merged(current.inherit, (*chain, profile_name)))
-            values.update(current.model_dump(exclude={"inherit"}, exclude_unset=True))
+            current_values = current.model_dump(exclude={"inherit"}, exclude_unset=True)
+            if current.model_fields_set & PASSWORD_SOURCE_FIELDS:
+                for field in PASSWORD_SOURCE_FIELDS:
+                    values.pop(field, None)
+            values.update(current_values)
             return values
 
-        return ResolvedProfileConfig.model_validate(merged(name, ()))
+        resolved = ResolvedProfileConfig.model_validate(merged(name, ()))
+        if validate_password_source:
+            _validate_profile_password_source(name, resolved)
+        return resolved
+
+
+def _validate_profile_password_source(
+    profile_name: str, profile: ResolvedProfileConfig
+) -> None:
+    if profile.password is not None:
+        raise ProfilePasswordSourceError(
+            profile_name,
+            "must not set [bold red]password[/bold red], because passwords must "
+            "not be stored in configuration files; use "
+            "[bold blue]password_file[/bold blue], "
+            "[bold blue]password_fd[/bold blue], or "
+            "[bold blue]password_keyring[/bold blue] instead",
+        )
+
+    selected_sources = [
+        name
+        for name, selected in (
+            ("password_file", profile.password_file is not None),
+            ("password_fd", profile.password_fd is not None),
+            ("password_keyring", profile.password_keyring),
+        )
+        if selected
+    ]
+    if len(selected_sources) > 1:
+        rich_sources = ", ".join(
+            f"[bold red]{source}[/bold red]" for source in selected_sources
+        )
+        raise ProfilePasswordSourceError(
+            profile_name,
+            f"has mutually exclusive password source settings: {rich_sources}",
+        )
 
 
 class Config(BaseSettings, _ConfigValues):

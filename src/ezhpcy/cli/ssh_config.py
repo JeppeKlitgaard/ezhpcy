@@ -7,7 +7,7 @@ import typer
 from ezhpcy.cli.common import HostOpt, UserOpt
 from ezhpcy.cli.utils.bad_parameter import RichBadParameter
 from ezhpcy.cli.utils.resolve import resolve_forbidden_none
-from ezhpcy.config import config
+from ezhpcy.config import ProfilePasswordSourceError, config
 from ezhpcy.constants import (
     WORKER_CLIENT_KEY_NAME,
     WORKER_HOST_ALIAS,
@@ -77,6 +77,8 @@ def ssh_config_cmd(
     """Print an OpenSSH Host block for the broker-backed worker connection."""
     try:
         resolved_profile = config.resolve_profile(profile)
+    except ProfilePasswordSourceError as error:
+        raise RichBadParameter(error.rich_message()) from error
     except ValueError as error:
         raise RichBadParameter(str(error), param_hint="PROFILE") from error
     profile_name = profile

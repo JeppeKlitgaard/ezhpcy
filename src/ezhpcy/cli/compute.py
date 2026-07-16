@@ -1,4 +1,5 @@
 import logging
+import queue as queue_module
 import secrets
 import shlex
 import signal
@@ -22,9 +23,10 @@ from ezhpcy.cli.provision import (
     validate_worker_infrastructure,
 )
 from ezhpcy.cli.utils.ssh import (
+    SSHD_PORT_MARKER,
     InteractiveSSHClient,
-    absolute_sshd_command,
     read_ed25519_public_key,
+    retrying_sshd_command,
     sshd_config_arguments,
 )
 from ezhpcy.config import ConnectionInfo, config
@@ -55,6 +57,7 @@ from ezhpcy.utils import local_machine_id, ssh_connection_id
 
 _FIRST_DYNAMIC_PORT = 49152
 _LAST_DYNAMIC_PORT = 65535
+_DEFAULT_WORKER_PORT_RETRIES = 5
 _JOB_POLL_INTERVAL = 1.0
 _JOB_MONITOR_INTERVAL = 5.0
 _SSH_BANNER_LIMIT = 255
@@ -71,13 +74,9 @@ def _worker_sshd_command(
     host_key: PurePosixPath,
     remote_username: str,
     authorized_key: tuple[str, str],
-    port: int,
+    ports: tuple[int, ...],
 ) -> tuple[str, ...]:
     sshd_arguments = [
-        "-D",
-        "-e",
-        "-p",
-        str(port),
         *sshd_config_arguments(
             host_key=host_key,
             remote_username=remote_username,
@@ -91,14 +90,21 @@ def _worker_sshd_command(
         str(remote_state.pixi_executable()),
         "exec",
         f"--spec={OPENSSH_MATCHSPEC}",
-        *absolute_sshd_command(sshd_arguments),
+        *retrying_sshd_command(sshd_arguments, ports),
     )
 
 
-def _select_worker_port() -> int:
-    return _FIRST_DYNAMIC_PORT + secrets.randbelow(
-        _LAST_DYNAMIC_PORT - _FIRST_DYNAMIC_PORT + 1
-    )
+def _select_worker_ports(count: int) -> tuple[int, ...]:
+    if count < 1:
+        raise ValueError("worker SSH port count must be positive")
+    ports: list[int] = []
+    while len(ports) < count:
+        port = _FIRST_DYNAMIC_PORT + secrets.randbelow(
+            _LAST_DYNAMIC_PORT - _FIRST_DYNAMIC_PORT + 1
+        )
+        if port not in ports:
+            ports.append(port)
+    return tuple(ports)
 
 
 def _ensure_local_worker_credentials(conn_info: ConnectionInfo) -> None:
@@ -247,17 +253,59 @@ def _monitor_job(
 
 
 def _drain_interactive_job(
-    job: InteractiveJob, stop_requested: threading.Event
+    job: InteractiveJob,
+    stop_requested: threading.Event,
+    selected_ports: queue_module.Queue[int] | None = None,
 ) -> None:
+    pending = bytearray()
+
+    def handle_output(output: bytes) -> None:
+        if not output:
+            return
+        typer.echo(output.decode(errors="replace"), nl=False, err=True)
+        if selected_ports is None:
+            return
+        pending.extend(output)
+        while b"\n" in pending:
+            raw_line, _, remainder = pending.partition(b"\n")
+            pending[:] = remainder
+            line = raw_line.decode(errors="replace").strip()
+            if line.startswith(SSHD_PORT_MARKER):
+                raw_port = line.removeprefix(SSHD_PORT_MARKER)
+                try:
+                    selected_ports.put_nowait(int(raw_port))
+                except ValueError:
+                    logger.warning("Worker reported an invalid SSH port: %s", raw_port)
+
     while not stop_requested.wait(0.05):
         output = job.read_available()
-        if output:
-            typer.echo(output.decode(errors="replace"), nl=False, err=True)
+        handle_output(output)
         if job.process.exit_status_ready():
-            output = job.read_available()
-            if output:
-                typer.echo(output.decode(errors="replace"), nl=False, err=True)
+            handle_output(job.read_available())
             return
+
+
+def _wait_for_selected_worker_port(
+    job: InteractiveJob,
+    selected_ports: queue_module.Queue[int],
+    *,
+    timeout_seconds: float,
+) -> int:
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ComputeTunnelError(
+                "worker SSH daemon did not bind a candidate port within "
+                f"{timeout_seconds:g} seconds"
+            )
+        try:
+            return selected_ports.get(timeout=min(0.1, remaining))
+        except queue_module.Empty:
+            if job.process.exit_status_ready():
+                raise ComputeTunnelError(
+                    "worker SSH daemon failed to bind any candidate port"
+                )
 
 
 def _run_compute_tunnel(
@@ -274,7 +322,7 @@ def _run_compute_tunnel(
     memory_bytes: int | None,
     queue_timeout_seconds: float,
     startup_timeout_seconds: float,
-    worker_port: int,
+    worker_ports: tuple[int, ...],
     auto_provision: bool,
 ) -> None:
     machine_id = local_machine_id()
@@ -337,14 +385,14 @@ def _run_compute_tunnel(
         )
         logger.debug(
             "Worker request: queue=%r cores=%d gpus=%d exclusive=%s "
-            "time_limit=%s memory_bytes=%s port=%d",
+            "time_limit=%s memory_bytes=%s ports=%s",
             queue,
             cores,
             gpus,
             exclusive,
             time_limit,
             memory_bytes,
-            worker_port,
+            worker_ports,
         )
         worker_cwd_dir = remote_state.worker_cwd_dir()
         worker_logs_dir = remote_state.worker_logs_dir()
@@ -366,7 +414,7 @@ def _run_compute_tunnel(
                 host_key=remote_host_key,
                 remote_username=remote_username,
                 authorized_key=(key_type, key_blob),
-                port=worker_port,
+                ports=worker_ports,
             ),
             name="ezhpcy-worker",
             time_limit=time_limit,
@@ -399,9 +447,10 @@ def _run_compute_tunnel(
             )
         job_finished = threading.Event()
         output_stop = threading.Event()
+        selected_ports: queue_module.Queue[int] = queue_module.Queue()
         output_thread = threading.Thread(
             target=_drain_interactive_job,
-            args=(interactive_job, output_stop),
+            args=(interactive_job, output_stop, selected_ports),
             daemon=True,
             name="ezhpcy-compute-job-output",
         )
@@ -424,6 +473,11 @@ def _run_compute_tunnel(
                     f"scheduler did not report a host for running job {job_id}"
                 )
             interactive_job.start_command()
+            worker_port = _wait_for_selected_worker_port(
+                interactive_job,
+                selected_ports,
+                timeout_seconds=startup_timeout_seconds,
+            )
             destination = (worker_host, worker_port)
             logger.info(
                 "Waiting for worker SSH endpoint %s:%d.", worker_host, worker_port
@@ -586,6 +640,17 @@ def compute_cmd(
             help="Worker SSH port; defaults to a random dynamic port.",
         ),
     ] = None,
+    worker_port_retries: Annotated[
+        int,
+        typer.Option(
+            "--worker-port-retries",
+            min=0,
+            help=(
+                "Alternate random worker SSH ports to try after a bind failure; "
+                "ignored with --worker-port."
+            ),
+        ),
+    ] = _DEFAULT_WORKER_PORT_RETRIES,
     auto_provision: Annotated[
         bool,
         typer.Option(
@@ -651,6 +716,11 @@ def compute_cmd(
             auto_provision_enabled = config.auto_provision
         if not auto_provision_enabled:
             _ensure_local_worker_credentials(profile_context.connection)
+        worker_ports = (
+            (worker_port,)
+            if worker_port is not None
+            else _select_worker_ports(worker_port_retries + 1)
+        )
         _run_compute_tunnel(
             profile_name=profile_context.name,
             profile=resolved,
@@ -664,7 +734,7 @@ def compute_cmd(
             memory_bytes=int(resolved.memory) if resolved.memory is not None else None,
             queue_timeout_seconds=resolved.queue_timeout_seconds,
             startup_timeout_seconds=resolved.worker_startup_timeout_seconds,
-            worker_port=worker_port or _select_worker_port(),
+            worker_ports=worker_ports,
             auto_provision=auto_provision_enabled,
         )
     except KeyboardInterrupt:

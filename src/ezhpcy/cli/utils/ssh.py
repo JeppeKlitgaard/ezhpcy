@@ -14,11 +14,46 @@ _EXEC_ABSOLUTE_SSHD = (
     'case "$sshd_path" in /*) exec "$sshd_path" "$@";; '
     '*) echo "sshd must resolve to an absolute path" >&2; exit 1;; esac'
 )
+SSHD_PORT_MARKER = "ezhpcy: worker sshd selected port "
+_EXEC_RETRYING_SSHD = (
+    'sshd_path="$(command -v sshd)" || exit; '
+    'case "$sshd_path" in /*) ;; '
+    '*) echo "sshd must resolve to an absolute path" >&2; exit 1;; esac; '
+    'port_count="$1"; shift; pid=; '
+    'trap \'[ -z "$pid" ] || kill "$pid" 2>/dev/null; exit 143\' '
+    "HUP INT TERM; "
+    'while [ "$port_count" -gt 0 ]; do '
+    'port="$1"; shift; port_count=$((port_count - 1)); '
+    '"$sshd_path" -D -e -p "$port" "$@" & pid=$!; '
+    "sleep 0.1; "
+    'if kill -0 "$pid" 2>/dev/null; then '
+    f'printf "{SSHD_PORT_MARKER}%s\\n" "$port"; '
+    'wait "$pid"; exit $?; '
+    "fi; "
+    'wait "$pid"; '
+    "done; "
+    "exit 1"
+)
 
 
 def absolute_sshd_command(arguments: list[str]) -> list[str]:
     """Run ``sshd`` by its resolved absolute path within a Pixi environment."""
     return ["sh", "-c", _EXEC_ABSOLUTE_SSHD, "sshd", *arguments]
+
+
+def retrying_sshd_command(arguments: list[str], ports: tuple[int, ...]) -> list[str]:
+    """Run foreground ``sshd``, retrying immediate startup failures by port."""
+    if not ports:
+        raise ValueError("at least one worker SSH port is required")
+    return [
+        "sh",
+        "-c",
+        _EXEC_RETRYING_SSHD,
+        "sshd",
+        str(len(ports)),
+        *(str(port) for port in ports),
+        *arguments,
+    ]
 
 
 def read_ed25519_public_key(path: Path) -> tuple[str, str]:

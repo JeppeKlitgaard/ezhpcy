@@ -1,4 +1,6 @@
 import logging
+import queue
+import threading
 from contextlib import contextmanager
 from datetime import timedelta
 from pathlib import PurePosixPath
@@ -12,8 +14,11 @@ from typer.testing import CliRunner
 from ezhpcy.cli import app, compute as compute_module
 from ezhpcy.cli.compute import (
     ComputeTunnelError,
+    _drain_interactive_job,
     _run_compute_tunnel,
+    _select_worker_ports,
     _wait_for_running_job,
+    _wait_for_selected_worker_port,
     _wait_for_worker_endpoint,
     _worker_sshd_command,
 )
@@ -48,14 +53,14 @@ def pbs_profile() -> ResolvedProfileConfig:
     )
 
 
-def test_worker_sshd_command_runs_directly_through_pixi() -> None:
+def test_worker_sshd_command_retries_ports_through_pixi() -> None:
     remote_state = RemoteState(cache_dir=PurePosixPath("/home/alice/.cache"))
     command = _worker_sshd_command(
         remote_state,
         host_key=PurePosixPath("/remote/ssh_host_ed25519_key"),
         remote_username="alice",
         authorized_key=("ssh-ed25519", "WORKERKEY"),
-        port=54321,
+        ports=(54321, 54322),
     )
 
     assert command[:6] == (
@@ -72,9 +77,12 @@ def test_worker_sshd_command_runs_directly_through_pixi() -> None:
         "-c",
         command[8],
         "sshd",
-        "-D",
+        "2",
     )
+    assert command[11:13] == ("54321", "54322")
     assert "command -v sshd" in command[8]
+    assert '"$sshd_path" -D -e -p "$port"' in command[8]
+    assert "worker sshd selected port" in command[8]
     assert command.count("sh") == 1
     assert command.count("-c") == 1
     assert "PidFile=none" in command
@@ -163,6 +171,21 @@ class StubProcess:
 
     def close(self) -> None:
         self.closed = True
+
+
+class OutputProcess(StubProcess):
+    def __init__(self, chunks: list[bytes]) -> None:
+        super().__init__()
+        self.chunks = chunks
+
+    def recv_ready(self) -> bool:
+        return bool(self.chunks)
+
+    def recv(self, _size: int) -> bytes:
+        return self.chunks.pop(0)
+
+    def exit_status_ready(self) -> bool:
+        return not self.chunks
 
 
 class StubTransport:
@@ -305,6 +328,37 @@ def test_wait_for_running_job_fails_when_job_exits() -> None:
         )
 
 
+def test_select_worker_ports_returns_unique_dynamic_ports() -> None:
+    with patch(
+        "ezhpcy.cli.compute.secrets.randbelow",
+        side_effect=[0, 0, 1, 2, 3, 4],
+    ):
+        ports = _select_worker_ports(5)
+
+    assert ports == (49152, 49153, 49154, 49155, 49156)
+
+
+def test_worker_output_reports_selected_retry_port() -> None:
+    process = OutputProcess(
+        [b"bind failed\nez", b"hpcy: worker sshd selected port 54322\n"]
+    )
+    job = InteractiveJob("42", process, "")
+    selected_ports: queue.Queue[int] = queue.Queue()
+
+    _drain_interactive_job(job, threading.Event(), selected_ports)
+
+    assert (
+        _wait_for_selected_worker_port(job, selected_ports, timeout_seconds=1) == 54322
+    )
+
+
+def test_worker_port_wait_fails_when_all_binds_fail() -> None:
+    job = InteractiveJob("42", OutputProcess([]), "")
+
+    with pytest.raises(ComputeTunnelError, match="failed to bind any candidate"):
+        _wait_for_selected_worker_port(job, queue.Queue(), timeout_seconds=1)
+
+
 def test_worker_endpoint_waits_for_an_ssh_banner() -> None:
     transport = StubTransport()
     transport_logger = logging.getLogger("paramiko.transport")
@@ -355,6 +409,10 @@ def test_compute_tunnel_submits_worker_starts_broker_and_cancels() -> None:
             "ezhpcy.cli.compute.read_ed25519_public_key",
             return_value=("ssh-ed25519", "WORKERKEY"),
         ),
+        patch(
+            "ezhpcy.cli.compute._wait_for_selected_worker_port",
+            return_value=54322,
+        ),
         patch("ezhpcy.cli.compute._wait_for_worker_endpoint"),
         patch("ezhpcy.cli.compute.create_broker_backend", return_value=object()),
         patch("ezhpcy.cli.compute.ForegroundBroker", side_effect=make_broker),
@@ -373,7 +431,7 @@ def test_compute_tunnel_submits_worker_starts_broker_and_cancels() -> None:
             memory_bytes=2048 * _MEBIBYTE,
             queue_timeout_seconds=10,
             startup_timeout_seconds=10,
-            worker_port=54321,
+            worker_ports=(54321, 54322),
             auto_provision=True,
         )
 
@@ -387,7 +445,7 @@ def test_compute_tunnel_submits_worker_starts_broker_and_cancels() -> None:
         ),
         remote_username="alice",
         authorized_key=("ssh-ed25519", "WORKERKEY"),
-        port=54321,
+        ports=(54321, 54322),
     )
     assert "AuthorizedKeysCommand=/bin/echo ssh-ed25519 WORKERKEY" in spec.command
     assert not any("payload" in argument for argument in spec.command)
@@ -410,7 +468,7 @@ def test_compute_tunnel_submits_worker_starts_broker_and_cancels() -> None:
     assert spec.stderr_path == PurePosixPath(
         f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/logs/worker/worker-%J.err"
     )
-    assert brokers[0].destination == ("node42", 54321)
+    assert brokers[0].destination == ("node42", 54322)
     assert brokers[0].closed
     assert scheduler.cancelled == ["42"]
     assert scheduler.process.closed
@@ -424,7 +482,7 @@ def test_compute_tunnel_submits_worker_starts_broker_and_cancels() -> None:
         "Tunnel ready for %s via worker %s:%d (press Ctrl+C to stop).",
         "ezhpcy-worker",
         "node42",
-        54321,
+        54322,
     )
 
 
@@ -452,6 +510,10 @@ def test_compute_tunnel_cancels_job_when_worker_startup_fails() -> None:
             return_value=("ssh-ed25519", "WORKERKEY"),
         ),
         patch(
+            "ezhpcy.cli.compute._wait_for_selected_worker_port",
+            return_value=54321,
+        ),
+        patch(
             "ezhpcy.cli.compute._wait_for_worker_endpoint",
             side_effect=ComputeTunnelError("worker did not listen"),
         ),
@@ -470,7 +532,7 @@ def test_compute_tunnel_cancels_job_when_worker_startup_fails() -> None:
             memory_bytes=1024 * _MEBIBYTE,
             queue_timeout_seconds=10,
             startup_timeout_seconds=10,
-            worker_port=54321,
+            worker_ports=(54321,),
             auto_provision=True,
         )
 
@@ -497,6 +559,10 @@ def test_compute_tunnel_uses_explicit_pbs_and_linuxsh_defaults() -> None:
             "ezhpcy.cli.compute.read_ed25519_public_key",
             return_value=("ssh-ed25519", "WORKERKEY"),
         ),
+        patch(
+            "ezhpcy.cli.compute._wait_for_selected_worker_port",
+            return_value=54321,
+        ),
         patch("ezhpcy.cli.compute._wait_for_worker_endpoint"),
         patch("ezhpcy.cli.compute.create_broker_backend", return_value=object()),
         patch("ezhpcy.cli.compute.ForegroundBroker", StubBroker),
@@ -515,7 +581,7 @@ def test_compute_tunnel_uses_explicit_pbs_and_linuxsh_defaults() -> None:
             memory_bytes=None,
             queue_timeout_seconds=10,
             startup_timeout_seconds=10,
-            worker_port=54321,
+            worker_ports=(54321,),
             auto_provision=True,
         )
 
@@ -538,8 +604,8 @@ def test_compute_tunnel_uses_explicit_pbs_and_linuxsh_defaults() -> None:
 
 
 def test_compute_tunnel_help_exposes_scheduler_and_resource_options() -> None:
-    result = CliRunner().invoke(app, ["compute", "--help"])
-    alias_result = CliRunner().invoke(app, ["c", "--help"])
+    result = CliRunner().invoke(app, ["compute", "--help"], terminal_width=160)
+    alias_result = CliRunner().invoke(app, ["c", "--help"], terminal_width=160)
 
     assert result.exit_code == 0
     assert alias_result.exit_code == 0
@@ -553,6 +619,8 @@ def test_compute_tunnel_help_exposes_scheduler_and_resource_options() -> None:
     assert "--queue-timeout" in result.stdout
     assert "--startup-timeout" in result.stdout
     assert "--worker-port" in result.stdout
+    # Rich abbreviates long option names in its fixed-width option column.
+    assert "--worker-port-retr" in result.stdout
     assert "--auto-provision" in result.stdout
     assert "--no-auto-provision" in result.stdout
     assert "--profile" in result.stdout
@@ -617,6 +685,25 @@ def test_compute_command_resolves_profile_and_applies_cli_overrides(
         host="login.example.com", user="alice"
     )
     assert captured["auto_provision"] is True
+    worker_ports = captured["worker_ports"]
+    assert isinstance(worker_ports, tuple)
+    assert len(worker_ports) == 6
+    assert len(set(worker_ports)) == 6
+
+    captured.clear()
+    result = CliRunner().invoke(
+        app,
+        [
+            "compute",
+            "--worker-port",
+            "55000",
+            "--worker-port-retries",
+            "2",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["worker_ports"] == (55000,)
 
 
 def test_compute_command_can_disable_auto_provision(

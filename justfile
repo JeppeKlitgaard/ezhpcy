@@ -1,5 +1,6 @@
 set minimum-version := '1.55.0'
 set default-list := true
+set dotenv-load := true
 
 # Run all checks
 all:
@@ -12,6 +13,11 @@ all:
 install:
     uv sync --all-extras
     uv run prek install
+
+# Override ezhpcy config with default. Works best with a .dotenv containing EZHPCY_USER
+override-config:
+    uv run ezhpcy config load --yes DTU
+
 
 # Formats the code using ruff
 [group: 'format']

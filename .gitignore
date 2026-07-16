@@ -9,3 +9,6 @@ dist/
 # Tools
 .ruff_cache/
 .pytest_cache/
+
+# Environment
+.env

@@ -11,23 +11,19 @@ from ezhpcy.cli.proxy import proxy_cmd
 from ezhpcy.cli.prune import prune_cmd
 from ezhpcy.cli.relay import relay_cmd
 from ezhpcy.cli.ssh_config import ssh_config_cmd
-from ezhpcy.cli.utils.alias import AliasGroup
+from ezhpcy.cli.utils.group import EzhpcyTyperGroup
 from ezhpcy.cli.version import version_cmd
 
 app = typer.Typer(
-    cls=AliasGroup,
+    cls=EzhpcyTyperGroup,
     help="Utilities for working with HPC facilities.",
     no_args_is_help=True,
 )
 
-app.add_typer(config_app, name="config")
-app.add_typer(keyring_app, name="keyring")
-app.command(name="info", help="Show debug information.")(info_cmd)
-app.command(name="version", help="Show the EzHPCy version.")(version_cmd)
-app.command(name="list-profiles", help="List configured profiles.")(list_profiles_cmd)
-app.command(name="provision", help="Provision EzHPCy worker infrastructure.")(
-    provision_cmd
-)
+app.command(
+    name="provision",
+    help="Provision EzHPCy worker infrastructure. Usually done automatically.",
+)(provision_cmd)
 app.command(name="prune", help="Prune EzHPCy-managed remote data.")(prune_cmd)
 app.command(
     name="compute, c",
@@ -37,12 +33,49 @@ app.command(name="relay", help="Relay OpenSSH to a worker through the login node
     relay_cmd
 )
 app.command(name="broker", help="Run the foreground worker-stream broker.")(broker_cmd)
+app.command(name="proxy", help="Proxy SSH bytes through a running tunnel broker.")(
+    proxy_cmd
+)
+
+# Configuration Commands
+app.add_typer(config_app, name="config", rich_help_panel="Configuration Commands")
 app.command(
     name="ssh-config",
     help="Print the OpenSSH configuration for the broker-backed worker.",
+    rich_help_panel="Configuration Commands",
 )(ssh_config_cmd)
-app.command(name="proxy", help="Proxy SSH bytes through a running tunnel broker.")(
-    proxy_cmd
+app.add_typer(keyring_app, name="keyring", rich_help_panel="Configuration Commands")
+
+
+# Meta Commands
+app.command(
+    name="info", help="Show debug information.", rich_help_panel="Meta Commands"
+)(info_cmd)
+app.command(
+    name="version", help="Show the EzHPCy version.", rich_help_panel="Meta Commands"
+)(version_cmd)
+app.command(
+    name="list-profiles",
+    help="List configured profiles.",
+    rich_help_panel="Meta Commands",
+)(list_profiles_cmd)
+
+# Keep the CLI's help order in one place, after every command has been registered.
+EzhpcyTyperGroup.command_order = (
+    "provision",
+    "prune",
+    "compute, c",
+    "relay",
+    "broker",
+    "proxy",
+    # Configuration Commands
+    "config",
+    "ssh-config",
+    "keyring",
+    # Meta Commands
+    "info",
+    "version",
+    "list-profiles",
 )
 
 

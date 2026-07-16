@@ -4,9 +4,9 @@ set dotenv-load := true
 
 # Run all checks
 all:
-    just test
     just format
     just lint
+    just test
 
 # Installs the project dependencies and pre-commit hooks
 [group: 'dev']

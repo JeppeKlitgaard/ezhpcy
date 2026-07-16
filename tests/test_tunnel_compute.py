@@ -714,6 +714,151 @@ def test_compute_command_resolves_profile_and_applies_cli_overrides(
     assert captured["worker_ports"] == (55000,)
 
 
+def test_compute_command_allows_wrapper_with_implicit_resource_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        compute_module.config,
+        "profile",
+        {
+            "base": ProfileConfig(
+                host="login.example.com",
+                user="alice",
+                scheduler="LSF",
+                interactive_submission_command=["/site/bin/interactive-lsf"],
+            )
+        },
+    )
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        compute_module,
+        "_run_compute_tunnel",
+        lambda **kwargs: captured.update(kwargs),
+    )
+
+    result = CliRunner().invoke(app, ["compute", "--profile", "base"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["queue"] is None
+    assert captured["cores"] == 1
+    assert captured["gpus"] == 0
+    assert captured["exclusive"] is False
+    profile = captured["profile"]
+    assert getattr(profile, "interactive_submission_command") == [
+        "/site/bin/interactive-lsf"
+    ]
+
+
+def test_compute_command_logs_inherited_submission_options_ignored_by_wrapper(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        compute_module.config,
+        "profile",
+        {
+            "base": ProfileConfig(
+                host="login.example.com",
+                user="alice",
+                scheduler="LSF",
+                queue="normal",
+                lsf_application_profile="qrsh",
+            ),
+            "wrapper": ProfileConfig(
+                inherit="base",
+                interactive_submission_command=["/site/bin/interactive-lsf"],
+            ),
+        },
+    )
+    monkeypatch.setattr(compute_module, "_run_compute_tunnel", lambda **_kwargs: None)
+
+    with patch("ezhpcy.cli.compute.logger") as logger:
+        result = CliRunner().invoke(app, ["compute", "--profile", "wrapper"])
+
+    assert result.exit_code == 0, result.output
+    logger.info.assert_called_once_with(
+        "Ignoring inherited scheduler submission options for "
+        "interactive_submission_command: %s",
+        "lsf_application_profile, queue",
+    )
+
+
+@pytest.mark.parametrize(
+    ("arguments", "option"),
+    [
+        (("--queue", "normal"), "--queue"),
+        (("--cores", "1"), "--cores"),
+        (("--gpus", "0"), "--gpus"),
+        (("--shared",), "--exclusive/--shared"),
+        (("--time-limit", "1:00"), "--time-limit"),
+        (("--memory", "1GB"), "--memory"),
+    ],
+)
+def test_compute_command_rejects_cli_resources_with_wrapper(
+    monkeypatch: pytest.MonkeyPatch,
+    arguments: tuple[str, ...],
+    option: str,
+) -> None:
+    monkeypatch.setattr(
+        compute_module.config,
+        "profile",
+        {
+            "base": ProfileConfig(
+                host="login.example.com",
+                user="alice",
+                scheduler="LSF",
+                interactive_submission_command=["/site/bin/interactive-lsf"],
+            )
+        },
+    )
+
+    result = CliRunner().invoke(app, ["compute", "--profile", "base", *arguments])
+
+    assert result.exit_code == 2
+    assert "cannot be combined with submission options" in result.output
+    assert option in result.output
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("queue", "normal"),
+        ("cores", 1),
+        ("gpus", 0),
+        ("exclusive", False),
+        ("time_limit", "1:00"),
+        ("memory", "1GB"),
+        ("lsf_resource_reserve_per_task", False),
+        ("lsf_application_profile", "qrsh"),
+        ("lsf_submission_environment", {"LSF_QRSH": "true"}),
+        ("lsf_export_environment", ["TERM"]),
+    ],
+)
+def test_compute_command_rejects_configured_submission_options_with_wrapper(
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    value: object,
+) -> None:
+    monkeypatch.setattr(
+        compute_module.config,
+        "profile",
+        {
+            "base": ProfileConfig(
+                host="login.example.com",
+                user="alice",
+                scheduler="LSF",
+                interactive_submission_command=["/site/bin/interactive-lsf"],
+                **{field: value},
+            )
+        },
+    )
+
+    result = CliRunner().invoke(app, ["compute", "--profile", "base"])
+
+    assert result.exit_code == 2
+    assert "cannot be combined with submission options" in result.output
+    assert f"profile.base.{field}" in result.output
+
+
 def test_compute_command_can_disable_auto_provision(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

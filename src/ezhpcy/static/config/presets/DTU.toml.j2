@@ -1,6 +1,5 @@
 # {{ preset }} HPC configuration for ezhpcy.
 
-default_profile = "default"
 log_level = "INFO"
 auto_provision = true
 
@@ -44,3 +43,10 @@ queue = "gpul40s"
 cores = 8
 time_limit = "1:00"
 memory = "32GB"
+
+[profile.dtu-a100sh]
+description = "DTU interactive A100 GPUs via a100sh"
+inherit = "dtu-base-lsf"
+
+scheduler = "LSF"
+interactive_submission_command = ["/lsf/local/bin/a100sh"]

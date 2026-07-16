@@ -46,6 +46,7 @@ class ProfileConfig(BaseModel):
     memory: PositiveByteSize | None = None
     queue_timeout_seconds: float | None = Field(default=None, gt=0)
     worker_startup_timeout_seconds: float | None = Field(default=None, gt=0)
+    interactive_submission_command: list[str] | None = Field(default=None, min_length=1)
 
     ## Scheduler Options
     # LSF Options
@@ -78,6 +79,7 @@ class _ResolvedConfigBase(BaseModel):
     memory: PositiveByteSize | None = None
     queue_timeout_seconds: float = Field(default=15 * 60, gt=0)
     worker_startup_timeout_seconds: float = Field(default=60, gt=0)
+    interactive_submission_command: list[str] | None = None
 
     ## Scheduler Options
     # LSF Options

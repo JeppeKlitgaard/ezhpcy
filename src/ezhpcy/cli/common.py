@@ -79,6 +79,8 @@ HostOpt = Annotated[
 class ProfileContext:
     name: str
     profile: ResolvedConfig
+    configured_fields: frozenset[str] = frozenset()
+    directly_configured_fields: frozenset[str] = frozenset()
 
     @property
     def connection(self) -> ConnectionInfo:
@@ -237,6 +239,8 @@ def profile_context_from_options(
     return ProfileContext(
         name=profile,
         profile=resolved_config,
+        configured_fields=frozenset(resolved_profile.model_fields_set),
+        directly_configured_fields=frozenset(config.profile[profile].model_fields_set),
     )
 
 

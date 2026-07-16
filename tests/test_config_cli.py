@@ -167,6 +167,13 @@ def test_config_load_creates_dtu_config_case_insensitively(
         "cores = 8\n"
         'time_limit = "1:00"\n'
         'memory = "32GB"\n'
+        "\n"
+        "[profile.dtu-a100sh]\n"
+        'description = "DTU interactive A100 GPUs via a100sh"\n'
+        'inherit = "dtu-base-lsf"\n'
+        "\n"
+        'scheduler = "LSF"\n'
+        'interactive_submission_command = ["/lsf/local/bin/a100sh"]\n'
     )
     assert contents.startswith("# DTU HPC configuration for ezhpcy.\n")
     assert tomllib.loads(contents) == tomllib.loads(expected)
@@ -174,7 +181,22 @@ def test_config_load_creates_dtu_config_case_insensitively(
     loaded_config = Config.from_mapping(loaded)
     assert str(loaded_config.resolve_profile("dtu-base").host) == "login2.hpc.dtu.dk"
     assert loaded_config.resolve_profile("dtu-gpul40s").cores == 8
-    assert str(loaded_config.resolve_profile("pbs").pbs_command_directory) == (
+    a100sh = loaded_config.resolve_profile("dtu-a100sh")
+    assert a100sh.interactive_submission_command == ["/lsf/local/bin/a100sh"]
+    assert a100sh.lsf_application_profile == "qrsh"
+    assert a100sh.lsf_submission_environment == {
+        "ESUB_BYPASS": "1",
+        "ESUB_QUIET": "1",
+        "LSF_QRSH": "true",
+    }
+    assert a100sh.lsf_export_environment == ["TERM", "LSF_QRSH"]
+    assert {
+        "lsf_resource_reserve_per_task",
+        "lsf_application_profile",
+        "lsf_submission_environment",
+        "lsf_export_environment",
+    }.isdisjoint(loaded_config.profile["dtu-a100sh"].model_fields_set)
+    assert str(loaded_config.resolve_profile("dtu-base-pbs").pbs_command_directory) == (
         "/opt/pbspro/bin"
     )
 

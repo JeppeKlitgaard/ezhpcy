@@ -22,6 +22,7 @@ from ezhpcy.cli.provision import (
     provision_worker_infrastructure,
     validate_worker_infrastructure,
 )
+from ezhpcy.cli.utils.bad_parameter import RichBadParameter
 from ezhpcy.cli.utils.ssh import (
     SSHD_PORT_MARKER,
     InteractiveSSHClient,
@@ -58,6 +59,20 @@ from ezhpcy.utils import local_machine_id, ssh_connection_id
 _FIRST_DYNAMIC_PORT = 49152
 _LAST_DYNAMIC_PORT = 65535
 _DEFAULT_WORKER_PORT_RETRIES = 5
+_INTERACTIVE_SUBMISSION_RESOURCE_OPTIONS = {
+    "queue",
+    "cores",
+    "gpus",
+    "exclusive",
+    "time_limit",
+    "memory",
+}
+_LSF_INTERACTIVE_SUBMISSION_OPTIONS = {
+    "lsf_resource_reserve_per_task",
+    "lsf_application_profile",
+    "lsf_submission_environment",
+    "lsf_export_environment",
+}
 _JOB_POLL_INTERVAL = 1.0
 _JOB_MONITOR_INTERVAL = 5.0
 _SSH_BANNER_LIMIT = 255
@@ -366,6 +381,9 @@ def _run_compute_tunnel(
                     ssh.run_login_shell,
                     ssh.start_login_shell,
                     interactive_application_profile=(profile.lsf_application_profile),
+                    interactive_submission_command=(
+                        profile.interactive_submission_command
+                    ),
                     interactive_submission_environment=(
                         profile.lsf_submission_environment
                     ),
@@ -377,6 +395,9 @@ def _run_compute_tunnel(
                     ssh.run_login_shell,
                     ssh.start_login_shell,
                     command_directory=profile.pbs_command_directory,
+                    interactive_submission_command=(
+                        profile.interactive_submission_command
+                    ),
                 )
             case _:
                 raise UnsupportedSchedulerError(scheduler_type)
@@ -703,6 +724,55 @@ def compute_cmd(
                 "scheduler must be set by --scheduler or the selected profile",
                 param_hint="--scheduler",
             )
+        if resolved.interactive_submission_command is not None:
+            configured_submission_options = (
+                set(profile_context.configured_fields)
+                & _INTERACTIVE_SUBMISSION_RESOURCE_OPTIONS
+            )
+            if resolved.scheduler is SchedulerType.LSF:
+                configured_submission_options |= (
+                    set(profile_context.configured_fields)
+                    & _LSF_INTERACTIVE_SUBMISSION_OPTIONS
+                )
+            directly_configured_submission_options = (
+                configured_submission_options
+                & set(profile_context.directly_configured_fields)
+            )
+            cli_submission_options = {
+                f"[bold red]{option}[/bold red]=[bold blue]{value}[/bold blue]"
+                for option, value in (
+                    ("--queue", queue),
+                    ("--cores", cores),
+                    ("--gpus", gpus),
+                    ("--exclusive/--shared", exclusive),
+                    ("--time-limit", time_limit),
+                    ("--memory", memory),
+                )
+                if value is not None
+            }
+            conflicts = [
+                *(
+                    f"[bold blue]profile.{profile_context.name}[/bold blue].[bold red]{option}[/bold red]"
+                    for option in sorted(directly_configured_submission_options)
+                ),
+                *sorted(cli_submission_options),
+            ]
+            if conflicts:
+                raise RichBadParameter(
+                    "interactive_submission_command replaces the scheduler-generated "
+                    "request and cannot be combined with submission options: "
+                    + ", ".join(conflicts),
+                    param_hint="interactive_submission_command",
+                )
+            inherited_submission_options = (
+                configured_submission_options - directly_configured_submission_options
+            )
+            if inherited_submission_options:
+                logger.info(
+                    "Ignoring inherited scheduler submission options for "
+                    "interactive_submission_command: %s",
+                    ", ".join(sorted(inherited_submission_options)),
+                )
         if auto_provision and no_auto_provision:
             raise typer.BadParameter(
                 "--auto-provision and --no-auto-provision cannot be used together",

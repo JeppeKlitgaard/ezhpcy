@@ -243,7 +243,32 @@ def test_lsf_interactive_submission_sets_explicit_core_and_host_defaults() -> No
     ]
 
 
-def test_lsf_interactive_command_round_trips_shell_sensitive_arguments() -> None:
+def test_lsf_interactive_submission_can_use_site_wrapper() -> None:
+    process = FakeProcess(stdout=[b"Job <100> is submitted to queue <gpua100i>.\n"])
+    commands: list[list[str]] = []
+    scheduler = LSFScheduler(
+        FakeRunner(),
+        lambda command: commands.append(command) or process,
+        interactive_application_profile="qrsh",
+        interactive_submission_command=("/lsf/local/bin/a100sh",),
+        interactive_submission_environment={"LSF_QRSH": "true"},
+    )
+
+    job = scheduler.submit_interactive(
+        JobSpec(
+            command=(_COMMAND, "54321"),
+            queue="gpua100i",
+            gpus=2,
+            working_directory=PurePosixPath("/home/user/worker"),
+        )
+    )
+    job.start_command()
+
+    assert commands == [["/lsf/local/bin/a100sh"]]
+    assert process.sent == [f"cd /home/user/worker && exec {_COMMAND} 54321\n"]
+
+
+def test_lsf_interactive_worker_command_round_trips_shell_sensitive_arguments() -> None:
     process = FakeProcess(stdout=[b"Job <42> is submitted to queue <hpcint>.\n"])
     scheduler = LSFScheduler(FakeRunner(), lambda _command: process)
     arguments = (
@@ -472,6 +497,24 @@ def test_pbs_interactive_submission_sets_ezhpcy_default_core_count() -> None:
             "select=1:ncpus=1",
         ]
     ]
+
+
+def test_pbs_interactive_submission_can_use_site_wrapper() -> None:
+    process = FakeProcess(stdout=[b"qsub: waiting for job 100.server to start\n"])
+    commands: list[list[str]] = []
+    scheduler = PBSScheduler(
+        FakeRunner(),
+        lambda command: commands.append(command) or process,
+        interactive_submission_command=("/site/bin/interactive-pbs", "--gpu"),
+    )
+
+    job = scheduler.submit_interactive(
+        JobSpec(command=(_COMMAND, "54321"), queue="gpuq", gpus=1)
+    )
+    job.start_command()
+
+    assert commands == [["/site/bin/interactive-pbs", "--gpu"]]
+    assert process.sent == [f"exec {_COMMAND} 54321\n"]
 
 
 def test_pbs_inspection_parses_json_state_hosts_and_exit_status() -> None:

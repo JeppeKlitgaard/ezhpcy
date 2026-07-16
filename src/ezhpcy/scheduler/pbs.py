@@ -3,7 +3,7 @@ import math
 import re
 import shlex
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -42,12 +42,29 @@ class PBSScheduler(Scheduler):
         process_starter: Callable[[list[str]], RemoteProcess] | None = None,
         *,
         command_directory: PurePosixPath | None = None,
+        interactive_submission_command: Sequence[str] | None = None,
     ) -> None:
         self._runner = runner
         self._process_starter = process_starter
         self._qsub = self._executable(command_directory, "qsub")
         self._qstat = self._executable(command_directory, "qstat")
         self._qdel = self._executable(command_directory, "qdel")
+        if interactive_submission_command is not None and (
+            not interactive_submission_command
+            or any(
+                not argument or "\0" in argument
+                for argument in interactive_submission_command
+            )
+        ):
+            raise ValueError(
+                "interactive_submission_command must contain non-empty, NUL-free "
+                "arguments"
+            )
+        self._interactive_submission_command = (
+            tuple(interactive_submission_command)
+            if interactive_submission_command is not None
+            else None
+        )
 
     @property
     def scheduler_type(self) -> SchedulerType:
@@ -72,10 +89,14 @@ class PBSScheduler(Scheduler):
         if self._process_starter is None:
             raise SchedulerError("PBS interactive submission is not configured")
 
-        command = self._submit_command(
-            spec,
-            interactive=True,
-            executable=self._qsub,
+        command = (
+            list(self._interactive_submission_command)
+            if self._interactive_submission_command is not None
+            else self._submit_command(
+                spec,
+                interactive=True,
+                executable=self._qsub,
+            )
         )
         try:
             process = self._process_starter(command)

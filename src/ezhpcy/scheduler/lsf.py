@@ -50,6 +50,7 @@ class LSFScheduler(Scheduler):
         process_starter: Callable[[list[str]], RemoteProcess] | None = None,
         *,
         interactive_application_profile: str | None = None,
+        interactive_submission_command: Sequence[str] | None = None,
         interactive_submission_environment: Mapping[str, str] | None = None,
         interactive_export_environment: Sequence[str] = (),
         resource_reserve_per_task: bool = False,
@@ -57,6 +58,22 @@ class LSFScheduler(Scheduler):
         self._runner = runner
         self._process_starter = process_starter
         self._interactive_application_profile = interactive_application_profile
+        if interactive_submission_command is not None and (
+            not interactive_submission_command
+            or any(
+                not argument or "\0" in argument
+                for argument in interactive_submission_command
+            )
+        ):
+            raise ValueError(
+                "interactive_submission_command must contain non-empty, NUL-free "
+                "arguments"
+            )
+        self._interactive_submission_command = (
+            tuple(interactive_submission_command)
+            if interactive_submission_command is not None
+            else None
+        )
         self._interactive_submission_environment = dict(
             interactive_submission_environment or {}
         )
@@ -90,13 +107,17 @@ class LSFScheduler(Scheduler):
         if self._process_starter is None:
             raise SchedulerError("LSF interactive submission is not configured")
 
-        command = self._submit_command(
-            spec,
-            interactive=True,
-            application_profile=self._interactive_application_profile,
-            export_environment=self._interactive_export_environment,
-            submission_environment=self._interactive_submission_environment,
-            resource_reserve_per_task=self._resource_reserve_per_task,
+        command = (
+            list(self._interactive_submission_command)
+            if self._interactive_submission_command is not None
+            else self._submit_command(
+                spec,
+                interactive=True,
+                application_profile=self._interactive_application_profile,
+                export_environment=self._interactive_export_environment,
+                submission_environment=self._interactive_submission_environment,
+                resource_reserve_per_task=self._resource_reserve_per_task,
+            )
         )
         try:
             process = self._process_starter(command)
@@ -116,7 +137,7 @@ class LSFScheduler(Scheduler):
 
                 decoded = output.decode(errors="replace")
                 if match := _SUBMITTED_JOB_PATTERN.search(decoded):
-                    job_command = shlex.join(["exec", *self._job_command(spec)])
+                    job_command = self._job_shell_command(spec)
 
                     def start_command() -> None:
                         if process.send(f"{job_command}\n") <= 0:
@@ -239,6 +260,14 @@ class LSFScheduler(Scheduler):
             )
         command.extend(spec.command)
         return command
+
+    @staticmethod
+    def _job_shell_command(spec: JobSpec) -> str:
+        command = shlex.join(["exec", *LSFScheduler._job_command(spec)])
+        if spec.working_directory is None:
+            return command
+        change_directory = shlex.join(["cd", str(spec.working_directory)])
+        return f"{change_directory} && {command}"
 
     @staticmethod
     def _parse_job_info(job_id: str, output: str) -> JobInfo:

@@ -4,7 +4,7 @@ from typing import Annotated
 
 import typer
 
-from ezhpcy.cli.common import HostOpt, UserOpt
+from ezhpcy.cli.common import HostOpt, ProfileArg, UserOpt
 from ezhpcy.cli.utils.bad_parameter import RichBadParameter
 from ezhpcy.cli.utils.resolve import resolve_forbidden_none
 from ezhpcy.config import ProfilePasswordSourceError, config
@@ -60,10 +60,7 @@ def render_worker_ssh_config(
 
 
 def ssh_config_cmd(
-    profile: Annotated[
-        str,
-        typer.Argument(help="Configured EzHPCy profile to use."),
-    ],
+    profile: ProfileArg,
     user: UserOpt = None,
     host: HostOpt = None,
     alias: Annotated[

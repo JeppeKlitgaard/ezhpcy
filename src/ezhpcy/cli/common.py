@@ -18,7 +18,7 @@ KEYRING_SERVICE_NAME = PACKAGE_NAME
 
 HOST_ENV_VAR = "EZHPCY_HOST"
 USER_ENV_VAR = "EZHPCY_USER"
-PROFILE_ENV = "EZHPCY_PROFILE"
+PROFILE_ENV_VAR = "EZHPCY_PROFILE"
 PASSWORD_ENV_VAR = "EZHPCY_PASSWORD"
 PASSWORD_FILE_ENV_VAR = "EZHPCY_PASSWORD_FILE"
 PASSWORD_FD_ENV_VAR = "EZHPCY_PASSWORD_FD"
@@ -37,7 +37,17 @@ UserOpt = Annotated[
 ProfileOpt = Annotated[
     str | None,
     typer.Option(
-        "--profile", "-p", help="Configured EzHPCy profile to use.", envvar=PROFILE_ENV
+        "--profile",
+        "-p",
+        help="Configured EzHPCy profile to use.",
+        envvar=PROFILE_ENV_VAR,
+    ),
+]
+ProfileArg = Annotated[
+    str,
+    typer.Argument(
+        help="Configured EzHPCy profile to use.",
+        envvar=PROFILE_ENV_VAR,
     ),
 ]
 PasswordOpt = Annotated[

@@ -11,6 +11,7 @@ from rich.prompt import Confirm, Prompt
 from rich.text import Text
 
 from ezhpcy import console
+from ezhpcy.cli.common import UserOpt
 from ezhpcy.config import Config, config
 
 PRESET_DIRECTORY = "static/config/presets"
@@ -79,10 +80,7 @@ def load_cmd(
             case_sensitive=False,
         ),
     ],
-    user: Annotated[
-        str | None,
-        typer.Option("--user", "-u", help="Username to store in the preset."),
-    ] = None,
+    user: UserOpt = None,
     yes: Annotated[
         bool,
         typer.Option(

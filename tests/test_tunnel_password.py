@@ -13,7 +13,6 @@ from ezhpcy.types import ProfileConfig
 def resolve_password(
     *,
     password: str | None = None,
-    password_env: bool = False,
     password_file: Path | None = None,
     password_fd: int | None = None,
     password_keyring: bool = False,
@@ -21,7 +20,6 @@ def resolve_password(
 ) -> str | None:
     return common.resolve_password(
         password=password,
-        password_env=password_env,
         password_file=password_file,
         password_fd=password_fd,
         password_keyring=password_keyring,
@@ -33,7 +31,15 @@ def resolve_password(
 
 @pytest.fixture(autouse=True)
 def without_default_password(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv(common.PASSWORD_ENV_VAR, raising=False)
+    for environment_variable in (
+        common.HOST_ENV_VAR,
+        common.USER_ENV_VAR,
+        common.PASSWORD_ENV_VAR,
+        common.PASSWORD_FILE_ENV_VAR,
+        common.PASSWORD_FD_ENV_VAR,
+        common.PASSWORD_KEYRING_ENV_VAR,
+    ):
+        monkeypatch.delenv(environment_variable, raising=False)
     monkeypatch.setattr(
         common.config,
         "profile",
@@ -69,57 +75,15 @@ def test_password_fd_is_read_without_closing_callers_descriptor() -> None:
             os.close(write_fd)
 
 
-def test_password_env_reads_environment_variable(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv(common.PASSWORD_ENV_VAR, "from-environment")
-
-    assert resolve_password(password_env=True) == "from-environment"
-
-
-def test_environment_variable_is_ignored_without_password_env(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv(common.PASSWORD_ENV_VAR, "from-environment")
-
-    assert resolve_password(config_password="from-config") == "from-config"
-
-
-def test_password_env_fails_when_environment_variable_is_unset() -> None:
-    with pytest.raises(RichBadParameter, match="EZHPCY_PASSWORD is not set"):
-        resolve_password(password_env=True)
-
-
-def test_password_env_cli_fails_loudly_when_variable_is_unset() -> None:
-    result = CliRunner().invoke(
-        app,
-        [
-            "compute",
-            "--profile",
-            "base",
-            "--scheduler",
-            "lsf",
-            "--user",
-            "alice",
-            "--password-env",
-        ],
-    )
-
-    assert result.exit_code == 2
-    assert "EZHPCY_PASSWORD" in result.stderr
-    assert "not set" in result.stderr
-
-
 def test_password_falls_back_to_profile() -> None:
     assert resolve_password(config_password="from-profile") == "from-profile"
 
 
-def test_explicit_password_source_does_not_implicitly_read_environment(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+def test_password_file_is_an_explicit_password_source(
+    tmp_path: Path,
 ) -> None:
     password_file = tmp_path / "password"
     password_file.write_text("from-file\n", encoding="utf-8")
-    monkeypatch.setenv(common.PASSWORD_ENV_VAR, "from-environment")
 
     assert resolve_password(password_file=password_file) == "from-file"
 
@@ -165,7 +129,111 @@ def test_explicit_password_sources_are_mutually_exclusive(tmp_path: Path) -> Non
     password_file.write_text("secret", encoding="utf-8")
 
     with pytest.raises(RichBadParameter, match="mutually exclusive"):
-        resolve_password(password_env=True, password_file=password_file)
+        resolve_password(password="secret", password_file=password_file)
+
+
+def test_connection_options_read_password_from_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(
+        "ezhpcy.cli.keyring.keyring.set_password",
+        lambda service, account, password: calls.append((service, account, password)),
+    )
+
+    result = CliRunner().invoke(
+        app,
+        ["keyring", "set"],
+        env={
+            common.HOST_ENV_VAR: "login.example.com",
+            common.USER_ENV_VAR: "alice",
+            common.PASSWORD_ENV_VAR: "from-environment",
+        },
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls == [("ezhpcy", "alice@login.example.com", "from-environment")]
+
+
+def test_connection_options_read_password_file_from_environment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    password_file = tmp_path / "password"
+    password_file.write_text("from-file\n", encoding="utf-8")
+    calls: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(
+        "ezhpcy.cli.keyring.keyring.set_password",
+        lambda service, account, password: calls.append((service, account, password)),
+    )
+
+    result = CliRunner().invoke(
+        app,
+        ["keyring", "set"],
+        env={
+            common.HOST_ENV_VAR: "login.example.com",
+            common.USER_ENV_VAR: "alice",
+            common.PASSWORD_FILE_ENV_VAR: str(password_file),
+        },
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls == [("ezhpcy", "alice@login.example.com", "from-file")]
+
+
+def test_connection_options_read_password_fd_from_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    read_fd, write_fd = os.pipe()
+    calls: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(
+        "ezhpcy.cli.keyring.keyring.set_password",
+        lambda service, account, password: calls.append((service, account, password)),
+    )
+    try:
+        os.write(write_fd, b"from-file-descriptor\n")
+        os.close(write_fd)
+        write_fd = -1
+
+        result = CliRunner().invoke(
+            app,
+            ["keyring", "set"],
+            env={
+                common.HOST_ENV_VAR: "login.example.com",
+                common.USER_ENV_VAR: "alice",
+                common.PASSWORD_FD_ENV_VAR: str(read_fd),
+            },
+        )
+    finally:
+        os.close(read_fd)
+        if write_fd >= 0:
+            os.close(write_fd)
+
+    assert result.exit_code == 0, result.output
+    assert calls == [("ezhpcy", "alice@login.example.com", "from-file-descriptor")]
+
+
+def test_connection_options_read_password_keyring_from_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(common.keyring, "get_password", lambda *_args: "from-keyring")
+    monkeypatch.setattr(
+        "ezhpcy.cli.keyring.keyring.set_password",
+        lambda service, account, password: calls.append((service, account, password)),
+    )
+
+    result = CliRunner().invoke(
+        app,
+        ["keyring", "set"],
+        env={
+            common.HOST_ENV_VAR: "login.example.com",
+            common.USER_ENV_VAR: "alice",
+            common.PASSWORD_KEYRING_ENV_VAR: "true",
+        },
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls == [("ezhpcy", "alice@login.example.com", "from-keyring")]
 
 
 @pytest.mark.parametrize(
@@ -185,9 +253,7 @@ def test_remote_command_help_includes_every_password_source(
 
     assert result.exit_code == 0
     assert "--password" in result.stdout
-    assert "--password-env" in result.stdout
     assert "--password-file" in result.stdout
     assert "--password-fd" in result.stdout
     assert "--password-keyring" in result.stdout
-    assert common.PASSWORD_ENV_VAR in result.stdout
     assert "--profile" in result.stdout

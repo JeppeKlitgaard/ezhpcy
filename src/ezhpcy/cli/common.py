@@ -11,17 +11,34 @@ from ezhpcy.cli.utils.bad_parameter import RichBadParameter
 from ezhpcy.cli.utils.options_group import attach_hook
 from ezhpcy.cli.utils.resolve import resolve_forbidden_none
 from ezhpcy.config import ConnectionInfo, config
+from ezhpcy.constants import PACKAGE_NAME
 from ezhpcy.types import ResolvedConfig
 
-KEYRING_SERVICE_NAME = "ezhpcy"
-PASSWORD_ENV_VAR = "EZHPCY_PASSWORD"
+KEYRING_SERVICE_NAME = PACKAGE_NAME
 
+HOST_ENV_VAR = "EZHPCY_HOST"
+USER_ENV_VAR = "EZHPCY_USER"
+PROFILE_ENV = "EZHPCY_PROFILE"
+PASSWORD_ENV_VAR = "EZHPCY_PASSWORD"
+PASSWORD_FILE_ENV_VAR = "EZHPCY_PASSWORD_FILE"
+PASSWORD_FD_ENV_VAR = "EZHPCY_PASSWORD_FD"
+PASSWORD_KEYRING_ENV_VAR = "EZHPCY_PASSWORD_KEYRING"
+
+HostOpt = Annotated[
+    str | None,
+    typer.Option("--host", "-h", help="Login node address.", envvar=HOST_ENV_VAR),
+]
 UserOpt = Annotated[
-    str | None, typer.Option("--user", "-u", help="Username for the login node.")
+    str | None,
+    typer.Option(
+        "--user", "-u", help="Username for the login node.", envvar=USER_ENV_VAR
+    ),
 ]
 ProfileOpt = Annotated[
     str | None,
-    typer.Option("--profile", "-p", help="Configured EzHPCy profile to use."),
+    typer.Option(
+        "--profile", "-p", help="Configured EzHPCy profile to use.", envvar=PROFILE_ENV
+    ),
 ]
 PasswordOpt = Annotated[
     str | None,
@@ -31,13 +48,7 @@ PasswordOpt = Annotated[
             "Password for the login node. "
             "Note: Specifying this is potentially a security risk."
         ),
-    ),
-]
-PasswordEnvOpt = Annotated[
-    bool,
-    typer.Option(
-        "--password-env",
-        help=f"Read the password from the {PASSWORD_ENV_VAR} environment variable.",
+        envvar=PASSWORD_ENV_VAR,
     ),
 ]
 PasswordFileOpt = Annotated[
@@ -50,6 +61,7 @@ PasswordFileOpt = Annotated[
         readable=True,
         resolve_path=True,
         help="Read the password from a UTF-8 file.",
+        envvar=PASSWORD_FILE_ENV_VAR,
     ),
 ]
 PasswordFdOpt = Annotated[
@@ -58,6 +70,7 @@ PasswordFdOpt = Annotated[
         "--password-fd",
         min=0,
         help="Read the password from an already-open file descriptor.",
+        envvar=PASSWORD_FD_ENV_VAR,
     ),
 ]
 PasswordKeyringOpt = Annotated[
@@ -68,10 +81,8 @@ PasswordKeyringOpt = Annotated[
             "Read the password from the system keyring service "
             f"'{KEYRING_SERVICE_NAME}' under USER@HOST."
         ),
+        envvar=PASSWORD_KEYRING_ENV_VAR,
     ),
-]
-HostOpt = Annotated[
-    str | None, typer.Option("--host", "-h", help="Login node address.")
 ]
 
 
@@ -141,7 +152,6 @@ def _read_password_keyring(*, user: str, host: str) -> str:
 def resolve_password(
     *,
     password: str | None,
-    password_env: bool,
     password_file: Path | None,
     password_fd: int | None,
     password_keyring: bool,
@@ -154,7 +164,6 @@ def resolve_password(
         name
         for name, selected in (
             ("--password", password is not None),
-            ("--password-env", password_env),
             ("--password-file", password_file is not None),
             ("--password-fd", password_fd is not None),
             ("--password-keyring", password_keyring),
@@ -169,14 +178,6 @@ def resolve_password(
 
     if password is not None:
         return password
-    if password_env:
-        try:
-            return os.environ[PASSWORD_ENV_VAR]
-        except KeyError:
-            raise RichBadParameter(
-                f"environment variable {PASSWORD_ENV_VAR} is not set",
-                param_hint="--password-env",
-            ) from None
     if password_file is not None:
         return _read_password_file(password_file)
     if password_fd is not None:
@@ -192,7 +193,6 @@ def profile_context_from_options(
     profile: ProfileOpt = None,
     user: UserOpt = None,
     password: PasswordOpt = None,
-    password_env: PasswordEnvOpt = False,
     password_file: PasswordFileOpt = None,
     password_fd: PasswordFdOpt = None,
     password_keyring: PasswordKeyringOpt = False,
@@ -220,7 +220,6 @@ def profile_context_from_options(
     )
     resolved_password = resolve_password(
         password=password,
-        password_env=password_env,
         password_file=password_file,
         password_fd=password_fd,
         password_keyring=password_keyring,
@@ -251,13 +250,12 @@ with_profile_options = attach_hook(
 
 def direct_connection_info_from_options(
     *,
+    host: HostOpt = None,
     user: UserOpt = None,
     password: PasswordOpt = None,
-    password_env: PasswordEnvOpt = False,
     password_file: PasswordFileOpt = None,
     password_fd: PasswordFdOpt = None,
     password_keyring: PasswordKeyringOpt = False,
-    host: HostOpt = None,
 ) -> ConnectionInfo:
     if user is None:
         raise RichBadParameter("user must be set via --user", param_hint="--user")
@@ -268,7 +266,6 @@ def direct_connection_info_from_options(
         host=host,
         password=resolve_password(
             password=password,
-            password_env=password_env,
             password_file=password_file,
             password_fd=password_fd,
             password_keyring=password_keyring,

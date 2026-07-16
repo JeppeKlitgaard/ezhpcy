@@ -11,7 +11,6 @@ def test_keyring_set_is_available_with_connection_options() -> None:
     assert result.exit_code == 0
     assert "--user" in result.stdout
     assert "--host" in result.stdout
-    assert "--password-env" in result.stdout
     assert "--password-file" in result.stdout
     assert "--password-fd" in result.stdout
 

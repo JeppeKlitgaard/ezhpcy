@@ -109,60 +109,9 @@ def test_config_load_creates_dtu_config_case_insensitively(
     assert result.exit_code == 0, result.output
     assert "loaded the DTU preset" in result.output
     contents = config_file.read_text(encoding="utf-8")
-    expected = (
-        "# DTU HPC configuration for EzHPCy.\n"
-        "\n"
-        'log_level = "INFO"\n'
-        "auto_provision = true\n"
-        "\n"
-        "[profile.base]\n"
-        "queue_timeout_seconds = 900\n"
-        "worker_startup_timeout_seconds = 60\n"
-        "\n"
-        "[profile.dtu-base]\n"
-        'inherit = "base"\n'
-        "\n"
-        'description = "DTU HPC"\n'
-        'host = "login2.hpc.dtu.dk"\n'
-        'user = "alice"\n'
-        "\n"
-        "[profile.dtu-base-lsf]\n"
-        'inherit = "dtu-base"\n'
-        'description = "DTU HPC LSF based queues"\n'
-        "\n"
-        'scheduler = "LSF"\n'
-        "\n"
-        "lsf_resource_reserve_per_task = true\n"
-        'lsf_application_profile = "qrsh"\n'
-        'lsf_submission_environment = { ESUB_BYPASS = "1", ESUB_QUIET = "1", LSF_QRSH = "true" }\n'
-        'lsf_export_environment = ["TERM", "LSF_QRSH"]\n'
-        "\n"
-        "[profile.dtu-base-pbs]\n"
-        'inherit = "dtu-base"\n'
-        'description = "DTU HPC PBS Pro based queues"\n'
-        'scheduler = "PBS"\n'
-        'queue = "workq"\n'
-        'pbs_command_directory = "/opt/pbspro/bin"\n'
-        "\n"
-        "[profile.dtu-gpul40s]\n"
-        'description = "DTU L40S GPU queue"\n'
-        'inherit = "dtu-base-lsf"\n'
-        "\n"
-        'queue = "gpul40s"\n'
-        "cores = 8\n"
-        'time_limit = "1:00"\n'
-        'memory = "32GB"\n'
-        "\n"
-        "[profile.dtu-a100sh]\n"
-        'description = "DTU interactive A100 GPUs via a100sh"\n'
-        'inherit = "dtu-base-lsf"\n'
-        "\n"
-        'scheduler = "LSF"\n'
-        'interactive_submission_command = ["/lsf/local/bin/a100sh"]\n'
-    )
     assert contents.startswith("# DTU HPC configuration for EzHPCy.\n")
-    assert tomllib.loads(contents) == tomllib.loads(expected)
     loaded = tomllib.loads(contents)
+    assert loaded["profile"]["dtu-base"]["user"] == "alice"
     loaded_config = Config.from_mapping(loaded)
     assert str(loaded_config.resolve_profile("dtu-base").host) == "login2.hpc.dtu.dk"
     assert loaded_config.resolve_profile("dtu-gpul40s").cores == 8

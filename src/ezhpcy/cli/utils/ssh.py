@@ -167,39 +167,49 @@ class InteractiveSSHClient(SSHClient):
         self.load_system_host_keys()
         self.set_missing_host_key_policy(PromptMissingHostKeyPolicy())
 
-    def interactive_connect(self):
+    @staticmethod
+    def _can_retry_with_password(error: paramiko.AuthenticationException) -> bool:
+        if not isinstance(error, paramiko.BadAuthenticationType):
+            return True
+        return bool(
+            {"password", "keyboard-interactive"}.intersection(error.allowed_types)
+        )
+
+    def interactive_connect(self) -> None:
         try:
             self.connect(
                 hostname=self.conn_info.host,
                 username=self.conn_info.user,
                 password=self.conn_info.password,
             )
-        except paramiko.BadAuthenticationType as e:
-            # We just needed to provide a password, do so interactively
-            if "password" in e.allowed_types and self.conn_info.password is None:
-                attempts = 1
-                while True:
-                    password = Prompt.ask(
-                        f"Enter password for {self.conn_info.user}@{self.conn_info.host}",
-                        password=True,
-                        console=console,
+        except paramiko.AuthenticationException as error:
+            if self.conn_info.password is not None or not self._can_retry_with_password(
+                error
+            ):
+                raise
+
+            # Agent and local-key authentication was unavailable or rejected.
+            # Reconnect with a prompted password; Paramiko also uses it as the
+            # response for single-prompt keyboard-interactive authentication.
+            self.close()
+            for attempt in range(1, 4):
+                password = Prompt.ask(
+                    f"Enter password for {self.conn_info.user}@{self.conn_info.host}",
+                    password=True,
+                    console=console,
+                )
+                try:
+                    self.connect(
+                        hostname=self.conn_info.host,
+                        username=self.conn_info.user,
+                        password=password,
                     )
-                    try:
-                        self.connect(
-                            hostname=self.conn_info.host,
-                            username=self.conn_info.user,
-                            password=password,
-                        )
-                        break
-                    except paramiko.AuthenticationException as e:
-                        attempts += 1
-
-                        if attempts > 3:
-                            raise e
-
-                        console.print(
-                            f"[bold red]Error[/bold red] [{attempts}/3]: Invalid password. Try again or press Ctrl+C to abort."
-                        )
-
-        except paramiko.SSHException as e:
-            console.print(f"[bold red]Error[/bold red]: {e}")
+                    return
+                except paramiko.AuthenticationException as retry_error:
+                    self.close()
+                    if attempt == 3 or not self._can_retry_with_password(retry_error):
+                        raise
+                    console.print(
+                        f"[bold red]Error[/bold red] [{attempt}/3]: Invalid "
+                        "password. Try again or press Ctrl+C to abort."
+                    )

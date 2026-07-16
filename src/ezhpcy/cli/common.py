@@ -1,4 +1,5 @@
 import os
+import shlex
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated
@@ -6,13 +7,15 @@ from typing import Annotated
 import keyring
 import typer
 from keyring.errors import KeyringError
+from pydantic import ValidationError
 
 from ezhpcy.cli.utils.bad_parameter import RichBadParameter
 from ezhpcy.cli.utils.options_group import attach_hook
 from ezhpcy.cli.utils.resolve import resolve_forbidden_none
 from ezhpcy.config import ConnectionInfo, ProfilePasswordSourceError, config
 from ezhpcy.constants import PACKAGE_NAME
-from ezhpcy.types import ResolvedConfig
+from ezhpcy.scheduler.types import SchedulerType
+from ezhpcy.types import ResolvedConfig, ResolvedProfileConfig
 
 KEYRING_SERVICE_NAME = PACKAGE_NAME
 
@@ -28,6 +31,16 @@ ProfileArg = Annotated[
     str,
     typer.Argument(
         help="Configured EzHPCy profile to use.",
+        envvar=PROFILE_ENV_VAR,
+    ),
+]
+OptionalProfileArg = Annotated[
+    str | None,
+    typer.Argument(
+        help=(
+            "Optional configured EzHPCy profile. When omitted, provide enough "
+            "options to form a complete configuration."
+        ),
         envvar=PROFILE_ENV_VAR,
     ),
 ]
@@ -85,11 +98,94 @@ PasswordKeyringOpt = Annotated[
         envvar=PASSWORD_KEYRING_ENV_VAR,
     ),
 ]
+SchedulerOpt = Annotated[
+    SchedulerType | None,
+    typer.Option(
+        "--scheduler",
+        case_sensitive=False,
+        help="Scheduler used to allocate the compute node.",
+    ),
+]
+QueueOpt = Annotated[
+    str | None,
+    typer.Option("--queue", "-q", help="Scheduler queue for the worker job."),
+]
+CoresOpt = Annotated[
+    int | None,
+    typer.Option(
+        "--cores",
+        "-n",
+        min=1,
+        help="Scheduler CPU cores reserved on the worker host.",
+    ),
+]
+GpusOpt = Annotated[
+    int | None,
+    typer.Option(
+        "--gpus",
+        min=0,
+        help="Number of GPUs reserved on the worker host.",
+    ),
+]
+ExclusiveOpt = Annotated[
+    bool | None,
+    typer.Option(
+        "--exclusive/--shared",
+        help="Reserve the worker host exclusively.",
+    ),
+]
+TimeLimitOpt = Annotated[
+    str | None,
+    typer.Option(
+        "--time-limit",
+        metavar="H:MM",
+        help="Optional worker lifetime override.",
+    ),
+]
+MemoryOpt = Annotated[
+    str | None,
+    typer.Option(
+        "--memory",
+        metavar="SIZE",
+        help=(
+            "Optional total worker memory parsed as a Pydantic byte size. "
+            "Bare values are bytes; SI (GB) and IEC (GiB) units differ."
+        ),
+    ),
+]
+QueueTimeoutOpt = Annotated[
+    float | None,
+    typer.Option(
+        "--queue-timeout",
+        min=1,
+        help="Maximum time to wait for the scheduler allocation.",
+    ),
+]
+StartupTimeoutOpt = Annotated[
+    float | None,
+    typer.Option(
+        "--startup-timeout",
+        min=1,
+        help="Maximum time to wait for worker SSH after allocation.",
+    ),
+]
+InteractiveSubmissionCommandOpt = Annotated[
+    str | None,
+    typer.Option(
+        "--interactive-submission-command",
+        metavar="COMMAND",
+        help=(
+            "Replace the scheduler-generated interactive submission command. "
+            "The value is parsed into arguments using shell-style quoting, but "
+            "is not executed through a shell."
+        ),
+    ),
+]
 
 
 @dataclass(frozen=True)
 class ProfileContext:
-    name: str
+    name: str | None
     profile: ResolvedConfig
     configured_fields: frozenset[str] = frozenset()
     directly_configured_fields: frozenset[str] = frozenset()
@@ -148,6 +244,24 @@ def _read_password_keyring(*, user: str, host: str) -> str:
             param_hint="--password-keyring",
         )
     return password
+
+
+def _parse_interactive_submission_command(value: str | None) -> list[str] | None:
+    if value is None:
+        return None
+    try:
+        command = shlex.split(value)
+    except ValueError as error:
+        raise RichBadParameter(
+            f"invalid shell-style quoting: {error}",
+            param_hint="--interactive-submission-command",
+        ) from error
+    if not command:
+        raise RichBadParameter(
+            "command must not be empty",
+            param_hint="--interactive-submission-command",
+        )
+    return command
 
 
 def resolve_password(
@@ -213,34 +327,53 @@ def resolve_password(
 
 def profile_context_from_cli(
     *,
-    profile: ProfileArg = ...,
+    profile: OptionalProfileArg = None,
     user: UserOpt = None,
     password: PasswordOpt = None,
     password_file: PasswordFileOpt = None,
     password_fd: PasswordFdOpt = None,
     password_keyring: PasswordKeyringOpt = False,
     host: HostOpt = None,
+    scheduler_type: SchedulerOpt = None,
+    queue: QueueOpt = None,
+    cores: CoresOpt = None,
+    gpus: GpusOpt = None,
+    exclusive: ExclusiveOpt = None,
+    time_limit: TimeLimitOpt = None,
+    memory: MemoryOpt = None,
+    queue_timeout_seconds: QueueTimeoutOpt = None,
+    startup_timeout_seconds: StartupTimeoutOpt = None,
+    interactive_submission_command: InteractiveSubmissionCommandOpt = None,
 ) -> ProfileContext:
-    try:
-        resolved_profile = config.resolve_profile(profile)
-    except ProfilePasswordSourceError as error:
-        raise RichBadParameter(error.rich_message()) from error
-    except ValueError as error:
-        raise RichBadParameter(str(error), param_hint="PROFILE") from error
+    if profile is None:
+        resolved_profile = ResolvedProfileConfig()
+        directly_configured_fields = frozenset[str]()
+    else:
+        try:
+            resolved_profile = config.resolve_profile(profile)
+        except ProfilePasswordSourceError as error:
+            raise RichBadParameter(error.rich_message()) from error
+        except ValueError as error:
+            raise RichBadParameter(str(error), param_hint="PROFILE") from error
+        directly_configured_fields = frozenset(config.profile[profile].model_fields_set)
 
     user = resolve_forbidden_none(
         cli_value=user,
         config_value=resolved_profile.user,
         name="user",
         cli_param="--user",
-        config_param=f"profile.{profile}.user",
+        config_param=(
+            f"profile.{profile}.user" if profile is not None else "a profile"
+        ),
     )
     resolved_host = resolve_forbidden_none(
         cli_value=host,
         config_value=(str(resolved_profile.host) if resolved_profile.host else None),
         name="host",
         cli_param="--host",
-        config_param=f"profile.{profile}.host",
+        config_param=(
+            f"profile.{profile}.host" if profile is not None else "a profile"
+        ),
     )
     resolved_password = resolve_password(
         password=password,
@@ -253,19 +386,52 @@ def profile_context_from_cli(
         config_password_fd=resolved_profile.password_fd,
         config_password_keyring=resolved_profile.password_keyring,
     )
-    resolved_config = ResolvedConfig.model_validate(
-        {
-            **resolved_profile.model_dump(),
-            "user": user,
-            "password": resolved_password,
-            "host": resolved_host,
-        }
-    )
+    try:
+        resolved_config = ResolvedConfig.model_validate(
+            {
+                **resolved_profile.model_dump(),
+                "user": user,
+                "password": resolved_password,
+                "host": resolved_host,
+                "scheduler": scheduler_type or resolved_profile.scheduler,
+                "queue": queue if queue is not None else resolved_profile.queue,
+                "cores": cores if cores is not None else resolved_profile.cores,
+                "gpus": gpus if gpus is not None else resolved_profile.gpus,
+                "exclusive": (
+                    exclusive if exclusive is not None else resolved_profile.exclusive
+                ),
+                "time_limit": (
+                    time_limit
+                    if time_limit is not None
+                    else resolved_profile.time_limit
+                ),
+                "memory": memory if memory is not None else resolved_profile.memory,
+                "queue_timeout_seconds": (
+                    queue_timeout_seconds
+                    if queue_timeout_seconds is not None
+                    else resolved_profile.queue_timeout_seconds
+                ),
+                "worker_startup_timeout_seconds": (
+                    startup_timeout_seconds
+                    if startup_timeout_seconds is not None
+                    else resolved_profile.worker_startup_timeout_seconds
+                ),
+                "interactive_submission_command": (
+                    _parse_interactive_submission_command(
+                        interactive_submission_command
+                    )
+                    if interactive_submission_command is not None
+                    else resolved_profile.interactive_submission_command
+                ),
+            }
+        )
+    except ValidationError as error:
+        raise RichBadParameter(str(error)) from error
     return ProfileContext(
         name=profile,
         profile=resolved_config,
         configured_fields=frozenset(resolved_profile.model_fields_set),
-        directly_configured_fields=frozenset(config.profile[profile].model_fields_set),
+        directly_configured_fields=directly_configured_fields,
     )
 
 

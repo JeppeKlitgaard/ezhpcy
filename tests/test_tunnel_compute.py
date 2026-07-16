@@ -26,13 +26,18 @@ from ezhpcy.config import ConnectionInfo
 from ezhpcy.constants import EZHPCY_VERSION, OPENSSH_MATCHSPEC, PIXI_VERSION
 from ezhpcy.scheduler.base import InteractiveJob, JobInfo, JobSpec, JobState
 from ezhpcy.scheduler.types import SchedulerType
-from ezhpcy.types import ProfileConfig, RemoteState, ResolvedProfileConfig
+from ezhpcy.types import (
+    ProfileConfig,
+    RemoteState,
+    ResolvedConfig,
+    ResolvedProfileConfig,
+)
 
 _MEBIBYTE = 1024**2
 
 
-def lsf_profile() -> ResolvedProfileConfig:
-    return ResolvedProfileConfig(
+def lsf_profile() -> ResolvedConfig:
+    return ResolvedConfig(
         host="login.example.com",
         user="alice",
         scheduler="LSF",
@@ -385,6 +390,7 @@ def test_compute_tunnel_submits_worker_starts_broker_and_cancels() -> None:
     ssh = StubSSH(transport)
     scheduler = StubScheduler([snapshot(JobState.RUNNING, "RUN", "node42")])
     brokers: list[StubBroker] = []
+    configuration = lsf_profile()
 
     def make_broker(*args, **kwargs) -> StubBroker:
         broker = StubBroker(*args, **kwargs)
@@ -414,13 +420,15 @@ def test_compute_tunnel_submits_worker_starts_broker_and_cancels() -> None:
             return_value=54322,
         ),
         patch("ezhpcy.cli.compute._wait_for_worker_endpoint"),
-        patch("ezhpcy.cli.compute.create_broker_backend", return_value=object()),
+        patch(
+            "ezhpcy.cli.compute.create_broker_backend", return_value=object()
+        ) as create_backend,
         patch("ezhpcy.cli.compute.ForegroundBroker", side_effect=make_broker),
         patch("ezhpcy.cli.compute.logger") as logger,
     ):
         _run_compute_tunnel(
-            profile_name="base",
-            profile=lsf_profile(),
+            profile_name=None,
+            profile=configuration,
             conn_info=ConnectionInfo(user="alice", host="login.example.com"),
             scheduler_type=SchedulerType.LSF,
             queue="normal",
@@ -436,6 +444,10 @@ def test_compute_tunnel_submits_worker_starts_broker_and_cancels() -> None:
         )
 
     assert len(scheduler.submitted) == 1
+    create_backend.assert_called_once_with(
+        profile=None,
+        resolved_config=configuration,
+    )
     spec = scheduler.submitted[0]
     assert tuple(spec.command) == _worker_sshd_command(
         ssh.get_remote_state(),
@@ -618,6 +630,7 @@ def test_compute_tunnel_help_exposes_scheduler_and_resource_options() -> None:
     assert "--memory" in result.stdout
     assert "--queue-timeout" in result.stdout
     assert "--startup-timeout" in result.stdout
+    assert "--interactive-subm" in result.stdout
     assert "--worker-port" in result.stdout
     # Rich abbreviates long option names in its fixed-width option column.
     assert "--worker-port-retr" in result.stdout
@@ -626,11 +639,132 @@ def test_compute_tunnel_help_exposes_scheduler_and_resource_options() -> None:
     assert "PROFILE" in result.stdout
 
 
-def test_compute_command_requires_an_explicit_profile() -> None:
+def test_compute_command_requires_a_resolvable_configuration() -> None:
     result = CliRunner().invoke(app, ["compute"])
 
     assert result.exit_code == 2
-    assert "Missing argument 'PROFILE'" in result.stderr
+    assert "user" in result.stderr
+    assert "--user" in result.stderr
+
+
+def test_compute_command_accepts_anonymous_cli_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        compute_module,
+        "_run_compute_tunnel",
+        lambda **kwargs: captured.update(kwargs),
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "compute",
+            "--host",
+            "login.example.com",
+            "--user",
+            "alice",
+            "--scheduler",
+            "LSF",
+            "--queue",
+            "gpu",
+            "--cores",
+            "8",
+            "--gpus",
+            "1",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["profile_name"] is None
+    assert captured["scheduler_type"] is SchedulerType.LSF
+    assert captured["queue"] == "gpu"
+    assert captured["cores"] == 8
+    assert captured["gpus"] == 1
+    assert captured["conn_info"] == ConnectionInfo(
+        host="login.example.com", user="alice"
+    )
+    resolved = captured["profile"]
+    assert getattr(resolved, "user") == "alice"
+    assert str(getattr(resolved, "host")) == "login.example.com"
+
+
+def test_compute_command_accepts_cli_interactive_submission_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        compute_module,
+        "_run_compute_tunnel",
+        lambda **kwargs: captured.update(kwargs),
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "compute",
+            "--host",
+            "login.example.com",
+            "--user",
+            "alice",
+            "--scheduler",
+            "LSF",
+            "--interactive-submission-command",
+            "/lsf/local/bin/a100sh --constraint 'gpu node'",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    resolved = captured["profile"]
+    assert getattr(resolved, "interactive_submission_command") == [
+        "/lsf/local/bin/a100sh",
+        "--constraint",
+        "gpu node",
+    ]
+
+
+def test_compute_command_rejects_resources_with_cli_interactive_command() -> None:
+    result = CliRunner().invoke(
+        app,
+        [
+            "compute",
+            "--host",
+            "login.example.com",
+            "--user",
+            "alice",
+            "--scheduler",
+            "LSF",
+            "--interactive-submission-command",
+            "/lsf/local/bin/a100sh",
+            "--queue",
+            "gpu",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "cannot be combined with submission options" in result.output
+    assert "--queue" in result.output
+
+
+def test_compute_command_rejects_malformed_interactive_command_quoting() -> None:
+    result = CliRunner().invoke(
+        app,
+        [
+            "compute",
+            "--host",
+            "login.example.com",
+            "--user",
+            "alice",
+            "--scheduler",
+            "LSF",
+            "--interactive-submission-command",
+            "'/lsf/local/bin/a100sh",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "No closing quotation" in result.output
 
 
 def test_compute_command_resolves_profile_and_applies_cli_overrides(

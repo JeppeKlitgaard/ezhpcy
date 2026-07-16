@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from ezhpcy import ipc
 from ezhpcy.ipc import create_broker_backend, load_broker_backend
 from ezhpcy.ipc.common import IPCError
 from ezhpcy.tunnel.broker import ForegroundBroker, relay_proxy_stdio
@@ -235,10 +236,11 @@ def test_proxy_sends_client_bytes_before_worker_sends_any_bytes() -> None:
 
 def test_loopback_broker_relays_server_banner_while_waiting_for_client(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    descriptor = tmp_path / "broker.json"
+    monkeypatch.setattr(ipc.config.local_file, "runtime_dir", tmp_path)
     server_backend = create_broker_backend(
-        descriptor_path=descriptor,
+        profile="test",
         authkey=b"a" * 32,
     )
     broker = ForegroundBroker(
@@ -249,7 +251,7 @@ def test_loopback_broker_relays_server_banner_while_waiting_for_client(
     output = io.BytesIO()
 
     relay_proxy_stdio(
-        load_broker_backend(descriptor),
+        load_broker_backend(profile="test"),
         io.BytesIO(b"SSH-2.0-test-client\r\n"),
         output,
     )

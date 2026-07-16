@@ -12,11 +12,20 @@ from typing import Annotated
 
 import paramiko
 import typer
-from pydantic import ValidationError
 
 from ezhpcy.cli.common import (
-    ProfileArg,
+    CoresOpt,
+    ExclusiveOpt,
+    GpusOpt,
+    InteractiveSubmissionCommandOpt,
+    MemoryOpt,
+    OptionalProfileArg,
     ProfileContext,
+    QueueOpt,
+    QueueTimeoutOpt,
+    SchedulerOpt,
+    StartupTimeoutOpt,
+    TimeLimitOpt,
     with_profile_context,
 )
 from ezhpcy.cli.provision import (
@@ -54,7 +63,7 @@ from ezhpcy.scheduler.lsf import LSFScheduler
 from ezhpcy.scheduler.pbs import PBSScheduler
 from ezhpcy.scheduler.types import SchedulerType
 from ezhpcy.tunnel.broker import ForegroundBroker
-from ezhpcy.types import RemoteState, ResolvedConfig, ResolvedProfileConfig
+from ezhpcy.types import RemoteState, ResolvedConfig
 from ezhpcy.utils import local_machine_id, ssh_connection_id
 
 _FIRST_DYNAMIC_PORT = 49152
@@ -326,8 +335,8 @@ def _wait_for_selected_worker_port(
 
 def _run_compute_tunnel(
     *,
-    profile_name: str,
-    profile: ResolvedProfileConfig,
+    profile_name: str | None,
+    profile: ResolvedConfig,
     conn_info: ConnectionInfo,
     scheduler_type: SchedulerType,
     queue: str | None,
@@ -402,9 +411,16 @@ def _run_compute_tunnel(
                 )
             case _:
                 raise UnsupportedSchedulerError(scheduler_type)
-        logger.info(
-            "Using profile %r with %s scheduler.", profile_name, scheduler_type.value
-        )
+        if profile_name is None:
+            logger.info(
+                "Using anonymous configuration with %s scheduler.", scheduler_type.value
+            )
+        else:
+            logger.info(
+                "Using profile %r with %s scheduler.",
+                profile_name,
+                scheduler_type.value,
+            )
         logger.debug(
             "Worker request: queue=%r cores=%d gpus=%d exclusive=%s "
             "time_limit=%s memory_bytes=%s ports=%s",
@@ -510,7 +526,10 @@ def _run_compute_tunnel(
                 timeout_seconds=startup_timeout_seconds,
             )
 
-            backend = create_broker_backend(profile=profile_name)
+            backend = create_broker_backend(
+                profile=profile_name,
+                resolved_config=(profile if profile_name is None else None),
+            )
             broker = ForegroundBroker(
                 transport,
                 destination,
@@ -582,78 +601,17 @@ def _run_compute_tunnel(
 @with_profile_context
 def compute_cmd(
     profile_context: ProfileContext,
-    profile: ProfileArg,
-    scheduler_type: Annotated[
-        SchedulerType | None,
-        typer.Option(
-            "--scheduler",
-            case_sensitive=False,
-            help="Scheduler used to allocate the compute node.",
-        ),
-    ] = None,
-    queue: Annotated[
-        str | None,
-        typer.Option("--queue", "-q", help="Scheduler queue for the worker job."),
-    ] = None,
-    cores: Annotated[
-        int | None,
-        typer.Option(
-            "--cores",
-            "-n",
-            min=1,
-            help="Scheduler CPU cores reserved on the worker host.",
-        ),
-    ] = None,
-    gpus: Annotated[
-        int | None,
-        typer.Option(
-            "--gpus",
-            min=0,
-            help="Number of GPUs reserved on the worker host.",
-        ),
-    ] = None,
-    exclusive: Annotated[
-        bool | None,
-        typer.Option(
-            "--exclusive/--shared",
-            help="Reserve the worker host exclusively.",
-        ),
-    ] = None,
-    time_limit: Annotated[
-        str | None,
-        typer.Option(
-            "--time-limit",
-            metavar="H:MM",
-            help="Optional worker lifetime override.",
-        ),
-    ] = None,
-    memory: Annotated[
-        str | None,
-        typer.Option(
-            "--memory",
-            metavar="SIZE",
-            help=(
-                "Optional total worker memory parsed as a Pydantic byte size. "
-                "Bare values are bytes; SI (GB) and IEC (GiB) units differ."
-            ),
-        ),
-    ] = None,
-    queue_timeout_seconds: Annotated[
-        float | None,
-        typer.Option(
-            "--queue-timeout",
-            min=1,
-            help="Maximum time to wait for the scheduler allocation.",
-        ),
-    ] = None,
-    startup_timeout_seconds: Annotated[
-        float | None,
-        typer.Option(
-            "--startup-timeout",
-            min=1,
-            help="Maximum time to wait for worker SSH after allocation.",
-        ),
-    ] = None,
+    profile: OptionalProfileArg = None,
+    scheduler_type: SchedulerOpt = None,
+    queue: QueueOpt = None,
+    cores: CoresOpt = None,
+    gpus: GpusOpt = None,
+    exclusive: ExclusiveOpt = None,
+    time_limit: TimeLimitOpt = None,
+    memory: MemoryOpt = None,
+    queue_timeout_seconds: QueueTimeoutOpt = None,
+    startup_timeout_seconds: StartupTimeoutOpt = None,
+    interactive_submission_command: InteractiveSubmissionCommandOpt = None,
     worker_port: Annotated[
         int | None,
         typer.Option(
@@ -691,36 +649,7 @@ def compute_cmd(
 ) -> None:
     """Allocate a compute node and expose its SSH service through the broker."""
     try:
-        profile = profile_context.profile
-        try:
-            resolved = ResolvedConfig.model_validate(
-                {
-                    **profile.model_dump(),
-                    "scheduler": scheduler_type or profile.scheduler,
-                    "queue": queue if queue is not None else profile.queue,
-                    "cores": cores if cores is not None else profile.cores,
-                    "gpus": gpus if gpus is not None else profile.gpus,
-                    "exclusive": (
-                        exclusive if exclusive is not None else profile.exclusive
-                    ),
-                    "time_limit": (
-                        time_limit if time_limit is not None else profile.time_limit
-                    ),
-                    "memory": memory if memory is not None else profile.memory,
-                    "queue_timeout_seconds": (
-                        queue_timeout_seconds
-                        if queue_timeout_seconds is not None
-                        else profile.queue_timeout_seconds
-                    ),
-                    "worker_startup_timeout_seconds": (
-                        startup_timeout_seconds
-                        if startup_timeout_seconds is not None
-                        else profile.worker_startup_timeout_seconds
-                    ),
-                }
-            )
-        except ValidationError as error:
-            raise typer.BadParameter(str(error)) from error
+        resolved = profile_context.profile
         if resolved.scheduler is None:
             raise typer.BadParameter(
                 "scheduler must be set by --scheduler or the selected profile",

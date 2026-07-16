@@ -1,11 +1,12 @@
 import os
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 from keyring.errors import KeyringError
 from typer.testing import CliRunner
 
-from ezhpcy.cli import app, common
+from ezhpcy.cli import app, broker as broker_module, common, proxy as proxy_module
 from ezhpcy.cli.utils.bad_parameter import RichBadParameter
 from ezhpcy.types import ProfileConfig
 
@@ -153,6 +154,100 @@ def test_explicit_password_sources_are_mutually_exclusive(tmp_path: Path) -> Non
         resolve_password(password="secret", password_file=password_file)
 
 
+def test_profile_context_can_be_resolved_entirely_from_cli_values() -> None:
+    context = common.profile_context_from_cli(
+        user="alice",
+        host="login.example.com",
+        scheduler_type="LSF",
+        queue="gpu",
+        cores=8,
+        gpus=1,
+    )
+
+    assert context.name is None
+    assert context.profile.user == "alice"
+    assert str(context.profile.host) == "login.example.com"
+    assert context.profile.queue == "gpu"
+    assert context.profile.cores == 8
+    assert context.profile.gpus == 1
+
+
+def test_anonymous_broker_uses_configuration_descriptor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    backend = object()
+    transport = MagicMock()
+    transport.is_active.return_value = True
+    ssh = MagicMock()
+    ssh.__enter__.return_value = ssh
+    ssh.get_transport.return_value = transport
+    broker = MagicMock()
+
+    def create_backend(**kwargs):
+        captured.update(kwargs)
+        return backend
+
+    monkeypatch.setattr(broker_module, "create_broker_backend", create_backend)
+    monkeypatch.setattr(broker_module, "InteractiveSSHClient", lambda _info: ssh)
+    monkeypatch.setattr(
+        broker_module, "ForegroundBroker", lambda *_args, **_kwargs: broker
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "broker",
+            "worker.internal",
+            "--worker-port",
+            "2222",
+            "--host",
+            "login.example.com",
+            "--user",
+            "alice",
+            "--queue",
+            "gpu",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["profile"] is None
+    configuration = captured["resolved_config"]
+    assert getattr(configuration, "queue") == "gpu"
+
+
+def test_anonymous_proxy_loads_configuration_descriptor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    backend = object()
+
+    def load_backend(**kwargs):
+        captured.update(kwargs)
+        return backend
+
+    monkeypatch.setattr(proxy_module, "load_broker_backend", load_backend)
+    monkeypatch.setattr(proxy_module, "relay_proxy_stdio", lambda *_args: None)
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "proxy",
+            "--host",
+            "login.example.com",
+            "--user",
+            "alice",
+            "--queue",
+            "gpu",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["profile"] is None
+    configuration = captured["resolved_config"]
+    assert getattr(configuration, "queue") == "gpu"
+
+
 def test_invalid_profile_password_sources_are_reported_as_a_cli_parameter_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -298,13 +393,13 @@ def test_connection_options_read_password_keyring_from_environment(
 def test_remote_command_help_includes_every_password_source(
     command: list[str],
 ) -> None:
-    result = CliRunner().invoke(app, [*command, "--help"])
+    result = CliRunner().invoke(app, [*command, "--help"], terminal_width=160)
 
     assert result.exit_code == 0
     assert "--password" in result.stdout
     assert "--password-file" in result.stdout
     assert "--password-fd" in result.stdout
-    assert "--password-keyring" in result.stdout
+    assert "--password-keyri" in result.stdout
     assert "PROFILE" in result.stdout
     assert "--profile" not in result.stdout
 

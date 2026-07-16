@@ -14,7 +14,6 @@ from ezhpcy import ipc
 from ezhpcy.ipc import (
     AuthenticatedIPCBackend,
     create_broker_backend,
-    default_descriptor_path,
     load_broker_backend,
 )
 from ezhpcy.ipc.common import (
@@ -23,17 +22,153 @@ from ezhpcy.ipc.common import (
     IPCAuthenticationError,
     IPCError,
 )
+from ezhpcy.types import ResolvedConfig
 
 AUTHKEY = b"a" * 32
 BIND_ADDRESS = IPCAddress("127.0.0.1", 0, allow_zero_port=True)
 
 
-def test_default_descriptor_path_is_namespaced_by_profile(
+def test_descriptor_path_is_namespaced_by_profile(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(ipc.config.local_file, "runtime_dir", tmp_path)
 
-    assert default_descriptor_path("gpu") == tmp_path / "broker-gpu.json"
+    assert ipc._get_descriptor_path("gpu") == (
+        tmp_path / "profile-descriptors" / "gpu.json"
+    )
+
+
+def test_resolved_config_descriptor_path_uses_digest(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(ipc.config.local_file, "runtime_dir", tmp_path)
+    configuration = ResolvedConfig.model_validate(
+        {
+            "user": "alice",
+            "host": "login.example.com",
+            "scheduler": "LSF",
+            "queue": "gpu",
+            "cores": 8,
+            "lsf_submission_environment": {"Z": "last", "A": "first"},
+            "password": "secret",
+        }
+    )
+    expected_digest = configuration.descriptor_digest()
+
+    assert (
+        ipc._get_descriptor_path(resolved_config=configuration)
+        == tmp_path / "anonymous-descriptors" / f"{expected_digest}.json"
+    )
+
+
+def test_anonymous_descriptor_identity_is_order_independent() -> None:
+    first = ResolvedConfig.model_validate(
+        {
+            "user": "alice",
+            "host": "login.example.com",
+            "lsf_submission_environment": {"A": "first", "Z": "last"},
+        }
+    )
+    second = ResolvedConfig.model_validate(
+        {
+            "host": "login.example.com",
+            "user": "alice",
+            "lsf_submission_environment": {"Z": "last", "A": "first"},
+        }
+    )
+
+    assert ipc._get_descriptor_path(resolved_config=first) == ipc._get_descriptor_path(
+        resolved_config=second
+    )
+
+
+def test_anonymous_descriptor_identity_excludes_password_sources() -> None:
+    password = ResolvedConfig.model_validate(
+        {
+            "user": "alice",
+            "host": "login.example.com",
+            "password": "secret",
+        }
+    )
+    password_file = ResolvedConfig.model_validate(
+        {
+            "user": "alice",
+            "host": "login.example.com",
+            "password_file": "password.txt",
+        }
+    )
+
+    assert ipc._get_descriptor_path(
+        resolved_config=password
+    ) == ipc._get_descriptor_path(resolved_config=password_file)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("user", "bob"),
+        ("host", "other.example.com"),
+        ("queue", "cpu"),
+        ("cores", 16),
+        ("interactive_submission_command", ["/site/bin/interactive"]),
+    ],
+)
+def test_anonymous_descriptor_identity_includes_job_configuration(
+    field: str, value: object
+) -> None:
+    base_values: dict[str, object] = {
+        "user": "alice",
+        "host": "login.example.com",
+        "queue": "gpu",
+        "cores": 8,
+    }
+    changed_values = {**base_values, field: value}
+
+    assert ipc._get_descriptor_path(
+        resolved_config=ResolvedConfig.model_validate(base_values)
+    ) != ipc._get_descriptor_path(
+        resolved_config=ResolvedConfig.model_validate(changed_values)
+    )
+
+
+def test_descriptor_path_requires_exactly_one_identity() -> None:
+    configuration = ResolvedConfig.model_validate(
+        {"user": "alice", "host": "login.example.com"}
+    )
+
+    with pytest.raises(ValueError, match="resolved configuration is required"):
+        ipc._get_descriptor_path()
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        ipc._get_descriptor_path("gpu", resolved_config=configuration)
+
+
+def test_anonymous_backend_publishes_and_loads_by_configuration(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(ipc.config.local_file, "runtime_dir", tmp_path)
+    configuration = ResolvedConfig.model_validate(
+        {
+            "user": "alice",
+            "host": "login.example.com",
+            "queue": "gpu",
+        }
+    )
+    backend = create_broker_backend(
+        resolved_config=configuration,
+        authkey=AUTHKEY,
+    )
+    listener = backend.listen(lambda _connection: None)
+    descriptor = ipc._get_descriptor_path(resolved_config=configuration)
+    try:
+        loaded = load_broker_backend(resolved_config=configuration)
+
+        assert descriptor.is_file()
+        assert loaded.address == listener.address
+        assert loaded.authkey == AUTHKEY
+    finally:
+        listener.close()
+
+    assert not descriptor.exists()
 
 
 def start_server(backend, handler, error_handler=None):
@@ -80,10 +215,13 @@ def test_wrong_authkey_is_rejected() -> None:
     assert errors and isinstance(errors[0], IPCAuthenticationError)
 
 
-def test_runtime_descriptor_publishes_capability_and_is_removed(tmp_path: Path) -> None:
-    descriptor = tmp_path / "broker.json"
+def test_runtime_descriptor_publishes_capability_and_is_removed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(ipc.config.local_file, "runtime_dir", tmp_path)
+    descriptor = ipc._get_descriptor_path("test")
     server = create_broker_backend(
-        descriptor_path=descriptor,
+        profile="test",
         authkey=AUTHKEY,
     )
     received: list[bytes] = []
@@ -93,7 +231,7 @@ def test_runtime_descriptor_publishes_capability_and_is_removed(tmp_path: Path) 
         connection.sendall(b"pong")
 
     listener, thread = start_server(server, serve)
-    client_backend = load_broker_backend(descriptor)
+    client_backend = load_broker_backend(profile="test")
     payload = json.loads(descriptor.read_text(encoding="utf-8"))
 
     assert descriptor.is_file()
@@ -118,9 +256,12 @@ def test_runtime_descriptor_publishes_capability_and_is_removed(tmp_path: Path) 
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
-def test_runtime_descriptor_is_owner_only_on_posix(tmp_path: Path) -> None:
-    descriptor = tmp_path / "runtime" / "broker.json"
-    backend = create_broker_backend(descriptor_path=descriptor)
+def test_runtime_descriptor_is_owner_only_on_posix(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(ipc.config.local_file, "runtime_dir", tmp_path)
+    descriptor = ipc._get_descriptor_path("test")
+    backend = create_broker_backend(profile="test")
     listener = backend.listen(lambda _connection: None)
     try:
         assert descriptor.stat().st_mode & 0o077 == 0
@@ -130,12 +271,15 @@ def test_runtime_descriptor_is_owner_only_on_posix(tmp_path: Path) -> None:
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX ownership and symlink semantics")
-def test_runtime_descriptor_rejects_symlinked_directory(tmp_path: Path) -> None:
+def test_runtime_descriptor_rejects_symlinked_directory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     real_directory = tmp_path / "real-runtime"
     real_directory.mkdir(mode=0o700)
     linked_directory = tmp_path / "linked-runtime"
     linked_directory.symlink_to(real_directory, target_is_directory=True)
-    backend = create_broker_backend(descriptor_path=linked_directory / "broker.json")
+    monkeypatch.setattr(ipc.config.local_file, "runtime_dir", linked_directory)
+    backend = create_broker_backend(profile="test")
 
     with pytest.raises(IPCError, match="must not be a symbolic link"):
         backend.listen(lambda _connection: None)
@@ -143,11 +287,12 @@ def test_runtime_descriptor_rejects_symlinked_directory(tmp_path: Path) -> None:
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX file type semantics")
 def test_runtime_descriptor_rejects_non_directory_runtime_path(
-    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     runtime_path = tmp_path / "runtime"
     runtime_path.touch()
-    backend = create_broker_backend(descriptor_path=runtime_path / "broker.json")
+    monkeypatch.setattr(ipc.config.local_file, "runtime_dir", runtime_path)
+    backend = create_broker_backend(profile="test")
 
     with pytest.raises(IPCError, match="is not a directory"):
         backend.listen(lambda _connection: None)
@@ -162,18 +307,22 @@ def test_runtime_descriptor_rejects_directory_owned_by_another_user(
     monkeypatch.setattr(
         runtime.os, "getuid", lambda: runtime_directory.stat().st_uid + 1
     )
-    backend = create_broker_backend(descriptor_path=runtime_directory / "broker.json")
+    monkeypatch.setattr(ipc.config.local_file, "runtime_dir", runtime_directory)
+    backend = create_broker_backend(profile="test")
 
     with pytest.raises(IPCError, match="not owned by the current user"):
         backend.listen(lambda _connection: None)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
-def test_runtime_descriptor_restricts_precreated_directory(tmp_path: Path) -> None:
+def test_runtime_descriptor_restricts_precreated_directory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     runtime_directory = tmp_path / "runtime"
     runtime_directory.mkdir(mode=0o777)
     runtime_directory.chmod(0o777)
-    backend = create_broker_backend(descriptor_path=runtime_directory / "broker.json")
+    monkeypatch.setattr(ipc.config.local_file, "runtime_dir", runtime_directory)
+    backend = create_broker_backend(profile="test")
     listener = backend.listen(lambda _connection: None)
     try:
         assert runtime_directory.stat().st_mode & 0o777 == 0o700
@@ -181,9 +330,19 @@ def test_runtime_descriptor_restricts_precreated_directory(tmp_path: Path) -> No
         listener.close()
 
 
-def test_missing_runtime_descriptor_fails_quickly(tmp_path: Path) -> None:
+def test_missing_runtime_descriptor_fails_quickly(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(ipc.config.local_file, "runtime_dir", tmp_path)
     with pytest.raises(BrokerUnavailableError, match="broker is not running"):
-        load_broker_backend(tmp_path / "missing.json")
+        load_broker_backend(profile="missing")
+
+
+def test_broker_backends_do_not_accept_a_descriptor_path(tmp_path: Path) -> None:
+    with pytest.raises(TypeError, match="descriptor_path"):
+        create_broker_backend(descriptor_path=tmp_path / "broker.json")
+    with pytest.raises(TypeError, match="descriptor_path"):
+        load_broker_backend(descriptor_path=tmp_path / "broker.json")
 
 
 def test_ipc_endpoint_absence_fails_quickly() -> None:
@@ -340,8 +499,12 @@ def test_unexpected_client_handler_error_is_reported() -> None:
     assert not thread.is_alive()
 
 
-def test_runtime_descriptor_rejects_non_loopback_address(tmp_path: Path) -> None:
-    descriptor = tmp_path / "broker.json"
+def test_runtime_descriptor_rejects_non_loopback_address(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(ipc.config.local_file, "runtime_dir", tmp_path)
+    descriptor = ipc._get_descriptor_path("test")
+    descriptor.parent.mkdir(parents=True)
     descriptor.write_text(
         json.dumps(
             {
@@ -356,31 +519,32 @@ def test_runtime_descriptor_rejects_non_loopback_address(tmp_path: Path) -> None
     )
 
     with pytest.raises(BrokerUnavailableError, match="runtime information is invalid"):
-        load_broker_backend(descriptor)
+        load_broker_backend(profile="test")
 
 
 def test_latest_broker_descriptor_wins_and_old_close_preserves_it(
-    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    descriptor = tmp_path / "broker.json"
+    monkeypatch.setattr(ipc.config.local_file, "runtime_dir", tmp_path)
+    descriptor = ipc._get_descriptor_path("test")
     first = create_broker_backend(
-        descriptor_path=descriptor,
+        profile="test",
         authkey=b"a" * 32,
     )
     second = create_broker_backend(
-        descriptor_path=descriptor,
+        profile="test",
         authkey=b"b" * 32,
     )
     first_listener = first.listen(lambda _connection: None)
     second_listener = second.listen(lambda _connection: None)
     try:
-        current = load_broker_backend(descriptor)
+        current = load_broker_backend(profile="test")
         assert current.address == second_listener.address
         assert current.authkey == b"b" * 32
 
         first_listener.close()
         assert descriptor.is_file()
-        assert load_broker_backend(descriptor).instance_id == second.instance_id
+        assert load_broker_backend(profile="test").instance_id == second.instance_id
     finally:
         first_listener.close()
         second_listener.close()

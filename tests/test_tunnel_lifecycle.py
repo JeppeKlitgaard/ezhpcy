@@ -134,6 +134,57 @@ def test_provision_help_describes_idempotent_provisioning() -> None:
     assert "-a" in prune_help.stdout
 
 
+def test_provision_accepts_anonymous_cli_configuration() -> None:
+    ssh = StubSSH()
+    with (
+        patch("ezhpcy.cli.provision.InteractiveSSHClient", return_value=ssh),
+        patch(
+            "ezhpcy.cli.provision.provision_worker_infrastructure"
+        ) as provision_infrastructure,
+    ):
+        result = CliRunner().invoke(
+            app,
+            [
+                "provision",
+                "--host",
+                "login.example.com",
+                "--user",
+                "alice",
+                "--yes",
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    provision_infrastructure.assert_called_once()
+    assert provision_infrastructure.call_args.kwargs["remote_username"] == "alice"
+    assert provision_infrastructure.call_args.kwargs["remote_host"] == (
+        "login.example.com"
+    )
+
+
+def test_prune_accepts_anonymous_cli_configuration() -> None:
+    ssh = StubSSH()
+    with (
+        patch("ezhpcy.cli.prune.InteractiveSSHClient", return_value=ssh),
+        patch("ezhpcy.cli.prune.prune_stale_installations") as prune_installations,
+        patch("ezhpcy.cli.prune.prune_stale_pixi_data") as prune_pixi,
+    ):
+        result = CliRunner().invoke(
+            app,
+            [
+                "prune",
+                "--host",
+                "login.example.com",
+                "--user",
+                "alice",
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    prune_installations.assert_called_once_with(ssh, ssh.get_remote_state())
+    prune_pixi.assert_called_once_with(ssh, ssh.get_remote_state())
+
+
 def test_provision_is_repeatable_and_never_invokes_remote_python(
     tmp_path: Path,
 ) -> None:

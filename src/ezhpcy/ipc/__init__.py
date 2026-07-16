@@ -32,6 +32,7 @@ from ezhpcy.ipc.runtime import (
     remove_runtime_descriptor,
 )
 from ezhpcy.ipc.server import AuthenticatedIPCServer
+from ezhpcy.types import ResolvedConfig
 
 _DEFAULT_BIND_ADDRESS = IPCAddress(LOOPBACK_HOST, 0, allow_zero_port=True)
 
@@ -120,41 +121,62 @@ class AuthenticatedIPCBackend:
             )
 
 
-def default_descriptor_path(profile: str | None = None) -> Path:
-    filename = f"broker-{profile}.json" if profile is not None else "broker.json"
-    return config.local_file.runtime_dir / filename
+def _get_descriptor_path(
+    profile: str | None = None,
+    *,
+    resolved_config: ResolvedConfig | None = None,
+) -> Path:
+    if profile is not None:
+        if resolved_config is not None:
+            raise ValueError(
+                "profile and resolved configuration are mutually exclusive"
+            )
+        return config.local_file.runtime_dir / "profile-descriptors" / f"{profile}.json"
+
+    if resolved_config is None:
+        raise ValueError(
+            "a resolved configuration is required when no profile is provided"
+        )
+    digest = resolved_config.descriptor_digest()
+    return config.local_file.runtime_dir / "anonymous-descriptors" / f"{digest}.json"
 
 
 def create_broker_backend(
     *,
     address: IPCAddress = _DEFAULT_BIND_ADDRESS,
-    descriptor_path: Path | None = None,
     authkey: bytes | None = None,
     profile: str | None = None,
+    resolved_config: ResolvedConfig | None = None,
 ) -> AuthenticatedIPCBackend:
     """Create the server backend and its per-run authentication capability."""
-    descriptor = descriptor_path or default_descriptor_path(profile)
+    descriptor_path = _get_descriptor_path(
+        profile,
+        resolved_config=resolved_config,
+    )
     return AuthenticatedIPCBackend(
         address=address,
         authkey=authkey or secrets.token_bytes(32),
-        descriptor_path=descriptor,
+        descriptor_path=descriptor_path,
         publish_descriptor=True,
     )
 
 
 def load_broker_backend(
-    descriptor_path: Path | None = None,
     *,
     profile: str | None = None,
+    resolved_config: ResolvedConfig | None = None,
 ) -> AuthenticatedIPCBackend:
     """Load the broker endpoint and capability without exposing either in argv."""
-    path = descriptor_path or default_descriptor_path(profile)
-    descriptor = load_runtime_descriptor(path)
+    descriptor_path = _get_descriptor_path(
+        profile,
+        resolved_config=resolved_config,
+    )
+    descriptor = load_runtime_descriptor(descriptor_path)
     try:
         return AuthenticatedIPCBackend(
             address=descriptor.address,
             authkey=descriptor.authkey,
-            descriptor_path=path,
+            descriptor_path=descriptor_path,
             instance_id=descriptor.instance_id,
         )
     except ValueError as error:

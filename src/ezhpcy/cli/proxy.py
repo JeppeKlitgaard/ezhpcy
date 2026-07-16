@@ -2,25 +2,28 @@ import sys
 
 import typer
 
-from ezhpcy.cli.common import ProfileArg
-from ezhpcy.cli.utils.bad_parameter import RichBadParameter
-from ezhpcy.config import ProfilePasswordSourceError, config
+from ezhpcy.cli.common import (
+    ProfileContext,
+    with_profile_context,
+)
 from ezhpcy.ipc import load_broker_backend
 from ezhpcy.ipc.common import IPCError
 from ezhpcy.tunnel.broker import relay_proxy_stdio
 
 
-def proxy_cmd(profile: ProfileArg) -> None:
+@with_profile_context
+def proxy_cmd(
+    profile_context: ProfileContext,
+) -> None:
     """Relay ProxyCommand stdin/stdout through a running tunnel broker."""
     try:
-        try:
-            config.resolve_profile(profile)
-        except ProfilePasswordSourceError as error:
-            raise RichBadParameter(error.rich_message()) from error
-        except ValueError as error:
-            raise RichBadParameter(str(error), param_hint="PROFILE") from error
         relay_proxy_stdio(
-            load_broker_backend(profile=profile),
+            load_broker_backend(
+                profile=profile_context.name,
+                resolved_config=(
+                    profile_context.profile if profile_context.name is None else None
+                ),
+            ),
             sys.stdin.buffer,
             sys.stdout.buffer,
         )

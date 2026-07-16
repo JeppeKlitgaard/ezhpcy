@@ -4,11 +4,85 @@ from pathlib import PurePosixPath
 from unittest.mock import MagicMock, call, patch
 
 import paramiko
+import pytest
 
+from ezhpcy.cli.utils.ssh import InteractiveSSHClient
 from ezhpcy.config import ConnectionInfo
 from ezhpcy.constants import EZHPCY_VERSION, PIXI_VERSION
 from ezhpcy.ssh import SFTPClient, SSHClient
 from ezhpcy.types import RemoteState
+
+
+def test_interactive_ssh_prompts_after_key_authentication_fails() -> None:
+    client = InteractiveSSHClient(
+        ConnectionInfo(user="alice", host="login.example.com")
+    )
+
+    with (
+        patch.object(
+            client,
+            "connect",
+            side_effect=[paramiko.AuthenticationException("keys rejected"), None],
+        ) as connect,
+        patch(
+            "ezhpcy.cli.utils.ssh.Prompt.ask",
+            return_value="secret",
+        ) as prompt,
+    ):
+        client.interactive_connect()
+
+    assert connect.call_args_list == [
+        call(
+            hostname="login.example.com",
+            username="alice",
+            password=None,
+        ),
+        call(
+            hostname="login.example.com",
+            username="alice",
+            password="secret",
+        ),
+    ]
+    prompt.assert_called_once()
+
+
+def test_interactive_ssh_does_not_prompt_for_unsupported_password_auth() -> None:
+    client = InteractiveSSHClient(
+        ConnectionInfo(user="alice", host="login.example.com")
+    )
+    error = paramiko.BadAuthenticationType("unsupported", ["publickey"])
+
+    with (
+        patch.object(client, "connect", side_effect=error),
+        patch("ezhpcy.cli.utils.ssh.Prompt.ask") as prompt,
+        pytest.raises(paramiko.BadAuthenticationType),
+    ):
+        client.interactive_connect()
+
+    prompt.assert_not_called()
+
+
+def test_interactive_ssh_propagates_explicit_password_failure() -> None:
+    client = InteractiveSSHClient(
+        ConnectionInfo(
+            user="alice",
+            host="login.example.com",
+            password="incorrect",
+        )
+    )
+
+    with (
+        patch.object(
+            client,
+            "connect",
+            side_effect=paramiko.AuthenticationException("incorrect password"),
+        ),
+        patch("ezhpcy.cli.utils.ssh.Prompt.ask") as prompt,
+        pytest.raises(paramiko.AuthenticationException),
+    ):
+        client.interactive_connect()
+
+    prompt.assert_not_called()
 
 
 def test_sftp_read_and_write_bytes() -> None:

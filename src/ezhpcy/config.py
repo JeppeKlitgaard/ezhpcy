@@ -197,12 +197,7 @@ class Config(BaseSettings, _ConfigValues):
     def from_mapping(cls, values: object) -> Self:
         """Validate explicit values without loading workstation settings sources."""
         validated = _ConfigValues.model_validate(values)
-        return cls.model_construct(
-            local_file=validated.local_file,
-            log_level=validated.log_level,
-            auto_provision=validated.auto_provision,
-            profile=validated.profile,
-        )
+        return cls.model_construct(**validated.__dict__)
 
 
 config = Config()

@@ -13,6 +13,7 @@ from ezhpcy.cli.provision import (
     ProvisioningError,
     _ensure_local_ssh_keys,
     _pin_worker_host_key,
+    _restrict_private_key_permissions,
     provision_openssh,
     provision_pixi,
     provision_sshd_files,
@@ -256,6 +257,34 @@ def test_local_worker_keys_are_generated_and_reused(
         loaded_key = paramiko.Ed25519Key.from_private_key_file(str(private_key))
         public_fields = public_key.read_text(encoding="ascii").split()
         assert public_fields[:2] == [loaded_key.get_name(), loaded_key.get_base64()]
+
+
+def test_windows_private_key_acl_grants_only_current_user(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    private_key = tmp_path / "worker_client_ed25519"
+    private_key.touch()
+    completed = SimpleNamespace(stdout='"MACHINE\\alice","S-1-5-21-1001"\n')
+
+    monkeypatch.setattr("ezhpcy.cli.provision.os.name", "nt")
+    with patch("ezhpcy.cli.provision.subprocess.run", return_value=completed) as run:
+        _restrict_private_key_permissions(private_key)
+
+    assert run.call_count == 2
+    assert run.call_args_list[0].args[0] == [
+        "whoami",
+        "/user",
+        "/fo",
+        "csv",
+        "/nh",
+    ]
+    assert run.call_args_list[1].args[0] == [
+        "icacls",
+        str(private_key),
+        "/inheritance:r",
+        "/grant:r",
+        "*S-1-5-21-1001:(F)",
+    ]
 
 
 def test_local_worker_host_keys_differ_between_login_endpoints(

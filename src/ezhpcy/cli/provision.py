@@ -1,7 +1,9 @@
+import csv
 import io
 import logging
 import os
 import shlex
+import subprocess
 from pathlib import Path, PurePosixPath
 from typing import Annotated
 
@@ -37,10 +39,62 @@ from ezhpcy.types import RemoteState
 from ezhpcy.utils import local_machine_id, ssh_connection_id
 
 logger = logging.getLogger(__name__)
+_WINDOWS_CREATION_FLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
 class ProvisioningError(RuntimeError):
     pass
+
+
+def _windows_current_user_sid() -> str:
+    """Return the current Windows user's SID using a system-provided command."""
+    try:
+        result = subprocess.run(
+            ["whoami", "/user", "/fo", "csv", "/nh"],
+            check=True,
+            capture_output=True,
+            text=True,
+            creationflags=_WINDOWS_CREATION_FLAGS,
+        )
+        row = next(csv.reader(result.stdout.splitlines()))
+        sid = row[1]
+    except (IndexError, OSError, StopIteration, subprocess.CalledProcessError) as error:
+        raise ProvisioningError(
+            "Could not determine the current Windows user for SSH key permissions."
+        ) from error
+    if not sid.startswith("S-"):
+        raise ProvisioningError(
+            "Windows returned an invalid user SID while securing the SSH key."
+        )
+    return sid
+
+
+# This is a hacky fix because Windows is a nightmare OS that should not exist.
+def _restrict_private_key_permissions(private_key: Path) -> None:
+    """Make a private key acceptable to OpenSSH on POSIX and Windows."""
+    os.chmod(private_key, 0o600)
+    if os.name != "nt":
+        return
+
+    sid = _windows_current_user_sid()
+    try:
+        subprocess.run(
+            [
+                "icacls",
+                str(private_key),
+                "/inheritance:r",
+                "/grant:r",
+                f"*{sid}:(F)",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            creationflags=_WINDOWS_CREATION_FLAGS,
+        )
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise ProvisioningError(
+            f"Could not restrict Windows permissions on SSH key {private_key}."
+        ) from error
 
 
 def _ensure_local_key_pair(
@@ -79,7 +133,7 @@ def _ensure_local_key_pair(
             f"{paramiko_key.get_name()} {paramiko_key.get_base64()} {comment}\n",
             encoding="ascii",
         )
-    os.chmod(private_key, 0o600)
+    _restrict_private_key_permissions(private_key)
     os.chmod(public_key, 0o644)
     return private_key, public_key
 

@@ -27,7 +27,7 @@ def test_render_worker_ssh_config_contains_complete_strict_proxy_configuration(
         f'    UserKnownHostsFile "{(tmp_path / "config with spaces" / "ssh" / "worker_known_hosts").as_posix()}"\n'
         "    HostKeyAlias ezhpcy-worker\n"
         "    StrictHostKeyChecking yes\n"
-        f'    ProxyCommand "{(tmp_path / "runtime with spaces" / "python.exe").as_posix()}" -m ezhpcy.cli.entry proxy --profile gpu\n'
+        f'    ProxyCommand "{(tmp_path / "runtime with spaces" / "python.exe").as_posix()}" -m ezhpcy.cli proxy --profile gpu\n'
     )
 
 

@@ -15,6 +15,7 @@ import typer
 from pydantic import ValidationError
 
 from ezhpcy.cli.common import (
+    ProfileArg,
     ProfileContext,
     with_profile_options,
 )
@@ -581,6 +582,7 @@ def _run_compute_tunnel(
 @with_profile_options
 def compute_cmd(
     profile_context: ProfileContext,
+    profile: ProfileArg,
     scheduler_type: Annotated[
         SchedulerType | None,
         typer.Option(

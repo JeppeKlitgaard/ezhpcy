@@ -103,17 +103,23 @@ def attach_hook(
             for k, v in inspect.signature(hook_func).parameters.items()
             if k not in source_params
         }
+        hook_param_names = set(inspect.signature(hook_func).parameters)
+        shared_params = hook_param_names & set(source_params)
 
         @functools.wraps(source_func)
         def wrapper(*args, **kwargs):
             # Filter kwargs for those accepted by the hook function
-            hook_kwargs = {k: v for k, v in kwargs.items() if k in hook_params}
+            hook_kwargs = {k: v for k, v in kwargs.items() if k in hook_param_names}
 
             # Execute hook function with its specific kwargs
             hook_result = hook_func(**hook_kwargs)
 
             # Filter in the remaining kwargs for the source function.
-            source_kwargs = {k: v for k, v in kwargs.items() if k not in hook_kwargs}
+            source_kwargs = {
+                k: v
+                for k, v in kwargs.items()
+                if k not in hook_param_names or k in shared_params
+            }
 
             # Execute the source function with original args and pass the hook's output to the source function as
             # the specified keyword argument

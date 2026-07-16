@@ -623,14 +623,14 @@ def test_compute_tunnel_help_exposes_scheduler_and_resource_options() -> None:
     assert "--worker-port-retr" in result.stdout
     assert "--auto-provision" in result.stdout
     assert "--no-auto-provision" in result.stdout
-    assert "--profile" in result.stdout
+    assert "PROFILE" in result.stdout
 
 
 def test_compute_command_requires_an_explicit_profile() -> None:
     result = CliRunner().invoke(app, ["compute"])
 
     assert result.exit_code == 2
-    assert "no profile was selected" in result.stderr
+    assert "Missing argument 'PROFILE'" in result.stderr
 
 
 def test_compute_command_resolves_profile_and_applies_cli_overrides(
@@ -668,7 +668,6 @@ def test_compute_command_resolves_profile_and_applies_cli_overrides(
         app,
         [
             "compute",
-            "--profile",
             "gpu",
             "--cores",
             "12",
@@ -701,7 +700,6 @@ def test_compute_command_resolves_profile_and_applies_cli_overrides(
         app,
         [
             "compute",
-            "--profile",
             "base",
             "--worker-port",
             "55000",
@@ -736,7 +734,7 @@ def test_compute_command_allows_wrapper_with_implicit_resource_defaults(
         lambda **kwargs: captured.update(kwargs),
     )
 
-    result = CliRunner().invoke(app, ["compute", "--profile", "base"])
+    result = CliRunner().invoke(app, ["compute", "base"])
 
     assert result.exit_code == 0, result.output
     assert captured["queue"] is None
@@ -772,7 +770,7 @@ def test_compute_command_logs_inherited_submission_options_ignored_by_wrapper(
     monkeypatch.setattr(compute_module, "_run_compute_tunnel", lambda **_kwargs: None)
 
     with patch("ezhpcy.cli.compute.logger") as logger:
-        result = CliRunner().invoke(app, ["compute", "--profile", "wrapper"])
+        result = CliRunner().invoke(app, ["compute", "wrapper"])
 
     assert result.exit_code == 0, result.output
     logger.info.assert_called_once_with(
@@ -811,7 +809,7 @@ def test_compute_command_rejects_cli_resources_with_wrapper(
         },
     )
 
-    result = CliRunner().invoke(app, ["compute", "--profile", "base", *arguments])
+    result = CliRunner().invoke(app, ["compute", "base", *arguments])
 
     assert result.exit_code == 2
     assert "cannot be combined with submission options" in result.output
@@ -852,7 +850,7 @@ def test_compute_command_rejects_configured_submission_options_with_wrapper(
         },
     )
 
-    result = CliRunner().invoke(app, ["compute", "--profile", "base"])
+    result = CliRunner().invoke(app, ["compute", "base"])
 
     assert result.exit_code == 2
     assert "cannot be combined with submission options" in result.output
@@ -887,9 +885,7 @@ def test_compute_command_can_disable_auto_provision(
         lambda **kwargs: captured.update(kwargs),
     )
 
-    result = CliRunner().invoke(
-        app, ["compute", "--profile", "base", "--no-auto-provision"]
-    )
+    result = CliRunner().invoke(app, ["compute", "base", "--no-auto-provision"])
 
     assert result.exit_code == 0, result.output
     assert credentials_checked
@@ -916,9 +912,7 @@ def test_compute_command_can_enable_auto_provision_when_config_disables_it(
         lambda **kwargs: captured.update(kwargs),
     )
 
-    result = CliRunner().invoke(
-        app, ["compute", "--profile", "base", "--auto-provision"]
-    )
+    result = CliRunner().invoke(app, ["compute", "base", "--auto-provision"])
 
     assert result.exit_code == 0, result.output
     assert captured["auto_provision"] is True
@@ -941,7 +935,6 @@ def test_compute_command_rejects_conflicting_auto_provision_flags(
         app,
         [
             "compute",
-            "--profile",
             "base",
             "--auto-provision",
             "--no-auto-provision",
@@ -968,7 +961,7 @@ def test_compute_command_rejects_unknown_profile_before_starting(
 
     monkeypatch.setattr(compute_module, "_ensure_local_worker_credentials", start)
 
-    result = CliRunner().invoke(app, ["compute", "--profile", "missing"])
+    result = CliRunner().invoke(app, ["compute", "missing"])
 
     assert result.exit_code == 2
     assert "unknown profile 'missing'" in result.stderr

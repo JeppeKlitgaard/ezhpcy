@@ -295,15 +295,7 @@ def test_connection_options_read_password_keyring_from_environment(
     assert calls == [("ezhpcy", "alice@login.example.com", "from-keyring")]
 
 
-@pytest.mark.parametrize(
-    "command",
-    [
-        ["provision"],
-        ["prune"],
-        ["compute"],
-        ["broker"],
-    ],
-)
+@pytest.mark.parametrize("command", [["provision"], ["prune"], ["broker"]])
 def test_remote_command_help_includes_every_password_source(
     command: list[str],
 ) -> None:
@@ -315,3 +307,15 @@ def test_remote_command_help_includes_every_password_source(
     assert "--password-fd" in result.stdout
     assert "--password-keyring" in result.stdout
     assert "--profile" in result.stdout
+
+
+def test_compute_help_includes_every_password_source_and_profile_argument() -> None:
+    result = CliRunner().invoke(app, ["compute", "--help"])
+
+    assert result.exit_code == 0
+    assert "--password" in result.stdout
+    assert "--password-file" in result.stdout
+    assert "--password-fd" in result.stdout
+    assert "--password-keyring" in result.stdout
+    assert "PROFILE" in result.stdout
+    assert "--profile" not in result.stdout

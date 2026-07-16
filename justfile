@@ -36,5 +36,5 @@ pc:
 
 # Runs the test suite
 [group: 'test']
-test:
-    uv run pytest
+test *args:
+    uv run pytest {{args}}

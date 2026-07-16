@@ -8,15 +8,15 @@ queue_timeout_seconds = 900
 worker_startup_timeout_seconds = 60
 
 [profile.dtu-base]
+description = "DTU HPC"
 inherit = "base"
 
-description = "DTU HPC"
 host = "login2.hpc.dtu.dk"
 user = {{ user | tojson }}
 
 [profile.dtu-base-lsf]
-inherit = "dtu-base"
 description = "DTU HPC LSF based queues"
+inherit = "dtu-base"
 
 
 scheduler = "LSF"
@@ -27,8 +27,8 @@ lsf_submission_environment = { ESUB_BYPASS = "1", ESUB_QUIET = "1", LSF_QRSH = "
 lsf_export_environment = ["TERM", "LSF_QRSH"]
 
 [profile.dtu-base-pbs]
-inherit = "dtu-base"
 description = "DTU HPC PBS Pro based queues"
+inherit = "dtu-base"
 
 scheduler = "PBS"
 queue = "workq"
@@ -44,9 +44,21 @@ cores = 8
 time_limit = "1:00"
 memory = "32GB"
 
+# Interactive GPU queues
 [profile.dtu-a100sh]
 description = "DTU interactive A100 GPUs via a100sh"
 inherit = "dtu-base-lsf"
 
-scheduler = "LSF"
 interactive_submission_command = ["/lsf/local/bin/a100sh"]
+
+[profile.dtu-voltash]
+description = "DTU interactive Volta GPUs via voltash"
+inherit = "dtu-base-lsf"
+
+interactive_submission_command = ["/lsf/local/bin/voltash"]
+
+[profile.dtu.sxm2sh]
+description = "DTU interactive SXM2 GPUs via sxm2sh"
+inherit = "dtu-base-lsf"
+
+interactive_submission_command = ["/lsf/local/bin/sxm2sh"]

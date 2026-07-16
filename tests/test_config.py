@@ -52,7 +52,6 @@ def test_config_singleton_applies_its_log_level() -> None:
 def test_nested_profile_inheritance_resolves_all_ancestor_values() -> None:
     config = config_module.Config.from_mapping(
         {
-            "default_profile": "default",
             "profile": {
                 "default": {
                     "description": "Base LSF profile",

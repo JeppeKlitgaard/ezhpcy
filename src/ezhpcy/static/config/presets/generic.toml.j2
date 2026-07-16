@@ -1,10 +1,9 @@
 # {{ preset }} HPC configuration for ezhpcy.
 
-default_profile = "default"
 log_level = "INFO"
 auto_provision = true
 
-[profile.default]
+[profile.base]
 host = "login.hpc.com"
 user = {{ user | tojson }}
 

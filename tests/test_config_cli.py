@@ -90,7 +90,6 @@ def test_list_profiles_shows_local_profile_metadata(
 ) -> None:
     config = Config.from_mapping(
         {
-            "default_profile": "default",
             "profile": {
                 "gpu": {
                     "description": "GPU jobs",
@@ -125,48 +124,55 @@ def test_config_load_creates_dtu_config_case_insensitively(
     assert result.exit_code == 0, result.output
     assert "loaded the DTU preset" in result.output
     contents = config_file.read_text(encoding="utf-8")
-    assert contents == (
+    expected = (
         "# DTU HPC configuration for ezhpcy.\n"
         "\n"
-        'default_profile = "default"\n'
         'log_level = "INFO"\n'
         "auto_provision = true\n"
         "\n"
-        "[profile.default]\n"
-        'description = "DTU LSF interactive queue"\n'
+        "[profile.base]\n"
+        "queue_timeout_seconds = 900\n"
+        "worker_startup_timeout_seconds = 60\n"
+        "\n"
+        "[profile.dtu-base]\n"
+        'inherit = "base"\n'
+        "\n"
+        'description = "DTU HPC"\n'
         'host = "login2.hpc.dtu.dk"\n'
         'user = "alice"\n'
         "\n"
+        "[profile.dtu-base-lsf]\n"
+        'inherit = "dtu-base"\n'
+        'description = "DTU HPC LSF based queues"\n'
+        "\n"
         'scheduler = "LSF"\n'
-        'queue = "hpcint"\n'
         "\n"
         "lsf_resource_reserve_per_task = true\n"
         'lsf_application_profile = "qrsh"\n'
         'lsf_submission_environment = { ESUB_BYPASS = "1", ESUB_QUIET = "1", LSF_QRSH = "true" }\n'
         'lsf_export_environment = ["TERM", "LSF_QRSH"]\n'
         "\n"
-        "queue_timeout_seconds = 900\n"
-        "worker_startup_timeout_seconds = 60\n"
-        "\n"
-        "[profile.pbs]\n"
-        'description = "DTU PBS work queue"\n'
-        'inherit = "default"\n'
+        "[profile.dtu-base-pbs]\n"
+        'inherit = "dtu-base"\n'
+        'description = "DTU HPC PBS Pro based queues"\n'
         'scheduler = "PBS"\n'
         'queue = "workq"\n'
         'pbs_command_directory = "/opt/pbspro/bin"\n'
         "\n"
         "[profile.dtu-gpul40s]\n"
         'description = "DTU L40S GPU queue"\n'
-        'inherit = "default"\n'
+        'inherit = "dtu-base-lsf"\n'
         "\n"
         'queue = "gpul40s"\n'
         "cores = 8\n"
         'time_limit = "1:00"\n'
         'memory = "32GB"\n'
     )
+    assert contents.startswith("# DTU HPC configuration for ezhpcy.\n")
+    assert tomllib.loads(contents) == tomllib.loads(expected)
     loaded = tomllib.loads(contents)
     loaded_config = Config.from_mapping(loaded)
-    assert str(loaded_config.resolve_profile().host) == "login2.hpc.dtu.dk"
+    assert str(loaded_config.resolve_profile("dtu-base").host) == "login2.hpc.dtu.dk"
     assert loaded_config.resolve_profile("dtu-gpul40s").cores == 8
     assert str(loaded_config.resolve_profile("pbs").pbs_command_directory) == (
         "/opt/pbspro/bin"
@@ -178,7 +184,7 @@ def test_config_load_existing_file_defaults_to_no(
 ) -> None:
     config_file = tmp_path / "ezhpcy.toml"
     config_file.write_text(
-        'default_profile = "old"\n[profile.old]\nhost = "old.example.com"\n',
+        '[profile.old]\nhost = "old.example.com"\n',
         encoding="utf-8",
     )
     use_config_file(monkeypatch, config_load, config_file)
@@ -194,7 +200,7 @@ def test_config_load_existing_file_defaults_to_no(
     assert "[y/n] (n)" in result.output
     assert "configuration unchanged" in result.output
     assert config_file.read_text(encoding="utf-8") == (
-        'default_profile = "old"\n[profile.old]\nhost = "old.example.com"\n'
+        '[profile.old]\nhost = "old.example.com"\n'
     )
 
 
@@ -203,7 +209,7 @@ def test_config_load_yes_overwrites_existing_file(
 ) -> None:
     config_file = tmp_path / "ezhpcy.toml"
     config_file.write_text(
-        'default_profile = "old"\n[profile.old]\nhost = "old.example.com"\n',
+        '[profile.old]\nhost = "old.example.com"\n',
         encoding="utf-8",
     )
     use_config_file(monkeypatch, config_load, config_file)

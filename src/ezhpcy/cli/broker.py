@@ -25,7 +25,7 @@ def broker_cmd(
     profile_context: ProfileContext,
 ) -> None:
     """Run the authenticated worker-stream broker in the foreground."""
-    backend = create_broker_backend(profile_name=profile_context.name)
+    backend = create_broker_backend(profile=profile_context.name)
 
     with InteractiveSSHClient(profile_context.connection) as ssh:
         ssh.interactive_connect()

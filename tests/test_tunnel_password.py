@@ -34,12 +34,11 @@ def resolve_password(
 @pytest.fixture(autouse=True)
 def without_default_password(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv(common.PASSWORD_ENV_VAR, raising=False)
-    monkeypatch.setattr(common.config, "default_profile", "default")
     monkeypatch.setattr(
         common.config,
         "profile",
         {
-            "default": ProfileConfig(
+            "base": ProfileConfig(
                 host="login.example.com", user="alice", scheduler="LSF"
             )
         },
@@ -96,6 +95,8 @@ def test_password_env_cli_fails_loudly_when_variable_is_unset() -> None:
         app,
         [
             "compute",
+            "--profile",
+            "base",
             "--scheduler",
             "lsf",
             "--user",

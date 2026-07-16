@@ -59,7 +59,6 @@ class _ConfigValues(BaseModel):
     local_file: LocalFileConfig = LocalFileConfig()
     log_level: LogLevel = LogLevel.INFO
     auto_provision: bool = True
-    default_profile: str | None = None
     profile: dict[str, ProfileConfig] = Field(default_factory=dict)
 
     model_config = ConfigDict(extra="forbid")
@@ -81,25 +80,16 @@ class _ConfigValues(BaseModel):
                 "profile names may contain only letters, digits, '.', '_', and '-': "
                 + ", ".join(repr(name) for name in invalid_names)
             )
-        if (
-            self.default_profile is not None
-            and self.default_profile not in self.profile
-        ):
-            raise ValueError(
-                f"default_profile {self.default_profile!r} does not name a configured profile"
-            )
+
         for name in self.profile:
             self.resolve_profile(name)
         return self
 
     def resolve_profile(self, name: str | None = None) -> ResolvedProfileConfig:
-        selected = name or self.default_profile
-        if selected is None:
-            raise ValueError(
-                "no profile was selected and default_profile is not configured"
-            )
-        if selected not in self.profile:
-            raise ValueError(f"unknown profile {selected!r}")
+        if name is None:
+            raise ValueError("no profile was selected")
+        if name not in self.profile:
+            raise ValueError(f"unknown profile {name!r}")
 
         def merged(profile_name: str, chain: tuple[str, ...]) -> dict[str, object]:
             if profile_name in chain:
@@ -108,7 +98,7 @@ class _ConfigValues(BaseModel):
             try:
                 current = self.profile[profile_name]
             except KeyError:
-                parent = chain[-1] if chain else selected
+                parent = chain[-1] if chain else name
                 raise ValueError(
                     f"profile {parent!r} inherits unknown profile {profile_name!r}"
                 ) from None
@@ -119,7 +109,7 @@ class _ConfigValues(BaseModel):
             values.update(current.model_dump(exclude={"inherit"}, exclude_unset=True))
             return values
 
-        return ResolvedProfileConfig.model_validate(merged(selected, ()))
+        return ResolvedProfileConfig.model_validate(merged(name, ()))
 
 
 class Config(BaseSettings, _ConfigValues):
@@ -155,7 +145,6 @@ class Config(BaseSettings, _ConfigValues):
             local_file=validated.local_file,
             log_level=validated.log_level,
             auto_provision=validated.auto_provision,
-            default_profile=validated.default_profile,
             profile=validated.profile,
         )
 

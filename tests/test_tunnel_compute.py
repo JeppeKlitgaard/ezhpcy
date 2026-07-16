@@ -419,7 +419,7 @@ def test_compute_tunnel_submits_worker_starts_broker_and_cancels() -> None:
         patch("ezhpcy.cli.compute.logger") as logger,
     ):
         _run_compute_tunnel(
-            profile_name="default",
+            profile_name="base",
             profile=lsf_profile(),
             conn_info=ConnectionInfo(user="alice", host="login.example.com"),
             scheduler_type=SchedulerType.LSF,
@@ -520,7 +520,7 @@ def test_compute_tunnel_cancels_job_when_worker_startup_fails() -> None:
         pytest.raises(ComputeTunnelError, match="did not listen"),
     ):
         _run_compute_tunnel(
-            profile_name="default",
+            profile_name="base",
             profile=lsf_profile(),
             conn_info=ConnectionInfo(user="alice", host="login.example.com"),
             scheduler_type=SchedulerType.LSF,
@@ -626,15 +626,21 @@ def test_compute_tunnel_help_exposes_scheduler_and_resource_options() -> None:
     assert "--profile" in result.stdout
 
 
+def test_compute_command_requires_an_explicit_profile() -> None:
+    result = CliRunner().invoke(app, ["compute"])
+
+    assert result.exit_code == 2
+    assert "no profile was selected" in result.stderr
+
+
 def test_compute_command_resolves_profile_and_applies_cli_overrides(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(compute_module.config, "default_profile", "default")
     monkeypatch.setattr(
         compute_module.config,
         "profile",
         {
-            "default": ProfileConfig(
+            "base": ProfileConfig(
                 host="login.example.com",
                 user="alice",
                 scheduler="LSF",
@@ -645,7 +651,7 @@ def test_compute_command_resolves_profile_and_applies_cli_overrides(
                 time_limit="1:00",
                 memory="32GB",
             ),
-            "gpu": ProfileConfig(inherit="default", queue="gpu", cores=8),
+            "gpu": ProfileConfig(inherit="base", queue="gpu", cores=8),
         },
     )
     captured: dict[str, object] = {}
@@ -695,6 +701,8 @@ def test_compute_command_resolves_profile_and_applies_cli_overrides(
         app,
         [
             "compute",
+            "--profile",
+            "base",
             "--worker-port",
             "55000",
             "--worker-port-retries",
@@ -709,12 +717,11 @@ def test_compute_command_resolves_profile_and_applies_cli_overrides(
 def test_compute_command_can_disable_auto_provision(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(compute_module.config, "default_profile", "default")
     monkeypatch.setattr(
         compute_module.config,
         "profile",
         {
-            "default": ProfileConfig(
+            "base": ProfileConfig(
                 host="login.example.com", user="alice", scheduler="LSF"
             )
         },
@@ -735,7 +742,9 @@ def test_compute_command_can_disable_auto_provision(
         lambda **kwargs: captured.update(kwargs),
     )
 
-    result = CliRunner().invoke(app, ["compute", "--no-auto-provision"])
+    result = CliRunner().invoke(
+        app, ["compute", "--profile", "base", "--no-auto-provision"]
+    )
 
     assert result.exit_code == 0, result.output
     assert credentials_checked
@@ -745,13 +754,12 @@ def test_compute_command_can_disable_auto_provision(
 def test_compute_command_can_enable_auto_provision_when_config_disables_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(compute_module.config, "default_profile", "default")
     monkeypatch.setattr(compute_module.config, "auto_provision", False)
     monkeypatch.setattr(
         compute_module.config,
         "profile",
         {
-            "default": ProfileConfig(
+            "base": ProfileConfig(
                 host="login.example.com", user="alice", scheduler="LSF"
             )
         },
@@ -763,7 +771,9 @@ def test_compute_command_can_enable_auto_provision_when_config_disables_it(
         lambda **kwargs: captured.update(kwargs),
     )
 
-    result = CliRunner().invoke(app, ["compute", "--auto-provision"])
+    result = CliRunner().invoke(
+        app, ["compute", "--profile", "base", "--auto-provision"]
+    )
 
     assert result.exit_code == 0, result.output
     assert captured["auto_provision"] is True
@@ -772,12 +782,11 @@ def test_compute_command_can_enable_auto_provision_when_config_disables_it(
 def test_compute_command_rejects_conflicting_auto_provision_flags(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(compute_module.config, "default_profile", "default")
     monkeypatch.setattr(
         compute_module.config,
         "profile",
         {
-            "default": ProfileConfig(
+            "base": ProfileConfig(
                 host="login.example.com", user="alice", scheduler="LSF"
             )
         },
@@ -785,7 +794,13 @@ def test_compute_command_rejects_conflicting_auto_provision_flags(
 
     result = CliRunner().invoke(
         app,
-        ["compute", "--auto-provision", "--no-auto-provision"],
+        [
+            "compute",
+            "--profile",
+            "base",
+            "--auto-provision",
+            "--no-auto-provision",
+        ],
     )
 
     assert result.exit_code == 2
@@ -795,11 +810,10 @@ def test_compute_command_rejects_conflicting_auto_provision_flags(
 def test_compute_command_rejects_unknown_profile_before_starting(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(compute_module.config, "default_profile", "default")
     monkeypatch.setattr(
         compute_module.config,
         "profile",
-        {"default": ProfileConfig(host="login.example.com", user="alice")},
+        {"base": ProfileConfig(host="login.example.com", user="alice")},
     )
     started = False
 

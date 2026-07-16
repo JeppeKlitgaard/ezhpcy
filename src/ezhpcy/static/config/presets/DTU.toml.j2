@@ -4,32 +4,41 @@ default_profile = "default"
 log_level = "INFO"
 auto_provision = true
 
-[profile.default]
-description = "DTU LSF interactive queue"
+[profile.base]
+queue_timeout_seconds = 900
+worker_startup_timeout_seconds = 60
+
+[profile.dtu-base]
+inherit = "base"
+
+description = "DTU HPC"
 host = "login2.hpc.dtu.dk"
 user = {{ user | tojson }}
 
+[profile.dtu-base-lsf]
+inherit = "dtu-base"
+description = "DTU HPC LSF based queues"
+
+
 scheduler = "LSF"
-queue = "hpcint"
 
 lsf_resource_reserve_per_task = true
 lsf_application_profile = "qrsh"
 lsf_submission_environment = { ESUB_BYPASS = "1", ESUB_QUIET = "1", LSF_QRSH = "true" }
 lsf_export_environment = ["TERM", "LSF_QRSH"]
 
-queue_timeout_seconds = 900
-worker_startup_timeout_seconds = 60
+[profile.dtu-base-pbs]
+inherit = "dtu-base"
+description = "DTU HPC PBS Pro based queues"
 
-[profile.pbs]
-description = "DTU PBS work queue"
-inherit = "default"
 scheduler = "PBS"
 queue = "workq"
+
 pbs_command_directory = "/opt/pbspro/bin"
 
 [profile.dtu-gpul40s]
 description = "DTU L40S GPU queue"
-inherit = "default"
+inherit = "dtu-base-lsf"
 
 queue = "gpul40s"
 cores = 8

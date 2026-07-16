@@ -200,22 +200,21 @@ def profile_context_from_options(
         resolved_profile = config.resolve_profile(profile)
     except ValueError as error:
         raise RichBadParameter(str(error), param_hint="--profile") from error
-    profile_name = profile or config.default_profile
-    assert profile_name is not None
+    assert profile is not None
 
     user = resolve_forbidden_none(
         cli_value=user,
         config_value=resolved_profile.user,
         name="user",
         cli_param="--user",
-        config_param=f"profile.{profile_name}.user",
+        config_param=f"profile.{profile}.user",
     )
     resolved_host = resolve_forbidden_none(
         cli_value=host,
         config_value=(str(resolved_profile.host) if resolved_profile.host else None),
         name="host",
         cli_param="--host",
-        config_param=f"profile.{profile_name}.host",
+        config_param=f"profile.{profile}.host",
     )
     resolved_password = resolve_password(
         password=password,
@@ -235,7 +234,10 @@ def profile_context_from_options(
             "host": resolved_host,
         }
     )
-    return ProfileContext(name=profile_name, profile=resolved_config)
+    return ProfileContext(
+        name=profile,
+        profile=resolved_config,
+    )
 
 
 with_profile_options = attach_hook(

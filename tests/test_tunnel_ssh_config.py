@@ -35,7 +35,6 @@ def test_ssh_config_command_is_available_and_uses_current_python(monkeypatch) ->
     monkeypatch.setattr(
         "ezhpcy.utils.machineid.hashed_id", lambda _app_id: "machine-id"
     )
-    monkeypatch.setattr(ssh_config.config, "default_profile", "default")
     monkeypatch.setattr(
         ssh_config.config,
         "profile",

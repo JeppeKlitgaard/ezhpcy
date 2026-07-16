@@ -488,7 +488,7 @@ def _run_compute_tunnel(
                 timeout_seconds=startup_timeout_seconds,
             )
 
-            backend = create_broker_backend(profile_name=profile_name)
+            backend = create_broker_backend(profile=profile_name)
             broker = ForegroundBroker(
                 transport,
                 destination,

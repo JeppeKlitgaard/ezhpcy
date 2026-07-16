@@ -17,10 +17,9 @@ def proxy_cmd(profile: ProfileOpt = None) -> None:
             config.resolve_profile(profile)
         except ValueError as error:
             raise RichBadParameter(str(error), param_hint="--profile") from error
-        profile_name = profile or config.default_profile
-        assert profile_name is not None
+        assert profile is not None
         relay_proxy_stdio(
-            load_broker_backend(profile_name=profile_name),
+            load_broker_backend(profile=profile),
             sys.stdin.buffer,
             sys.stdout.buffer,
         )

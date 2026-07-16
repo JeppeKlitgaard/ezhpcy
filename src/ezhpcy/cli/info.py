@@ -1,3 +1,5 @@
+from json import dumps as json_dumps
+
 import typer
 from rich.table import Table
 
@@ -10,21 +12,52 @@ from ezhpcy.utils import local_machine_id
 def info_cmd(json: bool = False) -> None:
     """Show debug information for EzHPCy."""
 
-    data = [
-        {
-            "key": "EZHPCY Version",
-            "value": ezhpcy_version(),
-            "description": "Current version of EzHPCy.",
-        },
-        {
-            "key": "Machine ID",
-            "value": local_machine_id(),
-            "description": "Unique identifier for the local machine.",
-        },
+    datas = [
+        # Section 1: General
+        [
+            {
+                "key": "EzHPCy Version",
+                "value": ezhpcy_version(),
+                "description": "Current version of EzHPCy.",
+            },
+            {
+                "key": "Machine ID",
+                "value": local_machine_id(),
+                "description": "Unique identifier for the local machine.",
+            },
+        ],
+        # Section 2: Directories
+        [
+            {
+                "key": "Cache Directory",
+                "value": str(config.local_file.cache_dir),
+                "description": "Directory where EzHPCy caches data.",
+            },
+            {
+                "key": "Config Directory",
+                "value": str(config.local_file.config_dir),
+                "description": "Directory where EzHPCy configuration files are stored.",
+            },
+            {
+                "key": "Data Directory",
+                "value": str(config.local_file.data_dir),
+                "description": "Directory where EzHPCy stores data.",
+            },
+            {
+                "key": "Runtime Directory",
+                "value": str(config.local_file.runtime_dir),
+                "description": "Directory where EzHPCy stores runtime files.",
+            },
+        ],
     ]
 
     if json:
-        typer.echo(json.dumps(data, indent=4))
+        # flat_data = [*section for section in datas]  # 3.15+
+        flat_data = []
+        for section in datas:
+            flat_data.extend(section)
+
+        typer.echo(json_dumps(flat_data, indent=4))
         return
 
     table = Table(title="EzHPCy Information")
@@ -33,34 +66,11 @@ def info_cmd(json: bool = False) -> None:
     table.add_column("Value", justify="left", style="white", no_wrap=True)
     table.add_column("Description", justify="left", style="green", no_wrap=False)
 
-    # General
-    table.add_row("EzHPCy Version", ezhpcy_version(), "Current version of EzHPCy.")
-    table.add_row(
-        "Machine ID", local_machine_id(), "Unique identifier for the local machine."
-    )
+    for i, section in enumerate(datas):
+        if i > 0:
+            table.add_section()
 
-    table.add_section()
-
-    # Directories
-    table.add_row(
-        "Cache Directory",
-        str(config.local_file.cache_dir),
-        "Directory where EzHPCy caches data.",
-    )
-    table.add_row(
-        "Config Directory",
-        str(config.local_file.config_dir),
-        "Directory where EzHPCy configuration files are stored.",
-    )
-    table.add_row(
-        "Data Directory",
-        str(config.local_file.data_dir),
-        "Directory where EzHPCy stores data.",
-    )
-    table.add_row(
-        "Runtime Directory",
-        str(config.local_file.runtime_dir),
-        "Directory where EzHPCy stores runtime files.",
-    )
+        for row in section:
+            table.add_row(row["key"], row["value"], row["description"])
 
     console.print(table)

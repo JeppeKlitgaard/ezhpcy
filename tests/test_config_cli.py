@@ -7,7 +7,6 @@ from typer.testing import CliRunner
 
 from ezhpcy.cli import app, list_profiles as config_list_profiles
 from ezhpcy.cli.config import (
-    dir as config_dir,
     edit as config_edit,
     load as config_load,
 )
@@ -67,22 +66,8 @@ def test_config_edit_is_listed_in_help() -> None:
     result = runner.invoke(app, ["config", "--help"])
 
     assert result.exit_code == 0, result.output
-    assert "dir" in result.output
     assert "edit" in result.output
     assert "load" in result.output
-
-
-def test_config_dir_prints_config_directory(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    config_directory = tmp_path / "custom config"
-    config = Config.from_mapping({"local_file": {"config_dir": config_directory}})
-    monkeypatch.setattr(config_dir, "config", config)
-
-    result = runner.invoke(app, ["config", "dir"])
-
-    assert result.exit_code == 0, result.output
-    assert result.output == f"{config_directory}\n"
 
 
 def test_list_profiles_shows_local_profile_metadata(

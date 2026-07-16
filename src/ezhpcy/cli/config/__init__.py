@@ -1,6 +1,5 @@
 import typer
 
-from ezhpcy.cli.config.dir import dir_cmd
 from ezhpcy.cli.config.edit import edit_cmd
 from ezhpcy.cli.config.load import load_cmd
 from ezhpcy.cli.utils.alias import AliasGroup
@@ -11,7 +10,6 @@ config_app = typer.Typer(
     no_args_is_help=True,
 )
 
-config_app.command(name="dir", help="Print the configuration directory.")(dir_cmd)
 config_app.command(name="edit", help="Open the configuration file in an editor.")(
     edit_cmd
 )

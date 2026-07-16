@@ -24,7 +24,7 @@ dependencies = [
 ]
 
 [project.scripts]
-ezhpcy = "ezhpcy.cli.entry:main"
+ezhpcy = "ezhpcy.cli:main"
 
 [dependency-groups]
 dev = [

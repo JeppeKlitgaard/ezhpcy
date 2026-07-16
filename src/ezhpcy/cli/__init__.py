@@ -44,3 +44,11 @@ app.command(
 app.command(name="proxy", help="Proxy SSH bytes through a running tunnel broker.")(
     proxy_cmd
 )
+
+
+def main() -> None:
+    app()
+
+
+if __name__ == "__main__":
+    main()

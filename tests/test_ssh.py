@@ -17,6 +17,8 @@ def test_interactive_ssh_prompts_after_key_authentication_fails() -> None:
     client = InteractiveSSHClient(
         ConnectionInfo(user="alice", host="login.example.com")
     )
+    transport = MagicMock()
+    transport.is_active.return_value = True
 
     with (
         patch.object(
@@ -28,6 +30,7 @@ def test_interactive_ssh_prompts_after_key_authentication_fails() -> None:
             "ezhpcy.cli.utils.ssh.Prompt.ask",
             return_value="secret",
         ) as prompt,
+        patch.object(client, "get_transport", return_value=transport),
     ):
         client.interactive_connect()
 
@@ -44,6 +47,48 @@ def test_interactive_ssh_prompts_after_key_authentication_fails() -> None:
         ),
     ]
     prompt.assert_called_once()
+    transport.set_keepalive.assert_called_once_with(30)
+
+
+def test_interactive_ssh_enables_default_transport_keepalive() -> None:
+    client = InteractiveSSHClient(
+        ConnectionInfo(user="alice", host="login.example.com")
+    )
+    transport = MagicMock()
+    transport.is_active.return_value = True
+
+    with (
+        patch.object(client, "connect") as connect,
+        patch.object(client, "get_transport", return_value=transport),
+    ):
+        client.interactive_connect()
+
+    connect.assert_called_once_with(
+        hostname="login.example.com",
+        username="alice",
+        password=None,
+    )
+    transport.set_keepalive.assert_called_once_with(30)
+
+
+def test_interactive_ssh_uses_configured_transport_keepalive() -> None:
+    client = InteractiveSSHClient(
+        ConnectionInfo(
+            user="alice",
+            host="login.example.com",
+            ssh_keepalive_interval_seconds=75,
+        )
+    )
+    transport = MagicMock()
+    transport.is_active.return_value = True
+
+    with (
+        patch.object(client, "connect"),
+        patch.object(client, "get_transport", return_value=transport),
+    ):
+        client.interactive_connect()
+
+    transport.set_keepalive.assert_called_once_with(75)
 
 
 def test_interactive_ssh_does_not_prompt_for_unsupported_password_auth() -> None:

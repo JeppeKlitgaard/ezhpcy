@@ -204,6 +204,7 @@ class InteractiveSSHClient(SSHClient):
                         username=self.conn_info.user,
                         password=password,
                     )
+                    self._enable_keepalive()
                     return
                 except paramiko.AuthenticationException as retry_error:
                     self.close()
@@ -213,3 +214,11 @@ class InteractiveSSHClient(SSHClient):
                         f"[bold red]Error[/bold red] [{attempt}/3]: Invalid "
                         "password. Try again or press Ctrl+C to abort."
                     )
+        else:
+            self._enable_keepalive()
+
+    def _enable_keepalive(self) -> None:
+        transport = self.get_transport()
+        if transport is None or not transport.is_active():
+            raise paramiko.SSHException("SSH session is not active")
+        transport.set_keepalive(self.conn_info.ssh_keepalive_interval_seconds)

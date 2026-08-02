@@ -4,7 +4,7 @@ log_level = "INFO"
 auto_provision = true
 
 [profile.base]
-host = "login.hpc.com"
+host = "login.hpc.example.com"
 user = {{ user | tojson }}
 
 scheduler = "LSF"
@@ -12,3 +12,4 @@ queue = "hpcint"
 
 queue_timeout_seconds = 900
 worker_startup_timeout_seconds = 60
+ssh_keepalive_interval_seconds = 30

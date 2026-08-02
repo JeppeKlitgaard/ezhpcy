@@ -196,6 +196,9 @@ class ProfileContext:
             user=self.profile.user,
             password=self.profile.password,
             host=self.profile.host,
+            ssh_keepalive_interval_seconds=(
+                self.profile.ssh_keepalive_interval_seconds
+            ),
         )
 
 

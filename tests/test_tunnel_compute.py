@@ -784,6 +784,7 @@ def test_compute_command_resolves_profile_and_applies_cli_overrides(
                 exclusive=True,
                 time_limit="1:00",
                 memory="32GB",
+                ssh_keepalive_interval_seconds=75,
             ),
             "gpu": ProfileConfig(inherit="base", queue="gpu", cores=8),
         },
@@ -821,7 +822,9 @@ def test_compute_command_resolves_profile_and_applies_cli_overrides(
     assert captured["memory_bytes"] == 64_000_000_000
     assert captured["time_limit"] == timedelta(hours=1)
     assert captured["conn_info"] == ConnectionInfo(
-        host="login.example.com", user="alice"
+        host="login.example.com",
+        user="alice",
+        ssh_keepalive_interval_seconds=75,
     )
     assert captured["auto_provision"] is True
     worker_ports = captured["worker_ports"]

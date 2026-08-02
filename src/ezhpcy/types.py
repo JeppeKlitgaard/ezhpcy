@@ -59,6 +59,7 @@ class ProfileConfig(BaseModel):
     memory: PositiveByteSize | None = None
 
     # Connection timings
+    ssh_keepalive_interval_seconds: int | None = Field(default=None, gt=0)
     queue_timeout_seconds: float | None = Field(default=None, gt=0)
     worker_startup_timeout_seconds: float | None = Field(default=None, gt=0)
 
@@ -103,6 +104,7 @@ class _ResolvedConfigBase(BaseModel):
     memory: PositiveByteSize | None = None
 
     # Connection timings
+    ssh_keepalive_interval_seconds: int = Field(default=30, gt=0)
     queue_timeout_seconds: float = Field(default=15 * 60, gt=0)
     worker_startup_timeout_seconds: float = Field(default=60, gt=0)
 
@@ -189,6 +191,7 @@ class ResolvedConfig(_ResolvedConfigBase):
             # Connection timings
             "queue_timeout_seconds",
             "worker_startup_timeout_seconds",
+            "ssh_keepalive_interval_seconds",
             # Password sources
             "password",
             "password_file",

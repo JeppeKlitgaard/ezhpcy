@@ -42,6 +42,28 @@ def test_auto_provision_can_be_disabled_from_the_environment(monkeypatch) -> Non
     assert config.auto_provision is False
 
 
+def test_profile_ssh_keepalive_defaults_to_30_seconds_and_is_inherited() -> None:
+    config = config_module.Config.from_mapping(
+        {
+            "profile": {
+                "base": {"ssh_keepalive_interval_seconds": 75},
+                "child": {"inherit": "base"},
+                "default": {},
+            }
+        }
+    )
+
+    assert config.resolve_profile("default").ssh_keepalive_interval_seconds == 30
+    assert config.resolve_profile("child").ssh_keepalive_interval_seconds == 75
+
+
+def test_profile_ssh_keepalive_must_be_positive() -> None:
+    with pytest.raises(ValidationError, match="ssh_keepalive_interval_seconds"):
+        config_module.Config.from_mapping(
+            {"profile": {"base": {"ssh_keepalive_interval_seconds": 0}}}
+        )
+
+
 def test_profile_password_keyring_can_be_enabled() -> None:
     config = config_module.Config.from_mapping(
         {"profile": {"base": {"password_keyring": True}}}

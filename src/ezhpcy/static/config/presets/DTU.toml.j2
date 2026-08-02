@@ -6,6 +6,9 @@ auto_provision = true
 [profile.base]
 queue_timeout_seconds = 900
 worker_startup_timeout_seconds = 60
+ssh_keepalive_interval_seconds = 30
+# password_keyring = true  # Enable fetching password via system keyring, set with `ezhpcy keyring`
+# password_env = true  # Enable fetching password via environment variable, set with `export EZHPCY_PASSWORD=...`
 
 [profile.dtu-base]
 description = "DTU HPC"

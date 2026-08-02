@@ -63,8 +63,8 @@ class LocalFileConfig(BaseModel):
 class ConnectionInfo(BaseModel):
     user: str | None = None
     password: str | None = None
-
     host: DomainStr
+    ssh_keepalive_interval_seconds: int = Field(default=30, gt=0)
 
 
 class _ConfigValues(BaseModel):

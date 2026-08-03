@@ -1,3 +1,4 @@
+import logging
 import os
 import re
 from pathlib import Path
@@ -15,7 +16,7 @@ from pydantic_settings import (
 from rich.text import Text
 
 from ezhpcy.constants import PACKAGE_NAME, SSH_DIRECTORY_NAME
-from ezhpcy.logging import LogLevel, configure_logging
+from ezhpcy.logging import configure_logging
 from ezhpcy.types import PASSWORD_SOURCE_FIELDS, ProfileConfig, ResolvedProfileConfig
 from ezhpcy.utils import ssh_connection_id
 
@@ -69,7 +70,7 @@ class ConnectionInfo(BaseModel):
 
 class _ConfigValues(BaseModel):
     local_file: LocalFileConfig = LocalFileConfig()
-    log_level: LogLevel = LogLevel.INFO
+    log_level: int = logging.INFO
     auto_provision: bool = True
     profile: dict[str, ProfileConfig] = Field(default_factory=dict)
 
@@ -77,8 +78,13 @@ class _ConfigValues(BaseModel):
 
     @field_validator("log_level", mode="before")
     @classmethod
-    def normalize_log_level(cls, value: object) -> object:
-        return value.upper() if isinstance(value, str) else value
+    def parse_log_level(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        try:
+            return logging.getLevelNamesMapping()[value.strip().upper()]
+        except KeyError:
+            raise ValueError(f"unknown logging level: {value!r}") from None
 
     @model_validator(mode="after")
     def validate_profiles(self) -> Self:

@@ -1,3 +1,6 @@
+import logging
+from typing import Annotated
+
 import typer
 
 from ezhpcy.cli.broker import broker_cmd
@@ -12,12 +15,28 @@ from ezhpcy.cli.prune import prune_cmd
 from ezhpcy.cli.ssh_config import ssh_config_cmd
 from ezhpcy.cli.utils.group import EzhpcyTyperGroup
 from ezhpcy.cli.version import version_cmd
+from ezhpcy.logging import configure_logging
 
 app = typer.Typer(
     cls=EzhpcyTyperGroup,
     help="Utilities for working with HPC facilities.",
     no_args_is_help=True,
 )
+
+
+@app.callback()
+def main(
+    debug: Annotated[
+        bool,
+        typer.Option(
+            "--debug",
+            help="Enable debug logging and include timestamps in log output.",
+        ),
+    ] = False,
+) -> None:
+    if debug:
+        configure_logging(logging.DEBUG, include_timestamp=True)
+
 
 app.command(
     name="provision",

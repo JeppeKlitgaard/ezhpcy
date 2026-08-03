@@ -1,5 +1,4 @@
 import logging
-from enum import StrEnum
 from typing import TextIO
 
 from rich.console import Console
@@ -7,40 +6,15 @@ from rich.logging import RichHandler
 
 from ezhpcy.constants import PACKAGE_NAME
 
-LOG_LEVEL_ENVIRONMENT_VARIABLE = "EZHPCY_LOG_LEVEL"
-DEFAULT_LOG_LEVEL = logging.INFO
 TERMINAL_HANDLER_NAME = "ezhpcy-terminal"
 LOG_FORMAT = "[%(name)s] %(message)s"
 
 
-class LogLevel(StrEnum):
-    DEBUG = "DEBUG"
-    INFO = "INFO"
-    WARNING = "WARNING"
-    ERROR = "ERROR"
-    CRITICAL = "CRITICAL"
-
-
-def _resolve_log_level(level: int | str | LogLevel | None) -> int:
-    if level is None:
-        level = DEFAULT_LOG_LEVEL
-    if isinstance(level, int):
-        if level < 0:
-            raise ValueError("log level must be non-negative")
-        return level
-
-    normalized = level.strip().upper()
-    resolved = logging.getLevelNamesMapping().get(normalized)
-    if resolved is None:
-        raise ValueError(
-            f"invalid log level {level!r}; set {LOG_LEVEL_ENVIRONMENT_VARIABLE} "
-            "to DEBUG, INFO, WARNING, ERROR, or CRITICAL"
-        )
-    return resolved
-
-
 def configure_logging(
-    level: int | str | LogLevel | None = None, *, stream: TextIO | None = None
+    level: int | str = logging.INFO,
+    *,
+    stream: TextIO | None = None,
+    include_timestamp: bool = False,
 ) -> logging.Logger:
     """Configure EzHPCy's default terminal logger and return it.
 
@@ -48,7 +22,7 @@ def configure_logging(
     the level without duplicating each emitted record.
     """
     logger = logging.getLogger(PACKAGE_NAME)
-    logger.setLevel(_resolve_log_level(level))
+    logger.setLevel(level)
     logger.propagate = False
 
     handler = next(
@@ -78,9 +52,15 @@ def configure_logging(
             markup=False,
         )
         handler.set_name(TERMINAL_HANDLER_NAME)
-        handler.setFormatter(logging.Formatter(LOG_FORMAT))
         logger.addHandler(handler)
     elif stream is not None:
         handler.console = Console(file=stream, highlight=False)
+
+    handler.setFormatter(
+        logging.Formatter(
+            f"%(asctime)s {LOG_FORMAT}" if include_timestamp else LOG_FORMAT,
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+    )
 
     return logger

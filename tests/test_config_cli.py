@@ -109,21 +109,17 @@ def test_config_load_creates_dtu_config_case_insensitively(
     assert result.exit_code == 0, result.output
     assert "loaded the DTU preset" in result.output
     contents = config_file.read_text(encoding="utf-8")
-    assert contents.startswith("# DTU HPC configuration for EzHPCy.\n")
+    assert contents.startswith("### DTU HPC configuration for EzHPCy.\n")
     loaded = tomllib.loads(contents)
     assert loaded["profile"]["dtu-base"]["user"] == "alice"
     loaded_config = Config.from_mapping(loaded)
-    assert str(loaded_config.resolve_profile("dtu-base").host) == "login2.hpc.dtu.dk"
+    assert str(loaded_config.resolve_profile("dtu-base").host) == "login.hpc.dtu.dk"
     assert loaded_config.resolve_profile("dtu-gpul40s").cores == 8
     a100sh = loaded_config.resolve_profile("dtu-a100sh")
     assert a100sh.interactive_submission_command == ["/lsf/local/bin/a100sh"]
     assert a100sh.lsf_application_profile == "qrsh"
-    assert a100sh.lsf_submission_environment == {
-        "ESUB_BYPASS": "1",
-        "ESUB_QUIET": "1",
-        "LSF_QRSH": "true",
-    }
-    assert a100sh.lsf_export_environment == ["TERM", "LSF_QRSH"]
+    assert a100sh.lsf_submission_environment == {}
+    assert a100sh.lsf_export_environment == []
     assert {
         "lsf_resource_reserve_per_task",
         "lsf_application_profile",
@@ -152,7 +148,7 @@ def test_config_load_existing_file_defaults_to_no(
     assert result.exit_code == 1
     assert "Warning" in result.output
     assert '-host = "old.example.com"' in result.output
-    assert '+host = "login2.hpc.dtu.dk"' in result.output
+    assert '+host = "login.hpc.dtu.dk"' in result.output
     assert "[y/n] (n)" in result.output
     assert "configuration unchanged" in result.output
     assert config_file.read_text(encoding="utf-8") == (
@@ -175,7 +171,7 @@ def test_config_load_yes_overwrites_existing_file(
     assert result.exit_code == 0, result.output
     assert "Warning" in result.output
     assert "Overwrite the existing configuration?" not in result.output
-    assert 'host = "login2.hpc.dtu.dk"' in config_file.read_text(encoding="utf-8")
+    assert 'host = "login.hpc.dtu.dk"' in config_file.read_text(encoding="utf-8")
 
 
 def test_config_load_rejects_unknown_preset() -> None:

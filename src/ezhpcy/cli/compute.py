@@ -252,26 +252,31 @@ def _wait_for_worker_endpoint(
 
 
 def _monitor_job(
-    scheduler: Scheduler,
-    job_id: str,
+    job: InteractiveJob,
     broker: ForegroundBroker,
     stop_requested: threading.Event,
     job_finished: threading.Event,
-    errors: list[Exception],
+    errors: list[ComputeTunnelError],
 ) -> None:
+    """Watch the attached job without opening recurring scheduler SSH channels."""
     while not stop_requested.wait(_JOB_MONITOR_INTERVAL):
-        try:
-            info = scheduler.inspect(job_id)
-        except SchedulerError as error:
-            errors.append(error)
-            logger.error("Could not inspect worker job %s: %s", job_id, error)
-            broker.close()
-            return
-
-        if info.state.is_terminal or info.state is JobState.UNKNOWN:
+        if job.process.exit_status_ready():
+            exit_status = job.process.recv_exit_status()
+            if exit_status == -1:
+                errors.append(
+                    ComputeTunnelError(
+                        f"worker job {job.job_id} interactive submission channel "
+                        "closed without an exit status; the login-node SSH "
+                        "transport was likely lost"
+                    )
+                )
+                broker.close()
+                return
             job_finished.set()
             logger.info(
-                "Worker job %s ended in scheduler state %s.", job_id, info.raw_state
+                "Worker job %s interactive session ended with status %d.",
+                job.job_id,
+                exit_status,
             )
             broker.close()
             return
@@ -542,12 +547,11 @@ def _run_compute_tunnel(
                 ),
             )
             monitor_stop = threading.Event()
-            monitor_errors: list[Exception] = []
+            monitor_errors: list[ComputeTunnelError] = []
             monitor = threading.Thread(
                 target=_monitor_job,
                 args=(
-                    scheduler,
-                    job_id,
+                    interactive_job,
                     broker,
                     monitor_stop,
                     job_finished,
@@ -584,11 +588,8 @@ def _run_compute_tunnel(
                 monitor.join(timeout=1)
                 if previous_sigbreak_handler is not None:
                     signal.signal(signal.SIGBREAK, previous_sigbreak_handler)
-
             if monitor_errors:
-                raise ComputeTunnelError(
-                    f"could not monitor worker job {job_id}: {monitor_errors[0]}"
-                )
+                raise monitor_errors[0]
         finally:
             if not job_finished.is_set():
                 try:

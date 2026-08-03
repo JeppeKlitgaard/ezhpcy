@@ -15,6 +15,7 @@ from ezhpcy.cli import app, compute as compute_module
 from ezhpcy.cli.compute import (
     ComputeTunnelError,
     _drain_interactive_job,
+    _monitor_job,
     _run_compute_tunnel,
     _select_worker_ports,
     _wait_for_running_job,
@@ -77,15 +78,16 @@ def test_worker_sshd_command_retries_ports_through_pixi() -> None:
         "exec",
         f"--spec={OPENSSH_MATCHSPEC}",
     )
-    assert command[6:11] == (
+    assert command[6:10] == (
         "sh",
         "-c",
         command[8],
         "sshd",
-        "2",
     )
-    assert command[11:13] == ("54321", "54322")
+    assert command[10] == "54321:54322"
     assert "command -v sshd" in command[8]
+    assert 'ports="$1"; shift' in command[8]
+    assert 'port="${ports%%:*}"' in command[8]
     assert '"$sshd_path" -D -e -p "$port"' in command[8]
     assert "worker sshd selected port" in command[8]
     assert command.count("sh") == 1
@@ -191,6 +193,18 @@ class OutputProcess(StubProcess):
 
     def exit_status_ready(self) -> bool:
         return not self.chunks
+
+
+class FinishedProcess(StubProcess):
+    def __init__(self, exit_status: int = 0) -> None:
+        super().__init__()
+        self.exit_status = exit_status
+
+    def exit_status_ready(self) -> bool:
+        return True
+
+    def recv_exit_status(self) -> int:
+        return self.exit_status
 
 
 class StubTransport:
@@ -362,6 +376,35 @@ def test_worker_port_wait_fails_when_all_binds_fail() -> None:
 
     with pytest.raises(ComputeTunnelError, match="failed to bind any candidate"):
         _wait_for_selected_worker_port(job, queue.Queue(), timeout_seconds=1)
+
+
+def test_job_monitor_uses_interactive_process_without_scheduler_polling() -> None:
+    job = InteractiveJob("42", FinishedProcess(0), "")
+    broker = StubBroker(None, ("node42", 54321), None)
+    job_finished = threading.Event()
+    errors: list[ComputeTunnelError] = []
+
+    with patch("ezhpcy.cli.compute._JOB_MONITOR_INTERVAL", 0):
+        _monitor_job(job, broker, threading.Event(), job_finished, errors)
+
+    assert job_finished.is_set()
+    assert not errors
+    assert broker.closed
+
+
+def test_job_monitor_does_not_treat_missing_exit_status_as_job_completion() -> None:
+    job = InteractiveJob("42", FinishedProcess(-1), "")
+    broker = StubBroker(None, ("node42", 54321), None)
+    job_finished = threading.Event()
+    errors: list[ComputeTunnelError] = []
+
+    with patch("ezhpcy.cli.compute._JOB_MONITOR_INTERVAL", 0):
+        _monitor_job(job, broker, threading.Event(), job_finished, errors)
+
+    assert not job_finished.is_set()
+    assert len(errors) == 1
+    assert "closed without an exit status" in str(errors[0])
+    assert broker.closed
 
 
 def test_worker_endpoint_waits_for_an_ssh_banner() -> None:

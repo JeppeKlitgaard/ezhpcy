@@ -1,3 +1,4 @@
+import threading
 from binascii import hexlify
 from pathlib import Path, PurePosixPath
 
@@ -15,15 +16,18 @@ _EXEC_ABSOLUTE_SSHD = (
     '*) echo "sshd must resolve to an absolute path" >&2; exit 1;; esac'
 )
 SSHD_PORT_MARKER = "ezhpcy: worker sshd selected port "
+_SERVER_ALIVE_REQUEST = "keepalive@openssh.com"
 _EXEC_RETRYING_SSHD = (
     'sshd_path="$(command -v sshd)" || exit; '
     'case "$sshd_path" in /*) ;; '
     '*) echo "sshd must resolve to an absolute path" >&2; exit 1;; esac; '
-    'port_count="$1"; shift; pid=; '
+    'ports="$1"; shift; pid=; '
     'trap \'[ -z "$pid" ] || kill "$pid" 2>/dev/null; exit 143\' '
     "HUP INT TERM; "
-    'while [ "$port_count" -gt 0 ]; do '
-    'port="$1"; shift; port_count=$((port_count - 1)); '
+    'while [ -n "$ports" ]; do '
+    'case "$ports" in '
+    '*:*) port="${ports%%:*}"; ports="${ports#*:}";; '
+    '*) port="$ports"; ports=;; esac; '
     '"$sshd_path" -D -e -p "$port" "$@" & pid=$!; '
     "sleep 0.1; "
     'if kill -0 "$pid" 2>/dev/null; then '
@@ -50,8 +54,7 @@ def retrying_sshd_command(arguments: list[str], ports: tuple[int, ...]) -> list[
         "-c",
         _EXEC_RETRYING_SSHD,
         "sshd",
-        str(len(ports)),
-        *(str(port) for port in ports),
+        ":".join(str(port) for port in ports),
         *arguments,
     ]
 
@@ -170,6 +173,7 @@ class InteractiveSSHClient(SSHClient):
         super().__init__(conn_info=conn_info)
         self.conn_info = conn_info
         self.password_prompt = password_prompt
+        self._server_alive_stop = threading.Event()
 
         self.load_system_host_keys()
         self.set_missing_host_key_policy(PromptMissingHostKeyPolicy())
@@ -230,4 +234,36 @@ class InteractiveSSHClient(SSHClient):
         transport = self.get_transport()
         if transport is None or not transport.is_active():
             raise paramiko.SSHException("SSH session is not active")
-        transport.set_keepalive(self.conn_info.ssh_keepalive_interval_seconds)
+        interval = self.conn_info.ssh_keepalive_interval_seconds
+        # Paramiko's built-in keepalive is a one-way request. Keep it for idle
+        # traffic, then add an OpenSSH-style request/reply heartbeat so this has
+        # the same liveness properties as ServerAliveInterval.
+        transport.set_keepalive(interval)
+        self._server_alive_stop = threading.Event()
+        threading.Thread(
+            target=_send_server_alive_requests,
+            args=(transport, self._server_alive_stop, interval),
+            daemon=True,
+            name="ezhpcy-ssh-server-alive",
+        ).start()
+
+    def close(self) -> None:
+        self._server_alive_stop.set()
+        super().close()
+
+
+def _send_server_alive_requests(
+    transport: paramiko.Transport,
+    stop_requested: threading.Event,
+    interval_seconds: int,
+) -> None:
+    """Request a server response periodically, matching OpenSSH keepalives."""
+    while not stop_requested.wait(interval_seconds):
+        if not transport.is_active():
+            return
+        try:
+            # A failure response still proves that the server is alive. The
+            # request name is the one OpenSSH uses for ServerAliveInterval.
+            transport.global_request(_SERVER_ALIVE_REQUEST, wait=True)
+        except EOFError, OSError, paramiko.SSHException:
+            return

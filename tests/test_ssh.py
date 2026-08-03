@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, call, patch
 import paramiko
 import pytest
 
-from ezhpcy.cli.utils.ssh import InteractiveSSHClient
+from ezhpcy.cli.utils.ssh import InteractiveSSHClient, _send_server_alive_requests
 from ezhpcy.config import ConnectionInfo
 from ezhpcy.constants import EZHPCY_VERSION, PIXI_VERSION
 from ezhpcy.ssh import SFTPClient, SSHClient
@@ -89,6 +89,18 @@ def test_interactive_ssh_uses_configured_transport_keepalive() -> None:
         client.interactive_connect()
 
     transport.set_keepalive.assert_called_once_with(75)
+
+
+def test_interactive_ssh_server_alive_requests_require_a_reply() -> None:
+    transport = MagicMock()
+    transport.is_active.return_value = True
+    stop_requested = MagicMock()
+    stop_requested.wait.side_effect = [False, True]
+
+    _send_server_alive_requests(transport, stop_requested, 30)
+
+    assert stop_requested.wait.call_args_list == [call(30), call(30)]
+    transport.global_request.assert_called_once_with("keepalive@openssh.com", wait=True)
 
 
 def test_interactive_ssh_does_not_prompt_for_unsupported_password_auth() -> None:

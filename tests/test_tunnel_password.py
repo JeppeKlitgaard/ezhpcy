@@ -189,7 +189,11 @@ def test_anonymous_broker_uses_configuration_descriptor(
         return backend
 
     monkeypatch.setattr(broker_module, "create_broker_backend", create_backend)
-    monkeypatch.setattr(broker_module, "InteractiveSSHClient", lambda _info: ssh)
+    monkeypatch.setattr(
+        broker_module,
+        "InteractiveSSHClient",
+        lambda _info, **_kwargs: ssh,
+    )
     monkeypatch.setattr(
         broker_module, "ForegroundBroker", lambda *_args, **_kwargs: broker
     )

@@ -48,6 +48,7 @@ class ProfileConfig(BaseModel):
     password_file: Path | None = None
     password_fd: int | None = Field(default=None, ge=0)
     password_keyring: bool | None = None
+    password_prompt: bool | None = None
 
     # Scheduler setup
     scheduler: SchedulerType | None = None
@@ -93,6 +94,7 @@ class _ResolvedConfigBase(BaseModel):
     password_file: Path | None = None
     password_fd: int | None = None
     password_keyring: bool = False
+    password_prompt: bool = True
 
     # Scheduler setup
     scheduler: SchedulerType | None = None
@@ -197,6 +199,7 @@ class ResolvedConfig(_ResolvedConfigBase):
             "password_file",
             "password_fd",
             "password_keyring",
+            "password_prompt",
             #
         }
     )

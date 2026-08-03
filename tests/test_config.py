@@ -42,6 +42,21 @@ def test_auto_provision_can_be_disabled_from_the_environment(monkeypatch) -> Non
     assert config.auto_provision is False
 
 
+def test_profile_password_prompt_defaults_to_true_and_is_inherited() -> None:
+    config = config_module.Config.from_mapping(
+        {
+            "profile": {
+                "base": {"password_prompt": False},
+                "child": {"inherit": "base"},
+                "default": {},
+            }
+        }
+    )
+
+    assert config.resolve_profile("default").password_prompt is True
+    assert config.resolve_profile("child").password_prompt is False
+
+
 def test_profile_ssh_keepalive_defaults_to_30_seconds_and_is_inherited() -> None:
     config = config_module.Config.from_mapping(
         {

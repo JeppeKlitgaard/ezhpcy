@@ -351,7 +351,10 @@ def _run_compute_tunnel(
     auto_provision: bool,
 ) -> None:
     machine_id = local_machine_id()
-    with InteractiveSSHClient(conn_info) as ssh:
+    with InteractiveSSHClient(
+        conn_info,
+        password_prompt=profile.password_prompt,
+    ) as ssh:
         ssh.interactive_connect()
         transport = ssh.get_transport()
         if transport is None or not transport.is_active():

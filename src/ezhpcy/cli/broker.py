@@ -95,7 +95,10 @@ def broker_cmd(
         ),
     )
 
-    with InteractiveSSHClient(profile_context.connection) as ssh:
+    with InteractiveSSHClient(
+        profile_context.connection,
+        password_prompt=profile_context.profile.password_prompt,
+    ) as ssh:
         ssh.interactive_connect()
         transport = ssh.get_transport()
         if transport is None or not transport.is_active():

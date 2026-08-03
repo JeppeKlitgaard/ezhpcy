@@ -107,6 +107,32 @@ def test_interactive_ssh_does_not_prompt_for_unsupported_password_auth() -> None
     prompt.assert_not_called()
 
 
+def test_interactive_ssh_does_not_prompt_when_password_prompt_is_disabled() -> None:
+    client = InteractiveSSHClient(
+        ConnectionInfo(
+            user="alice",
+            host="login.example.com",
+        ),
+        password_prompt=False,
+    )
+    error = paramiko.AuthenticationException("keys rejected")
+
+    with (
+        patch.object(client, "connect", side_effect=error) as connect,
+        patch("ezhpcy.cli.utils.ssh.Prompt.ask") as prompt,
+        pytest.raises(paramiko.AuthenticationException) as raised,
+    ):
+        client.interactive_connect()
+
+    assert raised.value is error
+    connect.assert_called_once_with(
+        hostname="login.example.com",
+        username="alice",
+        password=None,
+    )
+    prompt.assert_not_called()
+
+
 def test_interactive_ssh_propagates_explicit_password_failure() -> None:
     client = InteractiveSSHClient(
         ConnectionInfo(

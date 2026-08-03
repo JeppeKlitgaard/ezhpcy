@@ -159,10 +159,17 @@ class PromptMissingHostKeyPolicy(paramiko.MissingHostKeyPolicy):
 
 class InteractiveSSHClient(SSHClient):
     conn_info: ConnectionInfo
+    password_prompt: bool
 
-    def __init__(self, conn_info: ConnectionInfo):
+    def __init__(
+        self,
+        conn_info: ConnectionInfo,
+        *,
+        password_prompt: bool = True,
+    ):
         super().__init__(conn_info=conn_info)
         self.conn_info = conn_info
+        self.password_prompt = password_prompt
 
         self.load_system_host_keys()
         self.set_missing_host_key_policy(PromptMissingHostKeyPolicy())
@@ -183,8 +190,10 @@ class InteractiveSSHClient(SSHClient):
                 password=self.conn_info.password,
             )
         except paramiko.AuthenticationException as error:
-            if self.conn_info.password is not None or not self._can_retry_with_password(
-                error
+            if (
+                self.conn_info.password is not None
+                or not self.password_prompt
+                or not self._can_retry_with_password(error)
             ):
                 raise
 

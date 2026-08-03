@@ -1,4 +1,8 @@
-# {{ preset }} HPC configuration for EzHPCy.
+### {{ preset }} HPC configuration for EzHPCy.
+
+# Note: For whatever reason, DTU uses PBS Pro for `linuxsh`-like queues,
+# but LSF for everything else (batch, GPU interactive, ...).
+# This is reflected in the configuration below.
 
 log_level = "INFO"
 auto_provision = true
@@ -7,37 +11,64 @@ auto_provision = true
 queue_timeout_seconds = 900
 worker_startup_timeout_seconds = 60
 ssh_keepalive_interval_seconds = 30
-# password_keyring = true  # Enable fetching password via system keyring, set with `ezhpcy keyring`
-# password_env = true  # Enable fetching password via environment variable, set with `export EZHPCY_PASSWORD=...`
+
+password_keyring = false  # Enable fetching password via system keyring, set with `ezhpcy keyring`
+password_prompt = true  # Enable prompting for password on the command line
 
 [profile.dtu-base]
 description = "DTU HPC"
 inherit = "base"
 
-host = "login2.hpc.dtu.dk"
+host = "login.hpc.dtu.dk"
 user = {{ user | tojson }}
 
 [profile.dtu-base-lsf]
 description = "DTU HPC LSF based queues"
 inherit = "dtu-base"
 
-
 scheduler = "LSF"
 
 lsf_resource_reserve_per_task = true
 lsf_application_profile = "qrsh"
-lsf_submission_environment = { ESUB_BYPASS = "1", ESUB_QUIET = "1", LSF_QRSH = "true" }
-lsf_export_environment = ["TERM", "LSF_QRSH"]
+lsf_submission_environment = { }
+lsf_export_environment = []
 
 [profile.dtu-base-pbs]
 description = "DTU HPC PBS Pro based queues"
 inherit = "dtu-base"
 
 scheduler = "PBS"
-queue = "workq"
 
 pbs_command_directory = "/opt/pbspro/bin"
 
+### Interactive Queues
+[profile.dtu-linuxsh]
+description = "DTU interactive Linux nodes via linuxsh"
+inherit = "dtu-base-pbs"
+interactive_submission_command = ["/lsf/local/bin/linuxsh"]
+
+[profile.dtu-bigmemlinuxsh]
+description = "DTU interactive Linux nodes via bigmemlinuxsh"
+inherit = "dtu-base-pbs"
+interactive_submission_command = ["/lsf/local/bin/bigmemlinuxsh"]
+
+### GPU Interactive Queues
+[profile.dtu-a100sh]
+description = "DTU interactive A100 GPUs via a100sh"
+inherit = "dtu-base-lsf"
+interactive_submission_command = ["/lsf/local/bin/a100sh"]
+
+[profile.dtu-voltash]
+description = "DTU interactive Volta GPUs via voltash"
+inherit = "dtu-base-lsf"
+interactive_submission_command = ["/lsf/local/bin/voltash"]
+
+[profile.dtu.sxm2sh]
+description = "DTU interactive SXM2 GPUs via sxm2sh"
+inherit = "dtu-base-lsf"
+interactive_submission_command = ["/lsf/local/bin/sxm2sh"]
+
+### GPU Batch Queues
 [profile.dtu-gpul40s]
 description = "DTU L40S GPU queue"
 inherit = "dtu-base-lsf"
@@ -46,22 +77,3 @@ queue = "gpul40s"
 cores = 8
 time_limit = "1:00"
 memory = "32GB"
-
-# Interactive GPU queues
-[profile.dtu-a100sh]
-description = "DTU interactive A100 GPUs via a100sh"
-inherit = "dtu-base-lsf"
-
-interactive_submission_command = ["/lsf/local/bin/a100sh"]
-
-[profile.dtu-voltash]
-description = "DTU interactive Volta GPUs via voltash"
-inherit = "dtu-base-lsf"
-
-interactive_submission_command = ["/lsf/local/bin/voltash"]
-
-[profile.dtu.sxm2sh]
-description = "DTU interactive SXM2 GPUs via sxm2sh"
-inherit = "dtu-base-lsf"
-
-interactive_submission_command = ["/lsf/local/bin/sxm2sh"]

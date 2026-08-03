@@ -6,6 +6,7 @@ auto_provision = true
 [profile.base]
 host = "login.hpc.example.com"
 user = {{ user | tojson }}
+password_prompt = true
 
 scheduler = "LSF"
 queue = "hpcint"

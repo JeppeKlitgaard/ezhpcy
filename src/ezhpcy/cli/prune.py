@@ -119,7 +119,10 @@ def prune_cmd(
     ] = False,
 ) -> None:
     """Prune stale installations and Pixi data."""
-    ssh = InteractiveSSHClient(profile_context.connection)
+    ssh = InteractiveSSHClient(
+        profile_context.connection,
+        password_prompt=profile_context.profile.password_prompt,
+    )
     ssh.interactive_connect()
     remote_state = ssh.get_remote_state()
 

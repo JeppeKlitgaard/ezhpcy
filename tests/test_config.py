@@ -78,6 +78,30 @@ def test_profile_ssh_keepalive_must_be_positive() -> None:
         )
 
 
+def test_profile_worker_heartbeat_is_independent_and_inherited() -> None:
+    config = config_module.Config.from_mapping(
+        {
+            "profile": {
+                "base": {
+                    "ssh_keepalive_interval_seconds": 75,
+                    "worker_heartbeat_interval_seconds": 20,
+                    "worker_heartbeat_timeout_seconds": 60,
+                },
+                "child": {"inherit": "base"},
+                "default": {},
+            }
+        }
+    )
+
+    default = config.resolve_profile("default")
+    child = config.resolve_profile("child")
+    assert default.worker_heartbeat_interval_seconds == 30
+    assert default.worker_heartbeat_timeout_seconds == 90
+    assert child.ssh_keepalive_interval_seconds == 75
+    assert child.worker_heartbeat_interval_seconds == 20
+    assert child.worker_heartbeat_timeout_seconds == 60
+
+
 def test_profile_password_keyring_can_be_enabled() -> None:
     config = config_module.Config.from_mapping(
         {"profile": {"base": {"password_keyring": True}}}

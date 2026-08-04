@@ -1,3 +1,4 @@
+import logging
 import threading
 from binascii import hexlify
 from pathlib import Path, PurePosixPath
@@ -10,34 +11,151 @@ from ezhpcy import console
 from ezhpcy.config import ConnectionInfo
 from ezhpcy.ssh import SSHClient
 
+logger = logging.getLogger(__name__)
+
 _EXEC_ABSOLUTE_SSHD = (
     'sshd_path="$(command -v sshd)" || exit; '
     'case "$sshd_path" in /*) exec "$sshd_path" "$@";; '
     '*) echo "sshd must resolve to an absolute path" >&2; exit 1;; esac'
 )
 SSHD_PORT_MARKER = "ezhpcy: worker sshd selected port "
+WORKER_HEARTBEAT_MARKER = "ezhpcy-heartbeat"
 _SERVER_ALIVE_REQUEST = "keepalive@openssh.com"
-_EXEC_RETRYING_SSHD = (
-    'sshd_path="$(command -v sshd)" || exit; '
-    'case "$sshd_path" in /*) ;; '
-    '*) echo "sshd must resolve to an absolute path" >&2; exit 1;; esac; '
-    'ports="$1"; shift; pid=; '
-    'trap \'[ -z "$pid" ] || kill "$pid" 2>/dev/null; exit 143\' '
-    "HUP INT TERM; "
-    'while [ -n "$ports" ]; do '
-    'case "$ports" in '
-    '*:*) port="${ports%%:*}"; ports="${ports#*:}";; '
-    '*) port="$ports"; ports=;; esac; '
-    '"$sshd_path" -D -e -p "$port" "$@" & pid=$!; '
-    "sleep 0.1; "
-    'if kill -0 "$pid" 2>/dev/null; then '
-    f'printf "{SSHD_PORT_MARKER}%s\\n" "$port"; '
-    'wait "$pid"; exit $?; '
-    "fi; "
-    'wait "$pid"; '
-    "done; "
-    "exit 1"
-)
+_EXEC_RETRYING_SSHD = f"""
+sshd_path="$(command -v sshd)" || exit
+case "$sshd_path" in
+    /*) ;;
+    *) echo "sshd must resolve to an absolute path" >&2; exit 1 ;;
+esac
+
+ports="$1"
+heartbeat_token="$2"
+heartbeat_timeout="$3"
+heartbeat_debug="$4"
+heartbeat_log_dir="$5"
+shift 5
+pid=
+tty_echo_disabled=0
+job_id="${{LSB_JOBID:-${{PBS_JOBID:-unknown-$$}}}}"
+safe_job_id="${{job_id//[^A-Za-z0-9_.-]/_}}"
+heartbeat_log="$heartbeat_log_dir/heartbeat-$safe_job_id.log"
+
+umask 077
+mkdir -p "$heartbeat_log_dir" || exit
+
+log_heartbeat() {{
+    level="$1"
+    event="$2"
+    shift 2
+    timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    message="$timestamp level=$level component=worker-heartbeat event=$event job=$job_id"
+    if [ "$#" -gt 0 ]; then
+        message="$message $*"
+    fi
+    printf '%s\n' "$message" >> "$heartbeat_log"
+    printf '{WORKER_HEARTBEAT_MARKER}: %s\n' "$message" >&2
+}}
+
+restore_tty() {{
+    if [ "$tty_echo_disabled" -eq 1 ]; then
+        stty echo 2>/dev/null || true
+        tty_echo_disabled=0
+    fi
+}}
+
+stop_children() {{
+    if [ -n "$pid" ]; then
+        kill "$pid" 2>/dev/null || true
+    fi
+    wait "$pid" 2>/dev/null || true
+    restore_tty
+}}
+
+handle_signal() {{
+    log_heartbeat INFO worker_stopping reason=signal
+    stop_children
+    exit 143
+}}
+
+trap handle_signal HUP INT TERM
+
+while [ -n "$ports" ]; do
+    case "$ports" in
+        *:*) port="${{ports%%:*}}"; ports="${{ports#*:}}" ;;
+        *) port="$ports"; ports= ;;
+    esac
+
+    "$sshd_path" -D -e -p "$port" "$@" &
+    pid=$!
+    sleep 0.1
+    if ! kill -0 "$pid" 2>/dev/null; then
+        wait "$pid"
+        pid=
+        continue
+    fi
+
+    if [ -t 0 ] && stty -echo 2>/dev/null; then
+        tty_echo_disabled=1
+    fi
+    printf "{SSHD_PORT_MARKER}%s\n" "$port"
+    log_heartbeat INFO watchdog_armed timeout_seconds="$heartbeat_timeout" port="$port"
+
+    last_sequence=none
+    lease_exit_status=
+    while kill -0 "$pid" 2>/dev/null; do
+        marker=
+        received_token=
+        sequence=
+        extra=
+        IFS=' ' read -r -t "$heartbeat_timeout" \
+            marker received_token sequence extra
+        read_status=$?
+        if [ "$read_status" -ne 0 ]; then
+            if ! kill -0 "$pid" 2>/dev/null; then
+                break
+            fi
+            if [ "$read_status" -gt 128 ]; then
+                event=heartbeat_timeout
+                lease_exit_status=75
+            else
+                event=stdin_eof
+                lease_exit_status=74
+            fi
+            log_heartbeat ERROR "$event" last_sequence="$last_sequence" \
+                timeout_seconds="$heartbeat_timeout"
+            kill "$pid" 2>/dev/null || true
+            break
+        fi
+        if [ "$marker" != "{WORKER_HEARTBEAT_MARKER}" ] || \
+            [ "$received_token" != "$heartbeat_token" ] || \
+            [ -z "$sequence" ] || [ -n "$extra" ]; then
+            log_heartbeat ERROR invalid_heartbeat last_sequence="$last_sequence"
+            lease_exit_status=76
+            kill "$pid" 2>/dev/null || true
+            break
+        fi
+        last_sequence="$sequence"
+        if [ "$heartbeat_debug" -eq 1 ]; then
+            log_heartbeat DEBUG heartbeat_received sequence="$sequence"
+        fi
+    done
+
+    wait "$pid"
+    sshd_status=$?
+    pid=
+    restore_tty
+    if [ -n "$lease_exit_status" ]; then
+        log_heartbeat INFO worker_stopped sshd_status="$sshd_status" \
+            exit_status="$lease_exit_status"
+        exit "$lease_exit_status"
+    fi
+    log_heartbeat INFO worker_stopped sshd_status="$sshd_status" \
+        exit_status="$sshd_status"
+    exit "$sshd_status"
+done
+
+exit 1
+"""
 
 
 def absolute_sshd_command(arguments: list[str]) -> list[str]:
@@ -45,16 +163,28 @@ def absolute_sshd_command(arguments: list[str]) -> list[str]:
     return ["sh", "-c", _EXEC_ABSOLUTE_SSHD, "sshd", *arguments]
 
 
-def retrying_sshd_command(arguments: list[str], ports: tuple[int, ...]) -> list[str]:
+def retrying_sshd_command(
+    arguments: list[str],
+    ports: tuple[int, ...],
+    *,
+    heartbeat_token: str,
+    heartbeat_timeout_seconds: float,
+    heartbeat_debug: bool,
+    heartbeat_log_dir: PurePosixPath,
+) -> list[str]:
     """Run foreground ``sshd``, retrying immediate startup failures by port."""
     if not ports:
         raise ValueError("at least one worker SSH port is required")
     return [
-        "sh",
+        "bash",
         "-c",
         _EXEC_RETRYING_SSHD,
         "sshd",
         ":".join(str(port) for port in ports),
+        heartbeat_token,
+        str(heartbeat_timeout_seconds),
+        "1" if heartbeat_debug else "0",
+        str(heartbeat_log_dir),
         *arguments,
     ]
 
@@ -260,10 +390,17 @@ def _send_server_alive_requests(
     """Request a server response periodically, matching OpenSSH keepalives."""
     while not stop_requested.wait(interval_seconds):
         if not transport.is_active():
+            logger.debug("SSH server-alive sender stopped: transport inactive")
             return
         try:
             # A failure response still proves that the server is alive. The
             # request name is the one OpenSSH uses for ServerAliveInterval.
             transport.global_request(_SERVER_ALIVE_REQUEST, wait=True)
-        except EOFError, OSError, paramiko.SSHException:
+            logger.debug("SSH server-alive request completed")
+        except (EOFError, OSError, paramiko.SSHException) as error:
+            logger.debug(
+                "SSH server-alive request failed: transport_active=%s error=%r",
+                transport.is_active(),
+                error,
+            )
             return

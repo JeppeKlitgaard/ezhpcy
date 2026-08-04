@@ -169,6 +169,22 @@ StartupTimeoutOpt = Annotated[
         help="Maximum time to wait for worker SSH after allocation.",
     ),
 ]
+WorkerHeartbeatIntervalOpt = Annotated[
+    float | None,
+    typer.Option(
+        "--worker-heartbeat-interval",
+        min=1,
+        help="Interval between worker lease heartbeats.",
+    ),
+]
+WorkerHeartbeatTimeoutOpt = Annotated[
+    float | None,
+    typer.Option(
+        "--worker-heartbeat-timeout",
+        min=1,
+        help="Maximum time the worker may go without a lease heartbeat.",
+    ),
+]
 InteractiveSubmissionCommandOpt = Annotated[
     str | None,
     typer.Option(
@@ -346,6 +362,8 @@ def profile_context_from_cli(
     memory: MemoryOpt = None,
     queue_timeout_seconds: QueueTimeoutOpt = None,
     startup_timeout_seconds: StartupTimeoutOpt = None,
+    worker_heartbeat_interval_seconds: WorkerHeartbeatIntervalOpt = None,
+    worker_heartbeat_timeout_seconds: WorkerHeartbeatTimeoutOpt = None,
     interactive_submission_command: InteractiveSubmissionCommandOpt = None,
 ) -> ProfileContext:
     if profile is None:
@@ -418,6 +436,16 @@ def profile_context_from_cli(
                     startup_timeout_seconds
                     if startup_timeout_seconds is not None
                     else resolved_profile.worker_startup_timeout_seconds
+                ),
+                "worker_heartbeat_interval_seconds": (
+                    worker_heartbeat_interval_seconds
+                    if worker_heartbeat_interval_seconds is not None
+                    else resolved_profile.worker_heartbeat_interval_seconds
+                ),
+                "worker_heartbeat_timeout_seconds": (
+                    worker_heartbeat_timeout_seconds
+                    if worker_heartbeat_timeout_seconds is not None
+                    else resolved_profile.worker_heartbeat_timeout_seconds
                 ),
                 "interactive_submission_command": (
                     _parse_interactive_submission_command(

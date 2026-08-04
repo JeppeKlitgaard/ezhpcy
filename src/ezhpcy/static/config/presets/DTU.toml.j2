@@ -11,6 +11,8 @@ auto_provision = true
 queue_timeout_seconds = 900
 worker_startup_timeout_seconds = 60
 ssh_keepalive_interval_seconds = 30
+worker_heartbeat_interval_seconds = 30
+worker_heartbeat_timeout_seconds = 90
 
 password_keyring = false  # Enable fetching password via system keyring, set with `ezhpcy keyring`
 password_prompt = true  # Enable prompting for password on the command line

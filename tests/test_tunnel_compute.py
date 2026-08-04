@@ -18,6 +18,7 @@ from ezhpcy.cli.compute import (
     _monitor_job,
     _run_compute_tunnel,
     _select_worker_ports,
+    _send_worker_heartbeats,
     _wait_for_running_job,
     _wait_for_selected_worker_port,
     _wait_for_worker_endpoint,
@@ -67,6 +68,9 @@ def test_worker_sshd_command_retries_ports_through_pixi() -> None:
         remote_username="alice",
         authorized_key=("ssh-ed25519", "WORKERKEY"),
         ports=(54321, 54322),
+        heartbeat_token="LEASETOKEN",
+        heartbeat_timeout_seconds=90,
+        heartbeat_debug=True,
     )
 
     assert command[:6] == (
@@ -79,18 +83,26 @@ def test_worker_sshd_command_retries_ports_through_pixi() -> None:
         f"--spec={OPENSSH_MATCHSPEC}",
     )
     assert command[6:10] == (
-        "sh",
+        "bash",
         "-c",
         command[8],
         "sshd",
     )
-    assert command[10] == "54321:54322"
+    assert command[6] == "bash"
+    assert command[10:15] == (
+        "54321:54322",
+        "LEASETOKEN",
+        "90",
+        "1",
+        f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/logs/worker",
+    )
     assert "command -v sshd" in command[8]
-    assert 'ports="$1"; shift' in command[8]
+    assert 'ports="$1"' in command[8]
+    assert "shift 5" in command[8]
     assert 'port="${ports%%:*}"' in command[8]
     assert '"$sshd_path" -D -e -p "$port"' in command[8]
     assert "worker sshd selected port" in command[8]
-    assert command.count("sh") == 1
+    assert command.count("bash") == 1
     assert command.count("-c") == 1
     assert "PidFile=none" in command
     assert "HostKey=/remote/ssh_host_ed25519_key" in command
@@ -157,6 +169,7 @@ class StubChannel:
 class StubProcess:
     def __init__(self) -> None:
         self.closed = False
+        self.sent: list[bytes] = []
 
     def recv_ready(self) -> bool:
         return False
@@ -175,6 +188,11 @@ class StubProcess:
 
     def recv_exit_status(self) -> int:
         raise AssertionError("process is still running")
+
+    def send(self, data: bytes | str) -> int:
+        encoded = data.encode() if isinstance(data, str) else data
+        self.sent.append(encoded)
+        return len(encoded)
 
     def close(self) -> None:
         self.closed = True
@@ -214,6 +232,9 @@ class StubTransport:
 
     def is_active(self) -> bool:
         return True
+
+    def get_exception(self):
+        return None
 
     def open_channel(self, _kind: str, **kwargs) -> StubChannel:
         assert kwargs["dest_addr"] == ("node42", 54321)
@@ -407,6 +428,65 @@ def test_job_monitor_does_not_treat_missing_exit_status_as_job_completion() -> N
     assert broker.closed
 
 
+def test_worker_heartbeat_sender_logs_sequence_without_token() -> None:
+    stop_requested = threading.Event()
+
+    class OneHeartbeatProcess(StubProcess):
+        def send(self, data: bytes | str) -> int:
+            sent = super().send(data)
+            stop_requested.set()
+            return sent
+
+    job = InteractiveJob("42", OneHeartbeatProcess(), "")
+    errors: list[ComputeTunnelError] = []
+
+    with patch("ezhpcy.cli.compute.logger") as logger:
+        _send_worker_heartbeats(
+            job,
+            StubTransport(),  # type: ignore[arg-type]
+            token="SECRET-LEASE-TOKEN",
+            interval_seconds=30,
+            stop_requested=stop_requested,
+            failed=threading.Event(),
+            errors=errors,
+            failure_handler=lambda: None,
+        )
+
+    assert job.process.sent == [b"ezhpcy-heartbeat SECRET-LEASE-TOKEN 1\n"]
+    assert not errors
+    rendered_calls = repr(logger.method_calls)
+    assert "sequence=%d" in rendered_calls
+    assert "SECRET-LEASE-TOKEN" not in rendered_calls
+
+
+def test_worker_heartbeat_sender_reports_channel_failure() -> None:
+    class FailedHeartbeatProcess(StubProcess):
+        def send(self, _data: bytes | str) -> int:
+            raise OSError("channel closed")
+
+    job = InteractiveJob("42", FailedHeartbeatProcess(), "")
+    failed = threading.Event()
+    errors: list[ComputeTunnelError] = []
+    failure_handled = threading.Event()
+
+    _send_worker_heartbeats(
+        job,
+        StubTransport(),  # type: ignore[arg-type]
+        token="SECRET-LEASE-TOKEN",
+        interval_seconds=30,
+        stop_requested=threading.Event(),
+        failed=failed,
+        errors=errors,
+        failure_handler=failure_handled.set,
+    )
+
+    assert failed.is_set()
+    assert failure_handled.is_set()
+    assert len(errors) == 1
+    assert "sequence 1" in str(errors[0])
+    assert "SECRET-LEASE-TOKEN" not in str(errors[0])
+
+
 def test_worker_endpoint_waits_for_an_ssh_banner() -> None:
     transport = StubTransport()
     transport_logger = logging.getLogger("paramiko.transport")
@@ -446,6 +526,7 @@ def test_compute_tunnel_submits_worker_starts_broker_and_cancels() -> None:
             return_value=ssh,
         ),
         patch("ezhpcy.cli.compute.local_machine_id", return_value="machine-id"),
+        patch("ezhpcy.cli.compute.secrets.token_hex", return_value="LEASETOKEN"),
         patch(
             "ezhpcy.cli.compute.LSFScheduler",
             return_value=scheduler,
@@ -501,6 +582,9 @@ def test_compute_tunnel_submits_worker_starts_broker_and_cancels() -> None:
         remote_username="alice",
         authorized_key=("ssh-ed25519", "WORKERKEY"),
         ports=(54321, 54322),
+        heartbeat_token="LEASETOKEN",
+        heartbeat_timeout_seconds=90,
+        heartbeat_debug=True,
     )
     assert "AuthorizedKeysCommand=/bin/echo ssh-ed25519 WORKERKEY" in spec.command
     assert not any("payload" in argument for argument in spec.command)
@@ -673,6 +757,7 @@ def test_compute_tunnel_help_exposes_scheduler_and_resource_options() -> None:
     assert "--memory" in result.stdout
     assert "--queue-timeout" in result.stdout
     assert "--startup-timeout" in result.stdout
+    assert "--worker-heartbeat" in result.stdout
     assert "--interactive-subm" in result.stdout
     assert "--worker-port" in result.stdout
     # Rich abbreviates long option names in its fixed-width option column.
@@ -828,6 +913,8 @@ def test_compute_command_resolves_profile_and_applies_cli_overrides(
                 time_limit="1:00",
                 memory="32GB",
                 ssh_keepalive_interval_seconds=75,
+                worker_heartbeat_interval_seconds=20,
+                worker_heartbeat_timeout_seconds=60,
             ),
             "gpu": ProfileConfig(inherit="base", queue="gpu", cores=8),
         },
@@ -852,6 +939,10 @@ def test_compute_command_resolves_profile_and_applies_cli_overrides(
             "--memory",
             "64GB",
             "--shared",
+            "--worker-heartbeat-interval",
+            "12",
+            "--worker-heartbeat-timeout",
+            "30",
         ],
     )
 
@@ -870,6 +961,8 @@ def test_compute_command_resolves_profile_and_applies_cli_overrides(
         ssh_keepalive_interval_seconds=75,
     )
     assert captured["auto_provision"] is True
+    assert captured["heartbeat_interval_seconds"] == 12
+    assert captured["heartbeat_timeout_seconds"] == 30
     worker_ports = captured["worker_ports"]
     assert isinstance(worker_ports, tuple)
     assert len(worker_ports) == 6

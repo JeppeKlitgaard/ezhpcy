@@ -1,8 +1,11 @@
 """Foreground broker and ProxyCommand stream relays."""
 
+import itertools
+import logging
 import os
 import socket
 import threading
+import time
 from collections.abc import Callable
 from typing import BinaryIO
 
@@ -18,6 +21,7 @@ from ezhpcy.ipc.protocol import (
 )
 
 ErrorHandler = Callable[[Exception], None]
+logger = logging.getLogger(__name__)
 
 
 def _shutdown_write(stream: socket.socket | paramiko.Channel) -> None:
@@ -56,13 +60,24 @@ class ForegroundBroker:
         self.destination = destination
         self.backend = backend
         self.error_handler = error_handler
+        self._connection_ids = itertools.count(1)
         self._server = backend.listen(self._serve_client, self._report)
 
     def serve_forever(self) -> None:
         self._server.serve_forever()
 
     def _serve_client(self, stream: socket.socket) -> None:
+        connection_id = next(self._connection_ids)
+        started = time.monotonic()
         channel = None
+        logger.debug(
+            "Broker client accepted: connection=%d destination=%s:%d "
+            "transport_active=%s",
+            connection_id,
+            self.destination[0],
+            self.destination[1],
+            self.transport.is_active(),
+        )
         try:
             if not self.transport.is_active():
                 reject_worker_stream(
@@ -87,6 +102,11 @@ class ForegroundBroker:
                     f"worker channel could not be opened: {error}",
                 )
                 return
+            logger.debug(
+                "Worker channel opened: connection=%d channel_id=%s",
+                connection_id,
+                getattr(channel, "chanid", None),
+            )
             ready_worker_stream(stream)
             outgoing = threading.Thread(
                 target=self._forward_channel,
@@ -102,12 +122,23 @@ class ForegroundBroker:
         finally:
             if channel is not None:
                 channel.close()
+            logger.debug(
+                "Broker client closed: connection=%d duration_seconds=%.3f "
+                "transport_active=%s",
+                connection_id,
+                time.monotonic() - started,
+                self.transport.is_active(),
+            )
 
     def _forward_channel(
         self, channel: paramiko.Channel, stream: socket.socket
     ) -> None:
         try:
             _channel_to_socket(channel, stream)
+            logger.debug(
+                "Worker channel reached EOF: channel_id=%s",
+                getattr(channel, "chanid", None),
+            )
         except (OSError, paramiko.SSHException) as error:
             self._report(error)
             try:
@@ -116,6 +147,7 @@ class ForegroundBroker:
                 pass
 
     def _report(self, error: Exception) -> None:
+        logger.debug("Broker relay error: error=%r", error)
         if self.error_handler is not None:
             self.error_handler(error)
 

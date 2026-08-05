@@ -308,6 +308,28 @@ def test_run_login_shell_safely_quotes_the_nested_command() -> None:
     run.assert_called_once_with(["bash", "-lc", shlex.join(command)], timeout=30)
 
 
+def test_run_login_shell_with_input_streams_the_job_script() -> None:
+    client = SSHClient(ConnectionInfo(host="login.example.com"))
+    remote_stdin = MagicMock()
+    stdout = MagicMock()
+    stderr = MagicMock()
+    stdout.channel.recv_exit_status.return_value = 0
+    stdout.read.return_value = b"Job <42> is submitted.\n"
+    command = ["bsub", "-J", "worker name"]
+    script = "#!/usr/bin/env bash\necho worker\n"
+
+    with patch.object(
+        client, "exec_command", return_value=(remote_stdin, stdout, stderr)
+    ) as execute:
+        output = client.run_login_shell_with_input(command, script)
+
+    assert output == "Job <42> is submitted.\n"
+    execute.assert_called_once_with(shlex.join(["bash", "-lc", shlex.join(command)]))
+    remote_stdin.write.assert_called_once_with(script.encode())
+    remote_stdin.flush.assert_called_once_with()
+    remote_stdin.channel.shutdown_write.assert_called_once_with()
+
+
 def test_start_login_shell_opens_pty_and_keeps_channel_running() -> None:
     client = SSHClient(ConnectionInfo(host="login.example.com"))
     transport = MagicMock()

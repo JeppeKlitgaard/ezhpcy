@@ -125,6 +125,42 @@ def test_lsf_submission_builds_portable_job_spec() -> None:
     ]
 
 
+def test_lsf_script_submission_streams_job_body_to_bsub() -> None:
+    calls: list[tuple[list[str], str]] = []
+
+    def run_script(command: list[str], script: str) -> str:
+        calls.append((command, script))
+        return "Job <31415> is submitted to queue <normal>.\n"
+
+    scheduler = LSFScheduler(FakeRunner(), script_runner=run_script)
+    spec = JobSpec(
+        command=("bash", "-s", "--", "54321"),
+        name="ezhpcy-worker",
+        cores=4,
+        queue="normal",
+    )
+
+    assert (
+        scheduler.submit_script(spec, "#!/usr/bin/env bash\necho worker\n") == "31415"
+    )
+    assert calls == [
+        (
+            [
+                "bsub",
+                "-n",
+                "4",
+                "-R",
+                "span[hosts=1]",
+                "-J",
+                "ezhpcy-worker",
+                "-q",
+                "normal",
+            ],
+            "#!/usr/bin/env bash\necho worker\n",
+        )
+    ]
+
+
 def test_lsf_interactive_submission_keeps_process_and_uses_site_profile() -> None:
     runner = FakeRunner()
     process = FakeProcess(stdout=[b"Job <2718> is submitted to queue <hpcint>.\r\n"])

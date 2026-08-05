@@ -158,6 +158,19 @@ class SSHClient(paramiko.SSHClient):
         """Run a safely quoted command through the remote Bash login shell."""
         return self.run(["bash", "-lc", shlex.join(args)], **run_kwargs)
 
+    def run_login_shell_with_input(self, args: list[str], stdin: str) -> str:
+        """Run a login-shell command while streaming text to its standard input."""
+        escaped_command = shlex.join(["bash", "-lc", shlex.join(args)])
+        remote_stdin, stdout, stderr = self.exec_command(escaped_command)
+        remote_stdin.write(stdin.encode())
+        remote_stdin.flush()
+        remote_stdin.channel.shutdown_write()
+        exit_status = stdout.channel.recv_exit_status()
+        if exit_status != 0:
+            message = stderr.read().decode().strip()
+            raise RuntimeError(f"Remote command failed ({exit_status}): {message}")
+        return stdout.read().decode()
+
     def start_login_shell(self, args: list[str]) -> RemoteProcess:
         """Start a command in a remote Bash login shell with a pseudo-terminal."""
         transport = self.get_transport()

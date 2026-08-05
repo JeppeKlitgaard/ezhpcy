@@ -1,5 +1,4 @@
 import logging
-import queue
 import threading
 from contextlib import contextmanager
 from datetime import timedelta
@@ -14,16 +13,17 @@ from typer.testing import CliRunner
 from ezhpcy.cli import app, compute as compute_module
 from ezhpcy.cli.compute import (
     ComputeTunnelError,
-    _drain_interactive_job,
+    WorkerControl,
     _monitor_job,
     _run_compute_tunnel,
     _select_worker_ports,
-    _send_worker_heartbeats,
+    _send_worker_lease_heartbeats,
     _wait_for_running_job,
     _wait_for_selected_worker_port,
     _wait_for_worker_endpoint,
     _worker_sshd_command,
 )
+from ezhpcy.cli.utils.ssh import retrying_sshd_script, sshd_config_arguments
 from ezhpcy.config import ConnectionInfo
 from ezhpcy.constants import EZHPCY_VERSION, OPENSSH_MATCHSPEC, PIXI_VERSION
 from ezhpcy.scheduler.base import InteractiveJob, JobInfo, JobSpec, JobState
@@ -33,6 +33,7 @@ from ezhpcy.types import (
     RemoteState,
     ResolvedConfig,
     ResolvedProfileConfig,
+    SubmissionMode,
 )
 
 _MEBIBYTE = 1024**2
@@ -43,6 +44,7 @@ def lsf_profile() -> ResolvedConfig:
         host="login.example.com",
         user="alice",
         scheduler="LSF",
+        submission_mode="interactive",
         lsf_resource_reserve_per_task=True,
         lsf_application_profile="qrsh",
         lsf_submission_environment={"LSF_QRSH": "true"},
@@ -55,6 +57,7 @@ def pbs_profile() -> ResolvedProfileConfig:
         host="login.example.com",
         user="alice",
         scheduler="PBS",
+        submission_mode="interactive",
         queue="workq",
         pbs_command_directory=PurePosixPath("/opt/pbspro/bin"),
     )
@@ -64,13 +67,17 @@ def test_worker_sshd_command_retries_ports_through_pixi() -> None:
     remote_state = RemoteState(cache_dir=PurePosixPath("/home/alice/.cache"))
     command = _worker_sshd_command(
         remote_state,
-        host_key=PurePosixPath("/remote/ssh_host_ed25519_key"),
-        remote_username="alice",
-        authorized_key=("ssh-ed25519", "WORKERKEY"),
         ports=(54321, 54322),
         heartbeat_token="LEASETOKEN",
         heartbeat_timeout_seconds=90,
         heartbeat_debug=True,
+        control_dir=PurePosixPath("/home/alice/.cache/ezhpcy/control/test"),
+        read_script_from_stdin=False,
+        sshd_arguments=sshd_config_arguments(
+            host_key=PurePosixPath("/remote/ssh_host_ed25519_key"),
+            remote_username="alice",
+            authorized_key=("ssh-ed25519", "WORKERKEY"),
+        ),
     )
 
     assert command[:6] == (
@@ -85,23 +92,25 @@ def test_worker_sshd_command_retries_ports_through_pixi() -> None:
     assert command[6:10] == (
         "bash",
         "-c",
-        command[8],
+        retrying_sshd_script(),
         "sshd",
     )
     assert command[6] == "bash"
-    assert command[10:15] == (
+    assert command[10:16] == (
         "54321:54322",
         "LEASETOKEN",
         "90",
         "1",
         f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/logs/worker",
+        "/home/alice/.cache/ezhpcy/control/test",
     )
-    assert "command -v sshd" in command[8]
-    assert 'ports="$1"' in command[8]
-    assert "shift 5" in command[8]
-    assert 'port="${ports%%:*}"' in command[8]
-    assert '"$sshd_path" -D -e -p "$port"' in command[8]
-    assert "worker sshd selected port" in command[8]
+    worker_script = retrying_sshd_script()
+    assert "command -v sshd" in worker_script
+    assert 'ports="$1"' in worker_script
+    assert "shift 6" in worker_script
+    assert 'port="${ports%%:*}"' in worker_script
+    assert '"$sshd_path" -D -e -p "$port" "$@"' in worker_script
+    assert 'publish_state ready "$port"' in worker_script
     assert command.count("bash") == 1
     assert command.count("-c") == 1
     assert "PidFile=none" in command
@@ -116,11 +125,17 @@ class StubScheduler:
     def __init__(self, snapshots: list[JobInfo]) -> None:
         self.snapshots = snapshots
         self.submitted: list[JobSpec] = []
+        self.submitted_scripts: list[str] = []
         self.cancelled: list[str] = []
         self.command_starts = 0
 
     def submit(self, spec: JobSpec) -> str:
         self.submitted.append(spec)
+        return "42"
+
+    def submit_script(self, spec: JobSpec, script: str) -> str:
+        self.submitted.append(spec)
+        self.submitted_scripts.append(script)
         return "42"
 
     def submit_interactive(
@@ -250,6 +265,8 @@ class StubSSH:
         self.transport = transport
         self.commands: list[list[str]] = []
         self.directories: list[PurePosixPath] = []
+        self.files: dict[PurePosixPath, str] = {}
+        self.chmods: list[tuple[PurePosixPath, int]] = []
 
     def __enter__(self):
         return self
@@ -276,6 +293,33 @@ class StubSSH:
             def mkdir(self, path, **_kwargs) -> None:
                 ssh.directories.append(PurePosixPath(path))
 
+            def write_text(self, path, content) -> int:
+                ssh.files[PurePosixPath(path)] = content
+                return len(content)
+
+            def read_text(self, path) -> str:
+                try:
+                    return ssh.files[PurePosixPath(path)]
+                except KeyError as error:
+                    raise FileNotFoundError(path) from error
+
+            def chmod(self, path, mode) -> None:
+                ssh.chmods.append((PurePosixPath(path), mode))
+
+            def posix_rename(self, source, destination) -> None:
+                ssh.files[PurePosixPath(destination)] = ssh.files.pop(
+                    PurePosixPath(source)
+                )
+
+            def remove(self, path) -> None:
+                try:
+                    del ssh.files[PurePosixPath(path)]
+                except KeyError as error:
+                    raise FileNotFoundError(path) from error
+
+            def rmdir(self, _path) -> None:
+                pass
+
         yield StubSFTP()
 
     def run(self, args: list[str]) -> str:
@@ -284,6 +328,10 @@ class StubSSH:
 
     def run_login_shell(self, args: list[str]) -> str:
         self.commands.append(["bash", "-lc", *args])
+        return ""
+
+    def run_login_shell_with_input(self, args: list[str], stdin: str) -> str:
+        self.commands.append(["bash", "-lc", *args, stdin])
         return ""
 
     def start_login_shell(self, _args: list[str]) -> StubProcess:
@@ -378,25 +426,43 @@ def test_select_worker_ports_returns_unique_dynamic_ports() -> None:
     assert ports == (49152, 49153, 49154, 49155, 49156)
 
 
-def test_worker_output_reports_selected_retry_port() -> None:
-    process = OutputProcess(
-        [b"bind failed\nez", b"hpcy: worker sshd selected port 54322\n"]
-    )
-    job = InteractiveJob("42", process, "")
-    selected_ports: queue.Queue[int] = queue.Queue()
+def test_worker_control_reports_ready_port_and_bounds_leases() -> None:
+    ssh = StubSSH(StubTransport())
+    with ssh.sftp_client() as sftp:
+        control = WorkerControl(
+            sftp,
+            PurePosixPath("/control/run"),
+            "LEASETOKEN",
+            ports=(54321, 54322),
+        )
+        control.create()
+        for _ in range(4):
+            control.publish_lease()
+        ssh.files[control.directory / "ready"] = "v1 LEASETOKEN ready 54322\n"
 
-    _drain_interactive_job(job, threading.Event(), selected_ports)
+        assert _wait_for_selected_worker_port(control, timeout_seconds=1) == 54322
+        assert sorted(
+            path.name for path in ssh.files if path.name.startswith("lease.")
+        ) == [
+            "lease.00000000000000000003",
+            "lease.00000000000000000004",
+        ]
 
-    assert (
-        _wait_for_selected_worker_port(job, selected_ports, timeout_seconds=1) == 54322
-    )
 
+def test_worker_control_rejects_invalid_ready_port() -> None:
+    ssh = StubSSH(StubTransport())
+    with ssh.sftp_client() as sftp:
+        control = WorkerControl(
+            sftp,
+            PurePosixPath("/control/run"),
+            "LEASETOKEN",
+            ports=(54321,),
+        )
+        control.create()
+        ssh.files[control.directory / "ready"] = "v1 LEASETOKEN ready 54322\n"
 
-def test_worker_port_wait_fails_when_all_binds_fail() -> None:
-    job = InteractiveJob("42", OutputProcess([]), "")
-
-    with pytest.raises(ComputeTunnelError, match="failed to bind any candidate"):
-        _wait_for_selected_worker_port(job, queue.Queue(), timeout_seconds=1)
+        with pytest.raises(ComputeTunnelError, match="unexpected SSH port"):
+            _wait_for_selected_worker_port(control, timeout_seconds=1)
 
 
 def test_job_monitor_uses_interactive_process_without_scheduler_polling() -> None:
@@ -431,20 +497,18 @@ def test_job_monitor_does_not_treat_missing_exit_status_as_job_completion() -> N
 def test_worker_heartbeat_sender_logs_sequence_without_token() -> None:
     stop_requested = threading.Event()
 
-    class OneHeartbeatProcess(StubProcess):
-        def send(self, data: bytes | str) -> int:
-            sent = super().send(data)
+    class OneHeartbeatControl:
+        def publish_lease(self) -> int:
             stop_requested.set()
-            return sent
+            return 1
 
-    job = InteractiveJob("42", OneHeartbeatProcess(), "")
     errors: list[ComputeTunnelError] = []
 
     with patch("ezhpcy.cli.compute.logger") as logger:
-        _send_worker_heartbeats(
-            job,
+        _send_worker_lease_heartbeats(
+            OneHeartbeatControl(),  # type: ignore[arg-type]
             StubTransport(),  # type: ignore[arg-type]
-            token="SECRET-LEASE-TOKEN",
+            job_id="42",
             interval_seconds=30,
             stop_requested=stop_requested,
             failed=threading.Event(),
@@ -452,27 +516,25 @@ def test_worker_heartbeat_sender_logs_sequence_without_token() -> None:
             failure_handler=lambda: None,
         )
 
-    assert job.process.sent == [b"ezhpcy-heartbeat SECRET-LEASE-TOKEN 1\n"]
     assert not errors
     rendered_calls = repr(logger.method_calls)
     assert "sequence=%d" in rendered_calls
     assert "SECRET-LEASE-TOKEN" not in rendered_calls
 
 
-def test_worker_heartbeat_sender_reports_channel_failure() -> None:
-    class FailedHeartbeatProcess(StubProcess):
-        def send(self, _data: bytes | str) -> int:
+def test_worker_heartbeat_sender_reports_filesystem_failure() -> None:
+    class FailedHeartbeatControl:
+        def publish_lease(self) -> int:
             raise OSError("channel closed")
 
-    job = InteractiveJob("42", FailedHeartbeatProcess(), "")
     failed = threading.Event()
     errors: list[ComputeTunnelError] = []
     failure_handled = threading.Event()
 
-    _send_worker_heartbeats(
-        job,
+    _send_worker_lease_heartbeats(
+        FailedHeartbeatControl(),  # type: ignore[arg-type]
         StubTransport(),  # type: ignore[arg-type]
-        token="SECRET-LEASE-TOKEN",
+        job_id="42",
         interval_seconds=30,
         stop_requested=threading.Event(),
         failed=failed,
@@ -483,7 +545,7 @@ def test_worker_heartbeat_sender_reports_channel_failure() -> None:
     assert failed.is_set()
     assert failure_handled.is_set()
     assert len(errors) == 1
-    assert "sequence 1" in str(errors[0])
+    assert "sequence 0" in str(errors[0])
     assert "SECRET-LEASE-TOKEN" not in str(errors[0])
 
 
@@ -565,6 +627,7 @@ def test_compute_tunnel_submits_worker_starts_broker_and_cancels() -> None:
             startup_timeout_seconds=10,
             worker_ports=(54321, 54322),
             auto_provision=True,
+            submission_mode=SubmissionMode.INTERACTIVE,
         )
 
     assert len(scheduler.submitted) == 1
@@ -575,16 +638,22 @@ def test_compute_tunnel_submits_worker_starts_broker_and_cancels() -> None:
     spec = scheduler.submitted[0]
     assert tuple(spec.command) == _worker_sshd_command(
         ssh.get_remote_state(),
-        host_key=PurePosixPath(
-            f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/ssh/machine-id/"
-            "alice@login.example.com/ssh_host_ed25519_key"
-        ),
-        remote_username="alice",
-        authorized_key=("ssh-ed25519", "WORKERKEY"),
         ports=(54321, 54322),
         heartbeat_token="LEASETOKEN",
         heartbeat_timeout_seconds=90,
         heartbeat_debug=True,
+        control_dir=PurePosixPath(
+            f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/worker_control/LEASETOKEN"
+        ),
+        read_script_from_stdin=False,
+        sshd_arguments=sshd_config_arguments(
+            host_key=PurePosixPath(
+                f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/ssh/machine-id/"
+                "alice@login.example.com/ssh_host_ed25519_key"
+            ),
+            remote_username="alice",
+            authorized_key=("ssh-ed25519", "WORKERKEY"),
+        ),
     )
     assert "AuthorizedKeysCommand=/bin/echo ssh-ed25519 WORKERKEY" in spec.command
     assert not any("payload" in argument for argument in spec.command)
@@ -594,18 +663,22 @@ def test_compute_tunnel_submits_worker_starts_broker_and_cancels() -> None:
     assert spec.gpus == 2
     assert spec.exclusive
     assert scheduler_constructor.call_args.kwargs["resource_reserve_per_task"]
-    assert ssh.directories == [
+    assert ssh.directories[:2] == [
         PurePosixPath(f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/worker_cwd"),
         PurePosixPath(f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/logs/worker"),
     ]
+    assert (
+        PurePosixPath(f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/worker_control"),
+        0o700,
+    ) in ssh.chmods
     assert spec.working_directory == PurePosixPath(
         f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/worker_cwd"
     )
     assert spec.stdout_path == PurePosixPath(
-        f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/logs/worker/worker-%J.out"
+        f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/logs/worker/worker-LEASETOKEN.out"
     )
     assert spec.stderr_path == PurePosixPath(
-        f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/logs/worker/worker-%J.err"
+        f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/logs/worker/worker-LEASETOKEN.err"
     )
     assert brokers[0].destination == ("node42", 54322)
     assert brokers[0].closed
@@ -673,6 +746,7 @@ def test_compute_tunnel_cancels_job_when_worker_startup_fails() -> None:
             startup_timeout_seconds=10,
             worker_ports=(54321,),
             auto_provision=True,
+            submission_mode=SubmissionMode.INTERACTIVE,
         )
 
     assert scheduler.cancelled == ["42"]
@@ -722,6 +796,7 @@ def test_compute_tunnel_uses_explicit_pbs_and_linuxsh_defaults() -> None:
             startup_timeout_seconds=10,
             worker_ports=(54321,),
             auto_provision=True,
+            submission_mode=SubmissionMode.INTERACTIVE,
         )
 
     assert scheduler.submitted[0].cores == 1
@@ -736,10 +811,59 @@ def test_compute_tunnel_uses_explicit_pbs_and_linuxsh_defaults() -> None:
     assert call("Using profile %r with %s scheduler.", "pbs", "PBS") in (
         logger.info.call_args_list
     )
-    assert not any(
+    assert any(
         log_call.args[0].startswith("Worker logs:")
         for log_call in logger.info.call_args_list
     )
+
+
+def test_compute_tunnel_submits_batch_job_without_interactive_shell() -> None:
+    transport = StubTransport()
+    ssh = StubSSH(transport)
+    scheduler = StubScheduler([snapshot(JobState.RUNNING, "RUN", "node42")])
+
+    with (
+        patch("ezhpcy.cli.compute.InteractiveSSHClient", return_value=ssh),
+        patch("ezhpcy.cli.compute.local_machine_id", return_value="machine-id"),
+        patch("ezhpcy.cli.compute.secrets.token_hex", return_value="LEASETOKEN"),
+        patch("ezhpcy.cli.compute.LSFScheduler", return_value=scheduler),
+        patch("ezhpcy.cli.compute.provision_worker_infrastructure"),
+        patch(
+            "ezhpcy.cli.compute.read_ed25519_public_key",
+            return_value=("ssh-ed25519", "WORKERKEY"),
+        ),
+        patch("ezhpcy.cli.compute._wait_for_selected_worker_port", return_value=54321),
+        patch("ezhpcy.cli.compute._wait_for_worker_endpoint"),
+        patch("ezhpcy.cli.compute.create_broker_backend", return_value=object()),
+        patch("ezhpcy.cli.compute.ForegroundBroker", StubBroker),
+    ):
+        _run_compute_tunnel(
+            profile_name="batch",
+            profile=lsf_profile(),
+            conn_info=ConnectionInfo(user="alice", host="login.example.com"),
+            scheduler_type=SchedulerType.LSF,
+            submission_mode=SubmissionMode.BATCH,
+            queue="gpul40s",
+            cores=8,
+            gpus=1,
+            exclusive=False,
+            time_limit=timedelta(hours=1),
+            memory_bytes=None,
+            queue_timeout_seconds=10,
+            startup_timeout_seconds=10,
+            worker_ports=(54321,),
+            auto_provision=True,
+        )
+
+    assert len(scheduler.submitted) == 1
+    assert scheduler.submitted_scripts[0].startswith("#!/usr/bin/env bash\nexec ")
+    assert (
+        "AuthorizedKeysCommand=/bin/echo ssh-ed25519 WORKERKEY"
+        in (scheduler.submitted_scripts[0])
+    )
+    assert "worker.sh" not in scheduler.submitted_scripts[0]
+    assert scheduler.command_starts == 0
+    assert scheduler.cancelled == ["42"]
 
 
 def test_compute_tunnel_help_exposes_scheduler_and_resource_options() -> None:
@@ -749,6 +873,7 @@ def test_compute_tunnel_help_exposes_scheduler_and_resource_options() -> None:
     assert result.exit_code == 0
     assert alias_result.exit_code == 0
     assert "--scheduler" in result.stdout
+    assert "--submission-mode" in result.stdout
     assert "--queue" in result.stdout
     assert "--cores" in result.stdout
     assert "--gpus" in result.stdout
@@ -795,6 +920,8 @@ def test_compute_command_accepts_anonymous_cli_configuration(
             "alice",
             "--scheduler",
             "LSF",
+            "--submission-mode",
+            "interactive",
             "--queue",
             "gpu",
             "--cores",
@@ -818,6 +945,75 @@ def test_compute_command_accepts_anonymous_cli_configuration(
     assert str(getattr(resolved, "host")) == "login.example.com"
 
 
+def test_compute_command_requires_submission_mode() -> None:
+    result = CliRunner().invoke(
+        app,
+        [
+            "compute",
+            "--host",
+            "login.example.com",
+            "--user",
+            "alice",
+            "--scheduler",
+            "LSF",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "submission_mode must be set" in result.output
+
+
+def test_compute_command_accepts_batch_submission_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        compute_module,
+        "_run_compute_tunnel",
+        lambda **kwargs: captured.update(kwargs),
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "compute",
+            "--host",
+            "login.example.com",
+            "--user",
+            "alice",
+            "--scheduler",
+            "LSF",
+            "--submission-mode",
+            "batch",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["submission_mode"] is SubmissionMode.BATCH
+
+
+def test_compute_command_rejects_interactive_wrapper_in_batch_mode() -> None:
+    result = CliRunner().invoke(
+        app,
+        [
+            "compute",
+            "--host",
+            "login.example.com",
+            "--user",
+            "alice",
+            "--scheduler",
+            "LSF",
+            "--submission-mode",
+            "batch",
+            "--interactive-submission-command",
+            "/site/bin/interactive",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "requires submission_mode" in result.output
+
+
 def test_compute_command_accepts_cli_interactive_submission_command(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -838,6 +1034,8 @@ def test_compute_command_accepts_cli_interactive_submission_command(
             "alice",
             "--scheduler",
             "LSF",
+            "--submission-mode",
+            "interactive",
             "--interactive-submission-command",
             "/lsf/local/bin/a100sh --constraint 'gpu node'",
         ],
@@ -863,6 +1061,8 @@ def test_compute_command_rejects_resources_with_cli_interactive_command() -> Non
             "alice",
             "--scheduler",
             "LSF",
+            "--submission-mode",
+            "interactive",
             "--interactive-submission-command",
             "/lsf/local/bin/a100sh",
             "--queue",
@@ -886,6 +1086,8 @@ def test_compute_command_rejects_malformed_interactive_command_quoting() -> None
             "alice",
             "--scheduler",
             "LSF",
+            "--submission-mode",
+            "interactive",
             "--interactive-submission-command",
             "'/lsf/local/bin/a100sh",
         ],
@@ -906,6 +1108,7 @@ def test_compute_command_resolves_profile_and_applies_cli_overrides(
                 host="login.example.com",
                 user="alice",
                 scheduler="LSF",
+                submission_mode="interactive",
                 queue="normal",
                 cores=4,
                 gpus=1,
@@ -996,6 +1199,7 @@ def test_compute_command_allows_wrapper_with_implicit_resource_defaults(
                 host="login.example.com",
                 user="alice",
                 scheduler="LSF",
+                submission_mode="interactive",
                 interactive_submission_command=["/site/bin/interactive-lsf"],
             )
         },
@@ -1031,6 +1235,7 @@ def test_compute_command_logs_inherited_submission_options_ignored_by_wrapper(
                 host="login.example.com",
                 user="alice",
                 scheduler="LSF",
+                submission_mode="interactive",
                 queue="normal",
                 lsf_application_profile="qrsh",
             ),
@@ -1077,6 +1282,7 @@ def test_compute_command_rejects_cli_resources_with_wrapper(
                 host="login.example.com",
                 user="alice",
                 scheduler="LSF",
+                submission_mode="interactive",
                 interactive_submission_command=["/site/bin/interactive-lsf"],
             )
         },
@@ -1117,6 +1323,7 @@ def test_compute_command_rejects_configured_submission_options_with_wrapper(
                 host="login.example.com",
                 user="alice",
                 scheduler="LSF",
+                submission_mode="interactive",
                 interactive_submission_command=["/site/bin/interactive-lsf"],
                 **{field: value},
             )
@@ -1138,7 +1345,10 @@ def test_compute_command_can_disable_auto_provision(
         "profile",
         {
             "base": ProfileConfig(
-                host="login.example.com", user="alice", scheduler="LSF"
+                host="login.example.com",
+                user="alice",
+                scheduler="LSF",
+                submission_mode="interactive",
             )
         },
     )
@@ -1174,7 +1384,10 @@ def test_compute_command_can_enable_auto_provision_when_config_disables_it(
         "profile",
         {
             "base": ProfileConfig(
-                host="login.example.com", user="alice", scheduler="LSF"
+                host="login.example.com",
+                user="alice",
+                scheduler="LSF",
+                submission_mode="interactive",
             )
         },
     )
@@ -1199,7 +1412,10 @@ def test_compute_command_rejects_conflicting_auto_provision_flags(
         "profile",
         {
             "base": ProfileConfig(
-                host="login.example.com", user="alice", scheduler="LSF"
+                host="login.example.com",
+                user="alice",
+                scheduler="LSF",
+                submission_mode="interactive",
             )
         },
     )

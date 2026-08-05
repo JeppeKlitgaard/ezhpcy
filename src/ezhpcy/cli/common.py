@@ -15,7 +15,7 @@ from ezhpcy.cli.utils.resolve import resolve_forbidden_none
 from ezhpcy.config import ConnectionInfo, ProfilePasswordSourceError, config
 from ezhpcy.constants import PACKAGE_NAME
 from ezhpcy.scheduler.types import SchedulerType
-from ezhpcy.types import ResolvedConfig, ResolvedProfileConfig
+from ezhpcy.types import ResolvedConfig, ResolvedProfileConfig, SubmissionMode
 
 KEYRING_SERVICE_NAME = PACKAGE_NAME
 
@@ -104,6 +104,14 @@ SchedulerOpt = Annotated[
         "--scheduler",
         case_sensitive=False,
         help="Scheduler used to allocate the compute node.",
+    ),
+]
+SubmissionModeOpt = Annotated[
+    SubmissionMode | None,
+    typer.Option(
+        "--submission-mode",
+        case_sensitive=False,
+        help="Use an interactive shell or an ordinary batch scheduler job.",
     ),
 ]
 QueueOpt = Annotated[
@@ -354,6 +362,7 @@ def profile_context_from_cli(
     password_keyring: PasswordKeyringOpt = False,
     host: HostOpt = None,
     scheduler_type: SchedulerOpt = None,
+    submission_mode: SubmissionModeOpt = None,
     queue: QueueOpt = None,
     cores: CoresOpt = None,
     gpus: GpusOpt = None,
@@ -415,6 +424,11 @@ def profile_context_from_cli(
                 "password": resolved_password,
                 "host": resolved_host,
                 "scheduler": scheduler_type or resolved_profile.scheduler,
+                "submission_mode": (
+                    submission_mode
+                    if submission_mode is not None
+                    else resolved_profile.submission_mode
+                ),
                 "queue": queue if queue is not None else resolved_profile.queue,
                 "cores": cores if cores is not None else resolved_profile.cores,
                 "gpus": gpus if gpus is not None else resolved_profile.gpus,

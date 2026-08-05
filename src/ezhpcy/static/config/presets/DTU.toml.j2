@@ -47,33 +47,39 @@ pbs_command_directory = "/opt/pbspro/bin"
 [profile.dtu-linuxsh]
 description = "DTU interactive Linux nodes via linuxsh"
 inherit = "dtu-base-pbs"
+submission_mode = "interactive"
 interactive_submission_command = ["/lsf/local/bin/linuxsh"]
 
 [profile.dtu-bigmemlinuxsh]
 description = "DTU interactive Linux nodes via bigmemlinuxsh"
 inherit = "dtu-base-pbs"
+submission_mode = "interactive"
 interactive_submission_command = ["/lsf/local/bin/bigmemlinuxsh"]
 
 ### GPU Interactive Queues
 [profile.dtu-a100sh]
 description = "DTU interactive A100 GPUs via a100sh"
 inherit = "dtu-base-lsf"
+submission_mode = "interactive"
 interactive_submission_command = ["/lsf/local/bin/a100sh"]
 
 [profile.dtu-voltash]
 description = "DTU interactive Volta GPUs via voltash"
 inherit = "dtu-base-lsf"
+submission_mode = "interactive"
 interactive_submission_command = ["/lsf/local/bin/voltash"]
 
 [profile.dtu-sxm2sh]
 description = "DTU interactive SXM2 GPUs via sxm2sh"
 inherit = "dtu-base-lsf"
+submission_mode = "interactive"
 interactive_submission_command = ["/lsf/local/bin/sxm2sh"]
 
 ### GPU Batch Queues
 [profile.dtu-gpul40s]
 description = "DTU L40S GPU queue"
 inherit = "dtu-base-lsf"
+submission_mode = "batch"
 
 queue = "gpul40s"
 cores = 8

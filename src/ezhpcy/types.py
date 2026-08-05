@@ -2,6 +2,7 @@ import hashlib
 import json
 import re
 from datetime import timedelta
+from enum import StrEnum
 from pathlib import Path, PurePosixPath
 from typing import Annotated
 
@@ -17,6 +18,13 @@ PositiveByteSize = Annotated[ByteSize, Field(gt=0)]
 PASSWORD_SOURCE_FIELDS = frozenset(
     {"password", "password_file", "password_fd", "password_keyring"}
 )
+
+
+class SubmissionMode(StrEnum):
+    """How the scheduler should start the worker allocation."""
+
+    INTERACTIVE = "interactive"
+    BATCH = "batch"
 
 
 def parse_time_limit(value: str | None) -> timedelta | None:
@@ -52,6 +60,7 @@ class ProfileConfig(BaseModel):
 
     # Scheduler setup
     scheduler: SchedulerType | None = None
+    submission_mode: SubmissionMode | None = None
     queue: str | None = Field(default=None, min_length=1)
     cores: int | None = Field(default=None, ge=1)
     gpus: int | None = Field(default=None, ge=0)
@@ -100,6 +109,7 @@ class _ResolvedConfigBase(BaseModel):
 
     # Scheduler setup
     scheduler: SchedulerType | None = None
+    submission_mode: SubmissionMode | None = None
     queue: str | None = None
     cores: int = Field(default=1, ge=1)
     gpus: int = Field(default=0, ge=0)
@@ -219,6 +229,7 @@ class ResolvedConfig(_ResolvedConfigBase):
             "user",
             # Scheduler setup
             "scheduler",
+            "submission_mode",
             "queue",
             "cores",
             "gpus",

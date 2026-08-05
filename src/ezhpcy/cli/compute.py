@@ -1,5 +1,5 @@
 import logging
-import queue as queue_module
+import math
 import secrets
 import shlex
 import signal
@@ -25,6 +25,7 @@ from ezhpcy.cli.common import (
     QueueTimeoutOpt,
     SchedulerOpt,
     StartupTimeoutOpt,
+    SubmissionModeOpt,
     TimeLimitOpt,
     WorkerHeartbeatIntervalOpt,
     WorkerHeartbeatTimeoutOpt,
@@ -36,11 +37,10 @@ from ezhpcy.cli.provision import (
 )
 from ezhpcy.cli.utils.bad_parameter import RichBadParameter
 from ezhpcy.cli.utils.ssh import (
-    SSHD_PORT_MARKER,
-    WORKER_HEARTBEAT_MARKER,
     InteractiveSSHClient,
     read_ed25519_public_key,
     retrying_sshd_command,
+    retrying_sshd_script,
     sshd_config_arguments,
 )
 from ezhpcy.config import ConnectionInfo, config
@@ -65,8 +65,9 @@ from ezhpcy.scheduler.base import (
 from ezhpcy.scheduler.lsf import LSFScheduler
 from ezhpcy.scheduler.pbs import PBSScheduler
 from ezhpcy.scheduler.types import SchedulerType
+from ezhpcy.ssh import SFTPClient
 from ezhpcy.tunnel.broker import ForegroundBroker
-from ezhpcy.types import RemoteState, ResolvedConfig
+from ezhpcy.types import RemoteState, ResolvedConfig, SubmissionMode
 from ezhpcy.utils import local_machine_id, ssh_connection_id
 
 _FIRST_DYNAMIC_PORT = 49152
@@ -89,6 +90,7 @@ _LSF_INTERACTIVE_SUBMISSION_OPTIONS = {
 _JOB_POLL_INTERVAL = 1.0
 _JOB_MONITOR_INTERVAL = 5.0
 _SSH_BANNER_LIMIT = 255
+_LEASE_FILE_RETAIN_COUNT = 2
 logger = logging.getLogger(__name__)
 
 
@@ -99,21 +101,14 @@ class ComputeTunnelError(RuntimeError):
 def _worker_sshd_command(
     remote_state: RemoteState,
     *,
-    host_key: PurePosixPath,
-    remote_username: str,
-    authorized_key: tuple[str, str],
     ports: tuple[int, ...],
     heartbeat_token: str,
     heartbeat_timeout_seconds: float,
     heartbeat_debug: bool,
+    control_dir: PurePosixPath,
+    read_script_from_stdin: bool,
+    sshd_arguments: list[str],
 ) -> tuple[str, ...]:
-    sshd_arguments = [
-        *sshd_config_arguments(
-            host_key=host_key,
-            remote_username=remote_username,
-            authorized_key=authorized_key,
-        ),
-    ]
     return (
         "env",
         f"PIXI_HOME={remote_state.pixi_home()}",
@@ -125,11 +120,124 @@ def _worker_sshd_command(
             sshd_arguments,
             ports,
             heartbeat_token=heartbeat_token,
-            heartbeat_timeout_seconds=heartbeat_timeout_seconds,
+            heartbeat_timeout_seconds=math.ceil(heartbeat_timeout_seconds),
             heartbeat_debug=heartbeat_debug,
             heartbeat_log_dir=remote_state.worker_logs_dir(),
+            control_dir=control_dir,
+            read_script_from_stdin=read_script_from_stdin,
         ),
     )
+
+
+def _worker_job_script(command: tuple[str, ...], worker_script: str) -> str:
+    """Wrap the worker shell program in a batch script fed to LSF over stdin."""
+    delimiter = "EZHPCY_WORKER_SCRIPT"
+    if f"\n{delimiter}\n" in worker_script:
+        raise ValueError("worker script conflicts with its here-document delimiter")
+    return (
+        "#!/usr/bin/env bash\n"
+        f"exec {shlex.join(command)} <<'{delimiter}'\n"
+        f"{worker_script.rstrip()}\n"
+        f"{delimiter}\n"
+    )
+
+
+class WorkerControl:
+    """A bounded, filesystem-backed control mailbox for one worker job."""
+
+    def __init__(
+        self,
+        sftp: SFTPClient,
+        directory: PurePosixPath,
+        token: str,
+        *,
+        ports: tuple[int, ...],
+    ) -> None:
+        self._sftp = sftp
+        self.directory = directory
+        self._token = token
+        self._ports = frozenset(ports)
+        self._sequence = 0
+        self._leases: list[PurePosixPath] = []
+        self._lock = threading.Lock()
+
+    def create(self) -> None:
+        with self._lock:
+            self._sftp.mkdir(self.directory, mode=0o700, parents=True)
+
+    def publish_lease(self) -> int:
+        with self._lock:
+            self._sequence += 1
+            filename = f"lease.{self._sequence:020d}"
+            temporary = self.directory / f".{filename}.tmp"
+            lease = self.directory / filename
+            try:
+                self._sftp.write_text(temporary, f"{self._token} {self._sequence}\n")
+                self._sftp.chmod(str(temporary), 0o600)
+                self._sftp.posix_rename(str(temporary), str(lease))
+            except Exception:
+                try:
+                    self._sftp.remove(str(temporary))
+                except OSError:
+                    pass
+                raise
+            self._leases.append(lease)
+            while len(self._leases) > _LEASE_FILE_RETAIN_COUNT:
+                stale = self._leases.pop(0)
+                try:
+                    self._sftp.remove(str(stale))
+                except OSError as error:
+                    logger.debug(
+                        "Could not remove stale worker lease %s: %r", stale, error
+                    )
+            return self._sequence
+
+    def read_ready_port(self) -> int | None:
+        with self._lock:
+            try:
+                value = self._sftp.read_text(self.directory / "ready").strip()
+            except OSError:
+                return None
+        fields = value.split()
+        if len(fields) != 4 or fields[:3] != ["v1", self._token, "ready"]:
+            raise ComputeTunnelError("worker wrote an invalid ready record")
+        try:
+            port = int(fields[3])
+        except ValueError as error:
+            raise ComputeTunnelError(
+                "worker reported a non-numeric SSH port"
+            ) from error
+        if port not in self._ports:
+            raise ComputeTunnelError(f"worker reported unexpected SSH port {port}")
+        return port
+
+    def read_failure(self) -> str | None:
+        with self._lock:
+            try:
+                value = self._sftp.read_text(self.directory / "failed").strip()
+            except OSError:
+                return None
+        fields = value.split()
+        if len(fields) < 3 or fields[:3] != ["v1", self._token, "failed"]:
+            return "worker wrote an invalid failure record"
+        return " ".join(fields[3:]) or "worker startup failed"
+
+    def close(self) -> None:
+        with self._lock:
+            for path in (
+                *self._leases,
+                self.directory / "ready",
+                self.directory / "failed",
+                self.directory / "stopped",
+            ):
+                try:
+                    self._sftp.remove(str(path))
+                except OSError:
+                    pass
+            try:
+                self._sftp.rmdir(str(self.directory))
+            except OSError:
+                pass
 
 
 def _select_worker_ports(count: int) -> tuple[int, ...]:
@@ -328,34 +436,27 @@ def _monitor_job(
             return
 
 
-def _send_worker_heartbeats(
-    job: InteractiveJob,
+def _send_worker_lease_heartbeats(
+    control: WorkerControl,
     transport: paramiko.Transport,
     *,
-    token: str,
+    job_id: str,
     interval_seconds: float,
     stop_requested: threading.Event,
     failed: threading.Event,
     errors: list[ComputeTunnelError],
     failure_handler: Callable[[], None],
 ) -> None:
-    """Renew the worker lease until shutdown or the control channel fails."""
+    """Renew the filesystem lease until shutdown or the login transport fails."""
     sequence = 0
     logger.debug(
         "Worker heartbeat sender started: job=%s interval_seconds=%g",
-        job.job_id,
+        job_id,
         interval_seconds,
     )
     while not stop_requested.is_set():
-        sequence += 1
-        payload = f"{WORKER_HEARTBEAT_MARKER} {token} {sequence}\n".encode()
-        offset = 0
         try:
-            while offset < len(payload):
-                sent = job.process.send(payload[offset:])
-                if sent <= 0:
-                    raise EOFError("interactive worker channel accepted no data")
-                offset += sent
+            sequence = control.publish_lease()
         except Exception as error:
             if stop_requested.is_set():
                 break
@@ -365,7 +466,7 @@ def _send_worker_heartbeats(
                 else None
             )
             heartbeat_error = ComputeTunnelError(
-                f"worker heartbeat send failed for job {job.job_id} at "
+                f"worker heartbeat write failed for job {job_id} at "
                 f"sequence {sequence}: {error}"
             )
             errors.append(heartbeat_error)
@@ -373,7 +474,7 @@ def _send_worker_heartbeats(
             logger.error(
                 "Worker heartbeat send failed: job=%s sequence=%d "
                 "transport_active=%s transport_error=%r error=%r",
-                job.job_id,
+                job_id,
                 sequence,
                 transport.is_active(),
                 transport_error,
@@ -383,19 +484,53 @@ def _send_worker_heartbeats(
             failure_handler()
             return
         logger.debug(
-            "Worker heartbeat sent: job=%s sequence=%d bytes=%d transport_active=%s",
-            job.job_id,
+            "Worker heartbeat published: job=%s sequence=%d transport_active=%s",
+            job_id,
             sequence,
-            len(payload),
             transport.is_active(),
         )
         if stop_requested.wait(interval_seconds):
             break
     logger.debug(
         "Worker heartbeat sender stopped: job=%s last_sequence=%d",
-        job.job_id,
+        job_id,
         sequence,
     )
+
+
+def _monitor_scheduler_job(
+    scheduler: Scheduler,
+    job_id: str,
+    broker: ForegroundBroker,
+    stop_requested: threading.Event,
+    job_finished: threading.Event,
+    errors: list[ComputeTunnelError],
+) -> None:
+    """Close the broker when the scheduler reports that its job has ended."""
+    while not stop_requested.wait(_JOB_MONITOR_INTERVAL):
+        try:
+            info = scheduler.inspect(job_id)
+        except SchedulerError as error:
+            errors.append(
+                ComputeTunnelError(f"could not monitor worker job {job_id}: {error}")
+            )
+            broker.close()
+            return
+        if info.state.is_terminal:
+            job_finished.set()
+            logger.info(
+                "Worker job %s ended in scheduler state %s.", job_id, info.raw_state
+            )
+            broker.close()
+            return
+        if info.state is JobState.UNKNOWN:
+            errors.append(
+                ComputeTunnelError(
+                    f"worker job {job_id} entered unknown scheduler state {info.raw_state}"
+                )
+            )
+            broker.close()
+            return
 
 
 def _raise_heartbeat_failure(errors: list[ComputeTunnelError]) -> None:
@@ -404,41 +539,22 @@ def _raise_heartbeat_failure(errors: list[ComputeTunnelError]) -> None:
 
 
 def _drain_interactive_job(
-    job: InteractiveJob,
-    stop_requested: threading.Event,
-    selected_ports: queue_module.Queue[int] | None = None,
+    job: InteractiveJob, stop_requested: threading.Event
 ) -> None:
-    pending = bytearray()
-
-    def handle_output(output: bytes) -> None:
-        if not output:
-            return
-        typer.echo(output.decode(errors="replace"), nl=False, err=True)
-        if selected_ports is None:
-            return
-        pending.extend(output)
-        while b"\n" in pending:
-            raw_line, _, remainder = pending.partition(b"\n")
-            pending[:] = remainder
-            line = raw_line.decode(errors="replace").strip()
-            if line.startswith(SSHD_PORT_MARKER):
-                raw_port = line.removeprefix(SSHD_PORT_MARKER)
-                try:
-                    selected_ports.put_nowait(int(raw_port))
-                except ValueError:
-                    logger.warning("Worker reported an invalid SSH port: %s", raw_port)
-
+    """Forward diagnostic output from an interactive scheduler shell."""
     while not stop_requested.wait(0.05):
         output = job.read_available()
-        handle_output(output)
+        if output:
+            typer.echo(output.decode(errors="replace"), nl=False, err=True)
         if job.process.exit_status_ready():
-            handle_output(job.read_available())
+            output = job.read_available()
+            if output:
+                typer.echo(output.decode(errors="replace"), nl=False, err=True)
             return
 
 
 def _wait_for_selected_worker_port(
-    job: InteractiveJob,
-    selected_ports: queue_module.Queue[int],
+    control: WorkerControl,
     *,
     timeout_seconds: float,
 ) -> int:
@@ -450,13 +566,12 @@ def _wait_for_selected_worker_port(
                 "worker SSH daemon did not bind a candidate port within "
                 f"{timeout_seconds:g} seconds"
             )
-        try:
-            return selected_ports.get(timeout=min(0.1, remaining))
-        except queue_module.Empty:
-            if job.process.exit_status_ready():
-                raise ComputeTunnelError(
-                    "worker SSH daemon failed to bind any candidate port"
-                )
+        port = control.read_ready_port()
+        if port is not None:
+            return port
+        if failure := control.read_failure():
+            raise ComputeTunnelError(f"worker SSH daemon failed to start: {failure}")
+        time.sleep(min(0.1, remaining))
 
 
 def _run_compute_tunnel(
@@ -477,6 +592,7 @@ def _run_compute_tunnel(
     heartbeat_timeout_seconds: float = 90,
     worker_ports: tuple[int, ...],
     auto_provision: bool,
+    submission_mode: SubmissionMode,
 ) -> None:
     machine_id = local_machine_id()
     with InteractiveSSHClient(
@@ -521,6 +637,7 @@ def _run_compute_tunnel(
                 scheduler: Scheduler = LSFScheduler(
                     ssh.run_login_shell,
                     ssh.start_login_shell,
+                    ssh.run_login_shell_with_input,
                     interactive_application_profile=(profile.lsf_application_profile),
                     interactive_submission_command=(
                         profile.interactive_submission_command
@@ -576,231 +693,270 @@ def _run_compute_tunnel(
             / WORKER_HOST_KEY_NAME
         )
 
+        heartbeat_token = secrets.token_hex(16)
+        control_dir = (
+            remote_state.package_cache_dir() / "worker_control" / heartbeat_token
+        )
         with ssh.sftp_client() as sftp:
             sftp.mkdir(worker_cwd_dir, parents=True, exist_ok=True)
             sftp.mkdir(worker_logs_dir, parents=True, exist_ok=True)
-
-        heartbeat_token = secrets.token_hex(16)
-        spec = JobSpec(
-            command=_worker_sshd_command(
-                remote_state,
+            sftp.mkdir(control_dir.parent, mode=0o700, parents=True, exist_ok=True)
+            sftp.chmod(str(control_dir.parent), 0o700)
+            control = WorkerControl(
+                sftp,
+                control_dir,
+                heartbeat_token,
+                ports=worker_ports,
+            )
+            stream_lsf_script = (
+                scheduler_type is SchedulerType.LSF
+                and submission_mode is SubmissionMode.BATCH
+            )
+            control.create()
+            sshd_arguments = sshd_config_arguments(
                 host_key=remote_host_key,
                 remote_username=remote_username,
                 authorized_key=(key_type, key_blob),
-                ports=worker_ports,
-                heartbeat_token=heartbeat_token,
-                heartbeat_timeout_seconds=heartbeat_timeout_seconds,
-                heartbeat_debug=logger.isEnabledFor(logging.DEBUG),
-            ),
-            name="ezhpcy-worker",
-            time_limit=time_limit,
-            memory_bytes=memory_bytes,
-            cores=cores,
-            gpus=gpus,
-            exclusive=exclusive,
-            queue=queue,
-            working_directory=worker_cwd_dir,
-            stdout_path=worker_logs_dir / "worker-%J.out",
-            stderr_path=worker_logs_dir / "worker-%J.err",
-        )
-
-        interactive_job = scheduler.submit_interactive(
-            spec,
-            startup_timeout=startup_timeout_seconds,
-        )
-        job_id = interactive_job.job_id
-        logger.info("Submitted worker job %s.", job_id)
-        logger.info(
-            "Worker heartbeat enabled for job %s: interval=%g seconds, "
-            "timeout=%g seconds.",
-            job_id,
-            heartbeat_interval_seconds,
-            heartbeat_timeout_seconds,
-        )
-        logger.info(
-            "Worker heartbeat log: %s.",
-            worker_logs_dir / f"heartbeat-{job_id}.log",
-        )
-        if interactive_job.submission_command:
-            logger.debug(
-                "Submission command: %s",
-                shlex.join(interactive_job.submission_command),
             )
-        if scheduler_type is SchedulerType.LSF:
-            logger.info(
-                "Worker logs: %s and %s.",
-                str(spec.stdout_path).replace("%J", job_id),
-                str(spec.stderr_path).replace("%J", job_id),
-            )
-        job_finished = threading.Event()
-        output_stop = threading.Event()
-        heartbeat_stop = threading.Event()
-        heartbeat_failed = threading.Event()
-        heartbeat_errors: list[ComputeTunnelError] = []
-        heartbeat_thread: threading.Thread | None = None
-        broker: ForegroundBroker | None = None
-        shutdown_reason = "startup_failure"
-        selected_ports: queue_module.Queue[int] = queue_module.Queue()
-        output_thread = threading.Thread(
-            target=_drain_interactive_job,
-            args=(interactive_job, output_stop, selected_ports),
-            daemon=True,
-            name="ezhpcy-compute-job-output",
-        )
-        output_thread.start()
-        try:
-            interactive_job.start_command()
-            shutdown_reason = "starting_worker"
-            logger.debug("Worker command queued: job=%s", job_id)
-            info = _wait_for_running_job(
-                scheduler,
-                job_id,
-                timeout_seconds=queue_timeout_seconds,
-                state_handler=lambda snapshot: logger.info(
-                    "Worker job %s: %s (%s).",
-                    job_id,
-                    snapshot.state.value,
-                    snapshot.raw_state,
+            control.publish_lease()
+            spec = JobSpec(
+                command=_worker_sshd_command(
+                    remote_state,
+                    ports=worker_ports,
+                    heartbeat_token=heartbeat_token,
+                    heartbeat_timeout_seconds=heartbeat_timeout_seconds,
+                    heartbeat_debug=logger.isEnabledFor(logging.DEBUG),
+                    control_dir=control_dir,
+                    read_script_from_stdin=stream_lsf_script,
+                    sshd_arguments=sshd_arguments,
                 ),
-            )
-            worker_host = info.primary_host
-            if worker_host is None:
-                raise ComputeTunnelError(
-                    f"scheduler did not report a host for running job {job_id}"
-                )
-            worker_port = _wait_for_selected_worker_port(
-                interactive_job,
-                selected_ports,
-                timeout_seconds=startup_timeout_seconds,
-            )
-
-            def handle_heartbeat_failure() -> None:
-                nonlocal shutdown_reason
-                shutdown_reason = "heartbeat_send_failed"
-                if broker is not None:
-                    broker.close()
-
-            heartbeat_thread = threading.Thread(
-                target=_send_worker_heartbeats,
-                args=(interactive_job, transport),
-                kwargs={
-                    "token": heartbeat_token,
-                    "interval_seconds": heartbeat_interval_seconds,
-                    "stop_requested": heartbeat_stop,
-                    "failed": heartbeat_failed,
-                    "errors": heartbeat_errors,
-                    "failure_handler": handle_heartbeat_failure,
-                },
-                daemon=True,
-                name="ezhpcy-worker-heartbeat",
-            )
-            heartbeat_thread.start()
-            destination = (worker_host, worker_port)
-            logger.info(
-                "Waiting for worker SSH endpoint %s:%d.", worker_host, worker_port
-            )
-            _wait_for_worker_endpoint(
-                transport,
-                destination,
-                timeout_seconds=startup_timeout_seconds,
-                failure_check=lambda: _raise_heartbeat_failure(heartbeat_errors),
+                name="ezhpcy-worker",
+                time_limit=time_limit,
+                memory_bytes=memory_bytes,
+                cores=cores,
+                gpus=gpus,
+                exclusive=exclusive,
+                queue=queue,
+                working_directory=worker_cwd_dir,
+                stdout_path=worker_logs_dir / f"worker-{heartbeat_token}.out",
+                stderr_path=worker_logs_dir / f"worker-{heartbeat_token}.err",
             )
 
-            backend = create_broker_backend(
-                profile=profile_name,
-                resolved_config=(profile if profile_name is None else None),
-            )
-            broker = ForegroundBroker(
-                transport,
-                destination,
-                backend,
-                error_handler=lambda error: logger.error(
-                    "Broker client error: %s", error
-                ),
-            )
-            monitor_stop = threading.Event()
-            monitor_errors: list[ComputeTunnelError] = []
-            monitor = threading.Thread(
-                target=_monitor_job,
-                args=(
-                    interactive_job,
-                    broker,
-                    monitor_stop,
-                    job_finished,
-                    monitor_errors,
-                ),
-                daemon=True,
-                name="ezhpcy-job-monitor",
-            )
-            monitor.start()
-
-            logger.info(
-                "Tunnel ready for %s via worker %s:%d (press Ctrl+C to stop).",
-                WORKER_HOST_ALIAS,
-                worker_host,
-                worker_port,
-            )
-            logger.info(
-                "Connect with `ssh %s` or select `%s` in VS Code Remote-SSH.",
-                WORKER_HOST_ALIAS,
-                WORKER_HOST_ALIAS,
-            )
-            shutdown_reason = "broker_stopped"
-            previous_sigbreak_handler = None
-            if hasattr(signal, "SIGBREAK"):
-                previous_sigbreak_handler = signal.signal(
-                    signal.SIGBREAK, signal.default_int_handler
-                )
+            interactive_job: InteractiveJob | None = None
             try:
-                broker.serve_forever()
-            except KeyboardInterrupt:
-                shutdown_reason = "user_interrupt"
-                logger.info("Stopping compute-node tunnel...")
-            finally:
-                monitor_stop.set()
-                broker.close()
-                monitor.join(timeout=1)
-                if previous_sigbreak_handler is not None:
-                    signal.signal(signal.SIGBREAK, previous_sigbreak_handler)
-            if monitor_errors:
-                shutdown_reason = "job_monitor_error"
-                raise monitor_errors[0]
-            if job_finished.is_set():
-                shutdown_reason = "worker_finished"
-            _raise_heartbeat_failure(heartbeat_errors)
-        finally:
-            heartbeat_stop.set()
-            if heartbeat_thread is not None:
-                heartbeat_thread.join(timeout=1)
-                if heartbeat_thread.is_alive():
-                    logger.warning(
-                        "Worker heartbeat sender did not stop promptly: job=%s",
-                        job_id,
+                if submission_mode is SubmissionMode.INTERACTIVE:
+                    interactive_job = scheduler.submit_interactive(
+                        spec,
+                        startup_timeout=startup_timeout_seconds,
                     )
-            transport_error = (
-                transport.get_exception()
-                if hasattr(transport, "get_exception")
-                else None
-            )
-            logger.debug(
-                "Compute tunnel cleanup: job=%s reason=%s job_finished=%s "
-                "heartbeat_failed=%s transport_active=%s transport_error=%r",
-                job_id,
-                shutdown_reason,
-                job_finished.is_set(),
-                heartbeat_failed.is_set(),
-                transport.is_active(),
-                transport_error,
-            )
-            if not job_finished.is_set():
+                    job_id = interactive_job.job_id
+                elif stream_lsf_script:
+                    job_id = scheduler.submit_script(
+                        spec, _worker_job_script(spec.command, retrying_sshd_script())
+                    )
+                else:
+                    job_id = scheduler.submit(spec)
+                logger.info("Submitted worker job %s.", job_id)
+                logger.info(
+                    "Worker heartbeat enabled for job %s: interval=%g seconds, "
+                    "timeout=%g seconds.",
+                    job_id,
+                    heartbeat_interval_seconds,
+                    heartbeat_timeout_seconds,
+                )
+                logger.info(
+                    "Worker heartbeat log: %s.",
+                    worker_logs_dir / f"heartbeat-{job_id}.log",
+                )
+                if interactive_job is not None and interactive_job.submission_command:
+                    logger.debug(
+                        "Submission command: %s",
+                        shlex.join(interactive_job.submission_command),
+                    )
+                logger.info(
+                    "Worker logs: %s and %s.", spec.stdout_path, spec.stderr_path
+                )
+                job_finished = threading.Event()
+                output_stop = threading.Event()
+                heartbeat_stop = threading.Event()
+                heartbeat_failed = threading.Event()
+                heartbeat_errors: list[ComputeTunnelError] = []
+                heartbeat_thread: threading.Thread | None = None
+                broker: ForegroundBroker | None = None
+                shutdown_reason = "startup_failure"
+                output_thread: threading.Thread | None = None
+                if interactive_job is not None:
+                    output_thread = threading.Thread(
+                        target=_drain_interactive_job,
+                        args=(interactive_job, output_stop),
+                        daemon=True,
+                        name="ezhpcy-compute-job-output",
+                    )
+                    output_thread.start()
                 try:
-                    scheduler.cancel(job_id)
-                    logger.info("Cancelled worker job %s.", job_id)
-                except SchedulerError as error:
-                    logger.warning("Could not cancel worker job %s: %s", job_id, error)
-            output_stop.set()
-            interactive_job.close()
-            output_thread.join(timeout=1)
+                    if interactive_job is not None:
+                        interactive_job.start_command()
+                    shutdown_reason = "starting_worker"
+                    logger.debug("Worker command queued: job=%s", job_id)
+                    info = _wait_for_running_job(
+                        scheduler,
+                        job_id,
+                        timeout_seconds=queue_timeout_seconds,
+                        state_handler=lambda snapshot: logger.info(
+                            "Worker job %s: %s (%s).",
+                            job_id,
+                            snapshot.state.value,
+                            snapshot.raw_state,
+                        ),
+                    )
+                    worker_host = info.primary_host
+                    if worker_host is None:
+                        raise ComputeTunnelError(
+                            f"scheduler did not report a host for running job {job_id}"
+                        )
+                    worker_port = _wait_for_selected_worker_port(
+                        control,
+                        timeout_seconds=startup_timeout_seconds,
+                    )
+
+                    def handle_heartbeat_failure() -> None:
+                        nonlocal shutdown_reason
+                        shutdown_reason = "heartbeat_send_failed"
+                        if broker is not None:
+                            broker.close()
+
+                    heartbeat_thread = threading.Thread(
+                        target=_send_worker_lease_heartbeats,
+                        args=(control, transport),
+                        kwargs={
+                            "job_id": job_id,
+                            "interval_seconds": heartbeat_interval_seconds,
+                            "stop_requested": heartbeat_stop,
+                            "failed": heartbeat_failed,
+                            "errors": heartbeat_errors,
+                            "failure_handler": handle_heartbeat_failure,
+                        },
+                        daemon=True,
+                        name="ezhpcy-worker-heartbeat",
+                    )
+                    heartbeat_thread.start()
+                    destination = (worker_host, worker_port)
+                    logger.info(
+                        "Waiting for worker SSH endpoint %s:%d.",
+                        worker_host,
+                        worker_port,
+                    )
+                    _wait_for_worker_endpoint(
+                        transport,
+                        destination,
+                        timeout_seconds=startup_timeout_seconds,
+                        failure_check=lambda: _raise_heartbeat_failure(
+                            heartbeat_errors
+                        ),
+                    )
+
+                    backend = create_broker_backend(
+                        profile=profile_name,
+                        resolved_config=(profile if profile_name is None else None),
+                    )
+                    broker = ForegroundBroker(
+                        transport,
+                        destination,
+                        backend,
+                        error_handler=lambda error: logger.error(
+                            "Broker client error: %s", error
+                        ),
+                    )
+                    monitor_stop = threading.Event()
+                    monitor_errors: list[ComputeTunnelError] = []
+                    monitor = threading.Thread(
+                        target=_monitor_scheduler_job,
+                        args=(
+                            scheduler,
+                            job_id,
+                            broker,
+                            monitor_stop,
+                            job_finished,
+                            monitor_errors,
+                        ),
+                        daemon=True,
+                        name="ezhpcy-job-monitor",
+                    )
+                    monitor.start()
+
+                    logger.info(
+                        "Tunnel ready for %s via worker %s:%d (press Ctrl+C to stop).",
+                        WORKER_HOST_ALIAS,
+                        worker_host,
+                        worker_port,
+                    )
+                    logger.info(
+                        "Connect with `ssh %s` or select `%s` in VS Code Remote-SSH.",
+                        WORKER_HOST_ALIAS,
+                        WORKER_HOST_ALIAS,
+                    )
+                    shutdown_reason = "broker_stopped"
+                    previous_sigbreak_handler = None
+                    if hasattr(signal, "SIGBREAK"):
+                        previous_sigbreak_handler = signal.signal(
+                            signal.SIGBREAK, signal.default_int_handler
+                        )
+                    try:
+                        broker.serve_forever()
+                    except KeyboardInterrupt:
+                        shutdown_reason = "user_interrupt"
+                        logger.info("Stopping compute-node tunnel...")
+                    finally:
+                        monitor_stop.set()
+                        broker.close()
+                        monitor.join(timeout=1)
+                        if previous_sigbreak_handler is not None:
+                            signal.signal(signal.SIGBREAK, previous_sigbreak_handler)
+                    if monitor_errors:
+                        shutdown_reason = "job_monitor_error"
+                        raise monitor_errors[0]
+                    if job_finished.is_set():
+                        shutdown_reason = "worker_finished"
+                    _raise_heartbeat_failure(heartbeat_errors)
+                finally:
+                    heartbeat_stop.set()
+                    if heartbeat_thread is not None:
+                        heartbeat_thread.join(timeout=1)
+                        if heartbeat_thread.is_alive():
+                            logger.warning(
+                                "Worker heartbeat sender did not stop promptly: job=%s",
+                                job_id,
+                            )
+                    transport_error = (
+                        transport.get_exception()
+                        if hasattr(transport, "get_exception")
+                        else None
+                    )
+                    logger.debug(
+                        "Compute tunnel cleanup: job=%s reason=%s job_finished=%s "
+                        "heartbeat_failed=%s transport_active=%s transport_error=%r",
+                        job_id,
+                        shutdown_reason,
+                        job_finished.is_set(),
+                        heartbeat_failed.is_set(),
+                        transport.is_active(),
+                        transport_error,
+                    )
+                    if not job_finished.is_set():
+                        try:
+                            scheduler.cancel(job_id)
+                            logger.info("Cancelled worker job %s.", job_id)
+                        except SchedulerError as error:
+                            logger.warning(
+                                "Could not cancel worker job %s: %s", job_id, error
+                            )
+                    output_stop.set()
+                    if interactive_job is not None:
+                        interactive_job.close()
+                    if output_thread is not None:
+                        output_thread.join(timeout=1)
+            finally:
+                control.close()
 
 
 @with_profile_context
@@ -808,6 +964,7 @@ def compute_cmd(
     profile_context: ProfileContext,
     profile: OptionalProfileArg = None,
     scheduler_type: SchedulerOpt = None,
+    submission_mode: SubmissionModeOpt = None,
     queue: QueueOpt = None,
     cores: CoresOpt = None,
     gpus: GpusOpt = None,
@@ -861,6 +1018,19 @@ def compute_cmd(
             raise typer.BadParameter(
                 "scheduler must be set by --scheduler or the selected profile",
                 param_hint="--scheduler",
+            )
+        if resolved.submission_mode is None:
+            raise typer.BadParameter(
+                "submission_mode must be set by --submission-mode or the selected profile",
+                param_hint="--submission-mode",
+            )
+        if (
+            resolved.submission_mode is SubmissionMode.BATCH
+            and resolved.interactive_submission_command is not None
+        ):
+            raise RichBadParameter(
+                "interactive_submission_command requires submission_mode = 'interactive'",
+                param_hint="interactive_submission_command",
             )
         if resolved.interactive_submission_command is not None:
             configured_submission_options = (
@@ -934,6 +1104,7 @@ def compute_cmd(
             profile=resolved,
             conn_info=profile_context.connection,
             scheduler_type=resolved.scheduler,
+            submission_mode=resolved.submission_mode,
             queue=resolved.queue,
             cores=resolved.cores,
             gpus=resolved.gpus,

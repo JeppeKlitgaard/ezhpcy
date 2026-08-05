@@ -48,6 +48,7 @@ class LSFScheduler(Scheduler):
         self,
         runner: Callable[[list[str]], str],
         process_starter: Callable[[list[str]], RemoteProcess] | None = None,
+        script_runner: Callable[[list[str], str], str] | None = None,
         *,
         interactive_application_profile: str | None = None,
         interactive_submission_command: Sequence[str] | None = None,
@@ -57,6 +58,7 @@ class LSFScheduler(Scheduler):
     ) -> None:
         self._runner = runner
         self._process_starter = process_starter
+        self._script_runner = script_runner
         self._interactive_application_profile = interactive_application_profile
         if interactive_submission_command is not None and (
             not interactive_submission_command
@@ -92,6 +94,25 @@ class LSFScheduler(Scheduler):
             ),
             "submit a job",
         )
+        match = _SUBMITTED_JOB_PATTERN.search(output)
+        if match is None:
+            raise SchedulerOutputError(
+                f"could not find an LSF job ID in bsub output: {output.strip()!r}"
+            )
+        return match.group("job_id")
+
+    def submit_script(self, spec: JobSpec, script: str) -> str:
+        """Submit an LSF job script through ``bsub`` standard input."""
+        if not script:
+            raise ValueError("job script must not be empty")
+        if self._script_runner is None:
+            raise SchedulerError("LSF script submission is not configured")
+        try:
+            output = self._script_runner(self._submission_command(spec), script)
+        except Exception as error:
+            raise SchedulerCommandError(
+                f"LSF failed to submit a job script: {error}"
+            ) from error
         match = _SUBMITTED_JOB_PATTERN.search(output)
         if match is None:
             raise SchedulerOutputError(
@@ -260,6 +281,15 @@ class LSFScheduler(Scheduler):
             )
         command.extend(spec.command)
         return command
+
+    def _submission_command(self, spec: JobSpec) -> list[str]:
+        """Return the ``bsub`` invocation without a command-line job payload."""
+        command = self._submit_command(
+            spec,
+            resource_reserve_per_task=self._resource_reserve_per_task,
+        )
+        job_command = self._job_command(spec)
+        return command[: -len(job_command)]
 
     @staticmethod
     def _job_shell_command(spec: JobSpec) -> str:

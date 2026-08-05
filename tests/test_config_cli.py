@@ -11,6 +11,7 @@ from ezhpcy.cli.config import (
     load as config_load,
 )
 from ezhpcy.config import Config
+from ezhpcy.types import SubmissionMode
 
 runner = CliRunner()
 
@@ -115,7 +116,12 @@ def test_config_load_creates_dtu_config_case_insensitively(
     loaded_config = Config.from_mapping(loaded)
     assert str(loaded_config.resolve_profile("dtu-base").host) == "login.hpc.dtu.dk"
     assert loaded_config.resolve_profile("dtu-gpul40s").cores == 8
+    assert (
+        loaded_config.resolve_profile("dtu-gpul40s").submission_mode
+        is SubmissionMode.BATCH
+    )
     a100sh = loaded_config.resolve_profile("dtu-a100sh")
+    assert a100sh.submission_mode is SubmissionMode.INTERACTIVE
     assert a100sh.interactive_submission_command == ["/lsf/local/bin/a100sh"]
     assert a100sh.lsf_application_profile == "qrsh"
     assert a100sh.lsf_submission_environment == {}

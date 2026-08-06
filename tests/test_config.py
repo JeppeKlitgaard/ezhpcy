@@ -29,6 +29,18 @@ def test_invalid_log_level_is_rejected() -> None:
         config_module.Config.from_mapping({"log_level": "verbose"})
 
 
+def test_debug_defaults_to_false() -> None:
+    assert config_module.Config.from_mapping({}).debug is False
+
+
+def test_debug_can_be_enabled_from_the_environment(monkeypatch) -> None:
+    monkeypatch.setenv("EZHPCY_DEBUG", "TRUE")
+
+    config = config_module.Config()
+
+    assert config.debug is True
+
+
 def test_auto_provision_defaults_to_true() -> None:
     assert config_module.Config.from_mapping({}).auto_provision is True
 

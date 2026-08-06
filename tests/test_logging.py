@@ -81,11 +81,30 @@ def test_root_debug_option_overrides_logging_configuration() -> None:
     configure.assert_called_once_with(logging.DEBUG, include_timestamp=True)
 
 
+def test_debug_env_var_overrides_logging_configuration_without_the_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("EZHPCY_DEBUG", "1")
+
+    with patch("ezhpcy.cli.configure_logging") as configure:
+        result = CliRunner().invoke(app, ["version"])
+
+    assert result.exit_code == 0, result.output
+    configure.assert_called_once_with(logging.DEBUG, include_timestamp=True)
+
+
 def test_root_help_exposes_debug_option() -> None:
     result = CliRunner().invoke(app, ["--help"])
 
     assert result.exit_code == 0, result.output
     assert "--debug" in result.output
+
+
+def test_root_debug_help_exposes_its_env_var() -> None:
+    result = CliRunner().invoke(app, ["--help"])
+
+    assert result.exit_code == 0, result.output
+    assert "EZHPCY_DEBUG" in result.output
 
 
 def test_configure_logging_is_idempotent() -> None:

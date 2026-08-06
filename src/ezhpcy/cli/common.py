@@ -19,6 +19,7 @@ from ezhpcy.types import ResolvedConfig, ResolvedProfileConfig, SubmissionMode
 
 KEYRING_SERVICE_NAME = PACKAGE_NAME
 
+DEBUG_ENV_VAR = "EZHPCY_DEBUG"
 HOST_ENV_VAR = "EZHPCY_HOST"
 USER_ENV_VAR = "EZHPCY_USER"
 PROFILE_ENV_VAR = "EZHPCY_PROFILE"

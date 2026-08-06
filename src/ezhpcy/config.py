@@ -71,6 +71,7 @@ class ConnectionInfo(BaseModel):
 class _ConfigValues(BaseModel):
     local_file: LocalFileConfig = LocalFileConfig()
     log_level: int = logging.INFO
+    debug: bool = False
     auto_provision: bool = True
     profile: dict[str, ProfileConfig] = Field(default_factory=dict)
 
@@ -207,4 +208,7 @@ class Config(BaseSettings, _ConfigValues):
 
 
 config = Config()
-configure_logging(config.log_level)
+configure_logging(
+    logging.DEBUG if config.debug else config.log_level,
+    include_timestamp=config.debug,
+)

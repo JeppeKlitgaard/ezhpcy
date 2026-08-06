@@ -4,6 +4,7 @@ from typing import Annotated
 import typer
 
 from ezhpcy.cli.broker import broker_cmd
+from ezhpcy.cli.common import DEBUG_ENV_VAR
 from ezhpcy.cli.compute import compute_cmd
 from ezhpcy.cli.config import config_app
 from ezhpcy.cli.info import info_cmd
@@ -15,6 +16,7 @@ from ezhpcy.cli.prune import prune_cmd
 from ezhpcy.cli.ssh_config import ssh_config_cmd
 from ezhpcy.cli.utils.group import EzhpcyTyperGroup
 from ezhpcy.cli.version import version_cmd
+from ezhpcy.config import config
 from ezhpcy.logging import configure_logging
 
 app = typer.Typer(
@@ -31,10 +33,11 @@ def main(
         typer.Option(
             "--debug",
             help="Enable debug logging and include timestamps in log output.",
+            envvar=DEBUG_ENV_VAR,
         ),
     ] = False,
 ) -> None:
-    if debug:
+    if debug or config.debug:
         configure_logging(logging.DEBUG, include_timestamp=True)
 
 

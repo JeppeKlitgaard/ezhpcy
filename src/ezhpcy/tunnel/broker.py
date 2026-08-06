@@ -133,13 +133,24 @@ class ForegroundBroker:
     def _forward_channel(
         self, channel: paramiko.Channel, stream: socket.socket
     ) -> None:
+        started = time.monotonic()
         try:
             _channel_to_socket(channel, stream)
             logger.debug(
-                "Worker channel reached EOF: channel_id=%s",
+                "Worker channel reached EOF: channel_id=%s duration_seconds=%.3f",
                 getattr(channel, "chanid", None),
+                time.monotonic() - started,
             )
         except (OSError, paramiko.SSHException) as error:
+            # An unexpected mid-session drop
+            logger.warning(
+                "Worker channel relay failed: channel_id=%s duration_seconds=%.3f "
+                "transport_active=%s error=%r",
+                getattr(channel, "chanid", None),
+                time.monotonic() - started,
+                self.transport.is_active(),
+                error,
+            )
             self._report(error)
             try:
                 _shutdown_write(stream)
@@ -163,9 +174,16 @@ def relay_proxy_stdio(
     connect_timeout: float = 2.0,
 ) -> None:
     """Connect to the broker and reserve stdout exclusively for SSH bytes."""
+    started = time.monotonic()
+    logger.debug(
+        "Proxy relay connecting to broker: timeout_seconds=%g", connect_timeout
+    )
     stream = backend.connect(timeout=connect_timeout)
+    sent = 0
+    received = 0
     try:
         wait_for_worker_stream(stream)
+        logger.debug("Proxy relay ready; worker stream accepted by the broker")
 
         try:
             stdin_fd = stdin.fileno()
@@ -181,12 +199,20 @@ def relay_proxy_stdio(
                 return os.read(stdin_fd, size)
 
         def send_stdin() -> None:
+            nonlocal sent
             try:
                 while data := read_stdin(64 * 1024):
                     stream.sendall(data)
+                    sent += len(data)
+                logger.debug("Proxy relay reached stdin EOF: bytes_sent=%d", sent)
                 _shutdown_write(stream)
-            except OSError, ValueError:
-                pass
+            except (OSError, ValueError) as error:
+                # The client half is gone; the main loop reports the outcome.
+                logger.debug(
+                    "Proxy relay stdin reader stopped: bytes_sent=%d error=%r",
+                    sent,
+                    error,
+                )
 
         sender = threading.Thread(
             target=send_stdin, daemon=True, name="ezhpcy-proxy-stdin"
@@ -195,5 +221,14 @@ def relay_proxy_stdio(
         while data := stream.recv(64 * 1024):
             stdout.write(data)
             stdout.flush()
+            received += len(data)
+        logger.debug("Proxy relay reached broker EOF: bytes_received=%d", received)
     finally:
+        logger.debug(
+            "Proxy relay finished: duration_seconds=%.3f bytes_sent=%d "
+            "bytes_received=%d",
+            time.monotonic() - started,
+            sent,
+            received,
+        )
         stream.close()

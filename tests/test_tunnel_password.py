@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -224,7 +225,7 @@ def test_anonymous_proxy_loads_configuration_descriptor(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, object] = {}
-    backend = object()
+    backend = SimpleNamespace(debug=False)
 
     def load_backend(**kwargs):
         captured.update(kwargs)

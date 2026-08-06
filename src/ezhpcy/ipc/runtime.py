@@ -14,7 +14,7 @@ from ezhpcy.ipc.common import (
     IPCError,
 )
 
-RUNTIME_DESCRIPTOR_VERSION = 1
+RUNTIME_DESCRIPTOR_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -22,6 +22,7 @@ class RuntimeDescriptor:
     address: IPCAddress
     authkey: bytes
     instance_id: str
+    debug: bool
 
 
 def load_runtime_descriptor(path: Path) -> RuntimeDescriptor:
@@ -42,11 +43,14 @@ def load_runtime_descriptor(path: Path) -> RuntimeDescriptor:
         port = payload["port"]
         encoded_authkey = payload["authkey"]
         instance_id = payload["instance_id"]
+        debug = payload["debug"]
         if version != RUNTIME_DESCRIPTOR_VERSION:
             raise ValueError("unsupported runtime descriptor version")
         if not all(
             isinstance(value, str) for value in (host, encoded_authkey, instance_id)
         ):
+            raise ValueError("runtime descriptor values have invalid types")
+        if not isinstance(debug, bool):
             raise ValueError("runtime descriptor values have invalid types")
         address = IPCAddress(host, port)
         authkey = base64.b64decode(encoded_authkey, validate=True)
@@ -55,7 +59,7 @@ def load_runtime_descriptor(path: Path) -> RuntimeDescriptor:
             "broker runtime information is invalid; restart the foreground broker"
         ) from error
 
-    return RuntimeDescriptor(address, authkey, instance_id)
+    return RuntimeDescriptor(address, authkey, instance_id, debug)
 
 
 def publish_runtime_descriptor(
@@ -64,6 +68,7 @@ def publish_runtime_descriptor(
     address: IPCAddress,
     authkey: bytes,
     instance_id: str,
+    debug: bool,
 ) -> None:
     payload = {
         "version": RUNTIME_DESCRIPTOR_VERSION,
@@ -71,6 +76,7 @@ def publish_runtime_descriptor(
         "port": address.port,
         "authkey": base64.b64encode(authkey).decode("ascii"),
         "instance_id": instance_id,
+        "debug": debug,
     }
     directory = path.parent
     directory_fd = _prepare_runtime_directory(directory)

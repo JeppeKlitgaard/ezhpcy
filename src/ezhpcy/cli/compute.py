@@ -455,6 +455,7 @@ def _send_worker_lease_heartbeats(
         interval_seconds,
     )
     while not stop_requested.is_set():
+        started = time.monotonic()
         try:
             sequence = control.publish_lease()
         except Exception as error:
@@ -472,10 +473,12 @@ def _send_worker_lease_heartbeats(
             errors.append(heartbeat_error)
             failed.set()
             logger.error(
-                "Worker heartbeat send failed: job=%s sequence=%d "
-                "transport_active=%s transport_error=%r error=%r",
+                "Worker heartbeat send failed, stopping the tunnel: job=%s "
+                "sequence=%d elapsed_seconds=%.3f transport_active=%s "
+                "transport_error=%r error=%r",
                 job_id,
                 sequence,
+                time.monotonic() - started,
                 transport.is_active(),
                 transport_error,
                 error,
@@ -483,12 +486,24 @@ def _send_worker_lease_heartbeats(
             )
             failure_handler()
             return
+        elapsed = time.monotonic() - started
         logger.debug(
-            "Worker heartbeat published: job=%s sequence=%d transport_active=%s",
+            "Worker heartbeat published: job=%s sequence=%d elapsed_seconds=%.3f "
+            "transport_active=%s",
             job_id,
             sequence,
+            elapsed,
             transport.is_active(),
         )
+        if elapsed > interval_seconds:
+            logger.warning(
+                "Worker heartbeat is slower than its interval: job=%s sequence=%d "
+                "elapsed_seconds=%.3f interval_seconds=%g",
+                job_id,
+                sequence,
+                elapsed,
+                interval_seconds,
+            )
         if stop_requested.wait(interval_seconds):
             break
     logger.debug(
@@ -507,15 +522,37 @@ def _monitor_scheduler_job(
     errors: list[ComputeTunnelError],
 ) -> None:
     """Close the broker when the scheduler reports that its job has ended."""
+    polls = 0
     while not stop_requested.wait(_JOB_MONITOR_INTERVAL):
+        polls += 1
         try:
             info = scheduler.inspect(job_id)
         except SchedulerError as error:
+            # Single-strike teardown: record everything needed to tell a real
+            # job failure apart from a transient scheduler-query failure.
+            logger.error(
+                "Job monitor stopping the tunnel after a scheduler query failure: "
+                "job=%s poll=%d error=%r",
+                job_id,
+                polls,
+                error,
+                exc_info=logger.isEnabledFor(logging.DEBUG),
+            )
             errors.append(
                 ComputeTunnelError(f"could not monitor worker job {job_id}: {error}")
             )
             broker.close()
             return
+        logger.debug(
+            "Job monitor poll: job=%s poll=%d state=%s raw_state=%s hosts=%s "
+            "exit_code=%s",
+            job_id,
+            polls,
+            info.state.name,
+            info.raw_state,
+            info.execution_hosts,
+            info.exit_code,
+        )
         if info.state.is_terminal:
             job_finished.set()
             logger.info(
@@ -524,6 +561,14 @@ def _monitor_scheduler_job(
             broker.close()
             return
         if info.state is JobState.UNKNOWN:
+            logger.error(
+                "Job monitor stopping the tunnel after an unknown scheduler state: "
+                "job=%s poll=%d raw_state=%s. A scheduler that reports this state "
+                "transiently will still end the tunnel here.",
+                job_id,
+                polls,
+                info.raw_state,
+            )
             errors.append(
                 ComputeTunnelError(
                     f"worker job {job_id} entered unknown scheduler state {info.raw_state}"
@@ -784,7 +829,22 @@ def _run_compute_tunnel(
                 heartbeat_thread: threading.Thread | None = None
                 broker: ForegroundBroker | None = None
                 shutdown_reason = "startup_failure"
+                connection_errors: list[ComputeTunnelError] = []
                 output_thread: threading.Thread | None = None
+
+                def handle_connection_lost(error: paramiko.SSHException) -> None:
+                    nonlocal shutdown_reason
+                    shutdown_reason = "login_connection_lost"
+                    connection_errors.append(
+                        ComputeTunnelError(f"login-node SSH connection lost: {error}")
+                    )
+                    if broker is not None:
+                        broker.close()
+
+                # The keepalive sender has already closed the transport by the
+                # time this runs; stop the tunnel instead of serving a worker
+                # that can no longer be reached.
+                ssh.set_connection_lost_handler(handle_connection_lost)
                 if interactive_job is not None:
                     output_thread = threading.Thread(
                         target=_drain_interactive_job,
@@ -858,6 +918,7 @@ def _run_compute_tunnel(
                     backend = create_broker_backend(
                         profile=profile_name,
                         resolved_config=(profile if profile_name is None else None),
+                        debug=logger.isEnabledFor(logging.DEBUG),
                     )
                     broker = ForegroundBroker(
                         transport,
@@ -912,6 +973,8 @@ def _run_compute_tunnel(
                         monitor.join(timeout=1)
                         if previous_sigbreak_handler is not None:
                             signal.signal(signal.SIGBREAK, previous_sigbreak_handler)
+                    if connection_errors:
+                        raise connection_errors[0]
                     if monitor_errors:
                         shutdown_reason = "job_monitor_error"
                         raise monitor_errors[0]

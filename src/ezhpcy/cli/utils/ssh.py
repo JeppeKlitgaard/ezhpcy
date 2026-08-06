@@ -1,6 +1,8 @@
 import logging
 import threading
+import time
 from binascii import hexlify
+from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 
 import paramiko
@@ -20,6 +22,12 @@ _EXEC_ABSOLUTE_SSHD = (
 )
 WORKER_HEARTBEAT_MARKER = "ezhpcy-heartbeat"
 _SERVER_ALIVE_REQUEST = "keepalive@openssh.com"
+# Matches OpenSSH's ServerAliveCountMax default. With the default 30 second
+# interval the login session is declared dead after the same 90 seconds of
+# silence that the worker-side heartbeat watchdog allows.
+SERVER_ALIVE_COUNT_MAX = 3
+
+ConnectionLostHandler = Callable[[paramiko.SSHException], None]
 _EXEC_RETRYING_SSHD = f"""
 sshd_path="$(command -v sshd)" || exit
 case "$sshd_path" in
@@ -340,6 +348,7 @@ class InteractiveSSHClient(SSHClient):
         self.conn_info = conn_info
         self.password_prompt = password_prompt
         self._server_alive_stop = threading.Event()
+        self._connection_lost_handler: ConnectionLostHandler | None = None
 
         self.load_system_host_keys()
         self.set_missing_host_key_policy(PromptMissingHostKeyPolicy())
@@ -396,6 +405,26 @@ class InteractiveSSHClient(SSHClient):
         else:
             self._enable_keepalive()
 
+    def set_connection_lost_handler(
+        self, handler: ConnectionLostHandler | None
+    ) -> None:
+        """Register the callback for a login session that stopped answering.
+
+        The keepalive sender always closes the transport itself, so this only
+        lets the owning command name the failure and stop immediately instead of
+        waiting for some later operation to trip over the dead transport.
+        """
+        self._connection_lost_handler = handler
+
+    def _report_connection_lost(self, error: paramiko.SSHException) -> None:
+        handler = self._connection_lost_handler
+        if handler is None:
+            return
+        try:
+            handler(error)
+        except Exception:
+            logger.exception("Connection-lost handler failed")
+
     def _enable_keepalive(self) -> None:
         transport = self.get_transport()
         if transport is None or not transport.is_active():
@@ -408,35 +437,153 @@ class InteractiveSSHClient(SSHClient):
         self._server_alive_stop = threading.Event()
         threading.Thread(
             target=_send_server_alive_requests,
-            args=(transport, self._server_alive_stop, interval),
+            args=(
+                transport,
+                self._server_alive_stop,
+                interval,
+                self._report_connection_lost,
+            ),
             daemon=True,
             name="ezhpcy-ssh-server-alive",
         ).start()
 
     def close(self) -> None:
+        # Stop the keepalive sender before the transport goes away so a
+        # deliberate shutdown is never reported as a lost connection.
         self._server_alive_stop.set()
         super().close()
+
+
+def _request_server_alive(
+    transport: paramiko.Transport, *, timeout_seconds: float
+) -> bool:
+    """Send one keepalive request and report whether the server answered it.
+
+    Paramiko's ``global_request`` waits for a reply without any timeout of its
+    own: it returns only once the reply arrives or the transport goes inactive.
+    A connection whose packets are being dropped silently would therefore block
+    here forever, which is the one outcome a liveness probe must never have. The
+    request is issued on a helper thread so an unanswered probe can be counted.
+    """
+    answered = threading.Event()
+    failures: list[Exception] = []
+
+    def request() -> None:
+        try:
+            # A failure reply still proves that the server is alive, so the
+            # response itself is ignored; only silence counts. The request name
+            # is the one OpenSSH uses for ServerAliveInterval.
+            transport.global_request(_SERVER_ALIVE_REQUEST, wait=True)
+        except (EOFError, OSError, paramiko.SSHException) as error:
+            failures.append(error)
+        finally:
+            answered.set()
+
+    threading.Thread(
+        target=request,
+        daemon=True,
+        name="ezhpcy-ssh-server-alive-request",
+    ).start()
+    if not answered.wait(timeout_seconds):
+        return False
+    if failures:
+        raise failures[0]
+    return True
+
+
+def _end_lost_session(
+    transport: paramiko.Transport,
+    connection_lost_handler: ConnectionLostHandler | None,
+    message: str,
+) -> None:
+    """Close a login session that can no longer be proven alive."""
+    logger.error("%s", message)
+    error = paramiko.SSHException(message)
+    transport.close()
+    if connection_lost_handler is not None:
+        connection_lost_handler(error)
 
 
 def _send_server_alive_requests(
     transport: paramiko.Transport,
     stop_requested: threading.Event,
-    interval_seconds: int,
+    interval_seconds: float,
+    connection_lost_handler: ConnectionLostHandler | None = None,
+    *,
+    max_missed_responses: int = SERVER_ALIVE_COUNT_MAX,
 ) -> None:
-    """Request a server response periodically, matching OpenSSH keepalives."""
-    while not stop_requested.wait(interval_seconds):
+    """Probe the server periodically and end a session that stops answering.
+
+    This implements OpenSSH's ServerAliveInterval/ServerAliveCountMax contract.
+    A session that cannot be probed is a half-dead session, so every exit from
+    this loop other than a requested shutdown closes the transport: continuing
+    without a working liveness probe is never an option.
+    """
+    sequence = 0
+    missed_responses = 0
+    delay: float = interval_seconds
+    while not stop_requested.wait(delay):
         if not transport.is_active():
-            logger.debug("SSH server-alive sender stopped: transport inactive")
-            return
-        try:
-            # A failure response still proves that the server is alive. The
-            # request name is the one OpenSSH uses for ServerAliveInterval.
-            transport.global_request(_SERVER_ALIVE_REQUEST, wait=True)
-            logger.debug("SSH server-alive request completed")
-        except (EOFError, OSError, paramiko.SSHException) as error:
-            logger.debug(
-                "SSH server-alive request failed: transport_active=%s error=%r",
-                transport.is_active(),
-                error,
+            _end_lost_session(
+                transport,
+                connection_lost_handler,
+                "Login-node SSH transport went inactive; the session can no "
+                f"longer be probed (last server-alive sequence {sequence})",
             )
             return
+        sequence += 1
+        started = time.monotonic()
+        probe_error: Exception | None = None
+        try:
+            answered = _request_server_alive(
+                transport, timeout_seconds=interval_seconds
+            )
+        except (EOFError, OSError, paramiko.SSHException) as error:
+            answered = False
+            probe_error = error
+        if stop_requested.is_set():
+            return
+        elapsed = time.monotonic() - started
+        # A probe that used a whole interval has already paid for the next one.
+        delay = max(0.0, interval_seconds - elapsed)
+        # Paramiko also returns from global_request when the transport dies
+        # under it, so a completed request only counts while it is still active.
+        if answered and transport.is_active():
+            missed_responses = 0
+            logger.debug(
+                "SSH server-alive request answered: sequence=%d elapsed_seconds=%.3f",
+                sequence,
+                elapsed,
+            )
+            continue
+        if not transport.is_active():
+            # Paramiko drops user packets without raising once its transport
+            # dies, so this is the usual way a lost connection surfaces here.
+            _end_lost_session(
+                transport,
+                connection_lost_handler,
+                f"Login-node SSH transport died during server-alive request "
+                f"{sequence}: error={probe_error!r}",
+            )
+            return
+        missed_responses += 1
+        if missed_responses < max_missed_responses:
+            logger.warning(
+                "SSH server-alive request went unanswered: sequence=%d "
+                "missed=%d/%d timeout_seconds=%g error=%r",
+                sequence,
+                missed_responses,
+                max_missed_responses,
+                interval_seconds,
+                probe_error,
+            )
+            continue
+        _end_lost_session(
+            transport,
+            connection_lost_handler,
+            f"Login-node SSH session stopped answering: {missed_responses} "
+            f"server-alive requests went unanswered over "
+            f"{missed_responses * interval_seconds:g} seconds "
+            f"(last error={probe_error!r})",
+        )
+        return

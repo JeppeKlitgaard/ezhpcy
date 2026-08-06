@@ -1,3 +1,4 @@
+import logging
 import signal
 from typing import Annotated
 
@@ -26,6 +27,8 @@ from ezhpcy.cli.common import (
 from ezhpcy.cli.utils.ssh import InteractiveSSHClient
 from ezhpcy.ipc import create_broker_backend
 from ezhpcy.tunnel.broker import ForegroundBroker
+
+logger = logging.getLogger(__name__)
 
 
 def broker_cmd(
@@ -93,6 +96,7 @@ def broker_cmd(
         resolved_config=(
             profile_context.profile if profile_context.name is None else None
         ),
+        debug=logger.isEnabledFor(logging.DEBUG),
     )
 
     with InteractiveSSHClient(
@@ -112,6 +116,14 @@ def broker_cmd(
                 f"Broker client error: {error}", err=True
             ),
         )
+        connection_errors: list[paramiko.SSHException] = []
+
+        def handle_connection_lost(error: paramiko.SSHException) -> None:
+            connection_errors.append(error)
+            typer.echo(f"Login-node SSH connection lost: {error}", err=True)
+            broker.close()
+
+        ssh.set_connection_lost_handler(handle_connection_lost)
         typer.echo(
             f"Broker IPC ready; worker endpoint {worker_host}:{worker_port} will be "
             "checked on first connection (press Ctrl+C to stop)."
@@ -132,3 +144,5 @@ def broker_cmd(
             broker.close()
             if previous_sigbreak_handler is not None:
                 signal.signal(signal.SIGBREAK, previous_sigbreak_handler)
+        if connection_errors:
+            raise typer.Exit(code=1)

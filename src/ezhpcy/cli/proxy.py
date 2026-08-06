@@ -1,3 +1,4 @@
+import logging
 import sys
 
 import typer
@@ -8,6 +9,7 @@ from ezhpcy.cli.common import (
 )
 from ezhpcy.ipc import load_broker_backend
 from ezhpcy.ipc.common import IPCError
+from ezhpcy.logging import configure_logging
 from ezhpcy.tunnel.broker import relay_proxy_stdio
 
 
@@ -17,13 +19,19 @@ def proxy_cmd(
 ) -> None:
     """Relay ProxyCommand stdin/stdout through a running tunnel broker."""
     try:
-        relay_proxy_stdio(
-            load_broker_backend(
-                profile=profile_context.name,
-                resolved_config=(
-                    profile_context.profile if profile_context.name is None else None
-                ),
+        backend = load_broker_backend(
+            profile=profile_context.name,
+            resolved_config=(
+                profile_context.profile if profile_context.name is None else None
             ),
+        )
+        if backend.debug:
+            # OpenSSH starts this process from a fixed ProxyCommand line, so the
+            # tunnel's own --debug reaches it through the broker's descriptor.
+            # Logging is stderr-only; stdout carries SSH bytes exclusively.
+            configure_logging(logging.DEBUG, include_timestamp=True)
+        relay_proxy_stdio(
+            backend,
             sys.stdin.buffer,
             sys.stdout.buffer,
         )

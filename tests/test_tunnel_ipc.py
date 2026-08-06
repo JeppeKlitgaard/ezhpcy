@@ -255,6 +255,78 @@ def test_runtime_descriptor_publishes_capability_and_is_removed(
     assert not descriptor.exists()
 
 
+def test_debug_reaches_the_proxy_through_the_runtime_descriptor(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(ipc.config.local_file, "runtime_dir", tmp_path)
+    backend = create_broker_backend(profile="test", debug=True)
+    listener = backend.listen(lambda _connection: None)
+    try:
+        assert load_broker_backend(profile="test").debug is True
+    finally:
+        listener.close()
+
+
+def test_debug_defaults_to_disabled_for_the_proxy(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(ipc.config.local_file, "runtime_dir", tmp_path)
+    backend = create_broker_backend(profile="test")
+    listener = backend.listen(lambda _connection: None)
+    try:
+        assert load_broker_backend(profile="test").debug is False
+    finally:
+        listener.close()
+
+
+def test_descriptor_from_an_older_version_is_rejected(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A stale descriptor must fail loudly; restarting the broker is trivial."""
+    monkeypatch.setattr(ipc.config.local_file, "runtime_dir", tmp_path)
+    descriptor = ipc._get_descriptor_path("test")
+    descriptor.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    descriptor.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "host": "127.0.0.1",
+                "port": 5000,
+                "authkey": base64.b64encode(b"k" * 32).decode("ascii"),
+                "instance_id": "abc123",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(BrokerUnavailableError, match="restart the foreground broker"):
+        load_broker_backend(profile="test")
+
+
+def test_descriptor_with_a_non_boolean_debug_field_is_rejected(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(ipc.config.local_file, "runtime_dir", tmp_path)
+    descriptor = ipc._get_descriptor_path("test")
+    descriptor.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    descriptor.write_text(
+        json.dumps(
+            {
+                "version": runtime.RUNTIME_DESCRIPTOR_VERSION,
+                "host": "127.0.0.1",
+                "port": 5000,
+                "authkey": base64.b64encode(b"k" * 32).decode("ascii"),
+                "instance_id": "abc123",
+                "debug": "yes",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(BrokerUnavailableError, match="invalid"):
+        load_broker_backend(profile="test")
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
 def test_runtime_descriptor_is_owner_only_on_posix(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -513,6 +585,7 @@ def test_runtime_descriptor_rejects_non_loopback_address(
                 "port": 12345,
                 "authkey": base64.b64encode(AUTHKEY).decode("ascii"),
                 "instance_id": "test-instance",
+                "debug": False,
             }
         ),
         encoding="utf-8",

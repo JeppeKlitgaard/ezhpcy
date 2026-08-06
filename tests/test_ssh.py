@@ -1,5 +1,6 @@
 import shlex
 import stat
+import threading
 from pathlib import PurePosixPath
 from unittest.mock import MagicMock, call, patch
 
@@ -91,16 +92,107 @@ def test_interactive_ssh_uses_configured_transport_keepalive() -> None:
     transport.set_keepalive.assert_called_once_with(75)
 
 
+def _stop_after(iterations: int) -> MagicMock:
+    stop_requested = MagicMock()
+    stop_requested.wait.side_effect = [False] * iterations + [True]
+    stop_requested.is_set.return_value = False
+    return stop_requested
+
+
 def test_interactive_ssh_server_alive_requests_require_a_reply() -> None:
     transport = MagicMock()
     transport.is_active.return_value = True
-    stop_requested = MagicMock()
-    stop_requested.wait.side_effect = [False, True]
+    stop_requested = _stop_after(1)
 
     _send_server_alive_requests(transport, stop_requested, 30)
 
-    assert stop_requested.wait.call_args_list == [call(30), call(30)]
+    assert stop_requested.wait.call_args_list[0] == call(30)
     transport.global_request.assert_called_once_with("keepalive@openssh.com", wait=True)
+    transport.close.assert_not_called()
+
+
+def test_interactive_ssh_ends_the_session_when_replies_stop() -> None:
+    unblock = threading.Event()
+    transport = MagicMock()
+    transport.is_active.return_value = True
+    # Never answers, so every probe reaches its timeout without a reply.
+    transport.global_request.side_effect = lambda *_, **__: unblock.wait(5)
+    connection_lost = MagicMock()
+
+    try:
+        _send_server_alive_requests(
+            transport,
+            _stop_after(10),
+            0.01,
+            connection_lost,
+            max_missed_responses=3,
+        )
+    finally:
+        unblock.set()
+
+    assert transport.global_request.call_count == 3
+    transport.close.assert_called_once_with()
+    connection_lost.assert_called_once()
+    assert isinstance(connection_lost.call_args.args[0], paramiko.SSHException)
+
+
+def test_interactive_ssh_tolerates_a_single_unanswered_request() -> None:
+    unblock = threading.Event()
+    transport = MagicMock()
+    transport.is_active.return_value = True
+    transport.global_request.side_effect = lambda *_, **__: unblock.wait(5)
+    connection_lost = MagicMock()
+
+    try:
+        _send_server_alive_requests(
+            transport,
+            _stop_after(1),
+            0.01,
+            connection_lost,
+            max_missed_responses=3,
+        )
+    finally:
+        unblock.set()
+
+    transport.close.assert_not_called()
+    connection_lost.assert_not_called()
+
+
+def test_interactive_ssh_ends_the_session_when_the_transport_dies() -> None:
+    transport = MagicMock()
+    transport.is_active.return_value = False
+    connection_lost = MagicMock()
+
+    _send_server_alive_requests(transport, _stop_after(1), 30, connection_lost)
+
+    transport.global_request.assert_not_called()
+    transport.close.assert_called_once_with()
+    connection_lost.assert_called_once()
+
+
+def test_interactive_ssh_ends_the_session_when_a_request_fails() -> None:
+    transport = MagicMock()
+    transport.is_active.side_effect = [True, False]
+    transport.global_request.side_effect = paramiko.SSHException("connection reset")
+    connection_lost = MagicMock()
+
+    _send_server_alive_requests(transport, _stop_after(1), 30, connection_lost)
+
+    transport.close.assert_called_once_with()
+    connection_lost.assert_called_once()
+
+
+def test_interactive_ssh_registers_a_connection_lost_handler() -> None:
+    client = InteractiveSSHClient(
+        ConnectionInfo(user="alice", host="login.example.com")
+    )
+    handler = MagicMock()
+    client.set_connection_lost_handler(handler)
+    error = paramiko.SSHException("session stopped answering")
+
+    client._report_connection_lost(error)
+
+    handler.assert_called_once_with(error)
 
 
 def test_interactive_ssh_does_not_prompt_for_unsupported_password_auth() -> None:

@@ -47,6 +47,9 @@ class AuthenticatedIPCBackend:
     instance_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     publish_descriptor: bool = False
     authentication_timeout: float = AUTHENTICATION_TIMEOUT
+    # Published by the broker and read back by each proxy, which OpenSSH starts
+    # from a fixed ProxyCommand line and so cannot be given its own flags.
+    debug: bool = False
 
     def __post_init__(self) -> None:
         if len(self.authkey) < 32:
@@ -111,6 +114,7 @@ class AuthenticatedIPCBackend:
             address=address,
             authkey=self.authkey,
             instance_id=self.instance_id,
+            debug=self.debug,
         )
 
     def _remove_descriptor(self) -> None:
@@ -147,6 +151,7 @@ def create_broker_backend(
     authkey: bytes | None = None,
     profile: str | None = None,
     resolved_config: ResolvedConfig | None = None,
+    debug: bool = False,
 ) -> AuthenticatedIPCBackend:
     """Create the server backend and its per-run authentication capability."""
     descriptor_path = _get_descriptor_path(
@@ -158,6 +163,7 @@ def create_broker_backend(
         authkey=authkey or secrets.token_bytes(32),
         descriptor_path=descriptor_path,
         publish_descriptor=True,
+        debug=debug,
     )
 
 
@@ -178,6 +184,7 @@ def load_broker_backend(
             authkey=descriptor.authkey,
             descriptor_path=descriptor_path,
             instance_id=descriptor.instance_id,
+            debug=descriptor.debug,
         )
     except ValueError as error:
         raise BrokerUnavailableError(

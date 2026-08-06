@@ -1,5 +1,6 @@
 import logging
 import threading
+from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import timedelta
 from pathlib import PurePosixPath
@@ -263,6 +264,7 @@ class StubTransport:
 class StubSSH:
     def __init__(self, transport: StubTransport) -> None:
         self.transport = transport
+        self.connection_lost_handler: Callable[[Exception], None] | None = None
         self.commands: list[list[str]] = []
         self.directories: list[PurePosixPath] = []
         self.files: dict[PurePosixPath, str] = {}
@@ -276,6 +278,9 @@ class StubSSH:
 
     def interactive_connect(self) -> None:
         pass
+
+    def set_connection_lost_handler(self, handler) -> None:
+        self.connection_lost_handler = handler
 
     def get_transport(self) -> StubTransport:
         return self.transport
@@ -612,6 +617,7 @@ def test_compute_tunnel_submits_worker_starts_broker_and_cancels() -> None:
         patch("ezhpcy.cli.compute.ForegroundBroker", side_effect=make_broker),
         patch("ezhpcy.cli.compute.logger") as logger,
     ):
+        logger.isEnabledFor.return_value = False
         _run_compute_tunnel(
             profile_name=None,
             profile=configuration,
@@ -634,6 +640,7 @@ def test_compute_tunnel_submits_worker_starts_broker_and_cancels() -> None:
     create_backend.assert_called_once_with(
         profile=None,
         resolved_config=configuration,
+        debug=False,
     )
     spec = scheduler.submitted[0]
     assert tuple(spec.command) == _worker_sshd_command(
@@ -641,7 +648,7 @@ def test_compute_tunnel_submits_worker_starts_broker_and_cancels() -> None:
         ports=(54321, 54322),
         heartbeat_token="LEASETOKEN",
         heartbeat_timeout_seconds=90,
-        heartbeat_debug=True,
+        heartbeat_debug=False,
         control_dir=PurePosixPath(
             f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/worker_control/LEASETOKEN"
         ),
@@ -751,6 +758,67 @@ def test_compute_tunnel_cancels_job_when_worker_startup_fails() -> None:
 
     assert scheduler.cancelled == ["42"]
     assert scheduler.process.closed
+
+
+def test_compute_tunnel_stops_when_the_login_connection_is_lost() -> None:
+    transport = StubTransport()
+    ssh = StubSSH(transport)
+    scheduler = StubScheduler([snapshot(JobState.RUNNING, "RUN", "node42")])
+    brokers: list[StubBroker] = []
+
+    class LosingBroker(StubBroker):
+        def serve_forever(self) -> None:
+            assert ssh.connection_lost_handler is not None
+            ssh.connection_lost_handler(
+                paramiko.SSHException("session stopped answering")
+            )
+
+    def make_broker(*args, **kwargs) -> StubBroker:
+        broker = LosingBroker(*args, **kwargs)
+        brokers.append(broker)
+        return broker
+
+    with (
+        patch("ezhpcy.cli.compute.InteractiveSSHClient", return_value=ssh),
+        patch("ezhpcy.cli.compute.local_machine_id", return_value="machine-id"),
+        patch("ezhpcy.cli.compute.LSFScheduler", return_value=scheduler),
+        patch(
+            "ezhpcy.cli.compute.provision_worker_infrastructure",
+            return_value=None,
+        ),
+        patch(
+            "ezhpcy.cli.compute.read_ed25519_public_key",
+            return_value=("ssh-ed25519", "WORKERKEY"),
+        ),
+        patch(
+            "ezhpcy.cli.compute._wait_for_selected_worker_port",
+            return_value=54321,
+        ),
+        patch("ezhpcy.cli.compute._wait_for_worker_endpoint"),
+        patch("ezhpcy.cli.compute.create_broker_backend", return_value=object()),
+        patch("ezhpcy.cli.compute.ForegroundBroker", side_effect=make_broker),
+        pytest.raises(ComputeTunnelError, match="login-node SSH connection lost"),
+    ):
+        _run_compute_tunnel(
+            profile_name="base",
+            profile=lsf_profile(),
+            conn_info=ConnectionInfo(user="alice", host="login.example.com"),
+            scheduler_type=SchedulerType.LSF,
+            queue=None,
+            cores=4,
+            gpus=0,
+            exclusive=False,
+            time_limit=timedelta(minutes=60),
+            memory_bytes=1024 * _MEBIBYTE,
+            queue_timeout_seconds=10,
+            startup_timeout_seconds=10,
+            worker_ports=(54321,),
+            auto_provision=True,
+            submission_mode=SubmissionMode.INTERACTIVE,
+        )
+
+    assert brokers[0].closed
+    assert scheduler.cancelled == ["42"]
 
 
 def test_compute_tunnel_uses_explicit_pbs_and_linuxsh_defaults() -> None:

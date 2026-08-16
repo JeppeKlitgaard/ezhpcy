@@ -74,6 +74,8 @@ class ProfileConfig(BaseModel):
     worker_heartbeat_timeout_seconds: float | None = Field(default=None, gt=0)
     queue_timeout_seconds: float | None = Field(default=None, gt=0)
     worker_startup_timeout_seconds: float | None = Field(default=None, gt=0)
+    job_poll_interval_seconds: float | None = Field(default=None, gt=0)
+    job_monitor_interval_seconds: float | None = Field(default=None, gt=0)
 
     # Scheduler options - Interactive
     interactive_submission_command: list[str] | None = Field(default=None, min_length=1)
@@ -123,6 +125,8 @@ class _ResolvedConfigBase(BaseModel):
     worker_heartbeat_timeout_seconds: float = Field(default=90, gt=0)
     queue_timeout_seconds: float = Field(default=15 * 60, gt=0)
     worker_startup_timeout_seconds: float = Field(default=60, gt=0)
+    job_poll_interval_seconds: float = Field(default=2.5, gt=0)
+    job_monitor_interval_seconds: float = Field(default=60, gt=0)
 
     # Scheduler options - Interactive
     interactive_submission_command: list[str] | None = None
@@ -210,6 +214,8 @@ class ResolvedConfig(_ResolvedConfigBase):
             "ssh_keepalive_interval_seconds",
             "worker_heartbeat_interval_seconds",
             "worker_heartbeat_timeout_seconds",
+            "job_poll_interval_seconds",
+            "job_monitor_interval_seconds",
             # Password sources
             "password",
             "password_file",

@@ -18,6 +18,8 @@ from ezhpcy.cli.common import (
     ExclusiveOpt,
     GpusOpt,
     InteractiveSubmissionCommandOpt,
+    JobMonitorIntervalOpt,
+    JobPollIntervalOpt,
     MemoryOpt,
     OptionalProfileArg,
     ProfileContext,
@@ -87,8 +89,6 @@ _LSF_INTERACTIVE_SUBMISSION_OPTIONS = {
     "lsf_submission_environment",
     "lsf_export_environment",
 }
-_JOB_POLL_INTERVAL = 1.0
-_JOB_MONITOR_INTERVAL = 5.0
 _SSH_BANNER_LIMIT = 255
 _LEASE_FILE_RETAIN_COUNT = 2
 logger = logging.getLogger(__name__)
@@ -277,7 +277,7 @@ def _wait_for_running_job(
     job_id: str,
     *,
     timeout_seconds: float,
-    poll_interval: float = _JOB_POLL_INTERVAL,
+    poll_interval: float,
     state_handler: Callable[[JobInfo], None] | None = None,
 ) -> JobInfo:
     deadline = time.monotonic() + timeout_seconds
@@ -321,7 +321,7 @@ def _wait_for_worker_endpoint(
     destination: tuple[str, int],
     *,
     timeout_seconds: float,
-    poll_interval: float = _JOB_POLL_INTERVAL,
+    poll_interval: float,
     failure_check: Callable[[], None] | None = None,
 ) -> None:
     deadline = time.monotonic() + timeout_seconds
@@ -396,9 +396,10 @@ def _monitor_job(
     stop_requested: threading.Event,
     job_finished: threading.Event,
     errors: list[ComputeTunnelError],
+    monitor_interval: float,
 ) -> None:
     """Watch the attached job without opening recurring scheduler SSH channels."""
-    while not stop_requested.wait(_JOB_MONITOR_INTERVAL):
+    while not stop_requested.wait(monitor_interval):
         if job.process.exit_status_ready():
             exit_status = job.process.recv_exit_status()
             transport = getattr(broker, "transport", None)
@@ -520,10 +521,11 @@ def _monitor_scheduler_job(
     stop_requested: threading.Event,
     job_finished: threading.Event,
     errors: list[ComputeTunnelError],
+    monitor_interval: float,
 ) -> None:
     """Close the broker when the scheduler reports that its job has ended."""
     polls = 0
-    while not stop_requested.wait(_JOB_MONITOR_INTERVAL):
+    while not stop_requested.wait(monitor_interval):
         polls += 1
         try:
             info = scheduler.inspect(job_id)
@@ -633,6 +635,8 @@ def _run_compute_tunnel(
     memory_bytes: int | None,
     queue_timeout_seconds: float,
     startup_timeout_seconds: float,
+    job_poll_interval_seconds: float,
+    job_monitor_interval_seconds: float,
     heartbeat_interval_seconds: float = 30,
     heartbeat_timeout_seconds: float = 90,
     worker_ports: tuple[int, ...],
@@ -862,6 +866,7 @@ def _run_compute_tunnel(
                         scheduler,
                         job_id,
                         timeout_seconds=queue_timeout_seconds,
+                        poll_interval=job_poll_interval_seconds,
                         state_handler=lambda snapshot: logger.info(
                             "Worker job %s: %s (%s).",
                             job_id,
@@ -910,6 +915,7 @@ def _run_compute_tunnel(
                         transport,
                         destination,
                         timeout_seconds=startup_timeout_seconds,
+                        poll_interval=job_poll_interval_seconds,
                         failure_check=lambda: _raise_heartbeat_failure(
                             heartbeat_errors
                         ),
@@ -939,6 +945,7 @@ def _run_compute_tunnel(
                             monitor_stop,
                             job_finished,
                             monitor_errors,
+                            job_monitor_interval_seconds,
                         ),
                         daemon=True,
                         name="ezhpcy-job-monitor",
@@ -1036,6 +1043,8 @@ def compute_cmd(
     memory: MemoryOpt = None,
     queue_timeout_seconds: QueueTimeoutOpt = None,
     startup_timeout_seconds: StartupTimeoutOpt = None,
+    job_poll_interval_seconds: JobPollIntervalOpt = None,
+    job_monitor_interval_seconds: JobMonitorIntervalOpt = None,
     worker_heartbeat_interval_seconds: WorkerHeartbeatIntervalOpt = None,
     worker_heartbeat_timeout_seconds: WorkerHeartbeatTimeoutOpt = None,
     interactive_submission_command: InteractiveSubmissionCommandOpt = None,
@@ -1176,6 +1185,8 @@ def compute_cmd(
             memory_bytes=int(resolved.memory) if resolved.memory is not None else None,
             queue_timeout_seconds=resolved.queue_timeout_seconds,
             startup_timeout_seconds=resolved.worker_startup_timeout_seconds,
+            job_poll_interval_seconds=resolved.job_poll_interval_seconds,
+            job_monitor_interval_seconds=resolved.job_monitor_interval_seconds,
             heartbeat_interval_seconds=(resolved.worker_heartbeat_interval_seconds),
             heartbeat_timeout_seconds=resolved.worker_heartbeat_timeout_seconds,
             worker_ports=worker_ports,

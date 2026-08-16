@@ -403,6 +403,7 @@ def test_wait_for_running_job_reports_transitions_and_returns_host() -> None:
             scheduler,  # type: ignore[arg-type]
             "42",
             timeout_seconds=10,
+            poll_interval=2.5,
             state_handler=lambda item: transitions.append(item.state),
         )
 
@@ -418,6 +419,7 @@ def test_wait_for_running_job_fails_when_job_exits() -> None:
             scheduler,  # type: ignore[arg-type]
             "42",
             timeout_seconds=10,
+            poll_interval=2.5,
         )
 
 
@@ -476,8 +478,9 @@ def test_job_monitor_uses_interactive_process_without_scheduler_polling() -> Non
     job_finished = threading.Event()
     errors: list[ComputeTunnelError] = []
 
-    with patch("ezhpcy.cli.compute._JOB_MONITOR_INTERVAL", 0):
-        _monitor_job(job, broker, threading.Event(), job_finished, errors)
+    _monitor_job(
+        job, broker, threading.Event(), job_finished, errors, monitor_interval=0
+    )
 
     assert job_finished.is_set()
     assert not errors
@@ -490,8 +493,9 @@ def test_job_monitor_does_not_treat_missing_exit_status_as_job_completion() -> N
     job_finished = threading.Event()
     errors: list[ComputeTunnelError] = []
 
-    with patch("ezhpcy.cli.compute._JOB_MONITOR_INTERVAL", 0):
-        _monitor_job(job, broker, threading.Event(), job_finished, errors)
+    _monitor_job(
+        job, broker, threading.Event(), job_finished, errors, monitor_interval=0
+    )
 
     assert not job_finished.is_set()
     assert len(errors) == 1
@@ -566,6 +570,7 @@ def test_worker_endpoint_waits_for_an_ssh_banner() -> None:
                 transport,  # type: ignore[arg-type]
                 ("node42", 54321),
                 timeout_seconds=10,
+                poll_interval=2.5,
             )
 
         assert transport.attempts == 2
@@ -631,6 +636,8 @@ def test_compute_tunnel_submits_worker_starts_broker_and_cancels() -> None:
             memory_bytes=2048 * _MEBIBYTE,
             queue_timeout_seconds=10,
             startup_timeout_seconds=10,
+            job_poll_interval_seconds=configuration.job_poll_interval_seconds,
+            job_monitor_interval_seconds=configuration.job_monitor_interval_seconds,
             worker_ports=(54321, 54322),
             auto_provision=True,
             submission_mode=SubmissionMode.INTERACTIVE,
@@ -751,6 +758,8 @@ def test_compute_tunnel_cancels_job_when_worker_startup_fails() -> None:
             memory_bytes=1024 * _MEBIBYTE,
             queue_timeout_seconds=10,
             startup_timeout_seconds=10,
+            job_poll_interval_seconds=2.5,
+            job_monitor_interval_seconds=60,
             worker_ports=(54321,),
             auto_provision=True,
             submission_mode=SubmissionMode.INTERACTIVE,
@@ -812,6 +821,8 @@ def test_compute_tunnel_stops_when_the_login_connection_is_lost() -> None:
             memory_bytes=1024 * _MEBIBYTE,
             queue_timeout_seconds=10,
             startup_timeout_seconds=10,
+            job_poll_interval_seconds=2.5,
+            job_monitor_interval_seconds=60,
             worker_ports=(54321,),
             auto_provision=True,
             submission_mode=SubmissionMode.INTERACTIVE,
@@ -862,6 +873,8 @@ def test_compute_tunnel_uses_explicit_pbs_and_linuxsh_defaults() -> None:
             memory_bytes=None,
             queue_timeout_seconds=10,
             startup_timeout_seconds=10,
+            job_poll_interval_seconds=2.5,
+            job_monitor_interval_seconds=60,
             worker_ports=(54321,),
             auto_provision=True,
             submission_mode=SubmissionMode.INTERACTIVE,
@@ -919,6 +932,8 @@ def test_compute_tunnel_submits_batch_job_without_interactive_shell() -> None:
             memory_bytes=None,
             queue_timeout_seconds=10,
             startup_timeout_seconds=10,
+            job_poll_interval_seconds=2.5,
+            job_monitor_interval_seconds=60,
             worker_ports=(54321,),
             auto_provision=True,
         )
@@ -950,6 +965,8 @@ def test_compute_tunnel_help_exposes_scheduler_and_resource_options() -> None:
     assert "--memory" in result.stdout
     assert "--queue-timeout" in result.stdout
     assert "--startup-timeout" in result.stdout
+    assert "--job-poll-interval" in result.stdout
+    assert "--job-monitor-inte" in result.stdout
     assert "--worker-heartbeat" in result.stdout
     assert "--interactive-subm" in result.stdout
     assert "--worker-port" in result.stdout
@@ -1005,6 +1022,8 @@ def test_compute_command_accepts_anonymous_cli_configuration(
     assert captured["queue"] == "gpu"
     assert captured["cores"] == 8
     assert captured["gpus"] == 1
+    assert captured["job_poll_interval_seconds"] == 2.5
+    assert captured["job_monitor_interval_seconds"] == 60
     assert captured["conn_info"] == ConnectionInfo(
         host="login.example.com", user="alice"
     )
@@ -1186,6 +1205,8 @@ def test_compute_command_resolves_profile_and_applies_cli_overrides(
                 ssh_keepalive_interval_seconds=75,
                 worker_heartbeat_interval_seconds=20,
                 worker_heartbeat_timeout_seconds=60,
+                job_poll_interval_seconds=4,
+                job_monitor_interval_seconds=120,
             ),
             "gpu": ProfileConfig(inherit="base", queue="gpu", cores=8),
         },
@@ -1214,6 +1235,10 @@ def test_compute_command_resolves_profile_and_applies_cli_overrides(
             "12",
             "--worker-heartbeat-timeout",
             "30",
+            "--job-poll-interval",
+            "1.5",
+            "--job-monitor-interval",
+            "45",
         ],
     )
 
@@ -1234,6 +1259,8 @@ def test_compute_command_resolves_profile_and_applies_cli_overrides(
     assert captured["auto_provision"] is True
     assert captured["heartbeat_interval_seconds"] == 12
     assert captured["heartbeat_timeout_seconds"] == 30
+    assert captured["job_poll_interval_seconds"] == 1.5
+    assert captured["job_monitor_interval_seconds"] == 45
     worker_ports = captured["worker_ports"]
     assert isinstance(worker_ports, tuple)
     assert len(worker_ports) == 6
@@ -1254,6 +1281,8 @@ def test_compute_command_resolves_profile_and_applies_cli_overrides(
 
     assert result.exit_code == 0, result.output
     assert captured["worker_ports"] == (55000,)
+    assert captured["job_poll_interval_seconds"] == 4
+    assert captured["job_monitor_interval_seconds"] == 120
 
 
 def test_compute_command_allows_wrapper_with_implicit_resource_defaults(

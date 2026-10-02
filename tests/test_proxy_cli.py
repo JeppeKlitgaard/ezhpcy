@@ -83,4 +83,4 @@ def test_proxy_requires_an_alias() -> None:
     result = invoke(["proxy"])
 
     assert result.exit_code == 2
-    assert "Missing argument 'alias'" in result.stderr
+    assert "ALIAS requires an argument" in result.stderr

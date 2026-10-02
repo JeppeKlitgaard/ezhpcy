@@ -1,0 +1,264 @@
+import os
+from pathlib import Path
+from typing import Annotated
+
+from cyclopts import Group, Parameter, validators
+
+from ezhpcy.constants import PACKAGE_NAME
+from ezhpcy.scheduler.types import SchedulerType
+from ezhpcy.types import SubmissionMode
+
+KEYRING_SERVICE_NAME = PACKAGE_NAME
+
+DEBUG_ENV_VAR = "EZHPCY_DEBUG"
+HOST_ENV_VAR = "EZHPCY_HOST"
+USER_ENV_VAR = "EZHPCY_USER"
+PROFILE_ENV_VAR = "EZHPCY_PROFILE"
+PASSWORD_ENV_VAR = "EZHPCY_PASSWORD"
+PASSWORD_FILE_ENV_VAR = "EZHPCY_PASSWORD_FILE"
+PASSWORD_FD_ENV_VAR = "EZHPCY_PASSWORD_FD"
+PASSWORD_KEYRING_ENV_VAR = "EZHPCY_PASSWORD_KEYRING"
+
+CONNECTION_PANEL = Group("Connection Options", sort_key=1)
+SCHEDULER_PANEL = Group("Scheduler Options", sort_key=2)
+RESOURCES_PANEL = Group("Resource Options", sort_key=3)
+TIMINGS_PANEL = Group("Timing Options", sort_key=4)
+
+
+def _readable(_type: type, value: Path | None) -> None:
+    """Reject a path the current user can't read."""
+    if value is not None and not os.access(value, os.R_OK):
+        raise ValueError(f'"{value}" is not readable.')
+
+
+OptionalProfileArg = Annotated[
+    str | None,
+    Parameter(
+        help=(
+            "Optional configured EzHPCy profile. When omitted, provide enough "
+            "options to form a complete configuration. Run `ezhpcy list-profiles` "
+            "to see available profiles."
+        ),
+        env_var=PROFILE_ENV_VAR,
+    ),
+]
+AliasArg = Annotated[
+    str,
+    Parameter(
+        help=(
+            "SSH host alias of a running tunnel; usually its profile name "
+            "(see `ezhpcy list-profiles`)."
+        ),
+    ),
+]
+AliasOpt = Annotated[
+    str | None,
+    Parameter(
+        name="--alias",
+        help=(
+            "SSH host alias for this tunnel; defaults to the profile name, "
+            "or to a stable generated name without a profile."
+        ),
+    ),
+]
+HostOpt = Annotated[
+    str | None,
+    Parameter(
+        name=["--host", "-h"],
+        help="Login node address.",
+        env_var=HOST_ENV_VAR,
+        group=CONNECTION_PANEL,
+    ),
+]
+UserOpt = Annotated[
+    str | None,
+    Parameter(
+        name=["--user", "-u"],
+        help="Username for the login node.",
+        env_var=USER_ENV_VAR,
+        group=CONNECTION_PANEL,
+    ),
+]
+PasswordOpt = Annotated[
+    str | None,
+    Parameter(
+        name="--password",
+        help=(
+            "Password for the login node. "
+            "Note: Specifying this is potentially a security risk."
+        ),
+        env_var=PASSWORD_ENV_VAR,
+        group=CONNECTION_PANEL,
+    ),
+]
+PasswordFileOpt = Annotated[
+    Path | None,
+    Parameter(
+        name="--password-file",
+        validator=(validators.Path(exists=True, dir_okay=False), _readable),
+        help="Read the password from a UTF-8 file.",
+        env_var=PASSWORD_FILE_ENV_VAR,
+        group=CONNECTION_PANEL,
+    ),
+]
+PasswordFdOpt = Annotated[
+    int | None,
+    Parameter(
+        name="--password-fd",
+        validator=validators.Number(gte=0),
+        help="Read the password from an already-open file descriptor.",
+        env_var=PASSWORD_FD_ENV_VAR,
+        group=CONNECTION_PANEL,
+    ),
+]
+PasswordKeyringOpt = Annotated[
+    bool,
+    Parameter(
+        name="--password-keyring",
+        help=(
+            "Read the password from the system keyring service "
+            f"'{KEYRING_SERVICE_NAME}' under USER@HOST."
+        ),
+        env_var=PASSWORD_KEYRING_ENV_VAR,
+        group=CONNECTION_PANEL,
+    ),
+]
+SchedulerOpt = Annotated[
+    SchedulerType | None,
+    Parameter(
+        name="--scheduler",
+        help="Scheduler used to allocate the compute node.",
+        group=SCHEDULER_PANEL,
+    ),
+]
+SubmissionModeOpt = Annotated[
+    SubmissionMode | None,
+    Parameter(
+        name="--submission-mode",
+        help="Use an interactive shell or an ordinary batch scheduler job.",
+        group=SCHEDULER_PANEL,
+    ),
+]
+QueueOpt = Annotated[
+    str | None,
+    Parameter(
+        name=["--queue", "-q"],
+        help="Scheduler queue for the worker job.",
+        group=RESOURCES_PANEL,
+    ),
+]
+CoresOpt = Annotated[
+    int | None,
+    Parameter(
+        name=["--cores", "-n"],
+        validator=validators.Number(gte=1),
+        help="Scheduler CPU cores reserved on the worker host.",
+        group=RESOURCES_PANEL,
+    ),
+]
+GpusOpt = Annotated[
+    int | None,
+    Parameter(
+        name="--gpus",
+        validator=validators.Number(gte=0),
+        help="Number of GPUs reserved on the worker host.",
+        group=RESOURCES_PANEL,
+    ),
+]
+ExclusiveOpt = Annotated[
+    bool | None,
+    Parameter(
+        name="--exclusive",
+        negative="--shared",
+        help="Reserve the worker host exclusively.",
+        group=RESOURCES_PANEL,
+    ),
+]
+TimeLimitOpt = Annotated[
+    str | None,
+    Parameter(
+        name="--time-limit",
+        metavar="H:MM",
+        help="Optional worker lifetime override.",
+        group=RESOURCES_PANEL,
+    ),
+]
+MemoryOpt = Annotated[
+    str | None,
+    Parameter(
+        name="--memory",
+        metavar="SIZE",
+        help=(
+            "Optional total worker memory parsed as a Pydantic byte size. "
+            "Bare values are bytes; SI (GB) and IEC (GiB) units differ."
+        ),
+        group=RESOURCES_PANEL,
+    ),
+]
+QueueTimeoutOpt = Annotated[
+    float | None,
+    Parameter(
+        name="--queue-timeout",
+        validator=validators.Number(gte=1),
+        help="Maximum time to wait for the scheduler allocation.",
+        group=TIMINGS_PANEL,
+    ),
+]
+StartupTimeoutOpt = Annotated[
+    float | None,
+    Parameter(
+        name="--startup-timeout",
+        validator=validators.Number(gte=1),
+        help="Maximum time to wait for worker SSH after allocation.",
+        group=TIMINGS_PANEL,
+    ),
+]
+JobPollIntervalOpt = Annotated[
+    float | None,
+    Parameter(
+        name="--job-poll-interval",
+        validator=validators.Number(gte=0.1),
+        help="Interval between scheduler and worker-readiness startup checks.",
+        group=TIMINGS_PANEL,
+    ),
+]
+JobMonitorIntervalOpt = Annotated[
+    float | None,
+    Parameter(
+        name="--job-monitor-interval",
+        validator=validators.Number(gte=0.1),
+        help="Interval between scheduler checks after the tunnel is ready.",
+        group=TIMINGS_PANEL,
+    ),
+]
+WorkerHeartbeatIntervalOpt = Annotated[
+    float | None,
+    Parameter(
+        name="--worker-heartbeat-interval",
+        validator=validators.Number(gte=1),
+        help="Interval between worker lease heartbeats.",
+        group=TIMINGS_PANEL,
+    ),
+]
+WorkerHeartbeatTimeoutOpt = Annotated[
+    float | None,
+    Parameter(
+        name="--worker-heartbeat-timeout",
+        validator=validators.Number(gte=1),
+        help="Maximum time the worker may go without a lease heartbeat.",
+        group=TIMINGS_PANEL,
+    ),
+]
+InteractiveSubmissionCommandOpt = Annotated[
+    str | None,
+    Parameter(
+        name="--interactive-submission-command",
+        metavar="COMMAND",
+        help=(
+            "Replace the scheduler-generated interactive submission command. "
+            "The value is parsed into arguments using shell-style quoting, but "
+            "is not executed through a shell."
+        ),
+        group=SCHEDULER_PANEL,
+    ),
+]

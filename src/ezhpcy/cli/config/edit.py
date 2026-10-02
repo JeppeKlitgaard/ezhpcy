@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+from cyclopts import Parameter
 
 from ezhpcy.config import config
 from ezhpcy.console import console
@@ -57,11 +58,12 @@ def _editor_command(editor_command: str, config_file: str) -> list[str]:
 def edit_cmd(
     editor: Annotated[
         str | None,
-        typer.Argument(
+        Parameter(
             help="Editor command to use (for example, 'code --wait'). Uses "
             "VISUAL, EDITOR, or the platform default when omitted."
         ),
     ] = None,
+    /,
 ) -> None:
     """Open the EzHPCy configuration file in an editor and wait for it to close."""
     config_file = config.local_file.config_file

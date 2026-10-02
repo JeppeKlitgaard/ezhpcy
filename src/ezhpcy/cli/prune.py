@@ -4,10 +4,12 @@ from pathlib import PurePosixPath
 from typing import Annotated
 
 import typer
+from cyclopts import Parameter
 from rich.prompt import Confirm
 
 from ezhpcy import console
-from ezhpcy.cli.common import with_connection
+from ezhpcy.cli._options import OptionalProfileArg
+from ezhpcy.cli._resolve import with_connection
 from ezhpcy.cli.utils.ssh import InteractiveSSHClient
 from ezhpcy.ssh import SSHClient
 from ezhpcy.types import ConnectionInfo, RemoteState
@@ -97,20 +99,21 @@ def prune_all_remote_data(ssh: SSHClient, remote_state: RemoteState) -> None:
 
 @with_connection
 def prune_cmd(
+    profile: OptionalProfileArg = None,
+    /,
+    *,
     connection: ConnectionInfo,
     all_data: Annotated[
         bool,
-        typer.Option(
-            "--all",
-            "-a",
+        Parameter(
+            name=["--all", "-a"],
             help="Remove all EzHPCy-managed remote infrastructure and data.",
         ),
     ] = False,
     yes: Annotated[
         bool,
-        typer.Option(
-            "--yes",
-            "-y",
+        Parameter(
+            name=["--yes", "-y"],
             help="Remove all remote data without asking for confirmation.",
         ),
     ] = False,

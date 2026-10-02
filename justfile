@@ -12,7 +12,7 @@ all:
 # Installs the project dependencies and pre-commit hooks
 [group: 'dev']
 install:
-    uv sync --all-extras
+    uv sync
     uv run prek install
 
 # Override EzHPCy config with default. Works best with a .dotenv containing EZHPCY_USER

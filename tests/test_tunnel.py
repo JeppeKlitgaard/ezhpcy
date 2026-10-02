@@ -113,8 +113,10 @@ def test_worker_sshd_command_retries_ports_through_pixi() -> None:
     assert command[:6] == (
         "env",
         f"PIXI_HOME=/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/pixi/{PIXI_VERSION}",
-        f"PIXI_CACHE_DIR=/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/pixi_cache/"
-        f"{PIXI_VERSION}",
+        (
+            f"PIXI_CACHE_DIR=/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/pixi_cache/"
+            f"{PIXI_VERSION}"
+        ),
         f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/pixi/{PIXI_VERSION}/bin/pixi",
         "exec",
         f"--spec={OPENSSH_MATCHSPEC}",
@@ -1086,8 +1088,8 @@ def test_tunnel_command_accepts_anonymous_cli_configuration(
         host="login.example.com", user="alice"
     )
     resolved = captured["profile"]
-    assert getattr(resolved, "user") == "alice"
-    assert str(getattr(resolved, "host")) == "login.example.com"
+    assert resolved.user == "alice"
+    assert str(resolved.host) == "login.example.com"
 
 
 def test_tunnel_command_requires_submission_mode() -> None:
@@ -1188,7 +1190,7 @@ def test_tunnel_command_accepts_cli_interactive_submission_command(
 
     assert result.exit_code == 0, result.output
     resolved = captured["profile"]
-    assert getattr(resolved, "interactive_submission_command") == [
+    assert resolved.interactive_submission_command == [
         "/lsf/local/bin/a100sh",
         "--constraint",
         "gpu node",
@@ -1374,9 +1376,7 @@ def test_tunnel_command_allows_wrapper_with_implicit_resource_defaults(
     assert captured["gpus"] == 0
     assert captured["exclusive"] is False
     profile = captured["profile"]
-    assert getattr(profile, "interactive_submission_command") == [
-        "/site/bin/interactive-lsf"
-    ]
+    assert profile.interactive_submission_command == ["/site/bin/interactive-lsf"]
 
 
 def test_tunnel_command_logs_inherited_submission_options_ignored_by_wrapper(

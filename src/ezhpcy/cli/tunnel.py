@@ -399,53 +399,6 @@ def _wait_for_worker_endpoint(
         transport_logger.setLevel(previous_log_level)
 
 
-def _monitor_job(
-    job: InteractiveJob,
-    tunnel: TunnelServer,
-    stop_requested: threading.Event,
-    job_finished: threading.Event,
-    errors: list[TunnelError],
-    monitor_interval: float,
-) -> None:
-    """Watch the attached job without opening recurring scheduler SSH channels."""
-    while not stop_requested.wait(monitor_interval):
-        if job.process.exit_status_ready():
-            exit_status = job.process.recv_exit_status()
-            transport = getattr(tunnel, "transport", None)
-            transport_active = transport.is_active() if transport is not None else None
-            transport_error = (
-                transport.get_exception()
-                if transport is not None and hasattr(transport, "get_exception")
-                else None
-            )
-            logger.debug(
-                "Worker process ended: job=%s exit_status=%d "
-                "transport_active=%s transport_error=%r",
-                job.job_id,
-                exit_status,
-                transport_active,
-                transport_error,
-            )
-            if exit_status == -1:
-                errors.append(
-                    TunnelError(
-                        f"worker job {job.job_id} interactive submission channel "
-                        "closed without an exit status; the login-node SSH "
-                        "transport was likely lost"
-                    )
-                )
-                tunnel.close()
-                return
-            job_finished.set()
-            logger.info(
-                "Worker job %s interactive session ended with status %d.",
-                job.job_id,
-                exit_status,
-            )
-            tunnel.close()
-            return
-
-
 def _send_worker_lease_heartbeats(
     control: WorkerControl,
     transport: paramiko.Transport,
@@ -471,11 +424,7 @@ def _send_worker_lease_heartbeats(
         except Exception as error:
             if stop_requested.is_set():
                 break
-            transport_error = (
-                transport.get_exception()
-                if hasattr(transport, "get_exception")
-                else None
-            )
+            transport_error = transport.get_exception()
             heartbeat_error = TunnelError(
                 f"worker heartbeat write failed for job {job_id} at "
                 f"sequence {sequence}: {error}"
@@ -1080,11 +1029,7 @@ def _run_tunnel(
                                 "Worker heartbeat sender did not stop promptly: job=%s",
                                 job_id,
                             )
-                    transport_error = (
-                        transport.get_exception()
-                        if hasattr(transport, "get_exception")
-                        else None
-                    )
+                    transport_error = transport.get_exception()
                     logger.debug(
                         "Tunnel cleanup: job=%s reason=%s job_finished=%s "
                         "heartbeat_failed=%s transport_active=%s transport_error=%r",

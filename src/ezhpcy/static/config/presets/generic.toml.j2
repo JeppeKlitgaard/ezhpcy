@@ -11,9 +11,10 @@ ssh_keepalive_interval_seconds = 30
 
 [profile.base.scheduler]
 type = "LSF"
+submission_mode = "batch"
 
 [profile.base.resources]
-queue = "hpcint"
+queue = "hpc-queue"
 
 [profile.base.timings]
 queue_timeout_seconds = 900

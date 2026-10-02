@@ -94,7 +94,7 @@ class AuthenticatedIPCServer:
                 if not self._closed:
                     self._report(
                         IPCAuthenticationError(
-                            "rejected a local client during broker authentication"
+                            "rejected a local client during tunnel authentication"
                         )
                     )
                 return

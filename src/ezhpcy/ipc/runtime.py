@@ -1,4 +1,4 @@
-"""Secure publication and discovery of broker runtime descriptors."""
+"""Secure publication and discovery of tunnel runtime descriptors."""
 
 import base64
 import json
@@ -9,9 +9,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ezhpcy.ipc.common import (
-    BrokerUnavailableError,
     IPCAddress,
     IPCError,
+    TunnelUnavailableError,
 )
 
 RUNTIME_DESCRIPTOR_VERSION = 2
@@ -25,16 +25,23 @@ class RuntimeDescriptor:
     debug: bool
 
 
+def tunnel_not_running(path: Path | None) -> TunnelUnavailableError:
+    """Describe a missing tunnel, naming its alias when its descriptor is known."""
+    # Descriptors are named after the SSH host alias the tunnel serves.
+    target = "" if path is None else f" for `{path.stem}`"
+    return TunnelUnavailableError(
+        f"no tunnel is running{target}; start `ezhpcy tunnel`"
+    )
+
+
 def load_runtime_descriptor(path: Path) -> RuntimeDescriptor:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError as error:
-        raise BrokerUnavailableError(
-            "foreground broker is not running; start `ezhpcy tunnel`"
-        ) from error
+        raise tunnel_not_running(path) from error
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise BrokerUnavailableError(
-            "broker runtime information is invalid; restart the foreground broker"
+        raise TunnelUnavailableError(
+            "tunnel runtime information is invalid; restart the tunnel"
         ) from error
 
     try:
@@ -55,8 +62,8 @@ def load_runtime_descriptor(path: Path) -> RuntimeDescriptor:
         address = IPCAddress(host, port)
         authkey = base64.b64decode(encoded_authkey, validate=True)
     except (KeyError, TypeError, ValueError) as error:
-        raise BrokerUnavailableError(
-            "broker runtime information is invalid; restart the foreground broker"
+        raise TunnelUnavailableError(
+            "tunnel runtime information is invalid; restart the tunnel"
         ) from error
 
     return RuntimeDescriptor(address, authkey, instance_id, debug)
@@ -122,7 +129,7 @@ def _prepare_runtime_directory(directory: Path) -> int | None:
     except FileExistsError:
         pass
     except OSError as error:
-        raise IPCError("could not create the broker runtime directory") from error
+        raise IPCError("could not create the tunnel runtime directory") from error
 
     if os.name != "posix":
         # Python 3.14 applies an owner-and-administrators-only ACL when mode 0700
@@ -132,36 +139,36 @@ def _prepare_runtime_directory(directory: Path) -> int | None:
     try:
         metadata = directory.lstat()
     except OSError as error:
-        raise IPCError("could not inspect the broker runtime directory") from error
+        raise IPCError("could not inspect the tunnel runtime directory") from error
     if stat.S_ISLNK(metadata.st_mode):
-        raise IPCError("broker runtime directory must not be a symbolic link")
+        raise IPCError("tunnel runtime directory must not be a symbolic link")
     if not stat.S_ISDIR(metadata.st_mode):
-        raise IPCError("broker runtime path is not a directory")
+        raise IPCError("tunnel runtime path is not a directory")
     if metadata.st_uid != os.getuid():
-        raise IPCError("broker runtime directory is not owned by the current user")
+        raise IPCError("tunnel runtime directory is not owned by the current user")
 
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     try:
         directory_fd = os.open(directory, flags)
     except OSError as error:
         raise IPCError(
-            "could not securely open the broker runtime directory"
+            "could not securely open the tunnel runtime directory"
         ) from error
 
     try:
         metadata = os.fstat(directory_fd)
         if not stat.S_ISDIR(metadata.st_mode):
-            raise IPCError("broker runtime path is not a directory")
+            raise IPCError("tunnel runtime path is not a directory")
         if metadata.st_uid != os.getuid():
-            raise IPCError("broker runtime directory is not owned by the current user")
+            raise IPCError("tunnel runtime directory is not owned by the current user")
         try:
             os.fchmod(directory_fd, 0o700)
         except OSError as error:
             raise IPCError(
-                "could not restrict the broker runtime directory permissions"
+                "could not restrict the tunnel runtime directory permissions"
             ) from error
         if stat.S_IMODE(os.fstat(directory_fd).st_mode) != 0o700:
-            raise IPCError("broker runtime directory permissions are not private")
+            raise IPCError("tunnel runtime directory permissions are not private")
     except BaseException:
         os.close(directory_fd)
         raise

@@ -16,25 +16,25 @@ class IPCAddress:
 
     def __post_init__(self, allow_zero_port: bool) -> None:
         if self.host != LOOPBACK_HOST:
-            raise ValueError("broker IPC address must use IPv4 loopback")
+            raise ValueError("tunnel IPC address must use IPv4 loopback")
         minimum_port = 0 if allow_zero_port else 1
         if type(self.port) is not int or not minimum_port <= self.port <= 65535:
-            raise ValueError("broker IPC port is invalid")
+            raise ValueError("tunnel IPC port is invalid")
 
     def as_tuple(self) -> tuple[str, int]:
         return self.host, self.port
 
 
 class IPCError(Exception):
-    """Base class for actionable broker IPC failures."""
+    """Base class for actionable tunnel IPC failures."""
 
 
-class BrokerUnavailableError(IPCError):
-    """The foreground broker is not accepting connections."""
+class TunnelUnavailableError(IPCError):
+    """The tunnel is not accepting connections."""
 
 
 class IPCAuthenticationError(IPCError):
-    """The broker and proxy do not share the same capability key."""
+    """The tunnel and proxy do not share the same capability key."""
 
 
 class ProtocolError(IPCError):

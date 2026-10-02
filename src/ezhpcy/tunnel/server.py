@@ -1,4 +1,4 @@
-"""Foreground broker and ProxyCommand stream relays."""
+"""The tunnel server and ProxyCommand stream relays."""
 
 import itertools
 import logging
@@ -45,7 +45,7 @@ def _socket_to_channel(stream: socket.socket, channel: paramiko.Channel) -> None
     _shutdown_write(channel)
 
 
-class ForegroundBroker:
+class TunnelServer:
     """Own one login transport and multiplex worker channels over local IPC."""
 
     def __init__(
@@ -71,7 +71,7 @@ class ForegroundBroker:
         started = time.monotonic()
         channel = None
         logger.debug(
-            "Broker client accepted: connection=%d destination=%s:%d "
+            "Tunnel client accepted: connection=%d destination=%s:%d "
             "transport_active=%s",
             connection_id,
             self.destination[0],
@@ -82,7 +82,7 @@ class ForegroundBroker:
             if not self.transport.is_active():
                 reject_worker_stream(
                     stream,
-                    "login-node transport was lost; restart the foreground broker",
+                    "login-node transport was lost; restart the tunnel",
                 )
                 return
             try:
@@ -95,7 +95,7 @@ class ForegroundBroker:
             # re-raises exceptions saved by its transport thread, including
             # EOFError, socket errors, and exceptions from socket wrappers.
             # Keep this client boundary broad so every channel-open failure is
-            # returned to the proxy without terminating the broker.
+            # returned to the proxy without terminating the tunnel.
             except Exception as error:
                 reject_worker_stream(
                     stream,
@@ -123,7 +123,7 @@ class ForegroundBroker:
             if channel is not None:
                 channel.close()
             logger.debug(
-                "Broker client closed: connection=%d duration_seconds=%.3f "
+                "Tunnel client closed: connection=%d duration_seconds=%.3f "
                 "transport_active=%s",
                 connection_id,
                 time.monotonic() - started,
@@ -158,7 +158,7 @@ class ForegroundBroker:
                 pass
 
     def _report(self, error: Exception) -> None:
-        logger.debug("Broker relay error: error=%r", error)
+        logger.debug("Tunnel relay error: error=%r", error)
         if self.error_handler is not None:
             self.error_handler(error)
 
@@ -173,17 +173,17 @@ def relay_proxy_stdio(
     *,
     connect_timeout: float = 2.0,
 ) -> None:
-    """Connect to the broker and reserve stdout exclusively for SSH bytes."""
+    """Connect to the tunnel and reserve stdout exclusively for SSH bytes."""
     started = time.monotonic()
     logger.debug(
-        "Proxy relay connecting to broker: timeout_seconds=%g", connect_timeout
+        "Proxy relay connecting to tunnel: timeout_seconds=%g", connect_timeout
     )
     stream = backend.connect(timeout=connect_timeout)
     sent = 0
     received = 0
     try:
         wait_for_worker_stream(stream)
-        logger.debug("Proxy relay ready; worker stream accepted by the broker")
+        logger.debug("Proxy relay ready; worker stream accepted by the tunnel")
 
         try:
             stdin_fd = stdin.fileno()
@@ -222,7 +222,7 @@ def relay_proxy_stdio(
             stdout.write(data)
             stdout.flush()
             received += len(data)
-        logger.debug("Proxy relay reached broker EOF: bytes_received=%d", received)
+        logger.debug("Proxy relay reached tunnel EOF: bytes_received=%d", received)
     finally:
         logger.debug(
             "Proxy relay finished: duration_seconds=%.3f bytes_sent=%d "

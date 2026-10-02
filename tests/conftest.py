@@ -7,7 +7,7 @@ from ezhpcy.config import config
 
 @pytest.fixture(autouse=True)
 def isolated_runtime_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
-    """Keep broker descriptors and generated SSH configuration out of the real
+    """Keep tunnel descriptors and generated SSH configuration out of the real
     runtime directory, which the user's ~/.ssh/config may Include."""
     runtime_dir = tmp_path / "runtime"
     monkeypatch.setattr(config.local_file, "runtime_dir", runtime_dir)

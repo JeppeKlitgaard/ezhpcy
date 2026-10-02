@@ -11,12 +11,12 @@ import pytest
 from pydantic import ValidationError
 from typer.testing import CliRunner
 
-from ezhpcy.cli import app, compute as compute_module
-from ezhpcy.cli.compute import (
-    ComputeTunnelError,
+from ezhpcy.cli import app, tunnel as tunnel_module
+from ezhpcy.cli.tunnel import (
+    TunnelError,
     WorkerControl,
     _monitor_job,
-    _run_compute_tunnel,
+    _run_tunnel,
     _select_worker_ports,
     _send_worker_lease_heartbeats,
     _wait_for_running_job,
@@ -415,7 +415,7 @@ def test_wait_for_running_job_reports_transitions_and_returns_host() -> None:
     )
     transitions: list[JobState] = []
 
-    with patch("ezhpcy.cli.compute.time.sleep"):
+    with patch("ezhpcy.cli.tunnel.time.sleep"):
         info = _wait_for_running_job(
             scheduler,  # type: ignore[arg-type]
             "42",
@@ -431,7 +431,7 @@ def test_wait_for_running_job_reports_transitions_and_returns_host() -> None:
 def test_wait_for_running_job_fails_when_job_exits() -> None:
     scheduler = StubScheduler([snapshot(JobState.FAILED, "EXIT")])
 
-    with pytest.raises(ComputeTunnelError, match="scheduler state EXIT"):
+    with pytest.raises(TunnelError, match="scheduler state EXIT"):
         _wait_for_running_job(
             scheduler,  # type: ignore[arg-type]
             "42",
@@ -442,7 +442,7 @@ def test_wait_for_running_job_fails_when_job_exits() -> None:
 
 def test_select_worker_ports_returns_unique_dynamic_ports() -> None:
     with patch(
-        "ezhpcy.cli.compute.secrets.randbelow",
+        "ezhpcy.cli.tunnel.secrets.randbelow",
         side_effect=[0, 0, 1, 2, 3, 4],
     ):
         ports = _select_worker_ports(5)
@@ -485,7 +485,7 @@ def test_worker_control_rejects_invalid_ready_port() -> None:
         control.create()
         ssh.files[control.directory / "ready"] = "v1 LEASETOKEN ready 54322\n"
 
-        with pytest.raises(ComputeTunnelError, match="unexpected SSH port"):
+        with pytest.raises(TunnelError, match="unexpected SSH port"):
             _wait_for_selected_worker_port(control, timeout_seconds=1)
 
 
@@ -493,7 +493,7 @@ def test_job_monitor_uses_interactive_process_without_scheduler_polling() -> Non
     job = InteractiveJob("42", FinishedProcess(0), "")
     broker = StubBroker(None, ("node42", 54321), None)
     job_finished = threading.Event()
-    errors: list[ComputeTunnelError] = []
+    errors: list[TunnelError] = []
 
     _monitor_job(
         job, broker, threading.Event(), job_finished, errors, monitor_interval=0
@@ -508,7 +508,7 @@ def test_job_monitor_does_not_treat_missing_exit_status_as_job_completion() -> N
     job = InteractiveJob("42", FinishedProcess(-1), "")
     broker = StubBroker(None, ("node42", 54321), None)
     job_finished = threading.Event()
-    errors: list[ComputeTunnelError] = []
+    errors: list[TunnelError] = []
 
     _monitor_job(
         job, broker, threading.Event(), job_finished, errors, monitor_interval=0
@@ -528,9 +528,9 @@ def test_worker_heartbeat_sender_logs_sequence_without_token() -> None:
             stop_requested.set()
             return 1
 
-    errors: list[ComputeTunnelError] = []
+    errors: list[TunnelError] = []
 
-    with patch("ezhpcy.cli.compute.logger") as logger:
+    with patch("ezhpcy.cli.tunnel.logger") as logger:
         _send_worker_lease_heartbeats(
             OneHeartbeatControl(),  # type: ignore[arg-type]
             StubTransport(),  # type: ignore[arg-type]
@@ -554,7 +554,7 @@ def test_worker_heartbeat_sender_reports_filesystem_failure() -> None:
             raise OSError("channel closed")
 
     failed = threading.Event()
-    errors: list[ComputeTunnelError] = []
+    errors: list[TunnelError] = []
     failure_handled = threading.Event()
 
     _send_worker_lease_heartbeats(
@@ -582,7 +582,7 @@ def test_worker_endpoint_waits_for_an_ssh_banner() -> None:
     transport_logger.setLevel(logging.WARNING)
 
     try:
-        with patch("ezhpcy.cli.compute.time.sleep"):
+        with patch("ezhpcy.cli.tunnel.time.sleep"):
             _wait_for_worker_endpoint(
                 transport,  # type: ignore[arg-type]
                 ("node42", 54321),
@@ -597,7 +597,7 @@ def test_worker_endpoint_waits_for_an_ssh_banner() -> None:
         transport_logger.setLevel(previous_level)
 
 
-def test_compute_tunnel_submits_worker_starts_broker_and_cancels() -> None:
+def test_tunnel_submits_worker_starts_broker_and_cancels() -> None:
     transport = StubTransport()
     ssh = StubSSH(transport)
     scheduler = StubScheduler([snapshot(JobState.RUNNING, "RUN", "node42")])
@@ -611,36 +611,36 @@ def test_compute_tunnel_submits_worker_starts_broker_and_cancels() -> None:
 
     with (
         patch(
-            "ezhpcy.cli.compute.InteractiveSSHClient",
+            "ezhpcy.cli.tunnel.InteractiveSSHClient",
             return_value=ssh,
         ),
-        patch("ezhpcy.cli.compute.local_machine_id", return_value="machine-id"),
-        patch("ezhpcy.cli.compute.secrets.token_hex", return_value="LEASETOKEN"),
+        patch("ezhpcy.cli.tunnel.local_machine_id", return_value="machine-id"),
+        patch("ezhpcy.cli.tunnel.secrets.token_hex", return_value="LEASETOKEN"),
         patch(
-            "ezhpcy.cli.compute.LSFScheduler",
+            "ezhpcy.cli.tunnel.LSFScheduler",
             return_value=scheduler,
         ) as scheduler_constructor,
         patch(
-            "ezhpcy.cli.compute.provision_worker_infrastructure",
+            "ezhpcy.cli.tunnel.provision_worker_infrastructure",
             return_value=None,
         ),
         patch(
-            "ezhpcy.cli.compute.read_ed25519_public_key",
+            "ezhpcy.cli.tunnel.read_ed25519_public_key",
             return_value=("ssh-ed25519", "WORKERKEY"),
         ),
         patch(
-            "ezhpcy.cli.compute._wait_for_selected_worker_port",
+            "ezhpcy.cli.tunnel._wait_for_selected_worker_port",
             return_value=54322,
         ),
-        patch("ezhpcy.cli.compute._wait_for_worker_endpoint"),
+        patch("ezhpcy.cli.tunnel._wait_for_worker_endpoint"),
         patch(
-            "ezhpcy.cli.compute.create_broker_backend", return_value=object()
+            "ezhpcy.cli.tunnel.create_broker_backend", return_value=object()
         ) as create_backend,
-        patch("ezhpcy.cli.compute.ForegroundBroker", side_effect=make_broker),
-        patch("ezhpcy.cli.compute.logger") as logger,
+        patch("ezhpcy.cli.tunnel.ForegroundBroker", side_effect=make_broker),
+        patch("ezhpcy.cli.tunnel.logger") as logger,
     ):
         logger.isEnabledFor.return_value = False
-        _run_compute_tunnel(
+        _run_tunnel(
             profile_name=None,
             profile=configuration,
             conn_info=ConnectionInfo(user="alice", host="login.example.com"),
@@ -732,40 +732,40 @@ def test_compute_tunnel_submits_worker_starts_broker_and_cancels() -> None:
     )
 
 
-def test_compute_tunnel_cancels_job_when_worker_startup_fails() -> None:
+def test_tunnel_cancels_job_when_worker_startup_fails() -> None:
     transport = StubTransport()
     ssh = StubSSH(transport)
     scheduler = StubScheduler([snapshot(JobState.RUNNING, "RUN", "node42")])
 
     with (
         patch(
-            "ezhpcy.cli.compute.InteractiveSSHClient",
+            "ezhpcy.cli.tunnel.InteractiveSSHClient",
             return_value=ssh,
         ),
-        patch("ezhpcy.cli.compute.local_machine_id", return_value="machine-id"),
+        patch("ezhpcy.cli.tunnel.local_machine_id", return_value="machine-id"),
         patch(
-            "ezhpcy.cli.compute.LSFScheduler",
+            "ezhpcy.cli.tunnel.LSFScheduler",
             return_value=scheduler,
         ),
         patch(
-            "ezhpcy.cli.compute.provision_worker_infrastructure",
+            "ezhpcy.cli.tunnel.provision_worker_infrastructure",
             return_value=None,
         ),
         patch(
-            "ezhpcy.cli.compute.read_ed25519_public_key",
+            "ezhpcy.cli.tunnel.read_ed25519_public_key",
             return_value=("ssh-ed25519", "WORKERKEY"),
         ),
         patch(
-            "ezhpcy.cli.compute._wait_for_selected_worker_port",
+            "ezhpcy.cli.tunnel._wait_for_selected_worker_port",
             return_value=54321,
         ),
         patch(
-            "ezhpcy.cli.compute._wait_for_worker_endpoint",
-            side_effect=ComputeTunnelError("worker did not listen"),
+            "ezhpcy.cli.tunnel._wait_for_worker_endpoint",
+            side_effect=TunnelError("worker did not listen"),
         ),
-        pytest.raises(ComputeTunnelError, match="did not listen"),
+        pytest.raises(TunnelError, match="did not listen"),
     ):
-        _run_compute_tunnel(
+        _run_tunnel(
             profile_name="base",
             profile=lsf_profile(),
             conn_info=ConnectionInfo(user="alice", host="login.example.com"),
@@ -789,7 +789,7 @@ def test_compute_tunnel_cancels_job_when_worker_startup_fails() -> None:
     assert scheduler.process.closed
 
 
-def test_compute_tunnel_stops_when_the_login_connection_is_lost() -> None:
+def test_tunnel_stops_when_the_login_connection_is_lost() -> None:
     transport = StubTransport()
     ssh = StubSSH(transport)
     scheduler = StubScheduler([snapshot(JobState.RUNNING, "RUN", "node42")])
@@ -808,27 +808,27 @@ def test_compute_tunnel_stops_when_the_login_connection_is_lost() -> None:
         return broker
 
     with (
-        patch("ezhpcy.cli.compute.InteractiveSSHClient", return_value=ssh),
-        patch("ezhpcy.cli.compute.local_machine_id", return_value="machine-id"),
-        patch("ezhpcy.cli.compute.LSFScheduler", return_value=scheduler),
+        patch("ezhpcy.cli.tunnel.InteractiveSSHClient", return_value=ssh),
+        patch("ezhpcy.cli.tunnel.local_machine_id", return_value="machine-id"),
+        patch("ezhpcy.cli.tunnel.LSFScheduler", return_value=scheduler),
         patch(
-            "ezhpcy.cli.compute.provision_worker_infrastructure",
+            "ezhpcy.cli.tunnel.provision_worker_infrastructure",
             return_value=None,
         ),
         patch(
-            "ezhpcy.cli.compute.read_ed25519_public_key",
+            "ezhpcy.cli.tunnel.read_ed25519_public_key",
             return_value=("ssh-ed25519", "WORKERKEY"),
         ),
         patch(
-            "ezhpcy.cli.compute._wait_for_selected_worker_port",
+            "ezhpcy.cli.tunnel._wait_for_selected_worker_port",
             return_value=54321,
         ),
-        patch("ezhpcy.cli.compute._wait_for_worker_endpoint"),
-        patch("ezhpcy.cli.compute.create_broker_backend", return_value=object()),
-        patch("ezhpcy.cli.compute.ForegroundBroker", side_effect=make_broker),
-        pytest.raises(ComputeTunnelError, match="login-node SSH connection lost"),
+        patch("ezhpcy.cli.tunnel._wait_for_worker_endpoint"),
+        patch("ezhpcy.cli.tunnel.create_broker_backend", return_value=object()),
+        patch("ezhpcy.cli.tunnel.ForegroundBroker", side_effect=make_broker),
+        pytest.raises(TunnelError, match="login-node SSH connection lost"),
     ):
-        _run_compute_tunnel(
+        _run_tunnel(
             profile_name="base",
             profile=lsf_profile(),
             conn_info=ConnectionInfo(user="alice", host="login.example.com"),
@@ -852,35 +852,35 @@ def test_compute_tunnel_stops_when_the_login_connection_is_lost() -> None:
     assert scheduler.cancelled == ["42"]
 
 
-def test_compute_tunnel_uses_explicit_pbs_and_linuxsh_defaults() -> None:
+def test_tunnel_uses_explicit_pbs_and_linuxsh_defaults() -> None:
     transport = StubTransport()
     ssh = StubSSH(transport)
     scheduler = StubScheduler([snapshot(JobState.RUNNING, "R", "node42")])
 
     with (
-        patch("ezhpcy.cli.compute.InteractiveSSHClient", return_value=ssh),
-        patch("ezhpcy.cli.compute.local_machine_id", return_value="machine-id"),
+        patch("ezhpcy.cli.tunnel.InteractiveSSHClient", return_value=ssh),
+        patch("ezhpcy.cli.tunnel.local_machine_id", return_value="machine-id"),
         patch(
-            "ezhpcy.cli.compute.PBSScheduler", return_value=scheduler
+            "ezhpcy.cli.tunnel.PBSScheduler", return_value=scheduler
         ) as scheduler_constructor,
         patch(
-            "ezhpcy.cli.compute.provision_worker_infrastructure",
+            "ezhpcy.cli.tunnel.provision_worker_infrastructure",
             return_value=None,
         ),
         patch(
-            "ezhpcy.cli.compute.read_ed25519_public_key",
+            "ezhpcy.cli.tunnel.read_ed25519_public_key",
             return_value=("ssh-ed25519", "WORKERKEY"),
         ),
         patch(
-            "ezhpcy.cli.compute._wait_for_selected_worker_port",
+            "ezhpcy.cli.tunnel._wait_for_selected_worker_port",
             return_value=54321,
         ),
-        patch("ezhpcy.cli.compute._wait_for_worker_endpoint"),
-        patch("ezhpcy.cli.compute.create_broker_backend", return_value=object()),
-        patch("ezhpcy.cli.compute.ForegroundBroker", StubBroker),
-        patch("ezhpcy.cli.compute.logger") as logger,
+        patch("ezhpcy.cli.tunnel._wait_for_worker_endpoint"),
+        patch("ezhpcy.cli.tunnel.create_broker_backend", return_value=object()),
+        patch("ezhpcy.cli.tunnel.ForegroundBroker", StubBroker),
+        patch("ezhpcy.cli.tunnel.logger") as logger,
     ):
-        _run_compute_tunnel(
+        _run_tunnel(
             profile_name="pbs",
             profile=pbs_profile(),
             conn_info=ConnectionInfo(user="alice", host="login.example.com"),
@@ -918,27 +918,27 @@ def test_compute_tunnel_uses_explicit_pbs_and_linuxsh_defaults() -> None:
     )
 
 
-def test_compute_tunnel_submits_batch_job_without_interactive_shell() -> None:
+def test_tunnel_submits_batch_job_without_interactive_shell() -> None:
     transport = StubTransport()
     ssh = StubSSH(transport)
     scheduler = StubScheduler([snapshot(JobState.RUNNING, "RUN", "node42")])
 
     with (
-        patch("ezhpcy.cli.compute.InteractiveSSHClient", return_value=ssh),
-        patch("ezhpcy.cli.compute.local_machine_id", return_value="machine-id"),
-        patch("ezhpcy.cli.compute.secrets.token_hex", return_value="LEASETOKEN"),
-        patch("ezhpcy.cli.compute.LSFScheduler", return_value=scheduler),
-        patch("ezhpcy.cli.compute.provision_worker_infrastructure"),
+        patch("ezhpcy.cli.tunnel.InteractiveSSHClient", return_value=ssh),
+        patch("ezhpcy.cli.tunnel.local_machine_id", return_value="machine-id"),
+        patch("ezhpcy.cli.tunnel.secrets.token_hex", return_value="LEASETOKEN"),
+        patch("ezhpcy.cli.tunnel.LSFScheduler", return_value=scheduler),
+        patch("ezhpcy.cli.tunnel.provision_worker_infrastructure"),
         patch(
-            "ezhpcy.cli.compute.read_ed25519_public_key",
+            "ezhpcy.cli.tunnel.read_ed25519_public_key",
             return_value=("ssh-ed25519", "WORKERKEY"),
         ),
-        patch("ezhpcy.cli.compute._wait_for_selected_worker_port", return_value=54321),
-        patch("ezhpcy.cli.compute._wait_for_worker_endpoint"),
-        patch("ezhpcy.cli.compute.create_broker_backend", return_value=object()),
-        patch("ezhpcy.cli.compute.ForegroundBroker", StubBroker),
+        patch("ezhpcy.cli.tunnel._wait_for_selected_worker_port", return_value=54321),
+        patch("ezhpcy.cli.tunnel._wait_for_worker_endpoint"),
+        patch("ezhpcy.cli.tunnel.create_broker_backend", return_value=object()),
+        patch("ezhpcy.cli.tunnel.ForegroundBroker", StubBroker),
     ):
-        _run_compute_tunnel(
+        _run_tunnel(
             profile_name="batch",
             profile=lsf_profile(),
             conn_info=ConnectionInfo(user="alice", host="login.example.com"),
@@ -969,9 +969,9 @@ def test_compute_tunnel_submits_batch_job_without_interactive_shell() -> None:
     assert scheduler.cancelled == ["42"]
 
 
-def test_compute_tunnel_help_exposes_scheduler_and_resource_options() -> None:
-    result = CliRunner().invoke(app, ["compute", "--help"], terminal_width=160)
-    alias_result = CliRunner().invoke(app, ["c", "--help"], terminal_width=160)
+def test_tunnel_help_exposes_scheduler_and_resource_options() -> None:
+    result = CliRunner().invoke(app, ["tunnel", "--help"], terminal_width=160)
+    alias_result = CliRunner().invoke(app, ["t", "--help"], terminal_width=160)
 
     assert result.exit_code == 0
     assert alias_result.exit_code == 0
@@ -997,28 +997,28 @@ def test_compute_tunnel_help_exposes_scheduler_and_resource_options() -> None:
     assert "PROFILE" in result.stdout
 
 
-def test_compute_command_requires_a_resolvable_configuration() -> None:
-    result = CliRunner().invoke(app, ["compute"])
+def test_tunnel_command_requires_a_resolvable_configuration() -> None:
+    result = CliRunner().invoke(app, ["tunnel"])
 
     assert result.exit_code == 2
     assert "user" in result.stderr
     assert "--user" in result.stderr
 
 
-def test_compute_command_accepts_anonymous_cli_configuration(
+def test_tunnel_command_accepts_anonymous_cli_configuration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, object] = {}
     monkeypatch.setattr(
-        compute_module,
-        "_run_compute_tunnel",
+        tunnel_module,
+        "_run_tunnel",
         lambda **kwargs: captured.update(kwargs),
     )
 
     result = CliRunner().invoke(
         app,
         [
-            "compute",
+            "tunnel",
             "--host",
             "login.example.com",
             "--user",
@@ -1052,11 +1052,11 @@ def test_compute_command_accepts_anonymous_cli_configuration(
     assert str(getattr(resolved, "host")) == "login.example.com"
 
 
-def test_compute_command_requires_submission_mode() -> None:
+def test_tunnel_command_requires_submission_mode() -> None:
     result = CliRunner().invoke(
         app,
         [
-            "compute",
+            "tunnel",
             "--host",
             "login.example.com",
             "--user",
@@ -1070,20 +1070,20 @@ def test_compute_command_requires_submission_mode() -> None:
     assert "submission_mode must be set" in result.output
 
 
-def test_compute_command_accepts_batch_submission_mode(
+def test_tunnel_command_accepts_batch_submission_mode(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, object] = {}
     monkeypatch.setattr(
-        compute_module,
-        "_run_compute_tunnel",
+        tunnel_module,
+        "_run_tunnel",
         lambda **kwargs: captured.update(kwargs),
     )
 
     result = CliRunner().invoke(
         app,
         [
-            "compute",
+            "tunnel",
             "--host",
             "login.example.com",
             "--user",
@@ -1099,11 +1099,11 @@ def test_compute_command_accepts_batch_submission_mode(
     assert captured["submission_mode"] is SubmissionMode.BATCH
 
 
-def test_compute_command_rejects_interactive_wrapper_in_batch_mode() -> None:
+def test_tunnel_command_rejects_interactive_wrapper_in_batch_mode() -> None:
     result = CliRunner().invoke(
         app,
         [
-            "compute",
+            "tunnel",
             "--host",
             "login.example.com",
             "--user",
@@ -1121,20 +1121,20 @@ def test_compute_command_rejects_interactive_wrapper_in_batch_mode() -> None:
     assert "requires submission_mode" in result.output
 
 
-def test_compute_command_accepts_cli_interactive_submission_command(
+def test_tunnel_command_accepts_cli_interactive_submission_command(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: dict[str, object] = {}
     monkeypatch.setattr(
-        compute_module,
-        "_run_compute_tunnel",
+        tunnel_module,
+        "_run_tunnel",
         lambda **kwargs: captured.update(kwargs),
     )
 
     result = CliRunner().invoke(
         app,
         [
-            "compute",
+            "tunnel",
             "--host",
             "login.example.com",
             "--user",
@@ -1157,11 +1157,11 @@ def test_compute_command_accepts_cli_interactive_submission_command(
     ]
 
 
-def test_compute_command_rejects_resources_with_cli_interactive_command() -> None:
+def test_tunnel_command_rejects_resources_with_cli_interactive_command() -> None:
     result = CliRunner().invoke(
         app,
         [
-            "compute",
+            "tunnel",
             "--host",
             "login.example.com",
             "--user",
@@ -1182,11 +1182,11 @@ def test_compute_command_rejects_resources_with_cli_interactive_command() -> Non
     assert "--queue" in result.output
 
 
-def test_compute_command_rejects_malformed_interactive_command_quoting() -> None:
+def test_tunnel_command_rejects_malformed_interactive_command_quoting() -> None:
     result = CliRunner().invoke(
         app,
         [
-            "compute",
+            "tunnel",
             "--host",
             "login.example.com",
             "--user",
@@ -1204,11 +1204,11 @@ def test_compute_command_rejects_malformed_interactive_command_quoting() -> None
     assert "No closing quotation" in result.output
 
 
-def test_compute_command_resolves_profile_and_applies_cli_overrides(
+def test_tunnel_command_resolves_profile_and_applies_cli_overrides(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        compute_module.config,
+        tunnel_module.config,
         "profile",
         {
             "base": ProfileConfig(
@@ -1233,18 +1233,18 @@ def test_compute_command_resolves_profile_and_applies_cli_overrides(
     )
     captured: dict[str, object] = {}
     monkeypatch.setattr(
-        compute_module, "_ensure_local_worker_credentials", lambda _connection: None
+        tunnel_module, "_ensure_local_worker_credentials", lambda _connection: None
     )
     monkeypatch.setattr(
-        compute_module,
-        "_run_compute_tunnel",
+        tunnel_module,
+        "_run_tunnel",
         lambda **kwargs: captured.update(kwargs),
     )
 
     result = CliRunner().invoke(
         app,
         [
-            "compute",
+            "tunnel",
             "gpu",
             "--cores",
             "12",
@@ -1290,7 +1290,7 @@ def test_compute_command_resolves_profile_and_applies_cli_overrides(
     result = CliRunner().invoke(
         app,
         [
-            "compute",
+            "tunnel",
             "base",
             "--worker-port",
             "55000",
@@ -1305,11 +1305,11 @@ def test_compute_command_resolves_profile_and_applies_cli_overrides(
     assert captured["job_monitor_interval_seconds"] == 120
 
 
-def test_compute_command_allows_wrapper_with_implicit_resource_defaults(
+def test_tunnel_command_allows_wrapper_with_implicit_resource_defaults(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        compute_module.config,
+        tunnel_module.config,
         "profile",
         {
             "base": ProfileConfig(
@@ -1323,12 +1323,12 @@ def test_compute_command_allows_wrapper_with_implicit_resource_defaults(
     )
     captured: dict[str, object] = {}
     monkeypatch.setattr(
-        compute_module,
-        "_run_compute_tunnel",
+        tunnel_module,
+        "_run_tunnel",
         lambda **kwargs: captured.update(kwargs),
     )
 
-    result = CliRunner().invoke(app, ["compute", "base"])
+    result = CliRunner().invoke(app, ["tunnel", "base"])
 
     assert result.exit_code == 0, result.output
     assert captured["queue"] is None
@@ -1341,11 +1341,11 @@ def test_compute_command_allows_wrapper_with_implicit_resource_defaults(
     ]
 
 
-def test_compute_command_logs_inherited_submission_options_ignored_by_wrapper(
+def test_tunnel_command_logs_inherited_submission_options_ignored_by_wrapper(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        compute_module.config,
+        tunnel_module.config,
         "profile",
         {
             "base": ProfileConfig(
@@ -1362,10 +1362,10 @@ def test_compute_command_logs_inherited_submission_options_ignored_by_wrapper(
             ),
         },
     )
-    monkeypatch.setattr(compute_module, "_run_compute_tunnel", lambda **_kwargs: None)
+    monkeypatch.setattr(tunnel_module, "_run_tunnel", lambda **_kwargs: None)
 
-    with patch("ezhpcy.cli.compute.logger") as logger:
-        result = CliRunner().invoke(app, ["compute", "wrapper"])
+    with patch("ezhpcy.cli.tunnel.logger") as logger:
+        result = CliRunner().invoke(app, ["tunnel", "wrapper"])
 
     assert result.exit_code == 0, result.output
     logger.info.assert_called_once_with(
@@ -1386,13 +1386,13 @@ def test_compute_command_logs_inherited_submission_options_ignored_by_wrapper(
         (("--memory", "1GB"), "--memory"),
     ],
 )
-def test_compute_command_rejects_cli_resources_with_wrapper(
+def test_tunnel_command_rejects_cli_resources_with_wrapper(
     monkeypatch: pytest.MonkeyPatch,
     arguments: tuple[str, ...],
     option: str,
 ) -> None:
     monkeypatch.setattr(
-        compute_module.config,
+        tunnel_module.config,
         "profile",
         {
             "base": ProfileConfig(
@@ -1405,7 +1405,7 @@ def test_compute_command_rejects_cli_resources_with_wrapper(
         },
     )
 
-    result = CliRunner().invoke(app, ["compute", "base", *arguments])
+    result = CliRunner().invoke(app, ["tunnel", "base", *arguments])
 
     assert result.exit_code == 2
     assert "cannot be combined with submission options" in result.output
@@ -1427,13 +1427,13 @@ def test_compute_command_rejects_cli_resources_with_wrapper(
         ("lsf_export_environment", ["TERM"]),
     ],
 )
-def test_compute_command_rejects_configured_submission_options_with_wrapper(
+def test_tunnel_command_rejects_configured_submission_options_with_wrapper(
     monkeypatch: pytest.MonkeyPatch,
     field: str,
     value: object,
 ) -> None:
     monkeypatch.setattr(
-        compute_module.config,
+        tunnel_module.config,
         "profile",
         {
             "base": ProfileConfig(
@@ -1447,18 +1447,18 @@ def test_compute_command_rejects_configured_submission_options_with_wrapper(
         },
     )
 
-    result = CliRunner().invoke(app, ["compute", "base"])
+    result = CliRunner().invoke(app, ["tunnel", "base"])
 
     assert result.exit_code == 2
     assert "cannot be combined with submission options" in result.output
     assert f"profile.base.{field}" in result.output
 
 
-def test_compute_command_can_disable_auto_provision(
+def test_tunnel_command_can_disable_auto_provision(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        compute_module.config,
+        tunnel_module.config,
         "profile",
         {
             "base": ProfileConfig(
@@ -1477,27 +1477,27 @@ def test_compute_command_can_disable_auto_provision(
         credentials_checked = True
 
     monkeypatch.setattr(
-        compute_module, "_ensure_local_worker_credentials", check_credentials
+        tunnel_module, "_ensure_local_worker_credentials", check_credentials
     )
     monkeypatch.setattr(
-        compute_module,
-        "_run_compute_tunnel",
+        tunnel_module,
+        "_run_tunnel",
         lambda **kwargs: captured.update(kwargs),
     )
 
-    result = CliRunner().invoke(app, ["compute", "base", "--no-auto-provision"])
+    result = CliRunner().invoke(app, ["tunnel", "base", "--no-auto-provision"])
 
     assert result.exit_code == 0, result.output
     assert credentials_checked
     assert captured["auto_provision"] is False
 
 
-def test_compute_command_can_enable_auto_provision_when_config_disables_it(
+def test_tunnel_command_can_enable_auto_provision_when_config_disables_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(compute_module.config, "auto_provision", False)
+    monkeypatch.setattr(tunnel_module.config, "auto_provision", False)
     monkeypatch.setattr(
-        compute_module.config,
+        tunnel_module.config,
         "profile",
         {
             "base": ProfileConfig(
@@ -1510,22 +1510,22 @@ def test_compute_command_can_enable_auto_provision_when_config_disables_it(
     )
     captured: dict[str, object] = {}
     monkeypatch.setattr(
-        compute_module,
-        "_run_compute_tunnel",
+        tunnel_module,
+        "_run_tunnel",
         lambda **kwargs: captured.update(kwargs),
     )
 
-    result = CliRunner().invoke(app, ["compute", "base", "--auto-provision"])
+    result = CliRunner().invoke(app, ["tunnel", "base", "--auto-provision"])
 
     assert result.exit_code == 0, result.output
     assert captured["auto_provision"] is True
 
 
-def test_compute_command_rejects_conflicting_auto_provision_flags(
+def test_tunnel_command_rejects_conflicting_auto_provision_flags(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        compute_module.config,
+        tunnel_module.config,
         "profile",
         {
             "base": ProfileConfig(
@@ -1540,7 +1540,7 @@ def test_compute_command_rejects_conflicting_auto_provision_flags(
     result = CliRunner().invoke(
         app,
         [
-            "compute",
+            "tunnel",
             "base",
             "--auto-provision",
             "--no-auto-provision",
@@ -1551,11 +1551,11 @@ def test_compute_command_rejects_conflicting_auto_provision_flags(
     assert "cannot be used together" in result.output
 
 
-def test_compute_command_rejects_unknown_profile_before_starting(
+def test_tunnel_command_rejects_unknown_profile_before_starting(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        compute_module.config,
+        tunnel_module.config,
         "profile",
         {"base": ProfileConfig(host="login.example.com", user="alice")},
     )
@@ -1565,9 +1565,9 @@ def test_compute_command_rejects_unknown_profile_before_starting(
         nonlocal started
         started = True
 
-    monkeypatch.setattr(compute_module, "_ensure_local_worker_credentials", start)
+    monkeypatch.setattr(tunnel_module, "_ensure_local_worker_credentials", start)
 
-    result = CliRunner().invoke(app, ["compute", "missing"])
+    result = CliRunner().invoke(app, ["tunnel", "missing"])
 
     assert result.exit_code == 2
     assert "unknown profile 'missing'" in result.stderr

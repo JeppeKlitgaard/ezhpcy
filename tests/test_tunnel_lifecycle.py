@@ -478,8 +478,8 @@ def test_prune_all_removes_the_package_cache_directory(tmp_path: Path) -> None:
     assert ssh.commands == [["rm", "-rf", "--", "/home/alice/.cache/ezhpcy"]]
 
 
-def test_tunnel_and_legacy_lifecycle_commands_have_been_removed() -> None:
-    for command in ("tunnel", "t", "install", "uninstall"):
+def test_legacy_commands_have_been_removed() -> None:
+    for command in ("compute", "c", "broker", "install", "uninstall"):
         result = CliRunner().invoke(app, [command, "--help"])
         assert result.exit_code == 2
 

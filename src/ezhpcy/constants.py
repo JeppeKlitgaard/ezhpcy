@@ -5,6 +5,7 @@ from ezhpcy.utils import ezhpcy_version
 PACKAGE_NAME = "ezhpcy"
 EZHPCY_VERSION = ezhpcy_version()
 SSH_DIRECTORY_NAME = "ssh"
+LOGIN_KNOWN_HOSTS_NAME = "known_hosts"
 WORKER_CLIENT_KEY_NAME = "worker_client_ed25519"
 WORKER_HOST_ALIAS = "ezhpcy-worker"
 WORKER_HOST_KEY_NAME = "ssh_host_ed25519_key"

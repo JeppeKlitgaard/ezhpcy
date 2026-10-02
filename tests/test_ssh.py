@@ -1,13 +1,17 @@
 import shlex
 import stat
 import threading
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from unittest.mock import MagicMock, call, patch
 
 import paramiko
 import pytest
 
-from ezhpcy.cli.utils.ssh import InteractiveSSHClient, _send_server_alive_requests
+from ezhpcy.cli.utils.ssh import (
+    InteractiveSSHClient,
+    PromptMissingHostKeyPolicy,
+    _send_server_alive_requests,
+)
 from ezhpcy.constants import EZHPCY_VERSION, PIXI_VERSION
 from ezhpcy.ssh import SFTPClient, SSHClient
 from ezhpcy.types import ConnectionInfo, RemoteState
@@ -89,6 +93,60 @@ def test_interactive_ssh_uses_configured_transport_keepalive() -> None:
         client.interactive_connect()
 
     transport.set_keepalive.assert_called_once_with(75)
+
+
+def _missing_host_key(client: InteractiveSSHClient, answer: str) -> paramiko.PKey:
+    """Run the missing-host-key policy with `answer` typed at the prompt."""
+    key = paramiko.ECDSAKey.generate()
+    policy = PromptMissingHostKeyPolicy(client.known_hosts_file)
+    with patch("ezhpcy.cli.utils.ssh.Confirm.get_input", return_value=answer):
+        policy.missing_host_key(client, "login.example.com", key)
+    return key
+
+
+def test_interactive_ssh_rejects_unknown_host_key_by_default(tmp_path: Path) -> None:
+    known_hosts = tmp_path / "known_hosts"
+    client = InteractiveSSHClient(
+        ConnectionInfo(user="alice", host="login.example.com"),
+        known_hosts_file=known_hosts,
+    )
+
+    with pytest.raises(paramiko.SSHException, match="rejected by user"):
+        _missing_host_key(client, "")
+
+    assert client.get_host_keys().lookup("login.example.com") is None
+    assert not known_hosts.exists()
+
+
+def test_interactive_ssh_saves_accepted_host_key(tmp_path: Path) -> None:
+    known_hosts = tmp_path / "ezhpcy" / "known_hosts"
+    client = InteractiveSSHClient(
+        ConnectionInfo(user="alice", host="login.example.com"),
+        known_hosts_file=known_hosts,
+    )
+
+    key = _missing_host_key(client, "y")
+
+    assert known_hosts.read_text() == (
+        f"login.example.com {key.get_name()} {key.get_base64()}\n"
+    )
+    reconnecting_client = InteractiveSSHClient(
+        ConnectionInfo(user="alice", host="login.example.com"),
+        known_hosts_file=known_hosts,
+    )
+    assert reconnecting_client.get_host_keys().lookup("login.example.com") == {
+        key.get_name(): key
+    }
+
+
+def test_interactive_ssh_defaults_to_configured_known_hosts_file(
+    isolated_config_dir: Path,
+) -> None:
+    client = InteractiveSSHClient(
+        ConnectionInfo(user="alice", host="login.example.com")
+    )
+
+    assert client.known_hosts_file == isolated_config_dir / "known_hosts"
 
 
 def _stop_after(iterations: int) -> MagicMock:

@@ -63,9 +63,22 @@ log_heartbeat() {{
     printf '{WORKER_HEARTBEAT_MARKER}: %s\n' "$message" >&2
 }}
 
+stop_sshd() {{
+    # sshd serves each connection from a child that calls setsid(), so neither
+    # the listener's exit nor signals to the job's process group reach it. An
+    # orphaned connection handler keeps the job alive (and, for interactive
+    # jobs, its terminal open), so signal the handlers before the listener.
+    if command -v pkill >/dev/null 2>&1; then
+        pkill -TERM -P "$pid" 2>/dev/null || true
+    else
+        log_heartbeat WARN sessions_not_stopped reason=pkill_unavailable
+    fi
+    kill "$pid" 2>/dev/null || true
+}}
+
 stop_children() {{
     if [ -n "$pid" ]; then
-        kill "$pid" 2>/dev/null || true
+        stop_sshd
     fi
     wait "$pid" 2>/dev/null || true
 }}
@@ -147,7 +160,7 @@ while [ -n "$ports" ]; do
             lease_exit_status=75
             log_heartbeat ERROR heartbeat_timeout last_sequence="$last_sequence" \
                 timeout_seconds="$heartbeat_timeout"
-            kill "$pid" 2>/dev/null || true
+            stop_sshd
             break
         fi
         sleep 1
@@ -244,9 +257,19 @@ def _sshd_config_settings(
     host_key: PurePosixPath,
     remote_username: str,
     authorized_key: tuple[str, str],
+    client_alive: tuple[int, int] | None = None,
 ) -> tuple[tuple[str, str], ...]:
     """Return the complete worker sshd configuration as keyword-value pairs."""
     key_type, key_blob = authorized_key
+    liveness: tuple[tuple[str, str], ...] = ()
+    if client_alive is not None:
+        interval_seconds, count_max = client_alive
+        if interval_seconds < 1 or count_max < 1:
+            raise ValueError("client-alive interval and count must be positive")
+        liveness = (
+            ("ClientAliveInterval", str(interval_seconds)),
+            ("ClientAliveCountMax", str(count_max)),
+        )
     return (
         ("ListenAddress", "0.0.0.0"),
         # File Locations
@@ -274,6 +297,8 @@ def _sshd_config_settings(
         ("AllowAgentForwarding", "no"),
         ("X11Forwarding", "no"),
         ("PermitTunnel", "no"),
+        # Liveness
+        *liveness,
         # Misc
         ("UseDNS", "no"),
         ("LogLevel", "INFO"),
@@ -286,12 +311,20 @@ def sshd_config_arguments(
     host_key: PurePosixPath,
     remote_username: str,
     authorized_key: tuple[str, str],
+    client_alive: tuple[int, int] | None = None,
 ) -> list[str]:
-    """Return the complete worker sshd configuration as command-line options."""
+    """Return the complete worker sshd configuration as command-line options.
+
+    ``client_alive`` is an ``(interval_seconds, count_max)`` pair for sshd's
+    ClientAliveInterval and ClientAliveCountMax. The probes travel through the
+    tunnel to the real SSH client, so a session whose client became unreachable
+    ends on its own instead of outliving the worker.
+    """
     settings = _sshd_config_settings(
         host_key=host_key,
         remote_username=remote_username,
         authorized_key=authorized_key,
+        client_alive=client_alive,
     )
     return [
         "-f",

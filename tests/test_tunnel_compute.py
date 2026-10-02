@@ -22,6 +22,7 @@ from ezhpcy.cli.compute import (
     _wait_for_running_job,
     _wait_for_selected_worker_port,
     _wait_for_worker_endpoint,
+    _worker_client_alive,
     _worker_sshd_command,
 )
 from ezhpcy.cli.utils.ssh import retrying_sshd_script, sshd_config_arguments
@@ -118,6 +119,22 @@ def test_worker_sshd_command_retries_ports_through_pixi() -> None:
     assert "HostKey=/remote/ssh_host_ed25519_key" in command
     assert "AuthorizedKeysCommand=/bin/echo ssh-ed25519 WORKERKEY" in command
     assert not any("ssh-serve" in argument for argument in command)
+
+
+@pytest.mark.parametrize(
+    ("interval", "timeout", "expected"),
+    [
+        (30, 90, (30, 3)),
+        (20, 60, (20, 3)),
+        (30, 100, (30, 3)),
+        (0.5, 5, (1, 5)),
+        (30, 20, (30, 1)),
+    ],
+)
+def test_worker_client_alive_gives_up_within_the_heartbeat_timeout(
+    interval: float, timeout: float, expected: tuple[int, int]
+) -> None:
+    assert _worker_client_alive(interval, timeout) == expected
 
 
 class StubScheduler:
@@ -667,9 +684,12 @@ def test_compute_tunnel_submits_worker_starts_broker_and_cancels() -> None:
             ),
             remote_username="alice",
             authorized_key=("ssh-ed25519", "WORKERKEY"),
+            client_alive=(30, 3),
         ),
     )
     assert "AuthorizedKeysCommand=/bin/echo ssh-ed25519 WORKERKEY" in spec.command
+    assert "ClientAliveInterval=30" in spec.command
+    assert "ClientAliveCountMax=3" in spec.command
     assert not any("payload" in argument for argument in spec.command)
     assert spec.queue == "normal"
     assert spec.memory_bytes == 2048 * _MEBIBYTE

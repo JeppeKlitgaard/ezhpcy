@@ -129,6 +129,20 @@ def _worker_sshd_command(
     )
 
 
+def _worker_client_alive(
+    heartbeat_interval_seconds: float, heartbeat_timeout_seconds: float
+) -> tuple[int, int]:
+    """Bound how long the worker serves an SSH client that stopped answering.
+
+    A connection that was open when the login session died must end even if
+    the lease watchdog cannot signal its handler. The probes reuse the
+    heartbeat cadence and give up within the heartbeat timeout.
+    """
+    interval_seconds = max(1, math.ceil(heartbeat_interval_seconds))
+    count_max = max(1, math.floor(heartbeat_timeout_seconds / interval_seconds))
+    return interval_seconds, count_max
+
+
 def _worker_job_script(command: tuple[str, ...], worker_script: str) -> str:
     """Wrap the worker shell program in a batch script fed to LSF over stdin."""
     delimiter = "EZHPCY_WORKER_SCRIPT"
@@ -766,6 +780,9 @@ def _run_compute_tunnel(
                 host_key=remote_host_key,
                 remote_username=remote_username,
                 authorized_key=(key_type, key_blob),
+                client_alive=_worker_client_alive(
+                    heartbeat_interval_seconds, heartbeat_timeout_seconds
+                ),
             )
             control.publish_lease()
             spec = JobSpec(

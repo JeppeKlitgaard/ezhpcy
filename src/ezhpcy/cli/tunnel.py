@@ -34,19 +34,9 @@ from ezhpcy.cli.common import (
     WorkerHeartbeatTimeoutOpt,
     with_profile_context,
 )
-from ezhpcy.cli.provision import (
-    provision_worker_infrastructure,
-    validate_worker_infrastructure,
-)
 from ezhpcy.cli.ssh_config import echo_include_directive
 from ezhpcy.cli.utils.bad_parameter import RichBadParameter
-from ezhpcy.cli.utils.ssh import (
-    InteractiveSSHClient,
-    read_ed25519_public_key,
-    retrying_sshd_command,
-    retrying_sshd_script,
-    sshd_config_arguments,
-)
+from ezhpcy.cli.utils.ssh import InteractiveSSHClient
 from ezhpcy.config import ConnectionInfo, config
 from ezhpcy.constants import (
     OPENSSH_MATCHSPEC,
@@ -57,6 +47,10 @@ from ezhpcy.constants import (
 from ezhpcy.ipc import create_tunnel_backend
 from ezhpcy.ipc.common import IPCError
 from ezhpcy.permissions import FilePermissionError
+from ezhpcy.provision_host import (
+    provision_worker_infrastructure,
+    validate_worker_infrastructure,
+)
 from ezhpcy.scheduler.base import (
     InteractiveJob,
     JobInfo,
@@ -79,6 +73,12 @@ from ezhpcy.tunnel.ssh_config import (
     remove_active_host_config,
     write_active_host_config,
     write_profiles_config,
+)
+from ezhpcy.tunnel.sshd import (
+    read_ed25519_public_key,
+    retrying_sshd_command,
+    retrying_sshd_script,
+    sshd_config_arguments,
 )
 from ezhpcy.types import RemoteState, ResolvedConfig, SubmissionMode
 from ezhpcy.utils import local_machine_id, ssh_connection_id

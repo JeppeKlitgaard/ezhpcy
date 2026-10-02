@@ -14,7 +14,7 @@ WORKER_HOST_KEY_NAME = "ssh_host_ed25519_key"
 WINDOWS_CREATION_FLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 # Vendor software
-PIXI_VERSION = "0.73.0"
+PIXI_VERSION = "0.81.0"
 PIXI_INSTALLER_URL = "https://pixi.sh/install.sh"
-OPENSSH_VERSION = "10.4p1"
+OPENSSH_VERSION = "10.5p1"
 OPENSSH_MATCHSPEC = f"openssh=={OPENSSH_VERSION}"

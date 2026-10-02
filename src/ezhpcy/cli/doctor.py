@@ -54,22 +54,24 @@ class Check:
 
 def _check_profile(source: Config, name: str) -> Check:
     try:
-        resolved = source.resolve_profile(name)
+        connection = source.resolve_profile(name).connection
     except ProfilePasswordSourceError as error:
         return Check(
             Status.FAIL, f"Profile {name} is invalid", hint=error.rich_message()
         )
 
-    if resolved.password_file is not None and not resolved.password_file.is_file():
+    password_file = connection.password_file
+    if password_file is not None and not password_file.is_file():
         return Check(
             Status.FAIL,
-            f"Profile {name} is invalid: password_file "
-            f"{escape(str(resolved.password_file))} does not exist",
+            f"Profile {name} is invalid: connection.password_file "
+            f"{escape(str(password_file))} does not exist",
         )
-    if resolved.user is None or resolved.host is None:
+    if connection.user is None or connection.host is None:
         return Check(Status.OK, f"Profile {name} is valid")
     return Check(
-        Status.OK, f"Profile {name} is valid: {escape(resolved.user)}@{resolved.host}"
+        Status.OK,
+        f"Profile {name} is valid: {escape(connection.user)}@{connection.host}",
     )
 
 

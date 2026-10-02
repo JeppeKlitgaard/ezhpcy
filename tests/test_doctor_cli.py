@@ -35,12 +35,18 @@ def profiles(monkeypatch: pytest.MonkeyPatch) -> None:
         config,
         "profile",
         {
-            "base": ProfileConfig(scheduler="LSF"),
-            "cpu": ProfileConfig(
-                inherit="base", host="login.example.com", user="alice"
+            "base": ProfileConfig.model_validate({"scheduler": {"type": "LSF"}}),
+            "cpu": ProfileConfig.model_validate(
+                {
+                    "inherit": "base",
+                    "connection": {"host": "login.example.com", "user": "alice"},
+                }
             ),
-            "gpu": ProfileConfig(
-                inherit="base", host="login.example.com", user="alice"
+            "gpu": ProfileConfig.model_validate(
+                {
+                    "inherit": "base",
+                    "connection": {"host": "login.example.com", "user": "alice"},
+                }
             ),
         },
     )
@@ -86,10 +92,15 @@ def test_doctor_warns_without_profiles(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.mark.parametrize(
     ("profile", "message"),
     [
-        (ProfileConfig(password="hunter2"), "must not set password"),
         (
-            ProfileConfig(password_file=Path("missing-password.txt")),
-            "password_file missing-password.txt does not exist",
+            ProfileConfig.model_validate({"connection": {"password": "hunter2"}}),
+            "must not set connection.password",
+        ),
+        (
+            ProfileConfig.model_validate(
+                {"connection": {"password_file": Path("missing-password.txt")}}
+            ),
+            "connection.password_file missing-password.txt does not exist",
         ),
     ],
 )

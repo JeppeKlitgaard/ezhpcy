@@ -3,17 +3,21 @@
 log_level = "INFO"
 auto_provision = true
 
-[profile.base]
+[profile.base.connection]
 host = "login.hpc.example.com"
 user = {{ user | tojson }}
 password_prompt = true
+ssh_keepalive_interval_seconds = 30
 
-scheduler = "LSF"
+[profile.base.scheduler]
+type = "LSF"
+
+[profile.base.resources]
 queue = "hpcint"
 
+[profile.base.timings]
 queue_timeout_seconds = 900
 worker_startup_timeout_seconds = 60
-ssh_keepalive_interval_seconds = 30
 worker_heartbeat_interval_seconds = 30
 worker_heartbeat_timeout_seconds = 90
 job_poll_interval_seconds = 2.5

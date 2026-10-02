@@ -57,36 +57,38 @@ def test_profile_password_prompt_defaults_to_true_and_is_inherited() -> None:
     config = config_module.Config.from_mapping(
         {
             "profile": {
-                "base": {"password_prompt": False},
+                "base": {"connection": {"password_prompt": False}},
                 "child": {"inherit": "base"},
                 "default": {},
             }
         }
     )
 
-    assert config.resolve_profile("default").password_prompt is True
-    assert config.resolve_profile("child").password_prompt is False
+    assert config.resolve_profile("default").connection.password_prompt is True
+    assert config.resolve_profile("child").connection.password_prompt is False
 
 
 def test_profile_ssh_keepalive_defaults_to_30_seconds_and_is_inherited() -> None:
     config = config_module.Config.from_mapping(
         {
             "profile": {
-                "base": {"ssh_keepalive_interval_seconds": 75},
+                "base": {"connection": {"ssh_keepalive_interval_seconds": 75}},
                 "child": {"inherit": "base"},
                 "default": {},
             }
         }
     )
 
-    assert config.resolve_profile("default").ssh_keepalive_interval_seconds == 30
-    assert config.resolve_profile("child").ssh_keepalive_interval_seconds == 75
+    default = config.resolve_profile("default").connection
+    child = config.resolve_profile("child").connection
+    assert default.ssh_keepalive_interval_seconds == 30
+    assert child.ssh_keepalive_interval_seconds == 75
 
 
 def test_profile_ssh_keepalive_must_be_positive() -> None:
     with pytest.raises(ValidationError, match="ssh_keepalive_interval_seconds"):
         config_module.Config.from_mapping(
-            {"profile": {"base": {"ssh_keepalive_interval_seconds": 0}}}
+            {"profile": {"base": {"connection": {"ssh_keepalive_interval_seconds": 0}}}}
         )
 
 
@@ -95,9 +97,11 @@ def test_profile_worker_heartbeat_is_independent_and_inherited() -> None:
         {
             "profile": {
                 "base": {
-                    "ssh_keepalive_interval_seconds": 75,
-                    "worker_heartbeat_interval_seconds": 20,
-                    "worker_heartbeat_timeout_seconds": 60,
+                    "connection": {"ssh_keepalive_interval_seconds": 75},
+                    "timings": {
+                        "worker_heartbeat_interval_seconds": 20,
+                        "worker_heartbeat_timeout_seconds": 60,
+                    },
                 },
                 "child": {"inherit": "base"},
                 "default": {},
@@ -107,11 +111,11 @@ def test_profile_worker_heartbeat_is_independent_and_inherited() -> None:
 
     default = config.resolve_profile("default")
     child = config.resolve_profile("child")
-    assert default.worker_heartbeat_interval_seconds == 30
-    assert default.worker_heartbeat_timeout_seconds == 90
-    assert child.ssh_keepalive_interval_seconds == 75
-    assert child.worker_heartbeat_interval_seconds == 20
-    assert child.worker_heartbeat_timeout_seconds == 60
+    assert default.timings.worker_heartbeat_interval_seconds == 30
+    assert default.timings.worker_heartbeat_timeout_seconds == 90
+    assert child.connection.ssh_keepalive_interval_seconds == 75
+    assert child.timings.worker_heartbeat_interval_seconds == 20
+    assert child.timings.worker_heartbeat_timeout_seconds == 60
 
 
 def test_profile_job_intervals_default_and_are_inherited() -> None:
@@ -119,8 +123,10 @@ def test_profile_job_intervals_default_and_are_inherited() -> None:
         {
             "profile": {
                 "base": {
-                    "job_poll_interval_seconds": 4.5,
-                    "job_monitor_interval_seconds": 120,
+                    "timings": {
+                        "job_poll_interval_seconds": 4.5,
+                        "job_monitor_interval_seconds": 120,
+                    }
                 },
                 "child": {"inherit": "base"},
                 "default": {},
@@ -128,8 +134,8 @@ def test_profile_job_intervals_default_and_are_inherited() -> None:
         }
     )
 
-    default = config.resolve_profile("default")
-    child = config.resolve_profile("child")
+    default = config.resolve_profile("default").timings
+    child = config.resolve_profile("child").timings
     assert default.job_poll_interval_seconds == 2.5
     assert default.job_monitor_interval_seconds == 60
     assert child.job_poll_interval_seconds == 4.5
@@ -141,15 +147,17 @@ def test_profile_job_intervals_default_and_are_inherited() -> None:
 )
 def test_profile_job_intervals_must_be_positive(field: str) -> None:
     with pytest.raises(ValidationError, match=field):
-        config_module.Config.from_mapping({"profile": {"base": {field: 0}}})
+        config_module.Config.from_mapping(
+            {"profile": {"base": {"timings": {field: 0}}}}
+        )
 
 
 def test_profile_password_keyring_can_be_enabled() -> None:
     config = config_module.Config.from_mapping(
-        {"profile": {"base": {"password_keyring": True}}}
+        {"profile": {"base": {"connection": {"password_keyring": True}}}}
     )
 
-    assert config.resolve_profile("base").password_keyring is True
+    assert config.resolve_profile("base").connection.password_keyring is True
 
 
 def test_profile_password_sources_are_mutually_exclusive() -> None:
@@ -157,20 +165,25 @@ def test_profile_password_sources_are_mutually_exclusive() -> None:
         {
             "profile": {
                 "base": {
-                    "password_file": "password.txt",
-                    "password_keyring": True,
+                    "connection": {
+                        "password_file": "password.txt",
+                        "password_keyring": True,
+                    }
                 }
             }
         }
     )
 
-    with pytest.raises(ValueError, match=r"password_file, password_keyring"):
+    with pytest.raises(
+        ValueError,
+        match=r"connection\.password_file, connection\.password_keyring",
+    ):
         config.resolve_profile("base")
 
 
 def test_profile_password_is_rejected_to_keep_secrets_out_of_configuration() -> None:
     config = config_module.Config.from_mapping(
-        {"profile": {"base": {"password": "not-a-secret"}}}
+        {"profile": {"base": {"connection": {"password": "not-a-secret"}}}}
     )
 
     with pytest.raises(
@@ -183,15 +196,25 @@ def test_profile_password_source_overrides_the_inherited_source() -> None:
     config = config_module.Config.from_mapping(
         {
             "profile": {
-                "base": {"password_keyring": True},
-                "child": {"inherit": "base", "password_file": "password.txt"},
+                "base": {
+                    "connection": {
+                        "user": "alice",
+                        "password_keyring": True,
+                    }
+                },
+                "child": {
+                    "inherit": "base",
+                    "connection": {"password_file": "password.txt"},
+                },
             }
         }
     )
 
-    profile = config.resolve_profile("child")
-    assert profile.password_keyring is False
-    assert profile.password_file == Path("password.txt")
+    connection = config.resolve_profile("child").connection
+    assert connection.password_keyring is False
+    assert connection.password_file == Path("password.txt")
+    # Only the password source is replaced; the rest is still inherited.
+    assert connection.user == "alice"
 
 
 def test_config_singleton_applies_its_log_level() -> None:
@@ -209,24 +232,24 @@ def test_nested_profile_inheritance_resolves_all_ancestor_values() -> None:
             "profile": {
                 "default": {
                     "description": "Base LSF profile",
-                    "host": "login.example.com",
-                    "user": "alice",
-                    "scheduler": "LSF",
-                    "queue": "normal",
-                    "lsf_resource_reserve_per_task": True,
+                    "connection": {"host": "login.example.com", "user": "alice"},
+                    "scheduler": {"type": "LSF"},
+                    "resources": {"queue": "normal"},
+                    "lsf": {"resource_reserve_per_task": True},
                 },
                 "batch": {
                     "inherit": "default",
-                    "queue": "batch",
-                    "exclusive": True,
+                    "resources": {"queue": "batch", "exclusive": True},
                 },
                 "gpu": {
                     "description": "GPU jobs",
                     "inherit": "batch",
-                    "queue": "gpu",
-                    "cores": 8,
-                    "memory": "32GB",
-                    "time_limit": "1:00",
+                    "resources": {
+                        "queue": "gpu",
+                        "cores": 8,
+                        "memory": "32GB",
+                        "time_limit": "1:00",
+                    },
                 },
             },
         }
@@ -234,16 +257,55 @@ def test_nested_profile_inheritance_resolves_all_ancestor_values() -> None:
 
     profile = config.resolve_profile("gpu")
 
-    assert str(profile.host) == "login.example.com"
+    assert str(profile.connection.host) == "login.example.com"
     assert profile.description == "GPU jobs"
-    assert profile.user == "alice"
-    assert profile.scheduler is SchedulerType.LSF
-    assert profile.queue == "gpu"
-    assert profile.cores == 8
-    assert profile.exclusive
-    assert int(profile.memory) == 32_000_000_000
-    assert profile.time_limit_delta == timedelta(hours=1)
-    assert profile.lsf_resource_reserve_per_task
+    assert profile.connection.user == "alice"
+    assert profile.scheduler.type is SchedulerType.LSF
+    assert profile.resources.queue == "gpu"
+    assert profile.resources.cores == 8
+    assert profile.resources.exclusive
+    assert int(profile.resources.memory) == 32_000_000_000
+    assert profile.resources.time_limit_delta == timedelta(hours=1)
+    assert profile.lsf.resource_reserve_per_task
+
+
+def test_profile_inheritance_merges_each_sub_config_field_by_field() -> None:
+    config = config_module.Config.from_mapping(
+        {
+            "profile": {
+                "base": {
+                    "lsf": {
+                        "application_profile": "qrsh",
+                        "submission_environment": {"A": "1", "B": "2"},
+                    }
+                },
+                "child": {
+                    "inherit": "base",
+                    "lsf": {"submission_environment": {"C": "3"}},
+                },
+            }
+        }
+    )
+
+    lsf = config.resolve_profile("child").lsf
+
+    assert lsf.application_profile == "qrsh"
+    # Values inside a sub-config are replaced, not merged.
+    assert lsf.submission_environment == {"C": "3"}
+    assert lsf.model_fields_set == {"application_profile", "submission_environment"}
+
+
+@pytest.mark.parametrize(
+    "profile",
+    [
+        {"host": "login.example.com"},
+        {"lsf_application_profile": "qrsh"},
+        {"connection": {"queue": "gpu"}},
+    ],
+)
+def test_unknown_profile_keys_are_rejected(profile: dict[str, object]) -> None:
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        config_module.Config.from_mapping({"profile": {"base": profile}})
 
 
 @pytest.mark.parametrize(
@@ -254,7 +316,10 @@ def test_nested_profile_inheritance_resolves_all_ancestor_values() -> None:
             "inheritance cycle",
         ),
         ({"a": {"inherit": "missing"}}, "inherits unknown profile"),
-        ({"not allowed": {"host": "login.example.com"}}, "profile names"),
+        (
+            {"not allowed": {"connection": {"host": "login.example.com"}}},
+            "profile names",
+        ),
     ],
 )
 def test_invalid_profile_graphs_are_rejected(
@@ -265,12 +330,13 @@ def test_invalid_profile_graphs_are_rejected(
 
 
 @pytest.mark.parametrize(
-    "values",
+    "connection",
     [
         {"host": None, "user": "alice"},
-        {"host": "login.example.com", "user": None},
+        {"host": "login.example.com"},
+        {"host": "login.example.com", "user": ""},
     ],
 )
-def test_resolved_config_requires_host_and_user(values: dict[str, object]) -> None:
+def test_resolved_config_requires_host_and_user(connection: dict[str, object]) -> None:
     with pytest.raises(ValidationError):
-        ResolvedConfig.model_validate(values)
+        ResolvedConfig.model_validate({"connection": connection})

@@ -2,11 +2,10 @@ import logging
 import os
 import re
 from pathlib import Path
-from typing import Self
+from typing import Any, Self
 
 from platformdirs import PlatformDirs
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from pydantic_extra_types.domain import DomainStr
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -17,7 +16,11 @@ from rich.text import Text
 
 from ezhpcy.constants import PACKAGE_NAME, SSH_DIRECTORY_NAME
 from ezhpcy.logging import configure_logging
-from ezhpcy.types import PASSWORD_SOURCE_FIELDS, ProfileConfig, ResolvedProfileConfig
+from ezhpcy.types import (
+    PASSWORD_SOURCE_FIELDS,
+    ProfileConfig,
+    ResolvedProfileConfig,
+)
 from ezhpcy.utils import ssh_connection_id
 
 _DIRS = PlatformDirs(PACKAGE_NAME, appauthor=False)
@@ -61,13 +64,6 @@ class LocalFileConfig(BaseModel):
             / machine_id
             / ssh_connection_id(user, host)
         )
-
-
-class ConnectionInfo(BaseModel):
-    user: str | None = None
-    password: str | None = None
-    host: DomainStr
-    ssh_keepalive_interval_seconds: int = Field(default=30, gt=0)
 
 
 class _ConfigValues(BaseModel):
@@ -117,7 +113,7 @@ class _ConfigValues(BaseModel):
         if name not in self.profile:
             raise ValueError(f"unknown profile {name!r}")
 
-        def merged(profile_name: str, chain: tuple[str, ...]) -> dict[str, object]:
+        def merged(profile_name: str, chain: tuple[str, ...]) -> dict[str, Any]:
             if profile_name in chain:
                 cycle = " -> ".join((*chain, profile_name))
                 raise ValueError(f"profile inheritance cycle: {cycle}")
@@ -129,14 +125,19 @@ class _ConfigValues(BaseModel):
                     f"profile {parent!r} inherits unknown profile {profile_name!r}"
                 ) from None
 
-            values: dict[str, object] = {}
+            values: dict[str, Any] = {}
             if current.inherit is not None:
-                values.update(merged(current.inherit, (*chain, profile_name)))
+                values = merged(current.inherit, (*chain, profile_name))
             current_values = current.model_dump(exclude={"inherit"}, exclude_unset=True)
-            if current.model_fields_set & PASSWORD_SOURCE_FIELDS:
+            if current.connection.model_fields_set & PASSWORD_SOURCE_FIELDS:
                 for field in PASSWORD_SOURCE_FIELDS:
-                    values.pop(field, None)
-            values.update(current_values)
+                    values.get("connection", {}).pop(field, None)
+            for key, value in current_values.items():
+                # Sub-configs merge field by field; everything else is replaced.
+                if isinstance(value, dict):
+                    values[key] = {**values.get(key, {}), **value}
+                else:
+                    values[key] = value
             return values
 
         resolved = ResolvedProfileConfig.model_validate(merged(name, ()))
@@ -148,22 +149,23 @@ class _ConfigValues(BaseModel):
 def _validate_profile_password_source(
     profile_name: str, profile: ResolvedProfileConfig
 ) -> None:
-    if profile.password is not None:
+    connection = profile.connection
+    if connection.password is not None:
         raise ProfilePasswordSourceError(
             profile_name,
-            "must not set [bold red]password[/bold red], because passwords must "
-            "not be stored in configuration files; use "
-            "[bold blue]password_file[/bold blue], "
-            "[bold blue]password_fd[/bold blue], or "
-            "[bold blue]password_keyring[/bold blue] instead",
+            "must not set [bold red]connection.password[/bold red], because "
+            "passwords must not be stored in configuration files; use "
+            "[bold blue]connection.password_file[/bold blue], "
+            "[bold blue]connection.password_fd[/bold blue], or "
+            "[bold blue]connection.password_keyring[/bold blue] instead",
         )
 
     selected_sources = [
         name
         for name, selected in (
-            ("password_file", profile.password_file is not None),
-            ("password_fd", profile.password_fd is not None),
-            ("password_keyring", profile.password_keyring),
+            ("connection.password_file", connection.password_file is not None),
+            ("connection.password_fd", connection.password_fd is not None),
+            ("connection.password_keyring", connection.password_keyring),
         )
         if selected
     ]

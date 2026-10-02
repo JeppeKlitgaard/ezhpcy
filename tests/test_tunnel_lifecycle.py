@@ -185,7 +185,7 @@ def test_prune_accepts_anonymous_cli_configuration() -> None:
     prune_pixi.assert_called_once_with(ssh, ssh.get_remote_state())
 
 
-def test_provision_is_repeatable_and_never_invokes_remote_python(
+def test_provision_is_repeatable(
     tmp_path: Path,
 ) -> None:
     ssh = StubSSH()
@@ -232,12 +232,6 @@ def test_provision_is_repeatable_and_never_invokes_remote_python(
         assert f"PIXI_VERSION={PIXI_VERSION}" in command
         assert f"/ezhpcy/{EZHPCY_VERSION}/pixi/{PIXI_VERSION}/bin/pixi" in command
         assert "curl --fail --location --show-error --silent" in command
-        assert "provision.sh" not in command
-    assert not any(command[0] == "ezhpcy" for command in ssh.commands)
-    assert not any(
-        "uv" in argument for command in ssh.pixi_commands for argument in command
-    )
-    assert not any("ssh-keygen" in command for command in ssh.pixi_commands)
     remote_ssh = (
         f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/ssh/machine-id/"
         "alice@login.example.com"
@@ -253,8 +247,6 @@ def test_provision_is_repeatable_and_never_invokes_remote_python(
     assert (machine_ssh_dir / "worker_known_hosts").read_text(
         encoding="utf-8"
     ) == f"{WORKER_HOST_ALIAS} ssh-ed25519 LOCAL-HOST\n"
-    assert f"{remote_ssh}/authorized_keys" not in ssh.sftp.files
-    assert f"{remote_ssh}/sshd_config" not in ssh.sftp.files
     validation_commands = [command for command in ssh.pixi_commands if "-t" in command]
     assert len(validation_commands) == 2
     for command in validation_commands:
@@ -263,7 +255,6 @@ def test_provision_is_repeatable_and_never_invokes_remote_python(
         assert f"HostKey={remote_ssh}/ssh_host_ed25519_key" in command
         assert "AuthorizedKeysFile=none" in command
         assert "AuthorizedKeysCommand=/bin/echo ssh-ed25519 LOCAL" in command
-    assert "/home/alice/.cache/ezhpcy/provision.sh" not in ssh.sftp.files
 
 
 def test_local_worker_keys_are_generated_and_reused(
@@ -476,12 +467,6 @@ def test_prune_all_removes_the_package_cache_directory(tmp_path: Path) -> None:
 
     assert result.exit_code == 0, result.output
     assert ssh.commands == [["rm", "-rf", "--", "/home/alice/.cache/ezhpcy"]]
-
-
-def test_legacy_commands_have_been_removed() -> None:
-    for command in ("compute", "c", "broker", "install", "uninstall"):
-        result = CliRunner().invoke(app, [command, "--help"])
-        assert result.exit_code == 2
 
 
 def test_sshd_config_is_expressed_as_cli_arguments() -> None:

@@ -8,21 +8,10 @@ import pytest
 from typer.testing import CliRunner
 
 from ezhpcy.cli import app, common
-from ezhpcy.cli.provision import (
-    WORKER_HOST_ALIAS,
-    ProvisioningError,
-    _ensure_local_ssh_keys,
-    _pin_worker_host_key,
-    provision_openssh,
-    provision_pixi,
-    provision_sshd_files,
-    validate_worker_infrastructure,
-)
 from ezhpcy.cli.prune import (
     prune_stale_installations,
     prune_stale_pixi_data,
 )
-from ezhpcy.cli.utils.ssh import absolute_sshd_command, sshd_config_arguments
 from ezhpcy.config import Config
 from ezhpcy.constants import (
     EZHPCY_VERSION,
@@ -30,8 +19,18 @@ from ezhpcy.constants import (
     PIXI_INSTALLER_URL,
     PIXI_VERSION,
     WORKER_CLIENT_KEY_NAME,
+    WORKER_HOST_ALIAS,
     WORKER_HOST_KEY_NAME,
 )
+from ezhpcy.provision_host import (
+    ProvisioningError,
+    provision_openssh,
+    provision_pixi,
+    provision_sshd_files,
+    validate_worker_infrastructure,
+)
+from ezhpcy.provision_local import ensure_local_ssh_keys, pin_worker_host_key
+from ezhpcy.tunnel.sshd import absolute_sshd_command, sshd_config_arguments
 from ezhpcy.types import ProfileConfig, RemoteState
 
 
@@ -202,14 +201,14 @@ def test_provision_is_repeatable(
     with (
         patch("ezhpcy.utils.machineid.hashed_id", return_value="machine-id"),
         patch.object(common, "config", config),
-        patch("ezhpcy.cli.provision.config", config),
+        patch("ezhpcy.provision_host.config", config),
         patch("ezhpcy.cli.provision.InteractiveSSHClient", return_value=ssh),
         patch(
-            "ezhpcy.cli.provision.provision_sshd_files",
+            "ezhpcy.provision_host.provision_sshd_files",
             wraps=provision_sshd_files,
         ) as provision_files,
         patch(
-            "ezhpcy.cli.provision._ensure_local_ssh_keys",
+            "ezhpcy.provision_host.ensure_local_ssh_keys",
             return_value=(
                 private_key,
                 public_key,
@@ -272,9 +271,9 @@ def test_local_worker_keys_are_generated_and_reused(
     original_generate = ed25519.Ed25519PrivateKey.generate
     monkeypatch.setattr(ed25519.Ed25519PrivateKey, "generate", count_generated_key)
 
-    first = _ensure_local_ssh_keys(ssh_dir)
+    first = ensure_local_ssh_keys(ssh_dir)
     initial_contents = [path.read_bytes() for path in first]
-    second = _ensure_local_ssh_keys(ssh_dir)
+    second = ensure_local_ssh_keys(ssh_dir)
 
     assert first == second
     assert [path.name for path in first] == [
@@ -303,8 +302,8 @@ def test_local_worker_host_keys_differ_between_login_endpoints(
     tmp_path: Path,
 ) -> None:
     machine_ssh_dir = tmp_path / "config" / "ssh" / "machine-id"
-    login1_keys = _ensure_local_ssh_keys(machine_ssh_dir / "alice@login1.hpc.dtu.dk")
-    login2_keys = _ensure_local_ssh_keys(machine_ssh_dir / "alice@login2.hpc.dtu.dk")
+    login1_keys = ensure_local_ssh_keys(machine_ssh_dir / "alice@login1.hpc.dtu.dk")
+    login2_keys = ensure_local_ssh_keys(machine_ssh_dir / "alice@login2.hpc.dtu.dk")
 
     assert login1_keys[3].read_text(encoding="ascii") != login2_keys[3].read_text(
         encoding="ascii"
@@ -491,7 +490,7 @@ def test_pin_worker_host_key_preserves_unrelated_entries(tmp_path: Path) -> None
         encoding="utf-8",
     )
 
-    _pin_worker_host_key("ssh-ed25519 NEW remote-comment\n", known_hosts)
+    pin_worker_host_key("ssh-ed25519 NEW remote-comment\n", known_hosts)
 
     assert known_hosts.read_text(encoding="utf-8") == (
         f"other ssh-ed25519 OTHER\n{WORKER_HOST_ALIAS} ssh-ed25519 NEW\n"

@@ -27,12 +27,12 @@ from ezhpcy.cli.tunnel import (
     _worker_client_alive,
     _worker_sshd_command,
 )
-from ezhpcy.cli.utils.ssh import retrying_sshd_script, sshd_config_arguments
 from ezhpcy.config import ConnectionInfo
 from ezhpcy.constants import EZHPCY_VERSION, OPENSSH_MATCHSPEC, PIXI_VERSION
 from ezhpcy.scheduler.base import InteractiveJob, JobInfo, JobSpec, JobState
 from ezhpcy.scheduler.types import SchedulerType
 from ezhpcy.tunnel.ssh_config import WorkerHost
+from ezhpcy.tunnel.sshd import retrying_sshd_script, sshd_config_arguments
 from ezhpcy.types import (
     ProfileConfig,
     RemoteState,

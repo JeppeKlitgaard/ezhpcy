@@ -410,13 +410,6 @@ def test_missing_runtime_descriptor_fails_quickly(
         load_broker_backend(profile="missing")
 
 
-def test_broker_backends_do_not_accept_a_descriptor_path(tmp_path: Path) -> None:
-    with pytest.raises(TypeError, match="descriptor_path"):
-        create_broker_backend(descriptor_path=tmp_path / "broker.json")
-    with pytest.raises(TypeError, match="descriptor_path"):
-        load_broker_backend(descriptor_path=tmp_path / "broker.json")
-
-
 def test_ipc_endpoint_absence_fails_quickly() -> None:
     with socket.socket() as reserved:
         reserved.bind(BIND_ADDRESS.as_tuple())

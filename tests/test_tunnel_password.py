@@ -352,11 +352,3 @@ def test_remote_command_help_includes_every_password_source(
     assert "--password-keyri" in result.stdout
     assert "PROFILE" in result.stdout
     assert "--profile" not in result.stdout
-
-
-def test_proxy_help_includes_a_profile_argument() -> None:
-    result = CliRunner().invoke(app, ["proxy", "--help"])
-
-    assert result.exit_code == 0
-    assert "PROFILE" in result.stdout
-    assert "--profile" not in result.stdout

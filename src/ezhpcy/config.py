@@ -209,6 +209,18 @@ class Config(BaseSettings, _ConfigValues):
             file_secret_settings,
         )
 
+    @model_validator(mode="before")
+    @classmethod
+    def reject_local_file(cls, values: object) -> object:
+        # The config file location is resolved before any settings source is read,
+        # so `local_file` is derived from the platform directories, not configured.
+        if isinstance(values, dict) and "local_file" in values:
+            raise ValueError(
+                "local_file cannot be configured; set EZHPCY_CONFIG_FILE to use a "
+                "different configuration file"
+            )
+        return values
+
     @classmethod
     def from_mapping(cls, values: object) -> Self:
         """Validate explicit values without loading workstation settings sources."""

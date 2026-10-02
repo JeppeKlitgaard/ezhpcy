@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
+from pydantic_settings import SettingsConfigDict
 
 from ezhpcy import config as config_module
 from ezhpcy.scheduler.types import SchedulerType
@@ -215,6 +216,26 @@ def test_profile_password_source_overrides_the_inherited_source() -> None:
     assert connection.password_file == Path("password.txt")
     # Only the password source is replaced; the rest is still inherited.
     assert connection.user == "alice"
+
+
+def test_local_file_cannot_be_set_in_the_config_file(tmp_path: Path) -> None:
+    config_file = tmp_path / "ezhpcy.toml"
+    config_file.write_text(
+        '[local_file]\nconfig_file = "other.toml"\n', encoding="utf-8"
+    )
+
+    class FileConfig(config_module.Config):
+        model_config = SettingsConfigDict(toml_file=config_file)
+
+    with pytest.raises(ValidationError, match="local_file cannot be configured"):
+        FileConfig()
+
+
+def test_local_file_cannot_be_set_from_the_environment(monkeypatch) -> None:
+    monkeypatch.setenv("EZHPCY_LOCAL_FILE", '{"config_dir": "elsewhere"}')
+
+    with pytest.raises(ValidationError, match="local_file cannot be configured"):
+        config_module.Config()
 
 
 def test_config_singleton_applies_its_log_level() -> None:

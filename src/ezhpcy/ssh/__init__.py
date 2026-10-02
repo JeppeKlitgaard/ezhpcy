@@ -7,9 +7,8 @@ from pathlib import PurePosixPath
 
 import paramiko
 
-from ezhpcy.config import ConnectionInfo
 from ezhpcy.scheduler.base import RemoteProcess
-from ezhpcy.types import RemoteState
+from ezhpcy.types import ConnectionInfo, RemoteState
 
 logger = logging.getLogger(__name__)
 

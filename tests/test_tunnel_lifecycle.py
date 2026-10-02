@@ -112,8 +112,11 @@ def configured_client(tmp_path: Path) -> Config:
                 "runtime_dir": tmp_path / "runtime",
             },
             "profile": {
-                "base": ProfileConfig(
-                    host="login.example.com", user="alice", scheduler="LSF"
+                "base": ProfileConfig.model_validate(
+                    {
+                        "connection": {"host": "login.example.com", "user": "alice"},
+                        "scheduler": {"type": "LSF"},
+                    }
                 )
             },
         }

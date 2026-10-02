@@ -18,26 +18,20 @@ from ezhpcy.cli.common import (
     CoresOpt,
     ExclusiveOpt,
     GpusOpt,
-    InteractiveSubmissionCommandOpt,
-    JobMonitorIntervalOpt,
-    JobPollIntervalOpt,
     MemoryOpt,
     OptionalProfileArg,
-    ProfileContext,
     QueueOpt,
-    QueueTimeoutOpt,
-    SchedulerOpt,
-    StartupTimeoutOpt,
-    SubmissionModeOpt,
     TimeLimitOpt,
-    WorkerHeartbeatIntervalOpt,
-    WorkerHeartbeatTimeoutOpt,
-    with_profile_context,
+    resolve_profile_config,
+    with_connection,
+    with_resources,
+    with_scheduler,
+    with_timings,
 )
 from ezhpcy.cli.doctor import echo_include_directive
 from ezhpcy.cli.utils.bad_parameter import RichBadParameter
 from ezhpcy.cli.utils.ssh import InteractiveSSHClient
-from ezhpcy.config import ConnectionInfo, config
+from ezhpcy.config import config
 from ezhpcy.constants import (
     OPENSSH_MATCHSPEC,
     SSH_DIRECTORY_NAME,
@@ -80,26 +74,20 @@ from ezhpcy.tunnel.sshd import (
     retrying_sshd_script,
     sshd_config_arguments,
 )
-from ezhpcy.types import RemoteState, ResolvedConfig, SubmissionMode
+from ezhpcy.types import (
+    ConnectionInfo,
+    RemoteState,
+    ResolvedConfig,
+    ResourcesConfig,
+    SchedulerConfig,
+    SubmissionMode,
+    TimingsConfig,
+)
 from ezhpcy.utils import local_machine_id, ssh_connection_id
 
 _FIRST_DYNAMIC_PORT = 49152
 _LAST_DYNAMIC_PORT = 65535
 _DEFAULT_WORKER_PORT_RETRIES = 5
-_INTERACTIVE_SUBMISSION_RESOURCE_OPTIONS = {
-    "queue",
-    "cores",
-    "gpus",
-    "exclusive",
-    "time_limit",
-    "memory",
-}
-_LSF_INTERACTIVE_SUBMISSION_OPTIONS = {
-    "lsf_resource_reserve_per_task",
-    "lsf_application_profile",
-    "lsf_submission_environment",
-    "lsf_export_environment",
-}
 _SSH_BANNER_LIMIT = 255
 _LEASE_FILE_RETAIN_COUNT = 2
 logger = logging.getLogger(__name__)
@@ -698,7 +686,7 @@ def _resolve_ssh_host(
         )
     try:
         return WorkerHost.for_endpoint(
-            alias, user=resolved.user, host=str(resolved.host)
+            alias, user=resolved.connection.user, host=str(resolved.connection.host)
         )
     except ValueError as error:
         raise RichBadParameter(str(error), param_hint="--alias") from error
@@ -731,7 +719,7 @@ def _run_tunnel(
     machine_id = local_machine_id()
     with InteractiveSSHClient(
         conn_info,
-        password_prompt=profile.password_prompt,
+        password_prompt=conn_info.password_prompt,
     ) as ssh:
         ssh.interactive_connect()
         transport = ssh.get_transport()
@@ -772,23 +760,23 @@ def _run_tunnel(
                     ssh.run_login_shell,
                     ssh.start_login_shell,
                     ssh.run_login_shell_with_input,
-                    interactive_application_profile=(profile.lsf_application_profile),
+                    interactive_application_profile=profile.lsf.application_profile,
                     interactive_submission_command=(
-                        profile.interactive_submission_command
+                        profile.scheduler.interactive_submission_command
                     ),
                     interactive_submission_environment=(
-                        profile.lsf_submission_environment
+                        profile.lsf.submission_environment
                     ),
-                    interactive_export_environment=(profile.lsf_export_environment),
-                    resource_reserve_per_task=(profile.lsf_resource_reserve_per_task),
+                    interactive_export_environment=profile.lsf.export_environment,
+                    resource_reserve_per_task=profile.lsf.resource_reserve_per_task,
                 )
             case SchedulerType.PBS:
                 scheduler = PBSScheduler(
                     ssh.run_login_shell,
                     ssh.start_login_shell,
-                    command_directory=profile.pbs_command_directory,
+                    command_directory=profile.pbs.command_directory,
                     interactive_submission_command=(
-                        profile.interactive_submission_command
+                        profile.scheduler.interactive_submission_command
                     ),
                 )
             case _:
@@ -1124,25 +1112,24 @@ def _run_tunnel(
                 control.close()
 
 
-@with_profile_context
+@with_connection
+@with_scheduler
+@with_resources
+@with_timings
 def tunnel_cmd(
-    profile_context: ProfileContext,
+    connection: ConnectionInfo,
+    scheduler: SchedulerConfig,
+    resources: ResourcesConfig,
+    timings: TimingsConfig,
     profile: OptionalProfileArg = None,
-    scheduler_type: SchedulerOpt = None,
-    submission_mode: SubmissionModeOpt = None,
+    # Shared with `with_resources`, to tell resources given on the command line
+    # apart from configured ones.
     queue: QueueOpt = None,
     cores: CoresOpt = None,
     gpus: GpusOpt = None,
     exclusive: ExclusiveOpt = None,
     time_limit: TimeLimitOpt = None,
     memory: MemoryOpt = None,
-    queue_timeout_seconds: QueueTimeoutOpt = None,
-    startup_timeout_seconds: StartupTimeoutOpt = None,
-    job_poll_interval_seconds: JobPollIntervalOpt = None,
-    job_monitor_interval_seconds: JobMonitorIntervalOpt = None,
-    worker_heartbeat_interval_seconds: WorkerHeartbeatIntervalOpt = None,
-    worker_heartbeat_timeout_seconds: WorkerHeartbeatTimeoutOpt = None,
-    interactive_submission_command: InteractiveSubmissionCommandOpt = None,
     alias: AliasOpt = None,
     worker_port: Annotated[
         int | None,
@@ -1181,38 +1168,55 @@ def tunnel_cmd(
 ) -> None:
     """Allocate a compute node and expose its SSH service through a tunnel."""
     try:
-        resolved = profile_context.profile
-        if resolved.scheduler is None:
+        profile_config = resolve_profile_config(profile)
+        resolved = ResolvedConfig(
+            description=profile_config.description,
+            connection=connection,
+            scheduler=scheduler,
+            resources=resources,
+            timings=timings,
+            lsf=profile_config.lsf,
+            pbs=profile_config.pbs,
+        )
+        if scheduler.type is None:
             raise typer.BadParameter(
-                "scheduler must be set by --scheduler or the selected profile",
+                "scheduler.type must be set by --scheduler or the selected profile",
                 param_hint="--scheduler",
             )
-        if resolved.submission_mode is None:
+        if scheduler.submission_mode is None:
             raise typer.BadParameter(
-                "submission_mode must be set by --submission-mode or the selected profile",
+                "scheduler.submission_mode must be set by --submission-mode or the "
+                "selected profile",
                 param_hint="--submission-mode",
             )
         if (
-            resolved.submission_mode is SubmissionMode.BATCH
-            and resolved.interactive_submission_command is not None
+            scheduler.submission_mode is SubmissionMode.BATCH
+            and scheduler.interactive_submission_command is not None
         ):
             raise RichBadParameter(
-                "interactive_submission_command requires submission_mode = 'interactive'",
+                "scheduler.interactive_submission_command requires "
+                "scheduler.submission_mode = 'interactive'",
                 param_hint="interactive_submission_command",
             )
-        if resolved.interactive_submission_command is not None:
-            configured_submission_options = (
-                set(profile_context.configured_fields)
-                & _INTERACTIVE_SUBMISSION_RESOURCE_OPTIONS
-            )
-            if resolved.scheduler is SchedulerType.LSF:
-                configured_submission_options |= (
-                    set(profile_context.configured_fields)
-                    & _LSF_INTERACTIVE_SUBMISSION_OPTIONS
-                )
+        if scheduler.interactive_submission_command is not None:
+            submission_sections = ["resources"]
+            if scheduler.type is SchedulerType.LSF:
+                submission_sections.append("lsf")
+            configured_submission_options = {
+                f"{section}.{field}"
+                for section in submission_sections
+                for field in getattr(profile_config, section).model_fields_set
+            }
             directly_configured_submission_options = (
-                configured_submission_options
-                & set(profile_context.directly_configured_fields)
+                {
+                    f"{section}.{field}"
+                    for section in submission_sections
+                    for field in getattr(
+                        config.profile[profile], section
+                    ).model_fields_set
+                }
+                if profile is not None
+                else set()
             )
             cli_submission_options = {
                 f"[bold red]{option}[/bold red]=[bold blue]{value}[/bold blue]"
@@ -1228,16 +1232,16 @@ def tunnel_cmd(
             }
             conflicts = [
                 *(
-                    f"[bold blue]profile.{profile_context.name}[/bold blue].[bold red]{option}[/bold red]"
+                    f"[bold blue]profile.{profile}[/bold blue].[bold red]{option}[/bold red]"
                     for option in sorted(directly_configured_submission_options)
                 ),
                 *sorted(cli_submission_options),
             ]
             if conflicts:
                 raise RichBadParameter(
-                    "interactive_submission_command replaces the scheduler-generated "
-                    "request and cannot be combined with submission options: "
-                    + ", ".join(conflicts),
+                    "scheduler.interactive_submission_command replaces the "
+                    "scheduler-generated request and cannot be combined with "
+                    "submission options: " + ", ".join(conflicts),
                     param_hint="interactive_submission_command",
                 )
             inherited_submission_options = (
@@ -1246,12 +1250,10 @@ def tunnel_cmd(
             if inherited_submission_options:
                 logger.info(
                     "Ignoring inherited scheduler submission options for "
-                    "interactive_submission_command: %s",
+                    "scheduler.interactive_submission_command: %s",
                     ", ".join(sorted(inherited_submission_options)),
                 )
-        ssh_host = _resolve_ssh_host(
-            alias, profile_name=profile_context.name, resolved=resolved
-        )
+        ssh_host = _resolve_ssh_host(alias, profile_name=profile, resolved=resolved)
         written_profile_hosts = profile_hosts()
         try:
             write_profiles_config(written_profile_hosts)
@@ -1270,34 +1272,36 @@ def tunnel_cmd(
         else:
             auto_provision_enabled = config.auto_provision
         if not auto_provision_enabled:
-            _ensure_local_worker_credentials(profile_context.connection)
+            _ensure_local_worker_credentials(connection)
         worker_ports = (
             (worker_port,)
             if worker_port is not None
             else _select_worker_ports(worker_port_retries + 1)
         )
         _run_tunnel(
-            profile_name=profile_context.name,
+            profile_name=profile,
             profile=resolved,
             ssh_host=ssh_host,
             # A profile tunnel without user/host overrides renders exactly the
             # block profiles.conf already holds, so it needs no active file.
             ssh_host_in_profiles_config=ssh_host in written_profile_hosts,
-            conn_info=profile_context.connection,
-            scheduler_type=resolved.scheduler,
-            submission_mode=resolved.submission_mode,
-            queue=resolved.queue,
-            cores=resolved.cores,
-            gpus=resolved.gpus,
-            exclusive=resolved.exclusive,
-            time_limit=resolved.time_limit_delta,
-            memory_bytes=int(resolved.memory) if resolved.memory is not None else None,
-            queue_timeout_seconds=resolved.queue_timeout_seconds,
-            startup_timeout_seconds=resolved.worker_startup_timeout_seconds,
-            job_poll_interval_seconds=resolved.job_poll_interval_seconds,
-            job_monitor_interval_seconds=resolved.job_monitor_interval_seconds,
-            heartbeat_interval_seconds=(resolved.worker_heartbeat_interval_seconds),
-            heartbeat_timeout_seconds=resolved.worker_heartbeat_timeout_seconds,
+            conn_info=connection,
+            scheduler_type=scheduler.type,
+            submission_mode=scheduler.submission_mode,
+            queue=resources.queue,
+            cores=resources.cores,
+            gpus=resources.gpus,
+            exclusive=resources.exclusive,
+            time_limit=resources.time_limit_delta,
+            memory_bytes=(
+                int(resources.memory) if resources.memory is not None else None
+            ),
+            queue_timeout_seconds=timings.queue_timeout_seconds,
+            startup_timeout_seconds=timings.worker_startup_timeout_seconds,
+            job_poll_interval_seconds=timings.job_poll_interval_seconds,
+            job_monitor_interval_seconds=timings.job_monitor_interval_seconds,
+            heartbeat_interval_seconds=timings.worker_heartbeat_interval_seconds,
+            heartbeat_timeout_seconds=timings.worker_heartbeat_timeout_seconds,
             worker_ports=worker_ports,
             auto_provision=auto_provision_enabled,
         )

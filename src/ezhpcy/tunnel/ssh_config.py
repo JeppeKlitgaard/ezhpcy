@@ -126,8 +126,10 @@ def profile_hosts(source: Config = config) -> list[WorkerHost]:
     """Return a Host for every profile that defines both a user and a host."""
     hosts = []
     for name in sorted(source.profile):
-        resolved = source.resolve_profile(name, validate_password_source=False)
-        if resolved.user is None or resolved.host is None:
+        connection = source.resolve_profile(
+            name, validate_password_source=False
+        ).connection
+        if connection.user is None or connection.host is None:
             logger.debug(
                 "Not generating an SSH host for profile %r: no user/host.", name
             )
@@ -135,7 +137,7 @@ def profile_hosts(source: Config = config) -> list[WorkerHost]:
         try:
             hosts.append(
                 WorkerHost.for_endpoint(
-                    name, user=resolved.user, host=str(resolved.host)
+                    name, user=connection.user, host=str(connection.host)
                 )
             )
         except ValueError as error:

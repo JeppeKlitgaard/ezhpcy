@@ -4,18 +4,16 @@ import typer
 from rich.prompt import Confirm
 
 from ezhpcy import console
-from ezhpcy.cli.common import (
-    ProfileContext,
-    with_profile_context,
-)
+from ezhpcy.cli.common import with_connection
 from ezhpcy.cli.utils.ssh import InteractiveSSHClient
 from ezhpcy.provision_host import provision_worker_infrastructure
+from ezhpcy.types import ConnectionInfo
 from ezhpcy.utils import local_machine_id
 
 
-@with_profile_context
+@with_connection
 def provision_cmd(
-    profile_context: ProfileContext,
+    connection: ConnectionInfo,
     yes: Annotated[
         bool,
         typer.Option(
@@ -26,10 +24,7 @@ def provision_cmd(
     ] = False,
 ) -> None:
     """Idempotently provision worker infrastructure on the remote HPC host."""
-    ssh = InteractiveSSHClient(
-        profile_context.connection,
-        password_prompt=profile_context.profile.password_prompt,
-    )
+    ssh = InteractiveSSHClient(connection, password_prompt=connection.password_prompt)
     ssh.interactive_connect()
     remote_state = ssh.get_remote_state()
     remote_root = remote_state.package_cache_dir()
@@ -44,9 +39,9 @@ def provision_cmd(
         console.print("[bold yellow]Aborted[/bold yellow]: provisioning cancelled.")
         raise typer.Exit(code=1)
 
-    remote_username = profile_context.connection.user
+    remote_username = connection.user
     assert remote_username is not None
-    remote_host = str(profile_context.connection.host)
+    remote_host = str(connection.host)
     provision_worker_infrastructure(
         ssh,
         remote_state,

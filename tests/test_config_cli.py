@@ -4,17 +4,15 @@ from pathlib import Path
 from types import ModuleType
 
 import pytest
-from typer.testing import CliRunner
 
-from ezhpcy.cli import app, list_profiles as config_list_profiles
+from ezhpcy.cli import list_profiles as config_list_profiles
 from ezhpcy.cli.config import (
     edit as config_edit,
     load as config_load,
 )
 from ezhpcy.config import Config
 from ezhpcy.types import SubmissionMode
-
-runner = CliRunner()
+from tests.support.cli import invoke
 
 
 def use_config_file(
@@ -76,9 +74,9 @@ def test_config_edit_creates_config_file_and_waits_for_editor(
     arguments = ["config", "edit"]
     if editor_argument is not None:
         arguments.append(editor_argument)
-    result = runner.invoke(app, arguments)
+    result = invoke(arguments)
 
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == 0, result
     assert config_file.is_file()
     assert runs == [[expected_editor, str(config_file)]]
 
@@ -127,9 +125,9 @@ def test_config_edit_splits_editor_command(
     use_config_file(monkeypatch, config_edit, config_file)
     runs = record_editor_runs(monkeypatch, windows=windows, executables=executables)
 
-    result = runner.invoke(app, ["config", "edit", editor])
+    result = invoke(["config", "edit", editor])
 
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == 0, result
     assert runs == [[*expected_arguments, str(config_file)]]
 
 
@@ -140,9 +138,9 @@ def test_config_edit_does_not_interpret_editor_metacharacters(
     use_config_file(monkeypatch, config_edit, config_file)
     runs = record_editor_runs(monkeypatch, windows=False)
 
-    result = runner.invoke(app, ["config", "edit", "code;echo INJECTED"])
+    result = invoke(["config", "edit", "code;echo INJECTED"])
 
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == 0, result
     assert runs == [["code;echo", "INJECTED", str(config_file)]]
 
 
@@ -155,10 +153,10 @@ def test_config_edit_refuses_metacharacters_for_batch_file_editor(
         monkeypatch, windows=True, executables={"code": r"C:\VS Code\bin\code.cmd"}
     )
 
-    result = runner.invoke(app, ["config", "edit", "code"])
+    result = invoke(["config", "edit", "code"])
 
     assert result.exit_code == 2
-    assert "cannot safely be given" in result.output
+    assert "cannot safely be given" in result.stderr
     assert runs == []
 
 
@@ -169,10 +167,10 @@ def test_config_edit_rejects_invalid_editor_command(
     use_config_file(monkeypatch, config_edit, tmp_path / "ezhpcy.toml")
     runs = record_editor_runs(monkeypatch, windows=False)
 
-    result = runner.invoke(app, ["config", "edit", editor])
+    result = invoke(["config", "edit", editor])
 
     assert result.exit_code == 2
-    assert "Invalid editor command" in result.output
+    assert "Invalid editor command" in result.stderr
     assert runs == []
 
 
@@ -182,10 +180,10 @@ def test_config_edit_reports_editor_failure(
     use_config_file(monkeypatch, config_edit, tmp_path / "ezhpcy.toml")
     record_editor_runs(monkeypatch, windows=False, returncode=3)
 
-    result = runner.invoke(app, ["config", "edit", "vi"])
+    result = invoke(["config", "edit", "vi"])
 
     assert result.exit_code == 1
-    assert "editor exited with status 3" in result.output
+    assert "editor exited with status 3" in result.stdout
 
 
 def test_config_edit_reports_missing_editor(
@@ -199,18 +197,18 @@ def test_config_edit_reports_missing_editor(
 
     monkeypatch.setattr(config_edit.subprocess, "run", missing)
 
-    result = runner.invoke(app, ["config", "edit", "no-such-editor"])
+    result = invoke(["config", "edit", "no-such-editor"])
 
     assert result.exit_code == 2
-    assert "Could not open configuration file" in result.output
+    assert "Could not open configuration file" in result.stderr
 
 
 def test_config_edit_is_listed_in_help() -> None:
-    result = runner.invoke(app, ["config", "--help"])
+    result = invoke(["config", "--help"])
 
-    assert result.exit_code == 0, result.output
-    assert "edit" in result.output
-    assert "load" in result.output
+    assert result.exit_code == 0, result
+    assert "edit" in result.stdout
+    assert "load" in result.stdout
 
 
 def test_list_profiles_shows_local_profile_metadata(
@@ -229,10 +227,10 @@ def test_list_profiles_shows_local_profile_metadata(
     )
     monkeypatch.setattr(config_list_profiles, "config", config)
 
-    result = runner.invoke(app, ["list-profiles"])
+    result = invoke(["list-profiles"])
 
-    assert result.exit_code == 0, result.output
-    lines = [" ".join(line.split()) for line in result.output.splitlines()]
+    assert result.exit_code == 0, result
+    lines = [" ".join(line.split()) for line in result.stdout.splitlines()]
     assert lines == [
         "Profile Description",
         "gpu GPU jobs",
@@ -247,10 +245,10 @@ def test_config_load_creates_dtu_config_case_insensitively(
     config_file = tmp_path / "missing" / "ezhpcy.toml"
     use_config_file(monkeypatch, config_load, config_file)
 
-    result = runner.invoke(app, ["config", "load", preset, "--user", "alice"])
+    result = invoke(["config", "load", preset, "--user", "alice"])
 
-    assert result.exit_code == 0, result.output
-    assert "loaded the DTU preset" in result.output
+    assert result.exit_code == 0, result
+    assert "loaded the DTU preset" in result.stdout
     contents = config_file.read_text(encoding="utf-8")
     assert contents.startswith("### DTU HPC configuration for EzHPCy.\n")
     loaded = tomllib.loads(contents)
@@ -282,16 +280,14 @@ def test_config_load_existing_file_defaults_to_no(
     )
     use_config_file(monkeypatch, config_load, config_file)
 
-    result = runner.invoke(
-        app, ["config", "load", "dtu", "--user", "alice"], input="\n"
-    )
+    result = invoke(["config", "load", "dtu", "--user", "alice"], input="\n")
 
     assert result.exit_code == 1
-    assert "Warning" in result.output
-    assert '-connection.host = "old.example.com"' in result.output
-    assert '+connection.host = "login.hpc.dtu.dk"' in result.output
-    assert "[y/n] (n)" in result.output
-    assert "configuration unchanged" in result.output
+    assert "Warning" in result.stdout
+    assert '-connection.host = "old.example.com"' in result.stdout
+    assert '+connection.host = "login.hpc.dtu.dk"' in result.stdout
+    assert "[y/n] (n)" in result.stdout
+    assert "configuration unchanged" in result.stdout
     assert config_file.read_text(encoding="utf-8") == (
         '[profile.old]\nconnection.host = "old.example.com"\n'
     )
@@ -307,28 +303,29 @@ def test_config_load_yes_overwrites_existing_file(
     )
     use_config_file(monkeypatch, config_load, config_file)
 
-    result = runner.invoke(app, ["config", "load", "DTU", "--user", "alice", "--yes"])
+    result = invoke(["config", "load", "DTU", "--user", "alice", "--yes"])
 
-    assert result.exit_code == 0, result.output
-    assert "Warning" in result.output
-    assert "Overwrite the existing configuration?" not in result.output
+    assert result.exit_code == 0, result
+    assert "Warning" in result.stdout
+    assert "Overwrite the existing configuration?" not in result.stdout
+    assert "Overwrite the existing configuration?" not in result.stderr
     assert 'host = "login.hpc.dtu.dk"' in config_file.read_text(encoding="utf-8")
 
 
 def test_config_load_rejects_unknown_preset() -> None:
-    result = runner.invoke(app, ["config", "load", "unknown"])
+    result = invoke(["config", "load", "unknown"])
 
     assert result.exit_code == 2
-    output = result.output.casefold()
+    output = result.stderr.casefold()
     assert "invalid value for 'preset'" in output
     assert "'unknown' is not one of" in output
     assert "'dtu'" in output
 
 
 def test_config_load_help_lists_available_presets() -> None:
-    result = runner.invoke(app, ["config", "load", "--help"])
+    result = invoke(["config", "load", "--help"])
 
     assert result.exit_code == 0
-    output = result.output.casefold()
+    output = result.stdout.casefold()
     assert "{preset}:<dtu|generic>" in output
     assert "dtu" in output

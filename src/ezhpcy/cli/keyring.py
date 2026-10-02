@@ -1,20 +1,16 @@
 import keyring
 import typer
+from cyclopts import App
 from keyring.errors import KeyringError
 from rich.prompt import Prompt
 
-from ezhpcy.cli.common import (
-    KEYRING_SERVICE_NAME,
-    with_direct_connection_options,
-)
-from ezhpcy.cli.utils.alias import AliasGroup
+from ezhpcy.cli._options import KEYRING_SERVICE_NAME
+from ezhpcy.cli._resolve import with_direct_connection_options
 from ezhpcy.console import console
 from ezhpcy.types import ConnectionInfo
 
-keyring_app = typer.Typer(
-    cls=AliasGroup,
-    help="Manage login-node passwords in the system keyring.",
-    no_args_is_help=True,
+keyring_app = App(
+    name="keyring", help="Manage login-node passwords in the system keyring."
 )
 
 
@@ -42,4 +38,4 @@ def set_cmd(conn_info: ConnectionInfo) -> None:
     console.print(f"Stored password in the system keyring for {account}.")
 
 
-keyring_app.command(name="set", help="Store a login-node password.")(set_cmd)
+keyring_app.command(set_cmd, name="set", help="Store a login-node password.")

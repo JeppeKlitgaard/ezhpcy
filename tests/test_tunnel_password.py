@@ -1,10 +1,11 @@
 import os
+import re
 from pathlib import Path
 
 import pytest
 from keyring.errors import KeyringError
 
-from ezhpcy.cli import common
+from ezhpcy.cli import _options, _password, _resolve
 from ezhpcy.cli.utils.bad_parameter import RichBadParameter
 from ezhpcy.scheduler.types import SchedulerType
 from ezhpcy.types import ProfileConfig
@@ -21,7 +22,7 @@ def resolve_password(
     config_password_fd: int | None = None,
     config_password_keyring: bool = False,
 ) -> str | None:
-    return common.resolve_password(
+    return _password.resolve_password(
         password=password,
         password_file=password_file,
         password_fd=password_fd,
@@ -37,16 +38,16 @@ def resolve_password(
 @pytest.fixture(autouse=True)
 def without_default_password(monkeypatch: pytest.MonkeyPatch) -> None:
     for environment_variable in (
-        common.HOST_ENV_VAR,
-        common.USER_ENV_VAR,
-        common.PASSWORD_ENV_VAR,
-        common.PASSWORD_FILE_ENV_VAR,
-        common.PASSWORD_FD_ENV_VAR,
-        common.PASSWORD_KEYRING_ENV_VAR,
+        _options.HOST_ENV_VAR,
+        _options.USER_ENV_VAR,
+        _options.PASSWORD_ENV_VAR,
+        _options.PASSWORD_FILE_ENV_VAR,
+        _options.PASSWORD_FD_ENV_VAR,
+        _options.PASSWORD_KEYRING_ENV_VAR,
     ):
         monkeypatch.delenv(environment_variable, raising=False)
     monkeypatch.setattr(
-        common.config,
+        _resolve.config,
         "profile",
         {
             "base": ProfileConfig.model_validate(
@@ -90,7 +91,9 @@ def test_password_without_an_explicit_or_profile_source_is_none() -> None:
 def test_profile_password_keyring_can_read_from_keyring(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(common.keyring, "get_password", lambda *_args: "from-keyring")
+    monkeypatch.setattr(
+        _password.keyring, "get_password", lambda *_args: "from-keyring"
+    )
 
     assert resolve_password(config_password_keyring=True) == "from-keyring"
 
@@ -122,16 +125,16 @@ def test_password_keyring_uses_service_and_user_at_host(
         calls.append((service, account))
         return "from-keyring"
 
-    monkeypatch.setattr(common.keyring, "get_password", get_password)
+    monkeypatch.setattr(_password.keyring, "get_password", get_password)
 
     assert resolve_password(password_keyring=True) == "from-keyring"
-    assert calls == [(common.KEYRING_SERVICE_NAME, "alice@login.example.com")]
+    assert calls == [(_options.KEYRING_SERVICE_NAME, "alice@login.example.com")]
 
 
 def test_missing_keyring_password_is_an_actionable_parameter_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(common.keyring, "get_password", lambda *_args: None)
+    monkeypatch.setattr(_password.keyring, "get_password", lambda *_args: None)
 
     with pytest.raises(RichBadParameter, match="no password was found"):
         resolve_password(password_keyring=True)
@@ -143,7 +146,7 @@ def test_keyring_backend_error_is_an_actionable_parameter_error(
     def fail(*_args: str) -> None:
         raise KeyringError("backend unavailable")
 
-    monkeypatch.setattr(common.keyring, "get_password", fail)
+    monkeypatch.setattr(_password.keyring, "get_password", fail)
 
     with pytest.raises(RichBadParameter, match="backend unavailable"):
         resolve_password(password_keyring=True)
@@ -158,9 +161,9 @@ def test_explicit_password_sources_are_mutually_exclusive(tmp_path: Path) -> Non
 
 
 def test_sub_configs_can_be_resolved_entirely_from_cli_values() -> None:
-    connection = common.connection_from_cli(user="alice", host="login.example.com")
-    scheduler = common.scheduler_from_cli(scheduler_type=SchedulerType.LSF)
-    resources = common.resources_from_cli(queue="gpu", cores=8, gpus=1)
+    connection = _resolve.connection_from_cli(user="alice", host="login.example.com")
+    scheduler = _resolve.scheduler_from_cli(scheduler_type=SchedulerType.LSF)
+    resources = _resolve.resources_from_cli(queue="gpu", cores=8, gpus=1)
 
     assert connection.user == "alice"
     assert str(connection.host) == "login.example.com"
@@ -174,7 +177,7 @@ def test_cli_values_override_only_the_given_sub_config_fields(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        common.config,
+        _resolve.config,
         "profile",
         {
             "base": ProfileConfig.model_validate(
@@ -191,8 +194,8 @@ def test_cli_values_override_only_the_given_sub_config_fields(
         },
     )
 
-    connection = common.connection_from_cli(profile="base", user="bob")
-    resources = common.resources_from_cli(profile="base", cores=8)
+    connection = _resolve.connection_from_cli(profile="base", user="bob")
+    resources = _resolve.resources_from_cli(profile="base", cores=8)
 
     assert (connection.user, str(connection.host)) == ("bob", "login.example.com")
     assert connection.password_prompt is False
@@ -210,14 +213,14 @@ def test_connection_only_commands_reject_job_options(
     result = invoke([command, "base", *arguments])
 
     assert result.exit_code == 2
-    assert "No such option" in result.stderr
+    assert "Unknown option" in result.stderr
 
 
 def test_invalid_profile_password_sources_are_reported_as_a_cli_parameter_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        common.config,
+        _resolve.config,
         "profile",
         {
             "base": ProfileConfig.model_validate(
@@ -234,7 +237,7 @@ def test_invalid_profile_password_sources_are_reported_as_a_cli_parameter_error(
     )
 
     with pytest.raises(RichBadParameter):
-        common.connection_from_cli(profile="base")
+        _resolve.connection_from_cli(profile="base")
 
     result = invoke(
         ["tunnel", "base"],
@@ -242,10 +245,13 @@ def test_invalid_profile_password_sources_are_reported_as_a_cli_parameter_error(
     )
 
     assert result.exit_code == 2
-    assert "Invalid value:" in result.stderr
+    # Each setting is one styled run: Rich's highlighter didn't split it up.
+    assert "\x1b[1;31mconnection.password_file\x1b[0m" in result.stderr
+    stderr = re.sub(r"\x1b\[[0-9;]*m", "", result.stderr)
+    assert "Invalid value:" in stderr
     assert "Invalid value for" not in result.stdout
-    assert "Invalid value for" not in result.stderr
-    assert "password_file, connection.password_keyring" in result.stderr
+    assert "Invalid value for" not in stderr
+    assert "password_file, connection.password_keyring" in stderr
 
 
 def test_connection_options_read_password_from_environment(
@@ -260,9 +266,9 @@ def test_connection_options_read_password_from_environment(
     result = invoke(
         ["keyring", "set"],
         env={
-            common.HOST_ENV_VAR: "login.example.com",
-            common.USER_ENV_VAR: "alice",
-            common.PASSWORD_ENV_VAR: "from-environment",
+            _options.HOST_ENV_VAR: "login.example.com",
+            _options.USER_ENV_VAR: "alice",
+            _options.PASSWORD_ENV_VAR: "from-environment",
         },
     )
 
@@ -284,9 +290,9 @@ def test_connection_options_read_password_file_from_environment(
     result = invoke(
         ["keyring", "set"],
         env={
-            common.HOST_ENV_VAR: "login.example.com",
-            common.USER_ENV_VAR: "alice",
-            common.PASSWORD_FILE_ENV_VAR: str(password_file),
+            _options.HOST_ENV_VAR: "login.example.com",
+            _options.USER_ENV_VAR: "alice",
+            _options.PASSWORD_FILE_ENV_VAR: str(password_file),
         },
     )
 
@@ -311,9 +317,9 @@ def test_connection_options_read_password_fd_from_environment(
         result = invoke(
             ["keyring", "set"],
             env={
-                common.HOST_ENV_VAR: "login.example.com",
-                common.USER_ENV_VAR: "alice",
-                common.PASSWORD_FD_ENV_VAR: str(read_fd),
+                _options.HOST_ENV_VAR: "login.example.com",
+                _options.USER_ENV_VAR: "alice",
+                _options.PASSWORD_FD_ENV_VAR: str(read_fd),
             },
         )
     finally:
@@ -329,7 +335,9 @@ def test_connection_options_read_password_keyring_from_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[tuple[str, str, str]] = []
-    monkeypatch.setattr(common.keyring, "get_password", lambda *_args: "from-keyring")
+    monkeypatch.setattr(
+        _password.keyring, "get_password", lambda *_args: "from-keyring"
+    )
     monkeypatch.setattr(
         "ezhpcy.cli.keyring.keyring.set_password",
         lambda service, account, password: calls.append((service, account, password)),
@@ -338,9 +346,9 @@ def test_connection_options_read_password_keyring_from_environment(
     result = invoke(
         ["keyring", "set"],
         env={
-            common.HOST_ENV_VAR: "login.example.com",
-            common.USER_ENV_VAR: "alice",
-            common.PASSWORD_KEYRING_ENV_VAR: "true",
+            _options.HOST_ENV_VAR: "login.example.com",
+            _options.USER_ENV_VAR: "alice",
+            _options.PASSWORD_KEYRING_ENV_VAR: "true",
         },
     )
 

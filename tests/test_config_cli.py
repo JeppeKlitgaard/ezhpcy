@@ -317,9 +317,17 @@ def test_config_load_rejects_unknown_preset() -> None:
 
     assert result.exit_code == 2
     output = result.stderr.casefold()
-    assert "invalid value for 'preset'" in output
-    assert "'unknown' is not one of" in output
-    assert "'dtu'" in output
+    assert 'invalid value "unknown" for preset' in output
+    assert '"dtu"' in output
+
+
+def test_config_load_without_a_preset_lists_the_presets() -> None:
+    result = invoke(["config", "load"])
+
+    assert result.exit_code == 2
+    output = result.stderr.casefold()
+    assert "preset requires an argument" in output
+    assert 'choose from: "dtu", "generic"' in output
 
 
 def test_config_load_help_lists_available_presets() -> None:
@@ -327,5 +335,5 @@ def test_config_load_help_lists_available_presets() -> None:
 
     assert result.exit_code == 0
     output = result.stdout.casefold()
-    assert "{preset}:<dtu|generic>" in output
+    assert "[choices: dtu, generic]" in output
     assert "dtu" in output

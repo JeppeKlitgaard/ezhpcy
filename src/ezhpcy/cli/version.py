@@ -2,14 +2,16 @@ import json as json_lib
 from typing import Annotated
 
 import typer
+from cyclopts import Parameter
 
 from ezhpcy.utils import ezhpcy_version
 
 
 def version_cmd(
+    *,
     json: Annotated[
         bool,
-        typer.Option("--json", help="Output version information as JSON."),
+        Parameter(name="--json", help="Output version information as JSON."),
     ] = False,
 ) -> None:
     """Show the EzHPCy version."""

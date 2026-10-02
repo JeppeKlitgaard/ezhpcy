@@ -1,10 +1,12 @@
 from typing import Annotated
 
 import typer
+from cyclopts import Parameter
 from rich.prompt import Confirm
 
 from ezhpcy import console
-from ezhpcy.cli.common import with_connection
+from ezhpcy.cli._options import OptionalProfileArg
+from ezhpcy.cli._resolve import with_connection
 from ezhpcy.cli.utils.ssh import InteractiveSSHClient
 from ezhpcy.provision_host import provision_worker_infrastructure
 from ezhpcy.types import ConnectionInfo
@@ -13,12 +15,14 @@ from ezhpcy.utils import local_machine_id
 
 @with_connection
 def provision_cmd(
+    profile: OptionalProfileArg = None,
+    /,
+    *,
     connection: ConnectionInfo,
     yes: Annotated[
         bool,
-        typer.Option(
-            "--yes",
-            "-y",
+        Parameter(
+            name=["--yes", "-y"],
             help="Proceed with provisioning without asking for confirmation.",
         ),
     ] = False,

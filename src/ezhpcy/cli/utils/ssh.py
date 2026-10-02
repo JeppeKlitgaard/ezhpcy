@@ -1,14 +1,14 @@
 import logging
 import threading
 import time
-from binascii import hexlify
 from collections.abc import Callable
+from pathlib import Path
 
 import paramiko
-from paramiko.common import DEBUG
 from rich.prompt import Confirm, Prompt
 
 from ezhpcy import console
+from ezhpcy.config import config
 from ezhpcy.ssh import SSHClient
 from ezhpcy.types import ConnectionInfo
 
@@ -26,44 +26,65 @@ ConnectionLostHandler = Callable[[paramiko.SSHException], None]
 class PromptMissingHostKeyPolicy(paramiko.MissingHostKeyPolicy):
     """
     Prompts the user whether to accept or reject a missing host key.
-    If the user accepts, the key is added to the known hosts file.
+
+    An accepted key is saved to EzHPCy's own known hosts file rather than
+    ~/.ssh/known_hosts, because Paramiko rewrites the whole file on save and
+    drops lines it cannot parse, such as OpenSSH's @cert-authority markers.
     """
+
+    def __init__(self, known_hosts_file: Path) -> None:
+        self.known_hosts_file = known_hosts_file
 
     def missing_host_key(self, client, hostname, key):
         console.print(
-            f"[bold yellow]Warning[/bold yellow]: The host key for [bold purple]{hostname}[/bold purple] is not found in the known hosts file."
+            f"[bold yellow]Warning[/bold yellow]: The host key for [bold purple]{hostname}[/bold purple] is not in any known hosts file."
         )
         console.print(f"Key type: {key.get_name()}")
-        console.print(f"Key fingerprint: {key.get_fingerprint().hex()}")
+        console.print(f"Key fingerprint: {key.fingerprint}")
         user_accepts = Confirm.ask(
             "Do you want to accept this host key?: ",
             console=console,
-            default="n",
+            default=False,
             case_sensitive=False,
         )
-        if user_accepts:
-            client._host_keys.add(hostname, key.get_name(), key)
-
-            if client._host_keys_filename is not None:
-                client.save_host_keys(client._host_keys_filename)
-                client._log(
-                    DEBUG,
-                    f"Adding {key.get_name()} host key for {hostname}: {hexlify(key.get_fingerprint())}",
-                )
-            console.print(f"Host key for {hostname} added to known hosts.")
-        else:
+        if not user_accepts:
             raise paramiko.SSHException(f"Host key for {hostname} rejected by user.")
+
+        client.get_host_keys().add(hostname, key.get_name(), key)
+        try:
+            self.known_hosts_file.parent.mkdir(parents=True, exist_ok=True)
+            client.save_host_keys(str(self.known_hosts_file))
+        except OSError as error:
+            # The key is still trusted for this connection; it is only not
+            # remembered, so the next connection prompts again.
+            logger.warning(
+                "Could not save the host key for %s to %s: %s",
+                hostname,
+                self.known_hosts_file,
+                error,
+            )
+            return
+        logger.debug(
+            "Saved %s host key for %s to %s: %s",
+            key.get_name(),
+            hostname,
+            self.known_hosts_file,
+            key.fingerprint,
+        )
+        console.print(f"Host key for {hostname} saved to {self.known_hosts_file}.")
 
 
 class InteractiveSSHClient(SSHClient):
     conn_info: ConnectionInfo
     password_prompt: bool
+    known_hosts_file: Path
 
     def __init__(
         self,
         conn_info: ConnectionInfo,
         *,
         password_prompt: bool = True,
+        known_hosts_file: Path | None = None,
     ):
         super().__init__(conn_info=conn_info)
         self.conn_info = conn_info
@@ -71,8 +92,17 @@ class InteractiveSSHClient(SSHClient):
         self._server_alive_stop = threading.Event()
         self._connection_lost_handler: ConnectionLostHandler | None = None
 
+        self.known_hosts_file = (
+            known_hosts_file or config.local_file.login_known_hosts_file
+        )
+        # System keys are only read. Keys from EzHPCy's own file are loaded with
+        # load_host_keys, so save_host_keys merges in concurrent writes first.
         self.load_system_host_keys()
-        self.set_missing_host_key_policy(PromptMissingHostKeyPolicy())
+        if self.known_hosts_file.is_file():
+            self.load_host_keys(str(self.known_hosts_file))
+        self.set_missing_host_key_policy(
+            PromptMissingHostKeyPolicy(self.known_hosts_file)
+        )
 
     @staticmethod
     def _can_retry_with_password(error: paramiko.AuthenticationException) -> bool:

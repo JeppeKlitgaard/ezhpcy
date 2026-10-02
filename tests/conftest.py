@@ -15,6 +15,15 @@ def isolated_runtime_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Pat
 
 
 @pytest.fixture(autouse=True)
+def isolated_config_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """Keep worker keys and accepted login-node host keys out of the real
+    configuration directory."""
+    config_dir = tmp_path / "config"
+    monkeypatch.setattr(config.local_file, "config_dir", config_dir)
+    return config_dir
+
+
+@pytest.fixture(autouse=True)
 def without_connection_option_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

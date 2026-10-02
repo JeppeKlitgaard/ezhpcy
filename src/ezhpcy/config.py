@@ -14,7 +14,7 @@ from pydantic_settings import (
 )
 from rich.text import Text
 
-from ezhpcy.constants import PACKAGE_NAME, SSH_DIRECTORY_NAME
+from ezhpcy.constants import LOGIN_KNOWN_HOSTS_NAME, PACKAGE_NAME, SSH_DIRECTORY_NAME
 from ezhpcy.logging import configure_logging
 from ezhpcy.types import (
     PASSWORD_SOURCE_FIELDS,
@@ -55,6 +55,11 @@ class LocalFileConfig(BaseModel):
     data_dir: Path = _DIRS.user_data_path
     runtime_dir: Path = _DIRS.user_runtime_path
     config_file: Path = Field(default_factory=_default_config_file)
+
+    @property
+    def login_known_hosts_file(self) -> Path:
+        """Return where login-node host keys accepted at EzHPCy's prompt are kept."""
+        return self.config_dir / LOGIN_KNOWN_HOSTS_NAME
 
     def ssh_dir(self, machine_id: str, *, user: str, host: str) -> Path:
         """Return the SSH credential directory for one machine and endpoint."""

@@ -41,17 +41,28 @@ from ezhpcy.types import (
     ResourcesConfig,
     SchedulerConfig,
     SubmissionMode,
+    TimingsConfig,
 )
 
 _MEBIBYTE = 1024**2
 
 
-def lsf_profile() -> ResolvedConfig:
+# Short timeouts, so a broken stub fails a test quickly instead of hanging it.
+_TIMINGS = TimingsConfig(queue_timeout_seconds=10, worker_startup_timeout_seconds=10)
+
+
+def lsf_profile(
+    *,
+    submission_mode: SubmissionMode = SubmissionMode.INTERACTIVE,
+    resources: ResourcesConfig | None = None,
+) -> ResolvedConfig:
     return ResolvedConfig(
         connection=ConnectionInfo(host="login.example.com", user="alice"),
         scheduler=SchedulerConfig(
-            type=SchedulerType.LSF, submission_mode=SubmissionMode.INTERACTIVE
+            type=SchedulerType.LSF, submission_mode=submission_mode
         ),
+        resources=resources or ResourcesConfig(),
+        timings=_TIMINGS,
         lsf=LSFConfig(
             resource_reserve_per_task=True,
             application_profile="qrsh",
@@ -68,6 +79,7 @@ def pbs_profile() -> ResolvedConfig:
             type=SchedulerType.PBS, submission_mode=SubmissionMode.INTERACTIVE
         ),
         resources=ResourcesConfig(queue="workq"),
+        timings=_TIMINGS,
         pbs=PBSConfig(command_directory=PurePosixPath("/opt/pbspro/bin")),
     )
 
@@ -594,7 +606,16 @@ def test_tunnel_submits_worker_starts_server_and_cancels(
     ssh = StubSSH(transport)
     scheduler = StubScheduler([snapshot(JobState.RUNNING, "RUN", "node42")])
     tunnels: list[StubTunnelServer] = []
-    configuration = lsf_profile()
+    configuration = lsf_profile(
+        resources=ResourcesConfig(
+            queue="normal",
+            cores=32,
+            gpus=2,
+            exclusive=True,
+            time_limit="1:30",
+            memory="2048MiB",
+        )
+    )
 
     def make_tunnel(*args, **kwargs) -> StubTunnelServer:
         tunnel = StubTunnelServer(*args, **kwargs)
@@ -634,26 +655,11 @@ def test_tunnel_submits_worker_starts_server_and_cancels(
         logger.isEnabledFor.return_value = False
         _run_tunnel(
             profile_name=None,
-            profile=configuration,
+            resolved=configuration,
             ssh_host=worker_host(),
             ssh_host_in_profiles_config=False,
-            conn_info=ConnectionInfo(user="alice", host="login.example.com"),
-            scheduler_type=SchedulerType.LSF,
-            queue="normal",
-            cores=32,
-            gpus=2,
-            exclusive=True,
-            time_limit=timedelta(minutes=90),
-            memory_bytes=2048 * _MEBIBYTE,
-            queue_timeout_seconds=10,
-            startup_timeout_seconds=10,
-            job_poll_interval_seconds=configuration.timings.job_poll_interval_seconds,
-            job_monitor_interval_seconds=(
-                configuration.timings.job_monitor_interval_seconds
-            ),
             worker_ports=(54321, 54322),
             auto_provision=True,
-            submission_mode=SubmissionMode.INTERACTIVE,
         )
 
     assert len(scheduler.submitted) == 1
@@ -763,24 +769,13 @@ def test_tunnel_cancels_job_when_worker_startup_fails() -> None:
     ):
         _run_tunnel(
             profile_name="base",
-            profile=lsf_profile(),
+            resolved=lsf_profile(
+                resources=ResourcesConfig(cores=4, time_limit="1:00", memory="1024MiB")
+            ),
             ssh_host=worker_host(),
             ssh_host_in_profiles_config=False,
-            conn_info=ConnectionInfo(user="alice", host="login.example.com"),
-            scheduler_type=SchedulerType.LSF,
-            queue=None,
-            cores=4,
-            gpus=0,
-            exclusive=False,
-            time_limit=timedelta(minutes=60),
-            memory_bytes=1024 * _MEBIBYTE,
-            queue_timeout_seconds=10,
-            startup_timeout_seconds=10,
-            job_poll_interval_seconds=2.5,
-            job_monitor_interval_seconds=60,
             worker_ports=(54321,),
             auto_provision=True,
-            submission_mode=SubmissionMode.INTERACTIVE,
         )
 
     assert scheduler.cancelled == ["42"]
@@ -828,24 +823,13 @@ def test_tunnel_stops_when_the_login_connection_is_lost() -> None:
     ):
         _run_tunnel(
             profile_name="base",
-            profile=lsf_profile(),
+            resolved=lsf_profile(
+                resources=ResourcesConfig(cores=4, time_limit="1:00", memory="1024MiB")
+            ),
             ssh_host=worker_host(),
             ssh_host_in_profiles_config=False,
-            conn_info=ConnectionInfo(user="alice", host="login.example.com"),
-            scheduler_type=SchedulerType.LSF,
-            queue=None,
-            cores=4,
-            gpus=0,
-            exclusive=False,
-            time_limit=timedelta(minutes=60),
-            memory_bytes=1024 * _MEBIBYTE,
-            queue_timeout_seconds=10,
-            startup_timeout_seconds=10,
-            job_poll_interval_seconds=2.5,
-            job_monitor_interval_seconds=60,
             worker_ports=(54321,),
             auto_provision=True,
-            submission_mode=SubmissionMode.INTERACTIVE,
         )
 
     assert tunnels[0].closed
@@ -882,24 +866,11 @@ def test_tunnel_uses_explicit_pbs_and_linuxsh_defaults() -> None:
     ):
         _run_tunnel(
             profile_name="pbs",
-            profile=pbs_profile(),
+            resolved=pbs_profile(),
             ssh_host=worker_host(),
             ssh_host_in_profiles_config=False,
-            conn_info=ConnectionInfo(user="alice", host="login.example.com"),
-            scheduler_type=SchedulerType.PBS,
-            queue="workq",
-            cores=1,
-            gpus=0,
-            exclusive=False,
-            time_limit=None,
-            memory_bytes=None,
-            queue_timeout_seconds=10,
-            startup_timeout_seconds=10,
-            job_poll_interval_seconds=2.5,
-            job_monitor_interval_seconds=60,
             worker_ports=(54321,),
             auto_provision=True,
-            submission_mode=SubmissionMode.INTERACTIVE,
         )
 
     assert scheduler.submitted[0].cores == 1
@@ -942,22 +913,14 @@ def test_tunnel_submits_batch_job_without_interactive_shell() -> None:
     ):
         _run_tunnel(
             profile_name="batch",
-            profile=lsf_profile(),
+            resolved=lsf_profile(
+                submission_mode=SubmissionMode.BATCH,
+                resources=ResourcesConfig(
+                    queue="gpul40s", cores=8, gpus=1, time_limit="1:00"
+                ),
+            ),
             ssh_host=worker_host(),
             ssh_host_in_profiles_config=False,
-            conn_info=ConnectionInfo(user="alice", host="login.example.com"),
-            scheduler_type=SchedulerType.LSF,
-            submission_mode=SubmissionMode.BATCH,
-            queue="gpul40s",
-            cores=8,
-            gpus=1,
-            exclusive=False,
-            time_limit=timedelta(hours=1),
-            memory_bytes=None,
-            queue_timeout_seconds=10,
-            startup_timeout_seconds=10,
-            job_poll_interval_seconds=2.5,
-            job_monitor_interval_seconds=60,
             worker_ports=(54321,),
             auto_provision=True,
         )
@@ -1041,18 +1004,14 @@ def test_tunnel_command_accepts_anonymous_cli_configuration(
 
     assert result.exit_code == 0, result.output
     assert captured["profile_name"] is None
-    assert captured["scheduler_type"] is SchedulerType.LSF
-    assert captured["queue"] == "gpu"
-    assert captured["cores"] == 8
-    assert captured["gpus"] == 1
-    assert captured["job_poll_interval_seconds"] == 2.5
-    assert captured["job_monitor_interval_seconds"] == 60
-    assert captured["conn_info"] == ConnectionInfo(
-        host="login.example.com", user="alice"
-    )
-    resolved = captured["profile"]
-    assert resolved.connection.user == "alice"
-    assert str(resolved.connection.host) == "login.example.com"
+    resolved = captured["resolved"]
+    assert resolved.scheduler.type is SchedulerType.LSF
+    assert resolved.resources.queue == "gpu"
+    assert resolved.resources.cores == 8
+    assert resolved.resources.gpus == 1
+    assert resolved.timings.job_poll_interval_seconds == 2.5
+    assert resolved.timings.job_monitor_interval_seconds == 60
+    assert resolved.connection == ConnectionInfo(host="login.example.com", user="alice")
 
 
 def test_tunnel_command_requires_submission_mode() -> None:
@@ -1099,7 +1058,7 @@ def test_tunnel_command_accepts_batch_submission_mode(
     )
 
     assert result.exit_code == 0, result.output
-    assert captured["submission_mode"] is SubmissionMode.BATCH
+    assert captured["resolved"].scheduler.submission_mode is SubmissionMode.BATCH
 
 
 def test_tunnel_command_rejects_interactive_wrapper_in_batch_mode() -> None:
@@ -1152,7 +1111,7 @@ def test_tunnel_command_accepts_cli_interactive_submission_command(
     )
 
     assert result.exit_code == 0, result.output
-    resolved = captured["profile"]
+    resolved = captured["resolved"]
     assert resolved.scheduler.interactive_submission_command == [
         "/lsf/local/bin/a100sh",
         "--constraint",
@@ -1276,23 +1235,24 @@ def test_tunnel_command_resolves_profile_and_applies_cli_overrides(
 
     assert result.exit_code == 0, result.output
     assert captured["profile_name"] == "gpu"
-    assert captured["scheduler_type"] is SchedulerType.LSF
-    assert captured["queue"] == "gpu"
-    assert captured["cores"] == 12
-    assert captured["gpus"] == 1
-    assert captured["exclusive"] is False
-    assert captured["memory_bytes"] == 64_000_000_000
-    assert captured["time_limit"] == timedelta(hours=1)
-    assert captured["conn_info"] == ConnectionInfo(
+    resolved = captured["resolved"]
+    assert resolved.scheduler.type is SchedulerType.LSF
+    assert resolved.resources.queue == "gpu"
+    assert resolved.resources.cores == 12
+    assert resolved.resources.gpus == 1
+    assert resolved.resources.exclusive is False
+    assert resolved.resources.memory_bytes == 64_000_000_000
+    assert resolved.resources.time_limit_delta == timedelta(hours=1)
+    assert resolved.connection == ConnectionInfo(
         host="login.example.com",
         user="alice",
         ssh_keepalive_interval_seconds=75,
     )
     assert captured["auto_provision"] is True
-    assert captured["heartbeat_interval_seconds"] == 12
-    assert captured["heartbeat_timeout_seconds"] == 30
-    assert captured["job_poll_interval_seconds"] == 1.5
-    assert captured["job_monitor_interval_seconds"] == 45
+    assert resolved.timings.worker_heartbeat_interval_seconds == 12
+    assert resolved.timings.worker_heartbeat_timeout_seconds == 30
+    assert resolved.timings.job_poll_interval_seconds == 1.5
+    assert resolved.timings.job_monitor_interval_seconds == 45
     worker_ports = captured["worker_ports"]
     assert isinstance(worker_ports, tuple)
     assert len(worker_ports) == 6
@@ -1313,8 +1273,8 @@ def test_tunnel_command_resolves_profile_and_applies_cli_overrides(
 
     assert result.exit_code == 0, result.output
     assert captured["worker_ports"] == (55000,)
-    assert captured["job_poll_interval_seconds"] == 4
-    assert captured["job_monitor_interval_seconds"] == 120
+    assert captured["resolved"].timings.job_poll_interval_seconds == 4
+    assert captured["resolved"].timings.job_monitor_interval_seconds == 120
 
 
 def test_tunnel_command_allows_wrapper_with_implicit_resource_defaults(
@@ -1346,12 +1306,12 @@ def test_tunnel_command_allows_wrapper_with_implicit_resource_defaults(
     result = CliRunner().invoke(app, ["tunnel", "base"])
 
     assert result.exit_code == 0, result.output
-    assert captured["queue"] is None
-    assert captured["cores"] == 1
-    assert captured["gpus"] == 0
-    assert captured["exclusive"] is False
-    profile = captured["profile"]
-    assert profile.scheduler.interactive_submission_command == [
+    resolved = captured["resolved"]
+    assert resolved.resources.queue is None
+    assert resolved.resources.cores == 1
+    assert resolved.resources.gpus == 0
+    assert resolved.resources.exclusive is False
+    assert resolved.scheduler.interactive_submission_command == [
         "/site/bin/interactive-lsf"
     ]
 

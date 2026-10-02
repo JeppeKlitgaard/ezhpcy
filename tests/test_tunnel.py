@@ -387,7 +387,7 @@ class StubSSH:
         return StubProcess()
 
 
-class StubBroker:
+class StubTunnelServer:
     def __init__(self, _transport, destination, _backend, **_kwargs) -> None:
         self.destination = destination
         self.closed = False
@@ -518,33 +518,33 @@ def test_worker_control_rejects_invalid_ready_port() -> None:
 
 def test_job_monitor_uses_interactive_process_without_scheduler_polling() -> None:
     job = InteractiveJob("42", FinishedProcess(0), "")
-    broker = StubBroker(None, ("node42", 54321), None)
+    tunnel = StubTunnelServer(None, ("node42", 54321), None)
     job_finished = threading.Event()
     errors: list[TunnelError] = []
 
     _monitor_job(
-        job, broker, threading.Event(), job_finished, errors, monitor_interval=0
+        job, tunnel, threading.Event(), job_finished, errors, monitor_interval=0
     )
 
     assert job_finished.is_set()
     assert not errors
-    assert broker.closed
+    assert tunnel.closed
 
 
 def test_job_monitor_does_not_treat_missing_exit_status_as_job_completion() -> None:
     job = InteractiveJob("42", FinishedProcess(-1), "")
-    broker = StubBroker(None, ("node42", 54321), None)
+    tunnel = StubTunnelServer(None, ("node42", 54321), None)
     job_finished = threading.Event()
     errors: list[TunnelError] = []
 
     _monitor_job(
-        job, broker, threading.Event(), job_finished, errors, monitor_interval=0
+        job, tunnel, threading.Event(), job_finished, errors, monitor_interval=0
     )
 
     assert not job_finished.is_set()
     assert len(errors) == 1
     assert "closed without an exit status" in str(errors[0])
-    assert broker.closed
+    assert tunnel.closed
 
 
 def test_worker_heartbeat_sender_logs_sequence_without_token() -> None:
@@ -624,19 +624,19 @@ def test_worker_endpoint_waits_for_an_ssh_banner() -> None:
         transport_logger.setLevel(previous_level)
 
 
-def test_tunnel_submits_worker_starts_broker_and_cancels(
+def test_tunnel_submits_worker_starts_server_and_cancels(
     ssh_host_publication: list[tuple[str, str, str, bool | None]],
 ) -> None:
     transport = StubTransport()
     ssh = StubSSH(transport)
     scheduler = StubScheduler([snapshot(JobState.RUNNING, "RUN", "node42")])
-    brokers: list[StubBroker] = []
+    tunnels: list[StubTunnelServer] = []
     configuration = lsf_profile()
 
-    def make_broker(*args, **kwargs) -> StubBroker:
-        broker = StubBroker(*args, **kwargs)
-        brokers.append(broker)
-        return broker
+    def make_tunnel(*args, **kwargs) -> StubTunnelServer:
+        tunnel = StubTunnelServer(*args, **kwargs)
+        tunnels.append(tunnel)
+        return tunnel
 
     with (
         patch(
@@ -663,9 +663,9 @@ def test_tunnel_submits_worker_starts_broker_and_cancels(
         ),
         patch("ezhpcy.cli.tunnel._wait_for_worker_endpoint"),
         patch(
-            "ezhpcy.cli.tunnel.create_broker_backend", return_value=_BACKEND
+            "ezhpcy.cli.tunnel.create_tunnel_backend", return_value=_BACKEND
         ) as create_backend,
-        patch("ezhpcy.cli.tunnel.ForegroundBroker", side_effect=make_broker),
+        patch("ezhpcy.cli.tunnel.TunnelServer", side_effect=make_tunnel),
         patch("ezhpcy.cli.tunnel.logger") as logger,
     ):
         logger.isEnabledFor.return_value = False
@@ -740,9 +740,9 @@ def test_tunnel_submits_worker_starts_broker_and_cancels(
     assert spec.stderr_path == PurePosixPath(
         f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/logs/worker/worker-LEASETOKEN.err"
     )
-    assert brokers[0].destination == ("node42", 54322)
-    assert brokers[0].closed
-    # The Host block is published once the broker is up and withdrawn on exit.
+    assert tunnels[0].destination == ("node42", 54322)
+    assert tunnels[0].closed
+    # The Host block is published once the tunnel is up and withdrawn on exit.
     assert ssh_host_publication == [
         ("publish", "gpu", "instance-id", False),
         ("withdraw", "gpu", "instance-id", None),
@@ -826,19 +826,19 @@ def test_tunnel_stops_when_the_login_connection_is_lost() -> None:
     transport = StubTransport()
     ssh = StubSSH(transport)
     scheduler = StubScheduler([snapshot(JobState.RUNNING, "RUN", "node42")])
-    brokers: list[StubBroker] = []
+    tunnels: list[StubTunnelServer] = []
 
-    class LosingBroker(StubBroker):
+    class LosingTunnelServer(StubTunnelServer):
         def serve_forever(self) -> None:
             assert ssh.connection_lost_handler is not None
             ssh.connection_lost_handler(
                 paramiko.SSHException("session stopped answering")
             )
 
-    def make_broker(*args, **kwargs) -> StubBroker:
-        broker = LosingBroker(*args, **kwargs)
-        brokers.append(broker)
-        return broker
+    def make_tunnel(*args, **kwargs) -> StubTunnelServer:
+        tunnel = LosingTunnelServer(*args, **kwargs)
+        tunnels.append(tunnel)
+        return tunnel
 
     with (
         patch("ezhpcy.cli.tunnel.InteractiveSSHClient", return_value=ssh),
@@ -857,8 +857,8 @@ def test_tunnel_stops_when_the_login_connection_is_lost() -> None:
             return_value=54321,
         ),
         patch("ezhpcy.cli.tunnel._wait_for_worker_endpoint"),
-        patch("ezhpcy.cli.tunnel.create_broker_backend", return_value=_BACKEND),
-        patch("ezhpcy.cli.tunnel.ForegroundBroker", side_effect=make_broker),
+        patch("ezhpcy.cli.tunnel.create_tunnel_backend", return_value=_BACKEND),
+        patch("ezhpcy.cli.tunnel.TunnelServer", side_effect=make_tunnel),
         pytest.raises(TunnelError, match="login-node SSH connection lost"),
     ):
         _run_tunnel(
@@ -883,7 +883,7 @@ def test_tunnel_stops_when_the_login_connection_is_lost() -> None:
             submission_mode=SubmissionMode.INTERACTIVE,
         )
 
-    assert brokers[0].closed
+    assert tunnels[0].closed
     assert scheduler.cancelled == ["42"]
 
 
@@ -911,8 +911,8 @@ def test_tunnel_uses_explicit_pbs_and_linuxsh_defaults() -> None:
             return_value=54321,
         ),
         patch("ezhpcy.cli.tunnel._wait_for_worker_endpoint"),
-        patch("ezhpcy.cli.tunnel.create_broker_backend", return_value=_BACKEND),
-        patch("ezhpcy.cli.tunnel.ForegroundBroker", StubBroker),
+        patch("ezhpcy.cli.tunnel.create_tunnel_backend", return_value=_BACKEND),
+        patch("ezhpcy.cli.tunnel.TunnelServer", StubTunnelServer),
         patch("ezhpcy.cli.tunnel.logger") as logger,
     ):
         _run_tunnel(
@@ -972,8 +972,8 @@ def test_tunnel_submits_batch_job_without_interactive_shell() -> None:
         ),
         patch("ezhpcy.cli.tunnel._wait_for_selected_worker_port", return_value=54321),
         patch("ezhpcy.cli.tunnel._wait_for_worker_endpoint"),
-        patch("ezhpcy.cli.tunnel.create_broker_backend", return_value=_BACKEND),
-        patch("ezhpcy.cli.tunnel.ForegroundBroker", StubBroker),
+        patch("ezhpcy.cli.tunnel.create_tunnel_backend", return_value=_BACKEND),
+        patch("ezhpcy.cli.tunnel.TunnelServer", StubTunnelServer),
     ):
         _run_tunnel(
             profile_name="batch",

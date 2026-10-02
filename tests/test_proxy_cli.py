@@ -6,7 +6,7 @@ from typer.testing import CliRunner
 
 from ezhpcy import ipc
 from ezhpcy.cli import app, proxy as proxy_module
-from ezhpcy.ipc import create_broker_backend
+from ezhpcy.ipc import create_tunnel_backend
 
 
 @pytest.fixture
@@ -24,7 +24,7 @@ def test_proxy_relays_through_the_tunnel_published_for_its_alias(
         "relay_proxy_stdio",
         lambda backend, *_streams: relayed.append(backend),
     )
-    backend = create_broker_backend(alias="gpu", authkey=b"a" * 32)
+    backend = create_tunnel_backend(alias="gpu", authkey=b"a" * 32)
     listener = backend.listen(lambda _connection: None)
     try:
         result = CliRunner().invoke(app, ["proxy", "gpu"])
@@ -67,7 +67,7 @@ def test_proxy_takes_debug_logging_from_the_tunnel(
         "configure_logging",
         lambda level, **_kwargs: levels.append(level),
     )
-    listener = create_broker_backend(alias="gpu", debug=True).listen(
+    listener = create_tunnel_backend(alias="gpu", debug=True).listen(
         lambda _connection: None
     )
     try:

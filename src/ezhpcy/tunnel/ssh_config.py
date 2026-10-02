@@ -9,7 +9,7 @@ Everything lives in one runtime directory matched by one glob:
 - ``active-<alias>.conf`` holds the Host block of one running tunnel whose block
   is not already in ``profiles.conf``: a tunnel without a profile, one with a
   custom ``--alias``, or a profile tunnel whose ``--user``/``--host`` override
-  changes the block. The tunnel writes it once its broker is published and
+  changes the block. The tunnel writes it once its descriptor is published and
   removes it on exit. These files sort before ``profiles.conf``, and OpenSSH
   keeps the first value it obtains, so an overriding block wins over the
   profile block with the same alias.
@@ -77,7 +77,7 @@ def include_directive() -> str:
 
 @dataclass(frozen=True)
 class WorkerHost:
-    """One OpenSSH Host alias that reaches a worker through a tunnel broker."""
+    """One OpenSSH Host alias that reaches a worker through a tunnel."""
 
     alias: str
     user: str
@@ -192,7 +192,7 @@ def _active_instance_id(path: Path) -> str | None:
 
 
 def write_active_host_config(host: WorkerHost, *, instance_id: str) -> Path:
-    """Publish the Host block of a running tunnel, tagged with its broker."""
+    """Publish the Host block of a running tunnel, tagged with its instance."""
     path = _active_path(host.alias)
     _write_private(path, f"{_INSTANCE_MARKER}{instance_id}\n{host.render()}")
     return path
@@ -206,7 +206,7 @@ def remove_active_host_config(alias: str, *, instance_id: str) -> None:
 
 
 def prune_stale_active_configs() -> None:
-    """Remove Host blocks left behind by tunnels whose broker is gone."""
+    """Remove Host blocks left behind by tunnels that are no longer running."""
     for path in ssh_config_dir().glob(f"{ACTIVE_FILE_PREFIX}*.conf"):
         alias = path.name.removeprefix(ACTIVE_FILE_PREFIX).removesuffix(".conf")
         try:

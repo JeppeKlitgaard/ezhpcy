@@ -54,7 +54,7 @@ from ezhpcy.constants import (
     WORKER_CLIENT_KEY_NAME,
     WORKER_HOST_KEY_NAME,
 )
-from ezhpcy.ipc import create_broker_backend
+from ezhpcy.ipc import create_tunnel_backend
 from ezhpcy.ipc.common import IPCError
 from ezhpcy.permissions import FilePermissionError
 from ezhpcy.scheduler.base import (
@@ -70,7 +70,7 @@ from ezhpcy.scheduler.lsf import LSFScheduler
 from ezhpcy.scheduler.pbs import PBSScheduler
 from ezhpcy.scheduler.types import SchedulerType
 from ezhpcy.ssh import SFTPClient
-from ezhpcy.tunnel.broker import ForegroundBroker
+from ezhpcy.tunnel.server import TunnelServer
 from ezhpcy.tunnel.ssh_config import (
     WorkerHost,
     check_host_resolution,
@@ -413,7 +413,7 @@ def _wait_for_worker_endpoint(
 
 def _monitor_job(
     job: InteractiveJob,
-    broker: ForegroundBroker,
+    tunnel: TunnelServer,
     stop_requested: threading.Event,
     job_finished: threading.Event,
     errors: list[TunnelError],
@@ -423,7 +423,7 @@ def _monitor_job(
     while not stop_requested.wait(monitor_interval):
         if job.process.exit_status_ready():
             exit_status = job.process.recv_exit_status()
-            transport = getattr(broker, "transport", None)
+            transport = getattr(tunnel, "transport", None)
             transport_active = transport.is_active() if transport is not None else None
             transport_error = (
                 transport.get_exception()
@@ -446,7 +446,7 @@ def _monitor_job(
                         "transport was likely lost"
                     )
                 )
-                broker.close()
+                tunnel.close()
                 return
             job_finished.set()
             logger.info(
@@ -454,7 +454,7 @@ def _monitor_job(
                 job.job_id,
                 exit_status,
             )
-            broker.close()
+            tunnel.close()
             return
 
 
@@ -538,13 +538,13 @@ def _send_worker_lease_heartbeats(
 def _monitor_scheduler_job(
     scheduler: Scheduler,
     job_id: str,
-    broker: ForegroundBroker,
+    tunnel: TunnelServer,
     stop_requested: threading.Event,
     job_finished: threading.Event,
     errors: list[TunnelError],
     monitor_interval: float,
 ) -> None:
-    """Close the broker when the scheduler reports that its job has ended."""
+    """Close the tunnel when the scheduler reports that its job has ended."""
     polls = 0
     while not stop_requested.wait(monitor_interval):
         polls += 1
@@ -564,7 +564,7 @@ def _monitor_scheduler_job(
             errors.append(
                 TunnelError(f"could not monitor worker job {job_id}: {error}")
             )
-            broker.close()
+            tunnel.close()
             return
         logger.debug(
             "Job monitor poll: job=%s poll=%d state=%s raw_state=%s hosts=%s "
@@ -581,7 +581,7 @@ def _monitor_scheduler_job(
             logger.info(
                 "Worker job %s ended in scheduler state %s.", job_id, info.raw_state
             )
-            broker.close()
+            tunnel.close()
             return
         if info.state is JobState.UNKNOWN:
             logger.error(
@@ -597,7 +597,7 @@ def _monitor_scheduler_job(
                     f"worker job {job_id} entered unknown scheduler state {info.raw_state}"
                 )
             )
-            broker.close()
+            tunnel.close()
             return
 
 
@@ -919,7 +919,7 @@ def _run_tunnel(
                 heartbeat_failed = threading.Event()
                 heartbeat_errors: list[TunnelError] = []
                 heartbeat_thread: threading.Thread | None = None
-                broker: ForegroundBroker | None = None
+                tunnel: TunnelServer | None = None
                 shutdown_reason = "startup_failure"
                 connection_errors: list[TunnelError] = []
                 output_thread: threading.Thread | None = None
@@ -930,8 +930,8 @@ def _run_tunnel(
                     connection_errors.append(
                         TunnelError(f"login-node SSH connection lost: {error}")
                     )
-                    if broker is not None:
-                        broker.close()
+                    if tunnel is not None:
+                        tunnel.close()
 
                 # The keepalive sender has already closed the transport by the
                 # time this runs; stop the tunnel instead of serving a worker
@@ -975,8 +975,8 @@ def _run_tunnel(
                     def handle_heartbeat_failure() -> None:
                         nonlocal shutdown_reason
                         shutdown_reason = "heartbeat_send_failed"
-                        if broker is not None:
-                            broker.close()
+                        if tunnel is not None:
+                            tunnel.close()
 
                     heartbeat_thread = threading.Thread(
                         target=_send_worker_lease_heartbeats,
@@ -1009,16 +1009,16 @@ def _run_tunnel(
                         ),
                     )
 
-                    backend = create_broker_backend(
+                    backend = create_tunnel_backend(
                         alias=ssh_host.alias,
                         debug=logger.isEnabledFor(logging.DEBUG),
                     )
-                    broker = ForegroundBroker(
+                    tunnel = TunnelServer(
                         transport,
                         destination,
                         backend,
                         error_handler=lambda error: logger.error(
-                            "Broker client error: %s", error
+                            "Tunnel client error: %s", error
                         ),
                     )
                     monitor_stop = threading.Event()
@@ -1028,7 +1028,7 @@ def _run_tunnel(
                         args=(
                             scheduler,
                             job_id,
-                            broker,
+                            tunnel,
                             monitor_stop,
                             job_finished,
                             monitor_errors,
@@ -1055,23 +1055,23 @@ def _run_tunnel(
                         ssh_host.alias,
                         ssh_host.alias,
                     )
-                    shutdown_reason = "broker_stopped"
+                    shutdown_reason = "tunnel_stopped"
                     previous_sigbreak_handler = None
                     if hasattr(signal, "SIGBREAK"):
                         previous_sigbreak_handler = signal.signal(
                             signal.SIGBREAK, signal.default_int_handler
                         )
                     try:
-                        broker.serve_forever()
+                        tunnel.serve_forever()
                     except KeyboardInterrupt:
                         shutdown_reason = "user_interrupt"
                         logger.info("Stopping tunnel...")
                     finally:
                         monitor_stop.set()
-                        # Withdraw the Host block before the broker descriptor,
-                        # so a block never outlives the broker it points at.
+                        # Withdraw the Host block before the tunnel descriptor,
+                        # so a block never outlives the tunnel it points at.
                         _withdraw_ssh_host(ssh_host, instance_id=backend.instance_id)
-                        broker.close()
+                        tunnel.close()
                         monitor.join(timeout=1)
                         if previous_sigbreak_handler is not None:
                             signal.signal(signal.SIGBREAK, previous_sigbreak_handler)
@@ -1179,7 +1179,7 @@ def tunnel_cmd(
         ),
     ] = False,
 ) -> None:
-    """Allocate a compute node and expose its SSH service through the broker."""
+    """Allocate a compute node and expose its SSH service through a tunnel."""
     try:
         resolved = profile_context.profile
         if resolved.scheduler is None:

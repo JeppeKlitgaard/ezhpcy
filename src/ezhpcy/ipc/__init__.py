@@ -15,11 +15,11 @@ from pathlib import Path
 from ezhpcy.config import PROFILE_NAME_PATTERN, config
 from ezhpcy.ipc.common import (
     LOOPBACK_HOST,
-    BrokerUnavailableError,
     IPCAddress,
     IPCAuthenticationError,
     IPCError,
     IPCServer,
+    TunnelUnavailableError,
 )
 from ezhpcy.ipc.protocol import (
     AUTHENTICATION_TIMEOUT,
@@ -30,6 +30,7 @@ from ezhpcy.ipc.runtime import (
     load_runtime_descriptor,
     publish_runtime_descriptor,
     remove_runtime_descriptor,
+    tunnel_not_running,
 )
 from ezhpcy.ipc.server import AuthenticatedIPCServer
 
@@ -46,15 +47,15 @@ class AuthenticatedIPCBackend:
     instance_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     publish_descriptor: bool = False
     authentication_timeout: float = AUTHENTICATION_TIMEOUT
-    # Published by the broker and read back by each proxy, which OpenSSH starts
+    # Published by the tunnel and read back by each proxy, which OpenSSH starts
     # from a fixed ProxyCommand line and so cannot be given its own flags.
     debug: bool = False
 
     def __post_init__(self) -> None:
         if len(self.authkey) < 32:
-            raise ValueError("broker authkey must contain at least 32 random bytes")
+            raise ValueError("tunnel authkey must contain at least 32 random bytes")
         if self.authentication_timeout <= 0:
-            raise ValueError("broker authentication timeout must be positive")
+            raise ValueError("tunnel authentication timeout must be positive")
 
     def listen(
         self,
@@ -75,7 +76,7 @@ class AuthenticatedIPCBackend:
                 close_handler=close_handler,
             )
         except OSError as error:
-            raise IPCError("could not create the broker IPC listener") from error
+            raise IPCError("could not create the tunnel IPC listener") from error
 
         try:
             if self.publish_descriptor:
@@ -91,9 +92,7 @@ class AuthenticatedIPCBackend:
                 self.address.as_tuple(), timeout=max(0.0, timeout)
             )
         except OSError as error:
-            raise BrokerUnavailableError(
-                "foreground broker is not running; start `ezhpcy tunnel`"
-            ) from error
+            raise tunnel_not_running(self.descriptor_path) from error
 
         try:
             authenticate_client(client_socket, self.authkey, timeout)
@@ -101,13 +100,13 @@ class AuthenticatedIPCBackend:
         except (AuthenticationError, OSError, TimeoutError) as error:
             client_socket.close()
             raise IPCAuthenticationError(
-                "broker authentication failed; restart the foreground broker"
+                "tunnel authentication failed; restart the tunnel"
             ) from error
         return client_socket
 
     def _publish_descriptor(self, address: IPCAddress) -> None:
         if self.descriptor_path is None:
-            raise IPCError("broker runtime descriptor path is not configured")
+            raise IPCError("tunnel runtime descriptor path is not configured")
         publish_runtime_descriptor(
             self.descriptor_path,
             address=address,
@@ -125,13 +124,13 @@ class AuthenticatedIPCBackend:
 
 
 def descriptor_path(alias: str) -> Path:
-    """Return where the tunnel serving an SSH host alias publishes its broker."""
+    """Return where the tunnel serving an SSH host alias publishes its descriptor."""
     if PROFILE_NAME_PATTERN.fullmatch(alias) is None:
         raise ValueError(f"invalid host alias {alias!r}")
     return config.local_file.runtime_dir / "descriptors" / f"{alias}.json"
 
 
-def create_broker_backend(
+def create_tunnel_backend(
     *,
     alias: str,
     address: IPCAddress = _DEFAULT_BIND_ADDRESS,
@@ -148,8 +147,8 @@ def create_broker_backend(
     )
 
 
-def load_broker_backend(alias: str) -> AuthenticatedIPCBackend:
-    """Load the broker endpoint and capability without exposing either in argv."""
+def load_tunnel_backend(alias: str) -> AuthenticatedIPCBackend:
+    """Load the tunnel endpoint and capability without exposing either in argv."""
     path = descriptor_path(alias)
     descriptor = load_runtime_descriptor(path)
     try:
@@ -161,6 +160,6 @@ def load_broker_backend(alias: str) -> AuthenticatedIPCBackend:
             debug=descriptor.debug,
         )
     except ValueError as error:
-        raise BrokerUnavailableError(
-            "broker runtime information is invalid; restart the foreground broker"
+        raise TunnelUnavailableError(
+            "tunnel runtime information is invalid; restart the tunnel"
         ) from error

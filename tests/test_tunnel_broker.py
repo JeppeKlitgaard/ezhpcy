@@ -239,10 +239,7 @@ def test_loopback_broker_relays_server_banner_while_waiting_for_client(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(ipc.config.local_file, "runtime_dir", tmp_path)
-    server_backend = create_broker_backend(
-        profile="test",
-        authkey=b"a" * 32,
-    )
+    server_backend = create_broker_backend(alias="test", authkey=b"a" * 32)
     broker = ForegroundBroker(
         BannerTransport(), ("worker.internal", 3333), server_backend
     )
@@ -251,7 +248,7 @@ def test_loopback_broker_relays_server_banner_while_waiting_for_client(
     output = io.BytesIO()
 
     relay_proxy_stdio(
-        load_broker_backend(profile="test"),
+        load_broker_backend("test"),
         io.BytesIO(b"SSH-2.0-test-client\r\n"),
         output,
     )

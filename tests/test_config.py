@@ -196,7 +196,11 @@ def test_profile_password_source_overrides_the_inherited_source() -> None:
 
 def test_config_singleton_applies_its_log_level() -> None:
     assert isinstance(config_module.config, config_module.Config)
-    assert logging.getLogger("ezhpcy").level == config_module.config.log_level
+    # A workstation config with `debug = true` overrides the log level.
+    expected_level = (
+        logging.DEBUG if config_module.config.debug else config_module.config.log_level
+    )
+    assert logging.getLogger("ezhpcy").level == expected_level
 
 
 def test_nested_profile_inheritance_resolves_all_ancestor_values() -> None:

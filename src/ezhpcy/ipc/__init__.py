@@ -12,7 +12,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from ezhpcy.config import config
+from ezhpcy.config import PROFILE_NAME_PATTERN, config
 from ezhpcy.ipc.common import (
     LOOPBACK_HOST,
     BrokerUnavailableError,
@@ -32,7 +32,6 @@ from ezhpcy.ipc.runtime import (
     remove_runtime_descriptor,
 )
 from ezhpcy.ipc.server import AuthenticatedIPCServer
-from ezhpcy.types import ResolvedConfig
 
 _DEFAULT_BIND_ADDRESS = IPCAddress(LOOPBACK_HOST, 0, allow_zero_port=True)
 
@@ -125,64 +124,39 @@ class AuthenticatedIPCBackend:
             )
 
 
-def _get_descriptor_path(
-    profile: str | None = None,
-    *,
-    resolved_config: ResolvedConfig | None = None,
-) -> Path:
-    if profile is not None:
-        if resolved_config is not None:
-            raise ValueError(
-                "profile and resolved configuration are mutually exclusive"
-            )
-        return config.local_file.runtime_dir / "profile-descriptors" / f"{profile}.json"
-
-    if resolved_config is None:
-        raise ValueError(
-            "a resolved configuration is required when no profile is provided"
-        )
-    digest = resolved_config.descriptor_digest()
-    return config.local_file.runtime_dir / "anonymous-descriptors" / f"{digest}.json"
+def descriptor_path(alias: str) -> Path:
+    """Return where the tunnel serving an SSH host alias publishes its broker."""
+    if PROFILE_NAME_PATTERN.fullmatch(alias) is None:
+        raise ValueError(f"invalid host alias {alias!r}")
+    return config.local_file.runtime_dir / "descriptors" / f"{alias}.json"
 
 
 def create_broker_backend(
     *,
+    alias: str,
     address: IPCAddress = _DEFAULT_BIND_ADDRESS,
     authkey: bytes | None = None,
-    profile: str | None = None,
-    resolved_config: ResolvedConfig | None = None,
     debug: bool = False,
 ) -> AuthenticatedIPCBackend:
     """Create the server backend and its per-run authentication capability."""
-    descriptor_path = _get_descriptor_path(
-        profile,
-        resolved_config=resolved_config,
-    )
     return AuthenticatedIPCBackend(
         address=address,
         authkey=authkey or secrets.token_bytes(32),
-        descriptor_path=descriptor_path,
+        descriptor_path=descriptor_path(alias),
         publish_descriptor=True,
         debug=debug,
     )
 
 
-def load_broker_backend(
-    *,
-    profile: str | None = None,
-    resolved_config: ResolvedConfig | None = None,
-) -> AuthenticatedIPCBackend:
+def load_broker_backend(alias: str) -> AuthenticatedIPCBackend:
     """Load the broker endpoint and capability without exposing either in argv."""
-    descriptor_path = _get_descriptor_path(
-        profile,
-        resolved_config=resolved_config,
-    )
-    descriptor = load_runtime_descriptor(descriptor_path)
+    path = descriptor_path(alias)
+    descriptor = load_runtime_descriptor(path)
     try:
         return AuthenticatedIPCBackend(
             address=descriptor.address,
             authkey=descriptor.authkey,
-            descriptor_path=descriptor_path,
+            descriptor_path=path,
             instance_id=descriptor.instance_id,
             debug=descriptor.debug,
         )

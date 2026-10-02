@@ -1,12 +1,11 @@
 import os
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 from keyring.errors import KeyringError
 from typer.testing import CliRunner
 
-from ezhpcy.cli import app, common, proxy as proxy_module
+from ezhpcy.cli import app, common
 from ezhpcy.cli.utils.bad_parameter import RichBadParameter
 from ezhpcy.types import ProfileConfig
 
@@ -170,38 +169,6 @@ def test_profile_context_can_be_resolved_entirely_from_cli_values() -> None:
     assert context.profile.queue == "gpu"
     assert context.profile.cores == 8
     assert context.profile.gpus == 1
-
-
-def test_anonymous_proxy_loads_configuration_descriptor(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured: dict[str, object] = {}
-    backend = SimpleNamespace(debug=False)
-
-    def load_backend(**kwargs):
-        captured.update(kwargs)
-        return backend
-
-    monkeypatch.setattr(proxy_module, "load_broker_backend", load_backend)
-    monkeypatch.setattr(proxy_module, "relay_proxy_stdio", lambda *_args: None)
-
-    result = CliRunner().invoke(
-        app,
-        [
-            "proxy",
-            "--host",
-            "login.example.com",
-            "--user",
-            "alice",
-            "--queue",
-            "gpu",
-        ],
-    )
-
-    assert result.exit_code == 0, result.output
-    assert captured["profile"] is None
-    configuration = captured["resolved_config"]
-    assert getattr(configuration, "queue") == "gpu"
 
 
 def test_invalid_profile_password_sources_are_reported_as_a_cli_parameter_error(

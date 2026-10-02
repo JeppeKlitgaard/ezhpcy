@@ -4,9 +4,8 @@ import typer
 from rich.table import Table
 
 from ezhpcy import console
-from ezhpcy.cli.version import ezhpcy_version
 from ezhpcy.config import config
-from ezhpcy.utils import local_machine_id
+from ezhpcy.utils import ezhpcy_version, local_machine_id
 
 
 def info_cmd(json: bool = False) -> None:
@@ -26,7 +25,15 @@ def info_cmd(json: bool = False) -> None:
                 "description": "Unique identifier for the local machine.",
             },
         ],
-        # Section 2: Directories
+        # Section 2: Files
+        [
+            {
+                "key": "Config File",
+                "value": str(config.local_file.config_file),
+                "description": "EzHPCy configuration file.",
+            },
+        ],
+        # Section 3: Directories
         [
             {
                 "key": "Cache Directory",
@@ -52,11 +59,7 @@ def info_cmd(json: bool = False) -> None:
     ]
 
     if json:
-        # flat_data = [*section for section in datas]  # 3.15+
-        flat_data = []
-        for section in datas:
-            flat_data.extend(section)
-
+        flat_data = [*section for section in datas]
         typer.echo(json_dumps(flat_data, indent=4))
         return
 

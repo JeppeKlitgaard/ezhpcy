@@ -1,106 +1,50 @@
-import sys
-from pathlib import Path
-from typing import Annotated
-
 import typer
+from rich.markup import escape
 
-from ezhpcy.cli.common import HostOpt, ProfileArg, UserOpt
-from ezhpcy.cli.utils.bad_parameter import RichBadParameter
-from ezhpcy.cli.utils.resolve import resolve_forbidden_none
-from ezhpcy.config import ProfilePasswordSourceError, config
-from ezhpcy.constants import (
-    WORKER_CLIENT_KEY_NAME,
-    WORKER_HOST_ALIAS,
+from ezhpcy.console import console
+from ezhpcy.permissions import FilePermissionError
+from ezhpcy.tunnel.ssh_config import (
+    check_host_resolution,
+    include_directive,
+    profile_hosts,
+    write_profiles_config,
 )
-from ezhpcy.utils import local_machine_id
 
 
-def _config_path(path: Path) -> str:
-    """Render an absolute path safely in OpenSSH configuration syntax."""
-    value = path.expanduser().resolve().as_posix()
-    return f'"{value.replace(chr(34), chr(92) + chr(34))}"'
+def echo_include_directive(*, err: bool = False) -> None:
+    """Print the Include lines followed by a blank line, ready to copy verbatim."""
+    # Unindented and unwrapped (typer, not rich, which wraps long paths); the
+    # colour marks what to copy and is dropped when output is not a TTY.
+    typer.echo(typer.style(include_directive(), fg="cyan", bold=True) + "\n", err=err)
 
 
-def _single_token(value: str, *, name: str) -> str:
-    if not value or any(character.isspace() for character in value):
-        raise typer.BadParameter("must be one non-whitespace token", param_hint=name)
-    return value
-
-
-def render_worker_ssh_config(
-    *,
-    user: str,
-    profile_name: str,
-    alias: str | None = None,
-    ssh_dir: Path,
-    python_executable: Path = Path(sys.executable),
-) -> str:
-    """Render the stable worker alias consumed by OpenSSH and VS Code."""
-    user = _single_token(user, name="--user")
-    profile_name = _single_token(profile_name, name="PROFILE")
-    alias = _single_token(profile_name if alias is None else alias, name="--alias")
-    identity = ssh_dir / WORKER_CLIENT_KEY_NAME
-    known_hosts = ssh_dir / "worker_known_hosts"
-    return "\n".join(
-        (
-            f"Host {alias}",
-            f"    HostName {alias}",
-            f"    User {user}",
-            f"    IdentityFile {_config_path(identity)}",
-            "    IdentitiesOnly yes",
-            f"    UserKnownHostsFile {_config_path(known_hosts)}",
-            f"    HostKeyAlias {WORKER_HOST_ALIAS}",
-            "    StrictHostKeyChecking yes",
-            "    ProxyCommand "
-            f"{_config_path(python_executable)} -m ezhpcy.cli proxy {profile_name}",
-            "",
-        )
-    )
-
-
-def ssh_config_cmd(
-    profile: ProfileArg,
-    user: UserOpt = None,
-    host: HostOpt = None,
-    alias: Annotated[
-        str | None,
-        typer.Option(
-            "--alias",
-            help="Stable Host alias to expose to OpenSSH and VS Code.",
-        ),
-    ] = None,
-) -> None:
-    """Print an OpenSSH Host block for the broker-backed worker connection."""
+def ssh_config_cmd() -> None:
+    """Regenerate the profile SSH hosts and show how OpenSSH picks them up."""
+    hosts = profile_hosts()
     try:
-        resolved_profile = config.resolve_profile(profile)
-    except ProfilePasswordSourceError as error:
-        raise RichBadParameter(error.rich_message()) from error
-    except ValueError as error:
-        raise RichBadParameter(str(error), param_hint="PROFILE") from error
-    profile_name = profile
-    resolved_user = resolve_forbidden_none(
-        cli_value=user,
-        config_value=resolved_profile.user,
-        name="user",
-        cli_param="--user",
-        config_param=f"profile.{profile_name}.user",
+        path = write_profiles_config(hosts)
+    except (OSError, FilePermissionError) as error:
+        console.print(
+            f"[bold red]Could not write SSH configuration:[/] {escape(str(error))}"
+        )
+        raise typer.Exit(code=1) from error
+
+    console.print(
+        "Copy the two highlighted lines below to the top of "
+        "[bold]~/.ssh/config[/bold], before any Host or Match block:\n"
     )
-    resolved_host = resolve_forbidden_none(
-        cli_value=host,
-        config_value=(str(resolved_profile.host) if resolved_profile.host else None),
-        name="host",
-        cli_param="--host",
-        config_param=f"profile.{profile_name}.host",
-    )
-    ssh_dir = config.local_file.ssh_dir(
-        local_machine_id(), user=resolved_user, host=resolved_host
-    )
-    typer.echo(
-        render_worker_ssh_config(
-            user=resolved_user,
-            profile_name=profile_name,
-            alias=alias,
-            ssh_dir=ssh_dir,
-        ),
-        nl=False,
-    )
+    echo_include_directive()
+
+    if not hosts:
+        console.print(
+            "No profile defines both a user and a host; "
+            f"wrote empty {escape(str(path))}."
+        )
+        return
+    console.print(f"Profile hosts in [bold]{escape(str(path))}[/bold]:")
+    for host in hosts:
+        problem = check_host_resolution(host)
+        if problem is None:
+            console.print(f"  [bold green]ok[/]    {host.alias}")
+        else:
+            console.print(f"  [bold red]fail[/]  {host.alias}: {escape(problem)}")

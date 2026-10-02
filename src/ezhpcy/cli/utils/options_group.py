@@ -80,6 +80,10 @@ def attach_hook[**ParamsHook, RHook](
 
         @functools.wraps(source_func)
         def wrapper(*args, **kwargs):
+            # The CLI framework passes positional-or-keyword parameters, such as
+            # the profile argument, positionally; the hook takes them by name.
+            kwargs = wrapper.__signature__.bind(*args, **kwargs).arguments
+
             # Filter kwargs for those accepted by the hook function
             hook_kwargs = {k: v for k, v in kwargs.items() if k in hook_param_names}
 
@@ -93,10 +97,19 @@ def attach_hook[**ParamsHook, RHook](
                 if k not in hook_param_names or k in shared_params
             }
 
+            positional_only = [
+                source_kwargs.pop(name)
+                for name, param in source_params.items()
+                if param.kind is inspect.Parameter.POSITIONAL_ONLY
+                and name in source_kwargs
+            ]
+
             # Execute the source function with original args and pass the hook's output to the source function as
             # the specified keyword argument
             return source_func(
-                *args, **source_kwargs, **{hook_output_kwarg: hook_result}
+                *positional_only,
+                **source_kwargs,
+                **{hook_output_kwarg: hook_result},
             )
 
         # Combine signatures, but remove the hook_output_kwarg
@@ -107,10 +120,11 @@ def attach_hook[**ParamsHook, RHook](
             parameters=combined_params
         )
 
-        # Combine annotations, but remove the hook_output_kwarg
+        # Combine annotations, but remove the hook_output_kwarg. Keep `Annotated`
+        # metadata, which holds each option's CLI declaration.
         wrapper.__annotations__ = {
-            **typing.get_type_hints(source_func),
-            **typing.get_type_hints(hook_func),
+            **typing.get_type_hints(source_func, include_extras=True),
+            **typing.get_type_hints(hook_func, include_extras=True),
         }
         wrapper.__annotations__.pop(hook_output_kwarg)
 

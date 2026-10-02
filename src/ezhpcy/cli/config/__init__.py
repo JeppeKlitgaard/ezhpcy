@@ -1,16 +1,11 @@
-import typer
+from cyclopts import App
 
 from ezhpcy.cli.config.edit import edit_cmd
 from ezhpcy.cli.config.load import load_cmd
-from ezhpcy.cli.utils.alias import AliasGroup
 
-config_app = typer.Typer(
-    cls=AliasGroup,
-    help="Manage the EzHPCy configuration file.",
-    no_args_is_help=True,
-)
+config_app = App(name="config", help="Manage the EzHPCy configuration file.")
 
-config_app.command(name="edit", help="Open the configuration file in an editor.")(
-    edit_cmd
+config_app.command(
+    edit_cmd, name="edit", help="Open the configuration file in an editor."
 )
-config_app.command(name="load", help="Load a packaged configuration preset.")(load_cmd)
+config_app.command(load_cmd, name="load", help="Load a packaged configuration preset.")

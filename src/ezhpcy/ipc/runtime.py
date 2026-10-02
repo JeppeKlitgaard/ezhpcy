@@ -132,8 +132,8 @@ def _prepare_runtime_directory(directory: Path) -> int | None:
         raise IPCError("could not create the tunnel runtime directory") from error
 
     if os.name != "posix":
-        # Python 3.14 applies an owner-and-administrators-only ACL when mode 0700
-        # creates a directory on Windows. Files then inherit that protected ACL.
+        # Since Python 3.14, mkdir with mode 0700 applies an owner-and-
+        # administrators-only ACL on Windows. Files then inherit that ACL.
         return None
 
     try:

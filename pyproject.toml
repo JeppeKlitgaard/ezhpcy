@@ -1,12 +1,12 @@
 [project]
 name = "ezhpcy"
 version = "0.1.0"
-requires-python = ">=3.14"
+requires-python = ">=3.15"
 dependencies = [
     # Pydantic
     "pydantic-extra-types>=2.11.1",
     "pydantic-settings>=2.14.2",
-    "pydantic>=2.13.4",
+    "pydantic>=2.13.5",
     # Templates
     "jinja2>=3.1.6",
     # SSH
@@ -14,7 +14,7 @@ dependencies = [
     "cryptography>=46.0.5",
     # CLI
     "rich>=15.0.0",
-    "typer>=0.26.8",
+    "typer>=0.27.2",
     # Keyring, secretstorage is for keyring on Linux
     "keyring>=25.7.0",
     "secretstorage>=3.5.0 ; sys_platform == 'linux'",

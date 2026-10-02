@@ -3,9 +3,7 @@ from typing import Annotated
 
 import typer
 
-from ezhpcy.cli.broker import broker_cmd
 from ezhpcy.cli.common import DEBUG_ENV_VAR
-from ezhpcy.cli.compute import compute_cmd
 from ezhpcy.cli.config import config_app
 from ezhpcy.cli.info import info_cmd
 from ezhpcy.cli.keyring import keyring_app
@@ -14,6 +12,7 @@ from ezhpcy.cli.provision import provision_cmd
 from ezhpcy.cli.proxy import proxy_cmd
 from ezhpcy.cli.prune import prune_cmd
 from ezhpcy.cli.ssh_config import ssh_config_cmd
+from ezhpcy.cli.tunnel import tunnel_cmd
 from ezhpcy.cli.utils.group import EzhpcyTyperGroup
 from ezhpcy.cli.version import version_cmd
 from ezhpcy.config import config
@@ -47,11 +46,10 @@ app.command(
 )(provision_cmd)
 app.command(name="prune", help="Prune EzHPCy-managed remote data.")(prune_cmd)
 app.command(
-    name="compute, c",
-    help="Allocate a compute node and start its SSH tunnel.",
-)(compute_cmd)
-app.command(name="broker", help="Run the foreground worker-stream broker.")(broker_cmd)
-app.command(name="proxy", help="Proxy SSH bytes through a running tunnel broker.")(
+    name="tunnel, t",
+    help="Allocate a compute node and host an SSH tunnel to it.",
+)(tunnel_cmd)
+app.command(name="proxy", help="Connect through a running tunnel (SSH ProxyCommand).")(
     proxy_cmd
 )
 
@@ -82,8 +80,7 @@ app.command(
 EzhpcyTyperGroup.command_order = (
     "provision",
     "prune",
-    "compute, c",
-    "broker",
+    "tunnel, t",
     "proxy",
     # Configuration Commands
     "config",

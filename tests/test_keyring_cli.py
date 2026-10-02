@@ -1,12 +1,12 @@
 import pytest
 from keyring.errors import KeyringError
-from typer.testing import CliRunner
 
-from ezhpcy.cli import app, keyring as keyring_cli
+from ezhpcy.cli import keyring as keyring_cli
+from tests.support.cli import invoke
 
 
 def test_keyring_set_is_available_with_connection_options() -> None:
-    result = CliRunner().invoke(app, ["keyring", "set", "--help"])
+    result = invoke(["keyring", "set", "--help"])
 
     assert result.exit_code == 0
     assert "--user" in result.stdout
@@ -25,8 +25,7 @@ def test_keyring_set_stores_password_for_user_at_host(
         lambda service, account, password: calls.append((service, account, password)),
     )
 
-    result = CliRunner().invoke(
-        app,
+    result = invoke(
         [
             "keyring",
             "set",
@@ -62,8 +61,7 @@ def test_keyring_set_prompts_for_missing_password(
         lambda service, account, password: calls.append((service, account, password)),
     )
 
-    result = CliRunner().invoke(
-        app,
+    result = invoke(
         ["keyring", "set", "--user", "alice", "--host", "login.example.com"],
     )
 
@@ -78,8 +76,7 @@ def test_keyring_set_reports_backend_errors(monkeypatch: pytest.MonkeyPatch) -> 
 
     monkeypatch.setattr(keyring_cli.keyring, "set_password", fail)
 
-    result = CliRunner().invoke(
-        app,
+    result = invoke(
         [
             "keyring",
             "set",

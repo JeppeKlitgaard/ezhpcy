@@ -6,14 +6,13 @@ from unittest.mock import patch
 import pytest
 from rich.console import Console
 from rich.logging import RichHandler
-from typer.testing import CliRunner
 
-from ezhpcy.cli import app
 from ezhpcy.constants import PACKAGE_NAME
 from ezhpcy.logging import (
     TERMINAL_HANDLER_NAME,
     configure_logging,
 )
+from tests.support.cli import invoke
 
 
 @pytest.fixture(autouse=True)
@@ -75,9 +74,9 @@ def test_debug_logger_includes_a_timestamp() -> None:
 
 def test_root_debug_option_overrides_logging_configuration() -> None:
     with patch("ezhpcy.cli.configure_logging") as configure:
-        result = CliRunner().invoke(app, ["--debug", "version"])
+        result = invoke(["--debug", "version"])
 
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == 0, result
     configure.assert_called_once_with(logging.DEBUG, include_timestamp=True)
 
 
@@ -87,24 +86,24 @@ def test_debug_env_var_overrides_logging_configuration_without_the_flag(
     monkeypatch.setenv("EZHPCY_DEBUG", "1")
 
     with patch("ezhpcy.cli.configure_logging") as configure:
-        result = CliRunner().invoke(app, ["version"])
+        result = invoke(["version"])
 
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == 0, result
     configure.assert_called_once_with(logging.DEBUG, include_timestamp=True)
 
 
 def test_root_help_exposes_debug_option() -> None:
-    result = CliRunner().invoke(app, ["--help"])
+    result = invoke(["--help"])
 
-    assert result.exit_code == 0, result.output
-    assert "--debug" in result.output
+    assert result.exit_code == 0, result
+    assert "--debug" in result.stdout
 
 
 def test_root_debug_help_exposes_its_env_var() -> None:
-    result = CliRunner().invoke(app, ["--help"])
+    result = invoke(["--help"])
 
-    assert result.exit_code == 0, result.output
-    assert "EZHPCY_DEBUG" in result.output
+    assert result.exit_code == 0, result
+    assert "EZHPCY_DEBUG" in result.stdout
 
 
 def test_configure_logging_is_idempotent() -> None:

@@ -185,7 +185,7 @@ def test_config_load_rejects_unknown_preset() -> None:
 
     assert result.exit_code == 2
     output = result.output.casefold()
-    assert "invalid value for 'preset:{" in output
+    assert "invalid value for 'preset'" in output
     assert "'unknown' is not one of" in output
     assert "'dtu'" in output
 
@@ -195,7 +195,7 @@ def test_config_load_help_lists_available_presets() -> None:
 
     assert result.exit_code == 0
     output = result.output.casefold()
-    assert "preset:{" in output
+    assert "{preset}:<dtu|generic>" in output
     assert "dtu" in output
 
 

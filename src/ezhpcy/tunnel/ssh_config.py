@@ -234,6 +234,7 @@ def check_host_resolution(host: WorkerHost) -> str | None:
         result = subprocess.run(
             ["ssh", "-G", host.alias],
             capture_output=True,
+            check=False,
             text=True,
             timeout=_SSH_RESOLVE_TIMEOUT_SECONDS,
             creationflags=WINDOWS_CREATION_FLAGS,

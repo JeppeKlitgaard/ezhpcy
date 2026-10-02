@@ -198,7 +198,7 @@ def test_invalid_profile_password_sources_are_reported_as_a_cli_parameter_error(
 
     assert result.exit_code == 2
     assert "Invalid value:" in result.output
-    assert "Invalid value for PROFILE" not in result.output
+    assert "Invalid value for" not in result.output
     assert "password_file, password_keyring" in result.output
 
 

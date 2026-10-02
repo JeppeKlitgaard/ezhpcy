@@ -380,6 +380,7 @@ def resolve_with_openssh(tmp_path: Path, alias: str) -> dict[str, str]:
     result = subprocess.run(
         ["ssh", "-F", str(main_config), "-G", alias],
         capture_output=True,
+        check=False,
         text=True,
         timeout=10,
     )

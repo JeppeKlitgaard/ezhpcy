@@ -118,7 +118,7 @@ class PBSScheduler(Scheduler):
                 if match := _INTERACTIVE_JOB_PATTERN.search(decoded):
                     job_command = self._job_shell_command(spec)
 
-                    def start_command() -> None:
+                    def start_command(job_command: str = job_command) -> None:
                         if process.send(f"{job_command}\n") <= 0:
                             raise SchedulerCommandError(
                                 "PBS interactive shell did not accept the worker command"

@@ -28,6 +28,7 @@ lazy from ezhpcy.cli._resolve import (
     connection_from_cli,
     missing_setting_error,
     resolve_profile_config,
+    scheduler_from_cli,
     with_cli_options,
 )
 lazy from ezhpcy.cli.doctor import echo_include_directive
@@ -1083,12 +1084,12 @@ def _check_interactive_submission_command(
     if command is None:
         return
     # The command comes from the CLI or, failing that, from the profile.
-    command_source = (
-        "--interactive-submission-command"
-        if scheduler_options.interactive_submission_command is not None
-        else f"profile.{profile}.scheduler.interactive_submission_command"
-    )
-    command_value = shlex.join(command)
+    if scheduler_options.interactive_submission_command is not None:
+        command_source = "--interactive-submission-command"
+        command_value = scheduler_options.interactive_submission_command
+    else:
+        command_source = f"profile.{profile}.scheduler.interactive_submission_command"
+        command_value = shlex.join(command)
     if scheduler.submission_mode is SubmissionMode.BATCH:
         raise CliUsageError(
             t"It requires {'scheduler.submission_mode':name} to be "
@@ -1189,7 +1190,7 @@ def tunnel_cmd(
     connection = connection_from_cli(
         connection_options, profile_config.connection, profile=profile
     )
-    scheduler = with_cli_options(profile_config.scheduler, scheduler_options)
+    scheduler = scheduler_from_cli(scheduler_options, profile_config.scheduler)
     resources = with_cli_options(profile_config.resources, resource_options)
     timings = with_cli_options(profile_config.timings, timing_options)
     try:

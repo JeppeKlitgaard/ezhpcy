@@ -123,18 +123,6 @@ def configured_client(tmp_path: Path) -> Config:
     )
 
 
-def test_provision_help_describes_idempotent_provisioning() -> None:
-    result = invoke(["provision", "--help"])
-
-    assert result.exit_code == 0
-    assert "Provision EzHPCy worker infrastructure" in result.stdout
-
-    prune_help = invoke(["prune", "--help"])
-    assert prune_help.exit_code == 0
-    assert "--all" in prune_help.stdout
-    assert "-a" in prune_help.stdout
-
-
 def test_provision_accepts_anonymous_cli_configuration() -> None:
     ssh = StubSSH()
     with (

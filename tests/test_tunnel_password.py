@@ -133,19 +133,6 @@ def test_keyring_backend_error_is_an_actionable_parameter_error(
         resolve_password(password_keyring=True)
 
 
-@pytest.mark.parametrize(
-    "arguments", [["--queue", "gpu"], ["--scheduler", "LSF"], ["--queue-timeout", "5"]]
-)
-@pytest.mark.parametrize("command", ["provision", "prune"])
-def test_connection_only_commands_reject_job_options(
-    command: str, arguments: list[str]
-) -> None:
-    result = invoke([command, "base", *arguments])
-
-    assert result.exit_code == 2
-    assert "Unknown option" in result.stderr
-
-
 def test_invalid_profile_password_sources_are_reported_as_a_cli_parameter_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

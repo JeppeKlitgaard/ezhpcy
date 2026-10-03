@@ -17,6 +17,7 @@ from ezhpcy.cli import app, tunnel as tunnel_module
 from ezhpcy.cli.tunnel import (
     TunnelError,
     WorkerControl,
+    _monitor_job,
     _run_tunnel,
     _select_worker_ports,
     _send_worker_lease_heartbeats,
@@ -279,6 +280,18 @@ class OutputProcess(StubProcess):
         return not self.chunks
 
 
+class FinishedProcess(StubProcess):
+    def __init__(self, exit_status: int = 0) -> None:
+        super().__init__()
+        self.exit_status = exit_status
+
+    def exit_status_ready(self) -> bool:
+        return True
+
+    def recv_exit_status(self) -> int:
+        return self.exit_status
+
+
 class StubTransport:
     def __init__(self) -> None:
         self.channel = StubChannel(b"SSH-2.0-OpenSSH_10.4\r\n")
@@ -508,6 +521,37 @@ def test_worker_control_rejects_invalid_ready_port() -> None:
 
         with pytest.raises(TunnelError, match="unexpected SSH port"):
             _wait_for_selected_worker_port(control, timeout_seconds=1)
+
+
+def test_job_monitor_uses_interactive_process_without_scheduler_polling() -> None:
+    job = InteractiveJob("42", FinishedProcess(0), "")
+    tunnel = StubTunnelServer(None, ("node42", 54321), None)
+    job_finished = threading.Event()
+    errors: list[TunnelError] = []
+
+    _monitor_job(
+        job, tunnel, threading.Event(), job_finished, errors, monitor_interval=0
+    )
+
+    assert job_finished.is_set()
+    assert not errors
+    assert tunnel.closed
+
+
+def test_job_monitor_does_not_treat_missing_exit_status_as_job_completion() -> None:
+    job = InteractiveJob("42", FinishedProcess(-1), "")
+    tunnel = StubTunnelServer(None, ("node42", 54321), None)
+    job_finished = threading.Event()
+    errors: list[TunnelError] = []
+
+    _monitor_job(
+        job, tunnel, threading.Event(), job_finished, errors, monitor_interval=0
+    )
+
+    assert not job_finished.is_set()
+    assert len(errors) == 1
+    assert "closed without an exit status" in str(errors[0])
+    assert tunnel.closed
 
 
 def test_worker_heartbeat_sender_logs_sequence_without_token() -> None:

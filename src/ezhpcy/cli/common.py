@@ -39,6 +39,16 @@ SCHEDULER_PANEL = "Scheduler Options"
 RESOURCES_PANEL = "Resource Options"
 TIMINGS_PANEL = "Timing Options"
 
+ProfileArg = Annotated[
+    str,
+    typer.Argument(
+        help=(
+            "Configured EzHPCy profile to use. Run `ezhpcy list-profiles` to see "
+            "available profiles."
+        ),
+        envvar=PROFILE_ENV_VAR,
+    ),
+]
 OptionalProfileArg = Annotated[
     str | None,
     typer.Argument(

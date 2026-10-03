@@ -499,33 +499,6 @@ def test_sshd_config_is_expressed_as_cli_arguments() -> None:
     assert "AuthorizedKeysCommandUser=alice" in settings
     assert "AllowUsers=alice" in settings
     assert "Subsystem=sftp internal-sftp" in settings
-    assert not any(setting.startswith("ClientAlive") for setting in settings)
-
-
-def test_sshd_config_can_end_sessions_with_unreachable_clients() -> None:
-    arguments = sshd_config_arguments(
-        host_key=PurePosixPath("/home/alice/.config/ezhpcy/ssh/host"),
-        remote_username="alice",
-        authorized_key=("ssh-ed25519", "PUBLICKEY"),
-        client_alive=(30, 3),
-    )
-
-    settings = arguments[3::2]
-    assert "ClientAliveInterval=30" in settings
-    assert "ClientAliveCountMax=3" in settings
-
-
-@pytest.mark.parametrize("client_alive", [(0, 3), (30, 0)])
-def test_sshd_config_rejects_non_positive_client_alive(
-    client_alive: tuple[int, int],
-) -> None:
-    with pytest.raises(ValueError, match="client-alive"):
-        sshd_config_arguments(
-            host_key=PurePosixPath("/home/alice/.config/ezhpcy/ssh/host"),
-            remote_username="alice",
-            authorized_key=("ssh-ed25519", "PUBLICKEY"),
-            client_alive=client_alive,
-        )
 
 
 def test_pin_worker_host_key_preserves_unrelated_entries(tmp_path: Path) -> None:

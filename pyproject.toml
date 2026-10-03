@@ -31,14 +31,11 @@ dev = [
     "ipykernel>=7.2.0",
     "prek>=0.4.9",
     "pytest>=9.1.1",
-    "ruff>=0.16.10",    # keep in sync with .pre-commit-config.yaml
+    "ruff>=0.15.21",
 ]
 
 [tool.ruff.lint]
-extend-select = [
-    "I",  # isort
-    "UP", # pyupgrade
-]
+extend-select = ["I"]
 isort.combine-as-imports = true
 
 [build-system]

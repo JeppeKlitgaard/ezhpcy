@@ -20,24 +20,24 @@ explicit owner-only ACL and moved into place atomically.
 """
 
 import logging
-import os
-import subprocess
 import sys
-import uuid
 from dataclasses import dataclass
 from pathlib import Path
+lazy import os
+lazy import subprocess
+lazy import uuid
 
 from ezhpcy.config import PROFILE_NAME_PATTERN, Config, config
-from ezhpcy.constants import (
+lazy from ezhpcy.constants import (
     WINDOWS_CREATION_FLAGS,
     WORKER_CLIENT_KEY_NAME,
     WORKER_HOST_ALIAS,
 )
-from ezhpcy.ipc import descriptor_path
-from ezhpcy.ipc.common import IPCError
-from ezhpcy.ipc.runtime import load_runtime_descriptor
-from ezhpcy.permissions import restrict_to_current_user
-from ezhpcy.utils import local_machine_id
+lazy from ezhpcy.ipc import descriptor_path
+lazy from ezhpcy.ipc.common import IPCError
+lazy from ezhpcy.ipc.runtime import load_runtime_descriptor
+lazy from ezhpcy.permissions import restrict_to_current_user
+lazy from ezhpcy.utils import local_machine_id
 
 logger = logging.getLogger(__name__)
 

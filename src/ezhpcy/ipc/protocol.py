@@ -1,12 +1,12 @@
 """Fixed-size authentication and readiness messages for tunnel IPC."""
 
-import hmac
-import secrets
-import socket
-import struct
-import time
+lazy import hmac
+lazy import secrets
+lazy import socket
+lazy import struct
+lazy import time
 
-from ezhpcy.ipc.common import IPCError, ProtocolError
+lazy from ezhpcy.ipc.common import IPCError, ProtocolError
 
 MAX_ERROR_SIZE = 1024
 AUTHENTICATION_TIMEOUT = 2.0

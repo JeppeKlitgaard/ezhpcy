@@ -1,10 +1,10 @@
-from json import dumps as json_dumps
+lazy from json import dumps as json_dumps
 
-from rich.table import Table
+lazy from rich.table import Table
 
-from ezhpcy import console
-from ezhpcy.config import config
-from ezhpcy.utils import ezhpcy_version, local_machine_id
+lazy from ezhpcy import console
+lazy from ezhpcy.config import config
+lazy from ezhpcy.utils import ezhpcy_version, local_machine_id
 
 
 def info_cmd(*, json: bool = False) -> None:

@@ -1,17 +1,17 @@
 import logging
 import re
-from pathlib import PurePosixPath
-from typing import Annotated
+lazy from pathlib import PurePosixPath
+lazy from typing import Annotated
 
-from cyclopts import Parameter
-from rich.prompt import Confirm
+lazy from cyclopts import Parameter
+lazy from rich.prompt import Confirm
 
-from ezhpcy import console
 from ezhpcy.cli._options import ConnectionOptions, OptionalProfileArg
-from ezhpcy.cli._resolve import connection_from_cli, resolve_profile_config
-from ezhpcy.cli.utils.ssh import InteractiveSSHClient
-from ezhpcy.ssh import SSHClient
-from ezhpcy.types import RemoteState
+lazy from ezhpcy import console
+lazy from ezhpcy.cli._resolve import connection_from_cli, resolve_profile_config
+lazy from ezhpcy.cli.utils.ssh import InteractiveSSHClient
+lazy from ezhpcy.ssh import SSHClient
+lazy from ezhpcy.types import RemoteState
 
 _INSTALLATION_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+!-]*$")
 

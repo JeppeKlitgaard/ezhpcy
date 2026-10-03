@@ -6,6 +6,7 @@ import pytest
 from keyring.errors import KeyringError
 
 from ezhpcy.cli import _options, _password, _resolve
+from ezhpcy.cli._options import ConnectionOptions, ResourceOptions, SchedulerOptions
 from ezhpcy.cli.utils.bad_parameter import RichBadParameter
 from ezhpcy.scheduler.types import SchedulerType
 from ezhpcy.types import ProfileConfig
@@ -161,9 +162,18 @@ def test_explicit_password_sources_are_mutually_exclusive(tmp_path: Path) -> Non
 
 
 def test_sub_configs_can_be_resolved_entirely_from_cli_values() -> None:
-    connection = _resolve.connection_from_cli(user="alice", host="login.example.com")
-    scheduler = _resolve.scheduler_from_cli(scheduler_type=SchedulerType.LSF)
-    resources = _resolve.resources_from_cli(queue="gpu", cores=8, gpus=1)
+    profile_config = _resolve.resolve_profile_config(None)
+    connection = _resolve.connection_from_cli(
+        ConnectionOptions(user="alice", host="login.example.com"),
+        profile_config.connection,
+        profile=None,
+    )
+    scheduler = _resolve.scheduler_from_cli(
+        SchedulerOptions(scheduler_type=SchedulerType.LSF), profile_config.scheduler
+    )
+    resources = _resolve.resources_from_cli(
+        ResourceOptions(queue="gpu", cores=8, gpus=1), profile_config.resources
+    )
 
     assert connection.user == "alice"
     assert str(connection.host) == "login.example.com"
@@ -194,8 +204,13 @@ def test_cli_values_override_only_the_given_sub_config_fields(
         },
     )
 
-    connection = _resolve.connection_from_cli(profile="base", user="bob")
-    resources = _resolve.resources_from_cli(profile="base", cores=8)
+    profile_config = _resolve.resolve_profile_config("base")
+    connection = _resolve.connection_from_cli(
+        ConnectionOptions(user="bob"), profile_config.connection, profile="base"
+    )
+    resources = _resolve.resources_from_cli(
+        ResourceOptions(cores=8), profile_config.resources
+    )
 
     assert (connection.user, str(connection.host)) == ("bob", "login.example.com")
     assert connection.password_prompt is False
@@ -237,7 +252,7 @@ def test_invalid_profile_password_sources_are_reported_as_a_cli_parameter_error(
     )
 
     with pytest.raises(RichBadParameter):
-        _resolve.connection_from_cli(profile="base")
+        _resolve.resolve_profile_config("base")
 
     result = invoke(
         ["tunnel", "base"],

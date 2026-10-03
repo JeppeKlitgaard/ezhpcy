@@ -37,34 +37,33 @@ dev = [
 [tool.ruff.lint]
 preview = true
 extend-select = [
-    "A",    # flake8-builtins
-    "B",    # flake8-bugbear
+    "A",   # flake8-builtins
+    "B",   # flake8-bugbear
     "DTZ",  # flake8-datetimetz
-    "EXE",  #flake8-executable
-    "FURB", # refurb
-    "I",    # isort
-    "INP",  #flake8-no-pep420
-    "LOG",  #flake8-logging
-    "PTH",  #flake8-use-pathlib
-    "T10",  #flake8-debugger
-    "TID",  # flake8-tidy-imports
-    "UP",   # pyupgrade
-    "YTT",  # flake8-2020
+    "EXE", #flake8-executable
+    "I",   # isort
+    "INP", #flake8-no-pep420
+    "LOG", #flake8-logging
+    "PTH", #flake8-use-pathlib
+    "T10", #flake8-debugger
+    "TID", # flake8-tidy-imports
+    "UP",  # pyupgrade
+    "YTT", # flake8-2020
 ]
 ignore = [
-    "RUF106", # rule-codecs-in-suppression-comments
+    "RUF106",  # rule-codecs-in-suppression-comments
 ]
 isort.combine-as-imports = true
 
 [tool.ruff.lint.per-file-ignores]
 # Tests
 "tests/**" = [
-    "RUF069", # float-equality-comparison, in tests we sometimes want eq. check
+    "RUF069",  # float-equality-comparison, in tests we sometimes want eq. check
 ]
 
 # Standalone scripts
 "scripts/**" = [
-    "INP", # no-pep420, scripts are standalone and not part of a package
+    "INP",  # no-pep420, scripts are standalone and not part of a package
 ]
 
 [build-system]

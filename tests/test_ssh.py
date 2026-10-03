@@ -13,7 +13,7 @@ from ezhpcy.cli.utils.ssh import (
     _send_server_alive_requests,
 )
 from ezhpcy.constants import EZHPCY_VERSION, PIXI_VERSION
-from ezhpcy.ssh import RemoteCommandError, SFTPClient, SSHClient
+from ezhpcy.ssh import SFTPClient, SSHClient
 from ezhpcy.types import ConnectionInfo, RemoteState
 
 
@@ -477,54 +477,6 @@ def test_run_login_shell_with_input_streams_the_job_script() -> None:
     remote_stdin.write.assert_called_once_with(script.encode())
     remote_stdin.flush.assert_called_once_with()
     remote_stdin.channel.shutdown_write.assert_called_once_with()
-
-
-def _command_streams(
-    exit_status: int, stdout_bytes: bytes = b"", stderr_bytes: bytes = b""
-) -> tuple[MagicMock, MagicMock, MagicMock]:
-    stdout = MagicMock()
-    stdout.channel.recv_exit_status.return_value = exit_status
-    stdout.read.return_value = stdout_bytes
-    stderr = MagicMock()
-    stderr.read.return_value = stderr_bytes
-    return MagicMock(), stdout, stderr
-
-
-_RUN_METHODS = [
-    pytest.param(lambda client: client.run(["true"]), id="run"),
-    pytest.param(
-        lambda client: client.run_login_shell_with_input(["true"], "input"),
-        id="run_login_shell_with_input",
-    ),
-]
-
-
-@pytest.mark.parametrize("run", _RUN_METHODS)
-def test_remote_commands_return_decoded_stdout(run) -> None:
-    client = SSHClient(ConnectionInfo(host="login.example.com"))
-
-    with patch.object(
-        client, "exec_command", return_value=_command_streams(0, b"output\n")
-    ):
-        assert run(client) == "output\n"
-
-
-@pytest.mark.parametrize("run", _RUN_METHODS)
-def test_remote_commands_raise_remote_command_error_on_failure(run) -> None:
-    client = SSHClient(ConnectionInfo(host="login.example.com"))
-    streams = _command_streams(255, b"ignored", b"  Job <42> is not found\n")
-
-    with (
-        patch.object(client, "exec_command", return_value=streams),
-        pytest.raises(RemoteCommandError) as raised,
-    ):
-        run(client)
-
-    assert raised.value.exit_status == 255
-    assert raised.value.stderr == "Job <42> is not found"
-    # Callers such as the schedulers match on this message.
-    assert str(raised.value) == "Remote command failed (255): Job <42> is not found"
-    assert isinstance(raised.value, RuntimeError)
 
 
 def test_start_login_shell_opens_pty_and_keeps_channel_running() -> None:

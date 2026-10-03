@@ -6,29 +6,11 @@ from contextlib import contextmanager
 from pathlib import PurePosixPath
 
 import paramiko
-from paramiko.channel import ChannelFile, ChannelStderrFile
 
 from ezhpcy.scheduler.base import RemoteProcess
 from ezhpcy.types import ConnectionInfo, RemoteState
 
 logger = logging.getLogger(__name__)
-
-
-class RemoteCommandError(RuntimeError):
-    """A remote command exited with a non-zero status."""
-
-    def __init__(self, exit_status: int, stderr: str):
-        super().__init__(f"Remote command failed ({exit_status}): {stderr}")
-        self.exit_status = exit_status
-        self.stderr = stderr
-
-
-def _command_output(stdout: ChannelFile, stderr: ChannelStderrFile) -> str:
-    """Return a finished command's stdout, or raise if its exit status is not 0."""
-    exit_status = stdout.channel.recv_exit_status()
-    if exit_status != 0:
-        raise RemoteCommandError(exit_status, stderr.read().decode().strip())
-    return stdout.read().decode()
 
 
 class SFTPClient(paramiko.SFTPClient):
@@ -141,7 +123,13 @@ class SSHClient(paramiko.SSHClient):
             get_pty=get_pty,
             environment=environment,
         )
-        return _command_output(stdout, stderr)
+
+        exit_status = stdout.channel.recv_exit_status()
+        if exit_status != 0:
+            message = stderr.read().decode().strip()
+            raise RuntimeError(f"Remote command failed ({exit_status}): {message}")
+
+        return stdout.read().decode()
 
     def run_pixi(
         self,
@@ -176,7 +164,11 @@ class SSHClient(paramiko.SSHClient):
         remote_stdin.write(stdin.encode())
         remote_stdin.flush()
         remote_stdin.channel.shutdown_write()
-        return _command_output(stdout, stderr)
+        exit_status = stdout.channel.recv_exit_status()
+        if exit_status != 0:
+            message = stderr.read().decode().strip()
+            raise RuntimeError(f"Remote command failed ({exit_status}): {message}")
+        return stdout.read().decode()
 
     def start_login_shell(self, args: list[str]) -> RemoteProcess:
         """Start a command in a remote Bash login shell with a pseudo-terminal."""

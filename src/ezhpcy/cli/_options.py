@@ -1,7 +1,9 @@
 from dataclasses import dataclass
+from functools import cache
 from pathlib import Path
 from typing import Annotated
 lazy import os
+lazy from typing import get_type_hints
 
 from cyclopts import Group, Parameter, validators
 
@@ -266,7 +268,8 @@ InteractiveSubmissionCommandOpt = Annotated[
 
 
 # One dataclass per option panel. `name="*"` flattens its fields into top-level
-# options of the command that takes it.
+# options of the command that takes it. Fields are named like the settings they
+# override (see `given_options`).
 #
 # Commands give a default instance, since Cyclopts passes `None`
 # when none of the fields were given.
@@ -291,7 +294,7 @@ class ConnectionOptions:
 @Parameter(name="*")
 @dataclass(frozen=True, kw_only=True)
 class SchedulerOptions:
-    scheduler_type: SchedulerOpt = None
+    type: SchedulerOpt = None
     submission_mode: SubmissionModeOpt = None
     interactive_submission_command: InteractiveSubmissionCommandOpt = None
 
@@ -311,8 +314,40 @@ class ResourceOptions:
 @dataclass(frozen=True, kw_only=True)
 class TimingOptions:
     queue_timeout_seconds: QueueTimeoutOpt = None
-    startup_timeout_seconds: StartupTimeoutOpt = None
+    worker_startup_timeout_seconds: StartupTimeoutOpt = None
     job_poll_interval_seconds: JobPollIntervalOpt = None
     job_monitor_interval_seconds: JobMonitorIntervalOpt = None
     worker_heartbeat_interval_seconds: WorkerHeartbeatIntervalOpt = None
     worker_heartbeat_timeout_seconds: WorkerHeartbeatTimeoutOpt = None
+
+
+@cache
+def _flags(options_type: type) -> dict[str, str]:
+    """Each field's flag as errors name it, e.g. `--queue` or `--exclusive/--shared`."""
+    flags = {}
+    for name, hint in get_type_hints(options_type, include_extras=True).items():
+        parameter = next(
+            item for item in hint.__metadata__ if isinstance(item, Parameter)
+        )
+        # Cyclopts stores both as tuples, e.g. `("--queue", "-q")`.
+        names = tuple(parameter.name or ())
+        negatives = tuple(parameter.negative or ())
+        flags[name] = "/".join((names[0], *negatives[:1]))
+    return flags
+
+
+def given_options(options: object) -> dict[str, tuple[str, object]]:
+    """Return the options given on the command line, by field: (flag, value).
+
+    Options left out (`None`) are skipped. The flag is for error messages. For
+    `ezhpcy tunnel base --cores 8 --shared`:
+
+    >>> given_options(resource_options)
+    {'cores': ('--cores', 8), 'exclusive': ('--exclusive/--shared', False)}
+    """
+    flags = _flags(type(options))
+    return {
+        name: (flag, value)
+        for name, flag in flags.items()
+        if (value := getattr(options, name)) is not None
+    }

@@ -73,8 +73,21 @@ def resolve_password(
 
     `config_prefix` is where the profile's settings are, for error messages.
     """
-    # At most one of these is set: Cyclopts rejects several
-    # (the options' `PASSWORD_SOURCES` group).
+    explicit_sources = [
+        name
+        for name, selected in (
+            ("--password", password is not None),
+            ("--password-file", password_file is not None),
+            ("--password-fd", password_fd is not None),
+            ("--password-keyring", password_keyring),
+        )
+        if selected
+    ]
+    if len(explicit_sources) > 1:
+        raise CliUsageError(
+            t"Password source options are mutually exclusive: {explicit_sources:name}."
+        )
+
     if password is not None:
         return password
     if password_file is not None:

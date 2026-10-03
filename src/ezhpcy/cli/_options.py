@@ -272,8 +272,6 @@ InteractiveSubmissionCommandOpt = Annotated[
 # when none of the fields were given.
 # They're frozen, so the default is safe to share
 # ruff's B008 rule does not detect this, so we locally ignore it at call-sites.
-# See: https://github.com/astral-sh/ruff/issues/29071
-# Note: Should remove ignore from all call-sites when this is fixed
 #
 # They're dataclasses rather than Pydantic models on purpose:
 # Cyclopts hands a model the raw strings and shows Pydantic's own, uglier error

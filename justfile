@@ -46,3 +46,8 @@ pc:
 [group: 'test']
 test *args:
     uv run pytest {{args}}
+
+# Runs the test suite and reports coverage; `just coverage --cov-report=html` for htmlcov/
+[group: 'test']
+coverage *args:
+    uv run pytest --cov --cov-report=term-missing {{args}}

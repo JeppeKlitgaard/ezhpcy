@@ -2,6 +2,7 @@ import logging
 import os
 import re
 from pathlib import Path
+from string.templatelib import Template
 from typing import Any, Self
 
 from platformdirs import PlatformDirs
@@ -12,10 +13,10 @@ from pydantic_settings import (
     SettingsConfigDict,
     TomlConfigSettingsSource,
 )
-from rich.text import Text
 
 from ezhpcy.constants import LOGIN_KNOWN_HOSTS_NAME, PACKAGE_NAME, SSH_DIRECTORY_NAME
 from ezhpcy.logging import configure_logging
+from ezhpcy.messages import plain
 from ezhpcy.types import (
     PASSWORD_SOURCE_FIELDS,
     ProfileConfig,
@@ -30,14 +31,15 @@ PROFILE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
 
 class ProfilePasswordSourceError(ValueError):
-    """A profile's configured password sources are invalid."""
+    """A profile's configured password sources are invalid.
 
-    def __init__(self, profile_name: str, message: str) -> None:
-        self._rich_message = f"profile [bold blue]{profile_name}[/bold blue] {message}"
-        super().__init__(Text.from_markup(self._rich_message).plain)
+    `message` is a template, so the CLI can style the names in it (see
+    `ezhpcy.messages`).
+    """
 
-    def rich_message(self) -> str:
-        return self._rich_message
+    def __init__(self, message: Template) -> None:
+        self.message = message
+        super().__init__(plain(message))
 
 
 def _default_config_file() -> Path:
@@ -157,12 +159,11 @@ def _validate_profile_password_source(
     connection = profile.connection
     if connection.password is not None:
         raise ProfilePasswordSourceError(
-            profile_name,
-            "must not set [bold red]connection.password[/bold red], because "
-            "passwords must not be stored in configuration files; use "
-            "[bold blue]connection.password_file[/bold blue], "
-            "[bold blue]connection.password_fd[/bold blue], or "
-            "[bold blue]connection.password_keyring[/bold blue] instead",
+            t"profile {profile_name:name} must not set "
+            t"{'connection.password':name}, because passwords must not be stored "
+            t"in configuration files; use {'connection.password_file':name}, "
+            t"{'connection.password_fd':name}, or "
+            t"{'connection.password_keyring':name} instead"
         )
 
     selected_sources = [
@@ -175,12 +176,9 @@ def _validate_profile_password_source(
         if selected
     ]
     if len(selected_sources) > 1:
-        rich_sources = ", ".join(
-            f"[bold red]{source}[/bold red]" for source in selected_sources
-        )
         raise ProfilePasswordSourceError(
-            profile_name,
-            f"has mutually exclusive password source settings: {rich_sources}",
+            t"profile {profile_name:name} has mutually exclusive password source "
+            t"settings: {selected_sources:name}"
         )
 
 

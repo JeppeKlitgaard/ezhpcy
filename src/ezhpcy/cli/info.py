@@ -1,6 +1,5 @@
 from json import dumps as json_dumps
 
-import typer
 from rich.table import Table
 
 from ezhpcy import console
@@ -60,7 +59,7 @@ def info_cmd(*, json: bool = False) -> None:
 
     if json:
         flat_data = [*section for section in datas]
-        typer.echo(json_dumps(flat_data, indent=4))
+        console.out(json_dumps(flat_data, indent=4))
         return
 
     table = Table(title="EzHPCy Information")

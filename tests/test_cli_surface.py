@@ -701,6 +701,24 @@ def test_invalid_resource_values_are_usage_errors(
         ),
         pytest.param(
             "tunnel",
+            ["base", "--interactive-submission-command", "   "],
+            ["--interactive-submission-command", "must not be empty"],
+            id="wrapper-empty",
+        ),
+        pytest.param(
+            "tunnel",
+            [
+                "base",
+                "--interactive-submission-command",
+                "a100sh",
+                "--interactive-submission-command",
+                "a100sh",
+            ],
+            ["--interactive-submission-command specified multiple times"],
+            id="wrapper-given-twice",
+        ),
+        pytest.param(
+            "tunnel",
             ["base", "--alias", "exclusive"],
             ["is the name of profile", "exclusive"],
             id="alias-is-a-profile",

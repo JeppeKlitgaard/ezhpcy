@@ -1,4 +1,3 @@
-lazy import shlex
 lazy from collections.abc import Mapping
 lazy from string.templatelib import Template
 
@@ -7,7 +6,6 @@ lazy from pydantic import BaseModel, ValidationError
 lazy from ezhpcy.cli._errors import CliUsageError, sentence
 lazy from ezhpcy.cli._options import (
     ConnectionOptions,
-    SchedulerOptions,
     given_options,
 )
 lazy from ezhpcy.cli._password import resolve_password
@@ -16,7 +14,6 @@ lazy from ezhpcy.types import (
     ConnectionConfig,
     ConnectionInfo,
     ResolvedProfileConfig,
-    SchedulerConfig,
 )
 
 LIST_PROFILES_HINT = (
@@ -76,26 +73,6 @@ def _validation_usage_error(
     )
 
 
-def _parse_interactive_submission_command(value: str | None) -> list[str] | None:
-    if value is None:
-        return None
-    try:
-        command = shlex.split(value)
-    except ValueError as error:
-        raise CliUsageError(
-            t"Could not split it with shell-style quoting: {sentence(str(error))}",
-            param_hint="--interactive-submission-command",
-            value=value,
-        ) from error
-    if not command:
-        raise CliUsageError(
-            t"The command must not be empty.",
-            param_hint="--interactive-submission-command",
-            value=value,
-        )
-    return command
-
-
 def resolve_profile_config(profile: str | None) -> ResolvedProfileConfig:
     """Resolve the selected profile, or the defaults when none is selected."""
     if profile is None:
@@ -121,17 +98,16 @@ def resolve_profile_config(profile: str | None) -> ResolvedProfileConfig:
 
 
 def with_cli_options[SubConfigT: BaseModel](
-    sub_config: SubConfigT, options: object, **parsed: object
+    sub_config: SubConfigT, options: object
 ) -> SubConfigT:
     """Apply the options given on the command line on top of a resolved sub-config.
 
     `options` is an option dataclass whose fields are named like `sub_config`'s.
-    `parsed` replaces the raw value of a given option, by field.
     """
     given = given_options(options)
     values = {
         **sub_config.model_dump(exclude_unset=True),
-        **{name: parsed.get(name, value) for name, (_, value) in given.items()},
+        **{name: value for name, (_, value) in given.items()},
     }
     try:
         return type(sub_config).model_validate(values)
@@ -195,19 +171,6 @@ def connection_from_cli(
         raise _validation_usage_error(
             error, {"user": "--user", "host": "--host"}
         ) from error
-
-
-def scheduler_from_cli(
-    options: SchedulerOptions, configured: SchedulerConfig
-) -> SchedulerConfig:
-    """`with_cli_options`, splitting `--interactive-submission-command` first."""
-    return with_cli_options(
-        configured,
-        options,
-        interactive_submission_command=_parse_interactive_submission_command(
-            options.interactive_submission_command
-        ),
-    )
 
 
 def direct_connection_from_cli(options: ConnectionOptions) -> ConnectionInfo:

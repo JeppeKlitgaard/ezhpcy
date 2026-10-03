@@ -3,9 +3,12 @@ from functools import cache
 from pathlib import Path
 from typing import Annotated
 lazy import os
+lazy import shlex
+lazy from collections.abc import Sequence
 lazy from typing import get_type_hints
 
 from cyclopts import Group, Parameter, validators
+lazy from cyclopts import Token
 
 from ezhpcy.constants import PACKAGE_NAME
 from ezhpcy.scheduler.types import SchedulerType
@@ -252,10 +255,31 @@ WorkerHeartbeatTimeoutOpt = Annotated[
         group=TIMINGS_PANEL,
     ),
 ]
+
+
+def _split_command(_type: type, tokens: Sequence[Token]) -> list[str]:
+    """Split a command with shell-style quoting, without running a shell."""
+    # A list option collects every occurrence; this one takes one command. Worded
+    # like Cyclopts' own error for a repeated option.
+    if len(tokens) > 1:
+        raise ValueError(f"Parameter {tokens[0].keyword} specified multiple times.")
+    try:
+        command = shlex.split(tokens[0].value)
+    except ValueError as error:
+        raise ValueError(
+            f"Could not split it with shell-style quoting: {error}."
+        ) from error
+    if not command:
+        raise ValueError("The command must not be empty.")
+    return command
+
+
 InteractiveSubmissionCommandOpt = Annotated[
-    str | None,
+    list[str] | None,
     Parameter(
         name="--interactive-submission-command",
+        converter=_split_command,
+        n_tokens=1,
         metavar="COMMAND",
         help=(
             "Replace the scheduler-generated interactive submission command. "

@@ -20,7 +20,6 @@ from ezhpcy.cli._options import (
     ResourceOptions,
     SchedulerOptions,
     TimingOptions,
-    given_options,
 )
 lazy from ezhpcy.cli._errors import CliUsageError, sentence
 lazy from ezhpcy.cli._resolve import (
@@ -28,8 +27,9 @@ lazy from ezhpcy.cli._resolve import (
     connection_from_cli,
     missing_setting_error,
     resolve_profile_config,
+    resources_from_cli,
     scheduler_from_cli,
-    with_cli_options,
+    timings_from_cli,
 )
 lazy from ezhpcy.cli.doctor import echo_include_directive
 lazy from ezhpcy.cli.utils.ssh import InteractiveSSHClient
@@ -1116,8 +1116,16 @@ def _check_interactive_submission_command(
         else set()
     )
     cli_submission_options = [
-        t"{flag:name}={value}"
-        for flag, value in given_options(resource_options).values()
+        t"{option:name}={value}"
+        for option, value in (
+            ("--queue", resource_options.queue),
+            ("--cores", resource_options.cores),
+            ("--gpus", resource_options.gpus),
+            ("--exclusive/--shared", resource_options.exclusive),
+            ("--time-limit", resource_options.time_limit),
+            ("--memory", resource_options.memory),
+        )
+        if value is not None
     ]
     conflicts = [
         *(
@@ -1191,8 +1199,8 @@ def tunnel_cmd(
         connection_options, profile_config.connection, profile=profile
     )
     scheduler = scheduler_from_cli(scheduler_options, profile_config.scheduler)
-    resources = with_cli_options(profile_config.resources, resource_options)
-    timings = with_cli_options(profile_config.timings, timing_options)
+    resources = resources_from_cli(resource_options, profile_config.resources)
+    timings = timings_from_cli(timing_options, profile_config.timings)
     try:
         resolved = ResolvedConfig(
             description=profile_config.description,

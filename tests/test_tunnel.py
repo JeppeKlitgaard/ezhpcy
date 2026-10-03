@@ -118,6 +118,7 @@ def test_worker_sshd_command_retries_ports_through_pixi() -> None:
     assert "PidFile=none" in command
     assert "HostKey=/remote/ssh_host_ed25519_key" in command
     assert "AuthorizedKeysCommand=/bin/echo ssh-ed25519 WORKERKEY" in command
+    assert not any("ssh-serve" in argument for argument in command)
 
 
 @pytest.mark.parametrize(
@@ -689,6 +690,7 @@ def test_tunnel_submits_worker_starts_broker_and_cancels() -> None:
     assert "AuthorizedKeysCommand=/bin/echo ssh-ed25519 WORKERKEY" in spec.command
     assert "ClientAliveInterval=30" in spec.command
     assert "ClientAliveCountMax=3" in spec.command
+    assert not any("payload" in argument for argument in spec.command)
     assert spec.queue == "normal"
     assert spec.memory_bytes == 2048 * _MEBIBYTE
     assert spec.cores == 32
@@ -962,6 +964,7 @@ def test_tunnel_submits_batch_job_without_interactive_shell() -> None:
         "AuthorizedKeysCommand=/bin/echo ssh-ed25519 WORKERKEY"
         in (scheduler.submitted_scripts[0])
     )
+    assert "worker.sh" not in scheduler.submitted_scripts[0]
     assert scheduler.command_starts == 0
     assert scheduler.cancelled == ["42"]
 

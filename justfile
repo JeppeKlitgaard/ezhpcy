@@ -8,7 +8,6 @@ all:
     just format
     just lint
     just test
-    just pc-all
 
 # Installs the project dependencies and pre-commit hooks
 [group: 'dev']

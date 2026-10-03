@@ -6,6 +6,7 @@ import signal
 import threading
 import time
 from collections.abc import Callable
+from datetime import timedelta
 from pathlib import PurePosixPath
 from typing import Annotated
 
@@ -643,17 +644,27 @@ def _resolve_ssh_host(
 def _run_tunnel(
     *,
     profile_name: str | None,
-    resolved: ResolvedConfig,
+    profile: ResolvedConfig,
     ssh_host: WorkerHost,
     ssh_host_in_profiles_config: bool,
+    conn_info: ConnectionInfo,
+    scheduler_type: SchedulerType,
+    queue: str | None,
+    cores: int,
+    gpus: int,
+    exclusive: bool,
+    time_limit: timedelta | None,
+    memory_bytes: int | None,
+    queue_timeout_seconds: float,
+    startup_timeout_seconds: float,
+    job_poll_interval_seconds: float,
+    job_monitor_interval_seconds: float,
+    heartbeat_interval_seconds: float = 30,
+    heartbeat_timeout_seconds: float = 90,
     worker_ports: tuple[int, ...],
     auto_provision: bool,
+    submission_mode: SubmissionMode,
 ) -> None:
-    conn_info = resolved.connection
-    scheduler_type = resolved.scheduler.type
-    submission_mode = resolved.scheduler.submission_mode
-    resources = resolved.resources
-    timings = resolved.timings
     machine_id = local_machine_id()
     with InteractiveSSHClient(
         conn_info,
@@ -698,23 +709,23 @@ def _run_tunnel(
                     ssh.run_login_shell,
                     ssh.start_login_shell,
                     ssh.run_login_shell_with_input,
-                    interactive_application_profile=resolved.lsf.application_profile,
+                    interactive_application_profile=profile.lsf.application_profile,
                     interactive_submission_command=(
-                        resolved.scheduler.interactive_submission_command
+                        profile.scheduler.interactive_submission_command
                     ),
                     interactive_submission_environment=(
-                        resolved.lsf.submission_environment
+                        profile.lsf.submission_environment
                     ),
-                    interactive_export_environment=resolved.lsf.export_environment,
-                    resource_reserve_per_task=resolved.lsf.resource_reserve_per_task,
+                    interactive_export_environment=profile.lsf.export_environment,
+                    resource_reserve_per_task=profile.lsf.resource_reserve_per_task,
                 )
             case SchedulerType.PBS:
                 scheduler = PBSScheduler(
                     ssh.run_login_shell,
                     ssh.start_login_shell,
-                    command_directory=resolved.pbs.command_directory,
+                    command_directory=profile.pbs.command_directory,
                     interactive_submission_command=(
-                        resolved.scheduler.interactive_submission_command
+                        profile.scheduler.interactive_submission_command
                     ),
                 )
             case _:
@@ -733,15 +744,15 @@ def _run_tunnel(
             "Worker request: queue=%r cores=%d gpus=%d exclusive=%s "
             "time_limit=%s memory_bytes=%s ports=%s heartbeat_interval=%g "
             "heartbeat_timeout=%g",
-            resources.queue,
-            resources.cores,
-            resources.gpus,
-            resources.exclusive,
-            resources.time_limit_delta,
-            resources.memory_bytes,
+            queue,
+            cores,
+            gpus,
+            exclusive,
+            time_limit,
+            memory_bytes,
             worker_ports,
-            timings.worker_heartbeat_interval_seconds,
-            timings.worker_heartbeat_timeout_seconds,
+            heartbeat_interval_seconds,
+            heartbeat_timeout_seconds,
         )
         worker_cwd_dir = remote_state.worker_cwd_dir()
         worker_logs_dir = remote_state.worker_logs_dir()
@@ -778,8 +789,7 @@ def _run_tunnel(
                 remote_username=remote_username,
                 authorized_key=(key_type, key_blob),
                 client_alive=_worker_client_alive(
-                    timings.worker_heartbeat_interval_seconds,
-                    timings.worker_heartbeat_timeout_seconds,
+                    heartbeat_interval_seconds, heartbeat_timeout_seconds
                 ),
             )
             control.publish_lease()
@@ -788,19 +798,19 @@ def _run_tunnel(
                     remote_state,
                     ports=worker_ports,
                     heartbeat_token=heartbeat_token,
-                    heartbeat_timeout_seconds=timings.worker_heartbeat_timeout_seconds,
+                    heartbeat_timeout_seconds=heartbeat_timeout_seconds,
                     heartbeat_debug=logger.isEnabledFor(logging.DEBUG),
                     control_dir=control_dir,
                     read_script_from_stdin=stream_lsf_script,
                     sshd_arguments=sshd_arguments,
                 ),
                 name="ezhpcy-worker",
-                time_limit=resources.time_limit_delta,
-                memory_bytes=resources.memory_bytes,
-                cores=resources.cores,
-                gpus=resources.gpus,
-                exclusive=resources.exclusive,
-                queue=resources.queue,
+                time_limit=time_limit,
+                memory_bytes=memory_bytes,
+                cores=cores,
+                gpus=gpus,
+                exclusive=exclusive,
+                queue=queue,
                 working_directory=worker_cwd_dir,
                 stdout_path=worker_logs_dir / f"worker-{heartbeat_token}.out",
                 stderr_path=worker_logs_dir / f"worker-{heartbeat_token}.err",
@@ -811,7 +821,7 @@ def _run_tunnel(
                 if submission_mode is SubmissionMode.INTERACTIVE:
                     interactive_job = scheduler.submit_interactive(
                         spec,
-                        startup_timeout=timings.worker_startup_timeout_seconds,
+                        startup_timeout=startup_timeout_seconds,
                     )
                     job_id = interactive_job.job_id
                 elif stream_lsf_script:
@@ -825,8 +835,8 @@ def _run_tunnel(
                     "Worker heartbeat enabled for job %s: interval=%g seconds, "
                     "timeout=%g seconds.",
                     job_id,
-                    timings.worker_heartbeat_interval_seconds,
-                    timings.worker_heartbeat_timeout_seconds,
+                    heartbeat_interval_seconds,
+                    heartbeat_timeout_seconds,
                 )
                 logger.info(
                     "Worker heartbeat log: %s.",
@@ -880,8 +890,8 @@ def _run_tunnel(
                     info = _wait_for_running_job(
                         scheduler,
                         job_id,
-                        timeout_seconds=timings.queue_timeout_seconds,
-                        poll_interval=timings.job_poll_interval_seconds,
+                        timeout_seconds=queue_timeout_seconds,
+                        poll_interval=job_poll_interval_seconds,
                         state_handler=lambda snapshot: logger.info(
                             "Worker job %s: %s (%s).",
                             job_id,
@@ -896,7 +906,7 @@ def _run_tunnel(
                         )
                     worker_port = _wait_for_selected_worker_port(
                         control,
-                        timeout_seconds=timings.worker_startup_timeout_seconds,
+                        timeout_seconds=startup_timeout_seconds,
                     )
 
                     def handle_heartbeat_failure() -> None:
@@ -910,7 +920,7 @@ def _run_tunnel(
                         args=(control, transport),
                         kwargs={
                             "job_id": job_id,
-                            "interval_seconds": timings.worker_heartbeat_interval_seconds,
+                            "interval_seconds": heartbeat_interval_seconds,
                             "stop_requested": heartbeat_stop,
                             "failed": heartbeat_failed,
                             "errors": heartbeat_errors,
@@ -929,8 +939,8 @@ def _run_tunnel(
                     _wait_for_worker_endpoint(
                         transport,
                         destination,
-                        timeout_seconds=timings.worker_startup_timeout_seconds,
-                        poll_interval=timings.job_poll_interval_seconds,
+                        timeout_seconds=startup_timeout_seconds,
+                        poll_interval=job_poll_interval_seconds,
                         failure_check=lambda: _raise_heartbeat_failure(
                             heartbeat_errors
                         ),
@@ -959,7 +969,7 @@ def _run_tunnel(
                             monitor_stop,
                             job_finished,
                             monitor_errors,
-                            timings.job_monitor_interval_seconds,
+                            job_monitor_interval_seconds,
                         ),
                         daemon=True,
                         name="ezhpcy-job-monitor",
@@ -1215,11 +1225,28 @@ def tunnel_cmd(
         )
         _run_tunnel(
             profile_name=profile,
-            resolved=resolved,
+            profile=resolved,
             ssh_host=ssh_host,
             # A profile tunnel without user/host overrides renders exactly the
             # block profiles.conf already holds, so it needs no active file.
             ssh_host_in_profiles_config=ssh_host in written_profile_hosts,
+            conn_info=connection,
+            scheduler_type=scheduler.type,
+            submission_mode=scheduler.submission_mode,
+            queue=resources.queue,
+            cores=resources.cores,
+            gpus=resources.gpus,
+            exclusive=resources.exclusive,
+            time_limit=resources.time_limit_delta,
+            memory_bytes=(
+                int(resources.memory) if resources.memory is not None else None
+            ),
+            queue_timeout_seconds=timings.queue_timeout_seconds,
+            startup_timeout_seconds=timings.worker_startup_timeout_seconds,
+            job_poll_interval_seconds=timings.job_poll_interval_seconds,
+            job_monitor_interval_seconds=timings.job_monitor_interval_seconds,
+            heartbeat_interval_seconds=timings.worker_heartbeat_interval_seconds,
+            heartbeat_timeout_seconds=timings.worker_heartbeat_timeout_seconds,
             worker_ports=worker_ports,
             auto_provision=auto_provision_enabled,
         )

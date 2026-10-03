@@ -93,10 +93,6 @@ class ResourcesConfig(_SubConfig):
     def time_limit_delta(self) -> timedelta | None:
         return parse_time_limit(self.time_limit)
 
-    @property
-    def memory_bytes(self) -> int | None:
-        return int(self.memory) if self.memory is not None else None
-
 
 class TimingsConfig(_SubConfig):
     """Timeouts and intervals of the tunnel's scheduler and worker checks."""

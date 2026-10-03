@@ -3,12 +3,11 @@ from dataclasses import dataclass
 from enum import StrEnum
 from shutil import which
 
+import typer
 from rich.markup import escape
-from rich.text import Text
 
-from ezhpcy.cli._errors import rich_text, sentence
 from ezhpcy.config import Config, ProfilePasswordSourceError, config
-from ezhpcy.console import console, error_console
+from ezhpcy.console import console
 from ezhpcy.permissions import FilePermissionError
 from ezhpcy.tunnel.ssh_config import (
     check_host_resolution,
@@ -25,11 +24,9 @@ _INCLUDE_HINT = (
 
 def echo_include_directive(*, err: bool = False) -> None:
     """Print the Include lines followed by a blank line, ready to copy verbatim."""
-    # Unindented and unwrapped, even for long paths; the colour marks what to
-    # copy and is dropped when output is not a terminal.
-    (error_console if err else console).print(
-        Text(include_directive() + "\n", style="bold cyan"), soft_wrap=True
-    )
+    # Unindented and unwrapped (typer, not rich, which wraps long paths); the
+    # colour marks what to copy and is dropped when output is not a TTY.
+    typer.echo(typer.style(include_directive(), fg="cyan", bold=True) + "\n", err=err)
 
 
 class Status(StrEnum):
@@ -47,11 +44,11 @@ _STATUS_STYLES = {
 
 @dataclass(frozen=True)
 class Check:
-    """The outcome of one doctor check; `message` and a `str` hint are Rich markup."""
+    """The outcome of one doctor check; `message` and `hint` are Rich markup."""
 
     status: Status
     message: str
-    hint: str | Text | None = None
+    hint: str | None = None
     show_include: bool = False
 
 
@@ -60,9 +57,7 @@ def _check_profile(source: Config, name: str) -> Check:
         connection = source.resolve_profile(name).connection
     except ProfilePasswordSourceError as error:
         return Check(
-            Status.FAIL,
-            f"Profile {name} is invalid",
-            hint=rich_text(sentence(error.message)),
+            Status.FAIL, f"Profile {name} is invalid", hint=error.rich_message()
         )
 
     password_file = connection.password_file
@@ -156,10 +151,9 @@ def _print_check(check: Check, printed_hints: set[str]) -> None:
     style = _STATUS_STYLES[check.status]
     console.print(f"  [{style}]{check.status:<4}[/]  {check.message}")
     # Several checks share a remedy; repeating it adds noise, not information.
-    hint = Text.from_markup(check.hint) if isinstance(check.hint, str) else check.hint
-    if hint is not None and hint.plain not in printed_hints:
-        printed_hints.add(hint.plain)
-        console.print(Text("        ") + hint, style="dim")
+    if check.hint is not None and check.hint not in printed_hints:
+        printed_hints.add(check.hint)
+        console.print(f"        [dim]{check.hint}[/dim]")
         if check.show_include:
             console.print()
             echo_include_directive()
@@ -186,7 +180,7 @@ def doctor_cmd() -> None:
                     "[bold red]Stopped at the first failure[/]; fix it and run "
                     "`ezhpcy doctor` again."
                 )
-                raise SystemExit(1)
+                raise typer.Exit(code=1)
             warnings += check.status is Status.WARN
 
     console.print()

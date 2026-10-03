@@ -3,7 +3,6 @@ import math
 import secrets
 import shlex
 import signal
-import sys
 import threading
 import time
 from collections.abc import Callable
@@ -11,9 +10,9 @@ from pathlib import PurePosixPath
 from typing import Annotated
 
 import paramiko
+import typer
 from cyclopts import Parameter, validators
 
-from ezhpcy.cli._errors import CliUsageError, sentence
 from ezhpcy.cli._options import (
     AliasOpt,
     ConnectionOptions,
@@ -23,18 +22,16 @@ from ezhpcy.cli._options import (
     TimingOptions,
 )
 from ezhpcy.cli._resolve import (
-    LIST_PROFILES_HINT,
     connection_from_cli,
-    missing_setting_error,
     resolve_profile_config,
     resources_from_cli,
     scheduler_from_cli,
     timings_from_cli,
 )
 from ezhpcy.cli.doctor import echo_include_directive
+from ezhpcy.cli.utils.bad_parameter import RichBadParameter
 from ezhpcy.cli.utils.ssh import InteractiveSSHClient
 from ezhpcy.config import config
-from ezhpcy.console import error_console
 from ezhpcy.constants import (
     OPENSSH_MATCHSPEC,
     SSH_DIRECTORY_NAME,
@@ -550,17 +547,12 @@ def _drain_interactive_job(
     while not stop_requested.wait(0.05):
         output = job.read_available()
         if output:
-            _write_stderr(output)
+            typer.echo(output.decode(errors="replace"), nl=False, err=True)
         if job.process.exit_status_ready():
             output = job.read_available()
             if output:
-                _write_stderr(output)
+                typer.echo(output.decode(errors="replace"), nl=False, err=True)
             return
-
-
-def _write_stderr(output: bytes) -> None:
-    sys.stderr.write(output.decode(errors="replace"))
-    sys.stderr.flush()
 
 
 def _wait_for_selected_worker_port(
@@ -608,7 +600,7 @@ def _publish_ssh_host(
             host.alias,
             problem,
         )
-        error_console.print()
+        typer.echo(err=True)
         echo_include_directive(err=True)
 
 
@@ -633,19 +625,17 @@ def _resolve_ssh_host(
         # saved hosts (e.g. in VS Code) keep working.
         alias = profile_name or f"ezhpcy-{resolved.descriptor_digest()[:12]}"
     if alias != profile_name and alias in config.profile:
-        raise CliUsageError(
-            t"It is the name of profile {alias:name}; choose another alias.",
+        raise RichBadParameter(
+            f"alias [bold red]{alias}[/bold red] is the name of profile "
+            f"[bold blue]{alias}[/bold blue]; choose another alias",
             param_hint="--alias",
-            value=alias,
         )
     try:
         return WorkerHost.for_endpoint(
             alias, user=resolved.connection.user, host=str(resolved.connection.host)
         )
     except ValueError as error:
-        raise CliUsageError(
-            t"{sentence(str(error))}", param_hint="--alias", value=alias
-        ) from error
+        raise RichBadParameter(str(error), param_hint="--alias") from error
 
 
 def _run_tunnel(
@@ -1117,37 +1107,25 @@ def tunnel_cmd(
             lsf=profile_config.lsf,
             pbs=profile_config.pbs,
         )
-        for name, cli_param in (
-            ("type", "--scheduler"),
-            ("submission_mode", "--submission-mode"),
-        ):
-            if getattr(scheduler, name) is None:
-                raise missing_setting_error(
-                    f"scheduler.{name}",
-                    cli_param=cli_param,
-                    config_param=(
-                        f"profile.{profile}.scheduler.{name}" if profile else None
-                    ),
-                    hint=LIST_PROFILES_HINT if profile is None else t"",
-                )
-        # The command comes from the CLI or, failing that, from the profile.
-        if scheduler_options.interactive_submission_command is not None:
-            command_source = "--interactive-submission-command"
-            command_value = scheduler_options.interactive_submission_command
-        else:
-            command_source = (
-                f"profile.{profile}.scheduler.interactive_submission_command"
+        if scheduler.type is None:
+            raise typer.BadParameter(
+                "scheduler.type must be set by --scheduler or the selected profile",
+                param_hint="--scheduler",
             )
-            command_value = shlex.join(scheduler.interactive_submission_command or [])
+        if scheduler.submission_mode is None:
+            raise typer.BadParameter(
+                "scheduler.submission_mode must be set by --submission-mode or the "
+                "selected profile",
+                param_hint="--submission-mode",
+            )
         if (
             scheduler.submission_mode is SubmissionMode.BATCH
             and scheduler.interactive_submission_command is not None
         ):
-            raise CliUsageError(
-                t"It requires {'scheduler.submission_mode':name} to be "
-                t"{'interactive':choice}.",
-                param_hint=command_source,
-                value=command_value,
+            raise RichBadParameter(
+                "scheduler.interactive_submission_command requires "
+                "scheduler.submission_mode = 'interactive'",
+                param_hint="interactive_submission_command",
             )
         if scheduler.interactive_submission_command is not None:
             submission_sections = ["resources"]
@@ -1169,8 +1147,8 @@ def tunnel_cmd(
                 if profile is not None
                 else set()
             )
-            cli_submission_options = [
-                t"{option:name}={value}"
+            cli_submission_options = {
+                f"[bold red]{option}[/bold red]=[bold blue]{value}[/bold blue]"
                 for option, value in (
                     ("--queue", resource_options.queue),
                     ("--cores", resource_options.cores),
@@ -1180,20 +1158,20 @@ def tunnel_cmd(
                     ("--memory", resource_options.memory),
                 )
                 if value is not None
-            ]
+            }
             conflicts = [
                 *(
-                    t"{f'profile.{profile}.{option}':name}"
+                    f"[bold blue]profile.{profile}[/bold blue].[bold red]{option}[/bold red]"
                     for option in sorted(directly_configured_submission_options)
                 ),
-                *cli_submission_options,
+                *sorted(cli_submission_options),
             ]
             if conflicts:
-                raise CliUsageError(
-                    t"It replaces the scheduler-generated request and cannot be "
-                    t"combined with submission options: {conflicts}.",
-                    param_hint=command_source,
-                    value=command_value,
+                raise RichBadParameter(
+                    "scheduler.interactive_submission_command replaces the "
+                    "scheduler-generated request and cannot be combined with "
+                    "submission options: " + ", ".join(conflicts),
+                    param_hint="interactive_submission_command",
                 )
             inherited_submission_options = (
                 configured_submission_options - directly_configured_submission_options
@@ -1212,9 +1190,9 @@ def tunnel_cmd(
             logger.warning("Could not write the profile SSH configuration: %s", error)
             written_profile_hosts = []
         if auto_provision and no_auto_provision:
-            raise CliUsageError(
-                t"{'--auto-provision':name} and {'--no-auto-provision':name} "
-                t"cannot be used together."
+            raise typer.BadParameter(
+                "--auto-provision and --no-auto-provision cannot be used together",
+                param_hint="--auto-provision/--no-auto-provision",
             )
         if auto_provision:
             auto_provision_enabled = True
@@ -1247,4 +1225,4 @@ def tunnel_cmd(
             error,
             exc_info=logger.isEnabledFor(logging.DEBUG),
         )
-        raise SystemExit(1) from error
+        raise typer.Exit(code=1) from error

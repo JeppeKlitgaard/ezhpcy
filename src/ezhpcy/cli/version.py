@@ -1,9 +1,9 @@
 import json as json_lib
 from typing import Annotated
 
+import typer
 from cyclopts import Parameter
 
-from ezhpcy import console
 from ezhpcy.utils import ezhpcy_version
 
 
@@ -17,6 +17,6 @@ def version_cmd(
     """Show the EzHPCy version."""
     current_version = ezhpcy_version()
     if json:
-        console.out(json_lib.dumps({"version": current_version}))
+        typer.echo(json_lib.dumps({"version": current_version}))
     else:
-        console.out(current_version)
+        typer.echo(current_version)

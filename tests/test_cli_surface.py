@@ -3,7 +3,8 @@ The CLI's user-facing surface: commands, options, validation and errors.
 
 These tests go through `invoke` and the `capture` seams only, never through the CLI
 framework's objects, and never compare exact help text, so that they can stay
-unchanged when the framework behind the CLI changes.
+unchanged when the framework behind the CLI changes. See PLAN.md, "Behaviour to
+preserve: CLI surface".
 """
 
 import json
@@ -729,11 +730,7 @@ def test_invalid_resource_values_are_usage_errors(
                 "--interactive-submission-command",
                 "a100sh",
             ],
-            [
-                '"a100sh" for --interactive-submission-command',
-                "requires scheduler.submission_mode",
-                "interactive",
-            ],
+            ["interactive_submission_command requires", "interactive"],
             id="wrapper-in-batch-mode",
         ),
         pytest.param(

@@ -1,8 +1,9 @@
 import logging
 import sys
 
+import typer
+
 from ezhpcy.cli._options import AliasArg
-from ezhpcy.console import error_console
 from ezhpcy.ipc import load_tunnel_backend
 from ezhpcy.ipc.common import IPCError
 from ezhpcy.logging import configure_logging
@@ -24,8 +25,8 @@ def proxy_cmd(alias: AliasArg, /) -> None:
             sys.stdout.buffer,
         )
     except ValueError as error:
-        error_console.print(f"ezhpcy proxy: {error}", markup=False)
-        raise SystemExit(2) from error
+        typer.echo(f"ezhpcy proxy: {error}", err=True)
+        raise typer.Exit(code=2) from error
     except (IPCError, EOFError, OSError) as error:
-        error_console.print(f"ezhpcy proxy: {error}", markup=False)
-        raise SystemExit(1) from error
+        typer.echo(f"ezhpcy proxy: {error}", err=True)
+        raise typer.Exit(code=1) from error

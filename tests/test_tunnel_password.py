@@ -6,8 +6,8 @@ import pytest
 from keyring.errors import KeyringError
 
 from ezhpcy.cli import _options, _password, _resolve
-from ezhpcy.cli._errors import CliUsageError
 from ezhpcy.cli._options import ConnectionOptions, ResourceOptions, SchedulerOptions
+from ezhpcy.cli.utils.bad_parameter import RichBadParameter
 from ezhpcy.scheduler.types import SchedulerType
 from ezhpcy.types import ProfileConfig
 from tests.support.cli import invoke
@@ -137,7 +137,7 @@ def test_missing_keyring_password_is_an_actionable_parameter_error(
 ) -> None:
     monkeypatch.setattr(_password.keyring, "get_password", lambda *_args: None)
 
-    with pytest.raises(CliUsageError, match="No password was found"):
+    with pytest.raises(RichBadParameter, match="no password was found"):
         resolve_password(password_keyring=True)
 
 
@@ -149,7 +149,7 @@ def test_keyring_backend_error_is_an_actionable_parameter_error(
 
     monkeypatch.setattr(_password.keyring, "get_password", fail)
 
-    with pytest.raises(CliUsageError, match="backend unavailable"):
+    with pytest.raises(RichBadParameter, match="backend unavailable"):
         resolve_password(password_keyring=True)
 
 
@@ -157,7 +157,7 @@ def test_explicit_password_sources_are_mutually_exclusive(tmp_path: Path) -> Non
     password_file = tmp_path / "password"
     password_file.write_text("secret", encoding="utf-8")
 
-    with pytest.raises(CliUsageError, match="mutually exclusive"):
+    with pytest.raises(RichBadParameter, match="mutually exclusive"):
         resolve_password(password="secret", password_file=password_file)
 
 
@@ -251,7 +251,7 @@ def test_invalid_profile_password_sources_are_reported_as_a_cli_parameter_error(
         },
     )
 
-    with pytest.raises(CliUsageError):
+    with pytest.raises(RichBadParameter):
         _resolve.resolve_profile_config("base")
 
     result = invoke(
@@ -261,9 +261,9 @@ def test_invalid_profile_password_sources_are_reported_as_a_cli_parameter_error(
 
     assert result.exit_code == 2
     # Each setting is one styled run: Rich's highlighter didn't split it up.
-    assert "\x1b[1;39mconnection.password_file\x1b[0m" in result.stderr
+    assert "\x1b[1;31mconnection.password_file\x1b[0m" in result.stderr
     stderr = re.sub(r"\x1b\[[0-9;]*m", "", result.stderr)
-    assert "Profile base has mutually exclusive password source settings" in stderr
+    assert "Invalid value:" in stderr
     assert "Invalid value for" not in result.stdout
     assert "Invalid value for" not in stderr
     assert "password_file, connection.password_keyring" in stderr

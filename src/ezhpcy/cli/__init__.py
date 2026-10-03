@@ -3,6 +3,7 @@ import sys
 from collections.abc import Sequence
 from typing import Annotated
 
+import typer
 from cyclopts import (
     App,
     CycloptsError,
@@ -175,5 +176,19 @@ def main(
         app.meta(tokens, console=console, error_console=error_console)
     # Cyclopts only handles its own parse errors, not errors from command bodies.
     except CliUsageError as error:
-        error_console.print(CycloptsPanel(error.__rich__()))
+        # Like Cyclopts' own errors: the border is red, the message isn't.
+        error_console.print(
+            CycloptsPanel(Text.from_markup(error.message, style="default"))
+        )
         sys.exit(2)
+    # Temporary: most command bodies still raise Click's exceptions.
+    except typer.BadParameter as error:
+        message = error.format_message()
+        if not isinstance(message, Text):
+            message = Text(message)
+        # Like Cyclopts' own errors: the border is red, the message isn't.
+        message.style = "default"
+        error_console.print(CycloptsPanel(message))
+        sys.exit(2)
+    except typer.Exit as error:
+        sys.exit(error.exit_code)

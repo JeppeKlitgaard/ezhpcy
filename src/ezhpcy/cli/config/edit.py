@@ -5,9 +5,9 @@ import subprocess
 from pathlib import Path
 from typing import Annotated
 
+import typer
 from cyclopts import Parameter
 
-from ezhpcy.cli._errors import CliUsageError
 from ezhpcy.config import config
 from ezhpcy.console import console
 
@@ -72,8 +72,8 @@ def edit_cmd(
         config_file.parent.mkdir(parents=True, exist_ok=True)
         config_file.touch(exist_ok=True)
     except OSError as error:
-        raise CliUsageError(
-            t"Could not create configuration file {config_file}: {error}."
+        raise typer.BadParameter(
+            f"Could not create configuration file {config_file}: {error}"
         ) from error
 
     editor_command = (
@@ -86,17 +86,18 @@ def edit_cmd(
         # exits, instead of competing with the shell for it.
         result = subprocess.run(command, check=False)
     except ValueError as error:
-        raise CliUsageError(
-            t"Invalid editor command {editor_command:value}: {error}."
+        raise typer.BadParameter(
+            f"Invalid editor command {editor_command!r}: {error}",
+            param_hint="editor",
         ) from error
     except OSError as error:
-        raise CliUsageError(
-            t"Could not open configuration file {config_file} with "
-            t"{editor_command:value}: {error}."
+        raise typer.BadParameter(
+            f"Could not open configuration file {config_file}: {error}",
+            param_hint="editor",
         ) from error
 
     if result.returncode != 0:
         console.print(
             f"[bold red]Error[/bold red]: editor exited with status {result.returncode}."
         )
-        raise SystemExit(1)
+        raise typer.Exit(code=1)

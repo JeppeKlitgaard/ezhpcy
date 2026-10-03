@@ -1,3 +1,4 @@
+import typer
 from rich.table import Table
 
 from ezhpcy import console
@@ -7,7 +8,7 @@ from ezhpcy.config import config
 def list_profiles_cmd() -> None:
     """List the profiles in the local configuration."""
     if not config.profile:
-        console.print("No profiles configured.")
+        typer.echo("No profiles configured.")
         return
 
     table = Table(box=None, show_edge=False)

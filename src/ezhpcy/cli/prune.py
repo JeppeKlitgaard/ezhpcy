@@ -3,6 +3,7 @@ import re
 from pathlib import PurePosixPath
 from typing import Annotated
 
+import typer
 from cyclopts import Parameter
 from rich.prompt import Confirm
 
@@ -139,7 +140,7 @@ def prune_cmd(
     )
     if not user_accepts:
         console.print("[bold yellow]Aborted[/bold yellow]: prune cancelled.")
-        raise SystemExit(1)
+        raise typer.Exit(code=1)
 
     prune_all_remote_data(ssh, remote_state)
     console.print("[bold green]Success[/bold green]: all managed remote data removed.")

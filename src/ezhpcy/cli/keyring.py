@@ -1,4 +1,5 @@
 import keyring
+import typer
 from cyclopts import App
 from keyring.errors import KeyringError
 from rich.prompt import Prompt
@@ -32,7 +33,7 @@ def set_cmd(*, connection_options: ConnectionOptions = ConnectionOptions()) -> N
             "[bold red]Error[/bold red]: Could not store the password in the "
             f"system keyring: {error}"
         )
-        raise SystemExit(1) from error
+        raise typer.Exit(code=1) from error
 
     console.print(f"Stored password in the system keyring for {account}.")
 

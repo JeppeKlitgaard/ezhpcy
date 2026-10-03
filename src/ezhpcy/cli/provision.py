@@ -1,6 +1,5 @@
 from typing import Annotated
 
-import typer
 from cyclopts import Parameter
 from rich.prompt import Confirm
 
@@ -43,7 +42,7 @@ def provision_cmd(
     )
     if not user_accepts:
         console.print("[bold yellow]Aborted[/bold yellow]: provisioning cancelled.")
-        raise typer.Exit(code=1)
+        raise SystemExit(1)
 
     remote_username = connection.user
     assert remote_username is not None

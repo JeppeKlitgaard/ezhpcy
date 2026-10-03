@@ -6,7 +6,6 @@ from importlib.resources.abc import Traversable
 from pathlib import Path
 from typing import Annotated
 
-import typer
 from cyclopts import Parameter
 from jinja2 import Environment, StrictUndefined, TemplateError
 from pydantic import ValidationError
@@ -14,6 +13,7 @@ from rich.prompt import Confirm, Prompt
 from rich.text import Text
 
 from ezhpcy import console
+from ezhpcy.cli._errors import CliUsageError
 from ezhpcy.cli._options import UserOpt
 from ezhpcy.config import Config, config
 
@@ -95,9 +95,10 @@ def load_cmd(
     try:
         template_text = preset_resource.read_text(encoding="utf-8")
     except OSError as error:
-        raise typer.BadParameter(
-            f"Could not read preset {preset_name!r}: {error}",
-            param_hint="preset",
+        raise CliUsageError(
+            t"Could not read it: {error}.",
+            param_hint="PRESET",
+            value=preset_name,
         ) from error
 
     if user is None:
@@ -106,9 +107,10 @@ def load_cmd(
         rendered = _render_preset(template_text, preset=preset_name, user=user)
         Config.from_mapping(tomllib.loads(rendered))
     except (TemplateError, tomllib.TOMLDecodeError, ValidationError) as error:
-        raise typer.BadParameter(
-            f"Preset {preset_name!r} produced invalid configuration: {error}",
-            param_hint="preset",
+        raise CliUsageError(
+            t"It produced an invalid configuration: {error}",
+            param_hint="PRESET",
+            value=preset_name,
         ) from error
     config_file = config.local_file.config_file
 
@@ -116,8 +118,8 @@ def load_cmd(
         try:
             current = config_file.read_text(encoding="utf-8")
         except OSError as error:
-            raise typer.BadParameter(
-                f"Could not read configuration file {config_file}: {error}"
+            raise CliUsageError(
+                t"Could not read configuration file {config_file}: {error}."
             ) from error
 
         console.print(
@@ -144,14 +146,14 @@ def load_cmd(
             console.print(
                 "[bold yellow]Aborted[/bold yellow]: configuration unchanged."
             )
-            raise typer.Exit(code=1)
+            raise SystemExit(1)
 
     try:
         config_file.parent.mkdir(parents=True, exist_ok=True)
         config_file.write_text(rendered, encoding="utf-8")
     except OSError as error:
-        raise typer.BadParameter(
-            f"Could not write configuration file {config_file}: {error}"
+        raise CliUsageError(
+            t"Could not write configuration file {config_file}: {error}."
         ) from error
 
     console.print(

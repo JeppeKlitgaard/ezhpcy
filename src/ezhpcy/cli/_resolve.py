@@ -1,15 +1,10 @@
 import shlex
+from collections.abc import Mapping
+from string.templatelib import Template
 
-from cyclopts.exceptions import (
-    STYLE_NAME,
-    STYLE_OFFENDING_VALUE,
-    STYLE_SUGGESTION,
-    STYLE_VALID_CHOICE,
-)
 from pydantic import BaseModel, ValidationError
-from rich.markup import escape
 
-from ezhpcy.cli._errors import CliUsageError
+from ezhpcy.cli._errors import CliUsageError, sentence
 from ezhpcy.cli._options import (
     ConnectionOptions,
     ResourceOptions,
@@ -17,7 +12,6 @@ from ezhpcy.cli._options import (
     TimingOptions,
 )
 from ezhpcy.cli._password import resolve_password
-from ezhpcy.cli.utils.bad_parameter import RichBadParameter
 from ezhpcy.config import ProfilePasswordSourceError, config
 from ezhpcy.types import (
     ConnectionConfig,
@@ -28,6 +22,25 @@ from ezhpcy.types import (
     TimingsConfig,
 )
 
+LIST_PROFILES_HINT = (
+    t" Run {'ezhpcy list-profiles':suggestion} to see available profiles."
+)
+
+
+def missing_setting_error(
+    name: str,
+    *,
+    cli_param: str,
+    config_param: str | None,
+    hint: Template = t"",
+) -> CliUsageError:
+    """Report a setting that neither the CLI nor the profile (if any) gave."""
+    config_source = t"{config_param:name}" if config_param else t"a profile"
+    return CliUsageError(
+        t"{name:name} must be set via CLI ({cli_param:name}) "
+        t"or config ({config_source})." + hint
+    )
+
 
 def resolve_forbidden_none[T](
     *,
@@ -35,21 +48,35 @@ def resolve_forbidden_none[T](
     config_value: T | None,
     name: str,
     cli_param: str,
-    config_param: str,
-    hint: str | None = None,
+    config_param: str | None,
+    hint: Template = t"",
 ) -> T:
     value = cli_value if cli_value is not None else config_value
     if value is None:
-        raise RichBadParameter(
-            f"[bold purple]{name}[/bold purple] must be set via CLI ([bold green]{cli_param}[/bold green]) or config ([bold green]{config_param}[/bold green])"
-            + (f". {hint}" if hint else "")
+        raise missing_setting_error(
+            name, cli_param=cli_param, config_param=config_param, hint=hint
         )
     return value
 
 
-_LIST_PROFILES_HINT = (
-    "Run [bold green]ezhpcy list-profiles[/bold green] to see available profiles."
-)
+def _validation_usage_error(
+    error: ValidationError, names: Mapping[str, str]
+) -> CliUsageError:
+    """Report the first of Pydantic's errors, under the name the user knows."""
+    details = error.errors(include_url=False)[0]
+    # Pydantic prefixes a validator's own message with "Value error, ".
+    message = (
+        str(details["ctx"]["error"])
+        if details["type"] == "value_error"
+        else details["msg"]
+    )
+    message = t"{sentence(message)}"
+    if not details["loc"]:
+        return CliUsageError(message)
+    field = ".".join(map(str, details["loc"]))
+    return CliUsageError(
+        message, param_hint=names.get(field, field), value=details["input"]
+    )
 
 
 def _parse_interactive_submission_command(value: str | None) -> list[str] | None:
@@ -58,14 +85,16 @@ def _parse_interactive_submission_command(value: str | None) -> list[str] | None
     try:
         command = shlex.split(value)
     except ValueError as error:
-        raise RichBadParameter(
-            f"invalid shell-style quoting: {error}",
+        raise CliUsageError(
+            t"Could not split it with shell-style quoting: {sentence(str(error))}",
             param_hint="--interactive-submission-command",
+            value=value,
         ) from error
     if not command:
-        raise RichBadParameter(
-            "command must not be empty",
+        raise CliUsageError(
+            t"The command must not be empty.",
             param_hint="--interactive-submission-command",
+            value=value,
         )
     return command
 
@@ -75,42 +104,41 @@ def resolve_profile_config(profile: str | None) -> ResolvedProfileConfig:
     if profile is None:
         return ResolvedProfileConfig()
     if profile not in config.profile:
-        # Worded and styled like Cyclopts' error for an invalid choice.
-        message = (
-            f'Invalid value "[{STYLE_OFFENDING_VALUE}]{escape(profile)}[/]" '
-            f"for [{STYLE_NAME}]PROFILE[/]."
-        )
+        # Worded like Cyclopts' error for an invalid choice.
         if config.profile:
-            choices = ", ".join(
-                f'[{STYLE_VALID_CHOICE}]"{escape(name)}"[/]' for name in config.profile
-            )
-            message += f" Choose from: {choices}."
+            message = t"Choose from: {list(config.profile):choice}."
         else:
-            message += (
-                " No profiles are configured; run "
-                f"[{STYLE_SUGGESTION}]ezhpcy config load <preset>[/] to start from one."
+            message = (
+                t"No profiles are configured; run "
+                t"{'ezhpcy config load <preset>':suggestion} to start from one."
             )
-        raise CliUsageError(message)
+        raise CliUsageError(message, param_hint="PROFILE", value=profile)
     try:
         return config.resolve_profile(profile)
     except ProfilePasswordSourceError as error:
-        raise RichBadParameter(error.rich_message()) from error
+        raise CliUsageError(sentence(error.message)) from error
     except ValueError as error:
-        raise RichBadParameter(str(error), param_hint="PROFILE") from error
+        raise CliUsageError(
+            t"{sentence(str(error))}", param_hint="PROFILE", value=profile
+        ) from error
 
 
 def _with_cli_values[SubConfigT: BaseModel](
-    sub_config: SubConfigT, **cli_values: object
+    sub_config: SubConfigT, **cli_values: tuple[str, object]
 ) -> SubConfigT:
-    """Apply the CLI values that were given on top of a resolved sub-config."""
+    """Apply the CLI values that were given on top of a resolved sub-config.
+
+    Each value comes with the option that gave it, for error messages.
+    """
     values = {
         **sub_config.model_dump(exclude_unset=True),
-        **{name: value for name, value in cli_values.items() if value is not None},
+        **{name: value for name, (_, value) in cli_values.items() if value is not None},
     }
     try:
         return type(sub_config).model_validate(values)
     except ValidationError as error:
-        raise RichBadParameter(str(error)) from error
+        options = {name: option for name, (option, _) in cli_values.items()}
+        raise _validation_usage_error(error, options) from error
 
 
 def connection_from_cli(
@@ -122,13 +150,13 @@ def connection_from_cli(
     """Resolve the login connection from the CLI options and `profile`'s config."""
     config_prefix = f"profile.{profile}.connection" if profile is not None else None
     # Without a profile, the likely fix is to give one.
-    hint = _LIST_PROFILES_HINT if profile is None else None
+    hint = LIST_PROFILES_HINT if profile is None else t""
     user = resolve_forbidden_none(
         cli_value=options.user,
         config_value=configured.user,
         name="user",
         cli_param="--user",
-        config_param=f"{config_prefix}.user" if config_prefix else "a profile",
+        config_param=f"{config_prefix}.user" if config_prefix else None,
         hint=hint,
     )
     resolved_host = resolve_forbidden_none(
@@ -136,7 +164,7 @@ def connection_from_cli(
         config_value=str(configured.host) if configured.host else None,
         name="host",
         cli_param="--host",
-        config_param=f"{config_prefix}.host" if config_prefix else "a profile",
+        config_param=f"{config_prefix}.host" if config_prefix else None,
         hint=hint,
     )
     resolved_password = resolve_password(
@@ -149,6 +177,7 @@ def connection_from_cli(
         config_password_file=configured.password_file,
         config_password_fd=configured.password_fd,
         config_password_keyring=configured.password_keyring,
+        config_prefix=config_prefix or "connection",
     )
     try:
         return ConnectionInfo.model_validate(
@@ -163,7 +192,10 @@ def connection_from_cli(
             }
         )
     except ValidationError as error:
-        raise RichBadParameter(str(error)) from error
+        # The profile's host was validated when the configuration was loaded.
+        raise _validation_usage_error(
+            error, {"user": "--user", "host": "--host"}
+        ) from error
 
 
 def scheduler_from_cli(
@@ -171,10 +203,13 @@ def scheduler_from_cli(
 ) -> SchedulerConfig:
     return _with_cli_values(
         configured,
-        type=options.scheduler_type,
-        submission_mode=options.submission_mode,
-        interactive_submission_command=_parse_interactive_submission_command(
-            options.interactive_submission_command
+        type=("--scheduler", options.scheduler_type),
+        submission_mode=("--submission-mode", options.submission_mode),
+        interactive_submission_command=(
+            "--interactive-submission-command",
+            _parse_interactive_submission_command(
+                options.interactive_submission_command
+            ),
         ),
     )
 
@@ -184,12 +219,12 @@ def resources_from_cli(
 ) -> ResourcesConfig:
     return _with_cli_values(
         configured,
-        queue=options.queue,
-        cores=options.cores,
-        gpus=options.gpus,
-        exclusive=options.exclusive,
-        time_limit=options.time_limit,
-        memory=options.memory,
+        queue=("--queue", options.queue),
+        cores=("--cores", options.cores),
+        gpus=("--gpus", options.gpus),
+        exclusive=("--exclusive/--shared", options.exclusive),
+        time_limit=("--time-limit", options.time_limit),
+        memory=("--memory", options.memory),
     )
 
 
@@ -198,21 +233,36 @@ def timings_from_cli(
 ) -> TimingsConfig:
     return _with_cli_values(
         configured,
-        queue_timeout_seconds=options.queue_timeout_seconds,
-        worker_startup_timeout_seconds=options.startup_timeout_seconds,
-        job_poll_interval_seconds=options.job_poll_interval_seconds,
-        job_monitor_interval_seconds=options.job_monitor_interval_seconds,
-        worker_heartbeat_interval_seconds=options.worker_heartbeat_interval_seconds,
-        worker_heartbeat_timeout_seconds=options.worker_heartbeat_timeout_seconds,
+        queue_timeout_seconds=("--queue-timeout", options.queue_timeout_seconds),
+        worker_startup_timeout_seconds=(
+            "--startup-timeout",
+            options.startup_timeout_seconds,
+        ),
+        job_poll_interval_seconds=(
+            "--job-poll-interval",
+            options.job_poll_interval_seconds,
+        ),
+        job_monitor_interval_seconds=(
+            "--job-monitor-interval",
+            options.job_monitor_interval_seconds,
+        ),
+        worker_heartbeat_interval_seconds=(
+            "--worker-heartbeat-interval",
+            options.worker_heartbeat_interval_seconds,
+        ),
+        worker_heartbeat_timeout_seconds=(
+            "--worker-heartbeat-timeout",
+            options.worker_heartbeat_timeout_seconds,
+        ),
     )
 
 
 def direct_connection_from_cli(options: ConnectionOptions) -> ConnectionInfo:
     """Resolve a connection from the CLI options alone, without a profile."""
     if options.user is None:
-        raise RichBadParameter("user must be set via --user", param_hint="--user")
+        raise CliUsageError(t"{'user':name} must be set via {'--user':name}.")
     if options.host is None:
-        raise RichBadParameter("host must be set via --host", param_hint="--host")
+        raise CliUsageError(t"{'host':name} must be set via {'--host':name}.")
     return ConnectionInfo(
         user=options.user,
         host=options.host,

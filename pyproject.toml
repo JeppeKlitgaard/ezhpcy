@@ -15,7 +15,6 @@ dependencies = [
     # CLI
     "rich>=15.0.0",
     "typer>=0.27.2",
-    "cyclopts>=5.1.1",
     # Keyring, secretstorage is for keyring on Linux
     "keyring>=25.7.0",
     "secretstorage>=3.5.0 ; sys_platform == 'linux'",

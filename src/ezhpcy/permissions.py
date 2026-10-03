@@ -47,7 +47,7 @@ def restrict_to_current_user(path: Path) -> None:
     on %TEMP%), and Python's private mkdir ACL uses OWNER RIGHTS, which OpenSSH
     also rejects, so the ACL is replaced with a single explicit entry.
     """
-    path.chmod(0o600)
+    os.chmod(path, 0o600)
     if os.name != "nt":
         return
 

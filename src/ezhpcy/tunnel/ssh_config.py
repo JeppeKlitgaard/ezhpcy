@@ -150,7 +150,7 @@ def _write_private(path: Path, content: str) -> None:
     directory = path.parent
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     if os.name == "posix":
-        directory.chmod(0o700)
+        os.chmod(directory, 0o700)
     # The temporary name does not match the `*.conf` Include glob, so OpenSSH
     # never reads a file before its permissions are restricted.
     temporary = directory / f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
@@ -160,7 +160,7 @@ def _write_private(path: Path, content: str) -> None:
         with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as file:
             file.write(content)
         restrict_to_current_user(temporary)
-        temporary.replace(path)
+        os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
 

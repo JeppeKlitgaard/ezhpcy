@@ -37,18 +37,17 @@ dev = [
 [tool.ruff.lint]
 preview = true
 extend-select = [
-    "A",   # flake8-builtins
-    "B",   # flake8-bugbear
-    "DTZ",  # flake8-datetimetz
-    "EXE", #flake8-executable
     "I",   # isort
-    "INP", #flake8-no-pep420
-    "LOG", #flake8-logging
-    "PTH", #flake8-use-pathlib
-    "T10", #flake8-debugger
-    "TID", # flake8-tidy-imports
     "UP",  # pyupgrade
+    "TID", # flake8-tidy-imports
     "YTT", # flake8-2020
+    "B",   # flake8-bugbear
+    "A",   # flake8-builtins
+    "DTZ",  # flake8-datetimetz
+    "T10", #flake8-debugger
+    "EXE", #flake8-executable
+    "LOG", #flake8-logging
+    "INP", #flake8-no-pep420
 ]
 ignore = [
     "RUF106",  # rule-codecs-in-suppression-comments

@@ -125,7 +125,7 @@ class WorkerHost:
 def profile_hosts(source: Config = config) -> list[WorkerHost]:
     """Return a Host for every profile that defines both a user and a host."""
     hosts = []
-    for name in source.profile:
+    for name in sorted(source.profile):
         connection = source.resolve_profile(
             name, validate_password_source=False
         ).connection

@@ -15,7 +15,8 @@ def list_profiles_cmd() -> None:
     table.add_column("Profile", style="bold")
     table.add_column("Description")
 
-    for name, profile in config.profile.items():
+    for name in sorted(config.profile, key=str.casefold):
+        profile = config.profile[name]
         table.add_row(
             name,
             profile.description or "",

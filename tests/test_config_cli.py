@@ -93,8 +93,8 @@ def test_list_profiles_shows_local_profile_metadata(
     lines = [" ".join(line.split()) for line in result.output.splitlines()]
     assert lines == [
         "Profile Description",
-        "gpu GPU jobs",
         "default General login",
+        "gpu GPU jobs",
     ]
 
 

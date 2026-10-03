@@ -95,7 +95,7 @@ def test_profile_hosts_skip_profiles_without_an_endpoint() -> None:
         }
     )
 
-    assert [host.alias for host in ssh_config.profile_hosts(source)] == ["gpu", "cpu"]
+    assert [host.alias for host in ssh_config.profile_hosts(source)] == ["cpu", "gpu"]
 
 
 def test_profiles_config_holds_every_profile_host(isolated_runtime_dir: Path) -> None:

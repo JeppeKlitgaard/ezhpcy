@@ -97,7 +97,7 @@ def check_config(source: Config = config) -> Iterator[Check]:
         )
         return
 
-    for name in source.profile:
+    for name in sorted(source.profile):
         yield _check_profile(source, name)
 
 

@@ -114,36 +114,6 @@ def test_profile_worker_heartbeat_is_independent_and_inherited() -> None:
     assert child.worker_heartbeat_timeout_seconds == 60
 
 
-def test_profile_job_intervals_default_and_are_inherited() -> None:
-    config = config_module.Config.from_mapping(
-        {
-            "profile": {
-                "base": {
-                    "job_poll_interval_seconds": 4.5,
-                    "job_monitor_interval_seconds": 120,
-                },
-                "child": {"inherit": "base"},
-                "default": {},
-            }
-        }
-    )
-
-    default = config.resolve_profile("default")
-    child = config.resolve_profile("child")
-    assert default.job_poll_interval_seconds == 2.5
-    assert default.job_monitor_interval_seconds == 60
-    assert child.job_poll_interval_seconds == 4.5
-    assert child.job_monitor_interval_seconds == 120
-
-
-@pytest.mark.parametrize(
-    "field", ["job_poll_interval_seconds", "job_monitor_interval_seconds"]
-)
-def test_profile_job_intervals_must_be_positive(field: str) -> None:
-    with pytest.raises(ValidationError, match=field):
-        config_module.Config.from_mapping({"profile": {"base": {field: 0}}})
-
-
 def test_profile_password_keyring_can_be_enabled() -> None:
     config = config_module.Config.from_mapping(
         {"profile": {"base": {"password_keyring": True}}}

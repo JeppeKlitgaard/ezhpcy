@@ -178,22 +178,6 @@ StartupTimeoutOpt = Annotated[
         help="Maximum time to wait for worker SSH after allocation.",
     ),
 ]
-JobPollIntervalOpt = Annotated[
-    float | None,
-    typer.Option(
-        "--job-poll-interval",
-        min=0.1,
-        help="Interval between scheduler and worker-readiness startup checks.",
-    ),
-]
-JobMonitorIntervalOpt = Annotated[
-    float | None,
-    typer.Option(
-        "--job-monitor-interval",
-        min=0.1,
-        help="Interval between scheduler checks after the tunnel is ready.",
-    ),
-]
 WorkerHeartbeatIntervalOpt = Annotated[
     float | None,
     typer.Option(
@@ -388,8 +372,6 @@ def profile_context_from_cli(
     memory: MemoryOpt = None,
     queue_timeout_seconds: QueueTimeoutOpt = None,
     startup_timeout_seconds: StartupTimeoutOpt = None,
-    job_poll_interval_seconds: JobPollIntervalOpt = None,
-    job_monitor_interval_seconds: JobMonitorIntervalOpt = None,
     worker_heartbeat_interval_seconds: WorkerHeartbeatIntervalOpt = None,
     worker_heartbeat_timeout_seconds: WorkerHeartbeatTimeoutOpt = None,
     interactive_submission_command: InteractiveSubmissionCommandOpt = None,
@@ -469,16 +451,6 @@ def profile_context_from_cli(
                     startup_timeout_seconds
                     if startup_timeout_seconds is not None
                     else resolved_profile.worker_startup_timeout_seconds
-                ),
-                "job_poll_interval_seconds": (
-                    job_poll_interval_seconds
-                    if job_poll_interval_seconds is not None
-                    else resolved_profile.job_poll_interval_seconds
-                ),
-                "job_monitor_interval_seconds": (
-                    job_monitor_interval_seconds
-                    if job_monitor_interval_seconds is not None
-                    else resolved_profile.job_monitor_interval_seconds
                 ),
                 "worker_heartbeat_interval_seconds": (
                     worker_heartbeat_interval_seconds

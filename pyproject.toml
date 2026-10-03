@@ -30,9 +30,20 @@ ezhpcy = "ezhpcy.cli:main"
 dev = [
     "prek>=0.4.9",
     "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
     "ruff>=0.16.10", # keep in sync with .pre-commit-config.yaml
 ]
 
+# Test coverage
+[tool.coverage.run]
+source = ["ezhpcy"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+
+# Ruff - Linting
 [tool.ruff.lint]
 preview = true
 extend-select = [
@@ -66,6 +77,7 @@ isort.combine-as-imports = true
     "INP", # no-pep420, scripts are standalone and not part of a package
 ]
 
+# Build system
 [build-system]
 requires = ["uv_build>=0.11.28,<0.12"]
 build-backend = "uv_build"

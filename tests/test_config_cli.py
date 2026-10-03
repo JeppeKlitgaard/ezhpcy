@@ -1,4 +1,3 @@
-import subprocess
 import tomllib
 from pathlib import Path
 from types import ModuleType
@@ -24,185 +23,44 @@ def use_config_file(
     monkeypatch.setattr(module, "config", config)
 
 
-def record_editor_runs(
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    windows: bool,
-    executables: dict[str, str] | None = None,
-    returncode: int = 0,
-) -> list[list[str]]:
-    """Replace the editor process and PATH lookup, returning the commands run."""
-    runs: list[list[str]] = []
-
-    def run(command: list[str], *, check: bool) -> subprocess.CompletedProcess:
-        assert not check
-        runs.append(command)
-        return subprocess.CompletedProcess(command, returncode)
-
-    monkeypatch.setattr(config_edit, "IS_WINDOWS", windows)
-    monkeypatch.setattr(
-        config_edit.shutil, "which", lambda name: (executables or {}).get(name)
-    )
-    monkeypatch.setattr(config_edit.subprocess, "run", run)
-    monkeypatch.delenv("VISUAL", raising=False)
-    monkeypatch.delenv("EDITOR", raising=False)
-    return runs
-
-
-@pytest.mark.parametrize("windows", [False, True])
-@pytest.mark.parametrize(
-    ("editor_argument", "environment", "expected_editor"),
-    [
-        ("code", {"EDITOR": "default-editor"}, "code"),
-        (None, {"EDITOR": "default-editor"}, "default-editor"),
-        (None, {"VISUAL": "visual", "EDITOR": "default-editor"}, "visual"),
-        (None, {}, config_edit.DEFAULT_EDITOR),
-    ],
-)
-def test_config_edit_creates_config_file_and_waits_for_editor(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    windows: bool,
-    editor_argument: str | None,
-    environment: dict[str, str],
-    expected_editor: str,
+@pytest.mark.parametrize("editor", ["code", "C:/Program Files/Editor/editor.exe", None])
+def test_config_edit_creates_and_opens_config_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, editor: str | None
 ) -> None:
     config_file = tmp_path / "missing" / "ezhpcy.toml"
+    process_calls: list[list[str]] = []
+    startfile_calls: list[tuple[str, str]] = []
     use_config_file(monkeypatch, config_edit, config_file)
-    runs = record_editor_runs(monkeypatch, windows=windows)
-    for name, value in environment.items():
-        monkeypatch.setenv(name, value)
+    monkeypatch.setattr(config_edit.shutil, "which", lambda _editor: None)
+    monkeypatch.setattr(
+        config_edit.subprocess,
+        "Popen",
+        lambda command: process_calls.append(command),
+    )
+    monkeypatch.setattr(
+        config_edit.os,
+        "startfile",
+        lambda executable, *, arguments: startfile_calls.append(
+            (executable, arguments)
+        ),
+        raising=False,
+    )
+    monkeypatch.setenv("EDITOR", "default-editor")
 
     arguments = ["config", "edit"]
-    if editor_argument is not None:
-        arguments.append(editor_argument)
+    if editor is not None:
+        arguments.append(editor)
     result = runner.invoke(app, arguments)
 
     assert result.exit_code == 0, result.output
     assert config_file.is_file()
-    assert runs == [[expected_editor, str(config_file)]]
-
-
-@pytest.mark.parametrize(
-    ("windows", "editor", "executables", "expected_arguments"),
-    [
-        (False, "code --wait", {"code": "/usr/bin/code"}, ["/usr/bin/code", "--wait"]),
-        (False, '"/opt/My Editor/edit" -w', {}, ["/opt/My Editor/edit", "-w"]),
-        (
-            True,
-            r'"C:\Program Files\Editor\editor.exe" --wait',
-            {},
-            [r"C:\Program Files\Editor\editor.exe", "--wait"],
-        ),
-        (
-            True,
-            "C:/Program Files/Editor/editor.exe",
-            {
-                "C:/Program Files/Editor/editor.exe": (
-                    "C:/Program Files/Editor/editor.exe"
-                )
-            },
-            ["C:/Program Files/Editor/editor.exe"],
-        ),
-        (
-            True,
-            "code --wait",
-            {"code": r"C:\VS Code\bin\code.CMD"},
-            [
-                r"C:\VS Code\bin\code.CMD",
-                "--wait",
-            ],
-        ),
-    ],
-)
-def test_config_edit_splits_editor_command(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    windows: bool,
-    editor: str,
-    executables: dict[str, str],
-    expected_arguments: list[str],
-) -> None:
-    config_file = tmp_path / "ezhpcy.toml"
-    use_config_file(monkeypatch, config_edit, config_file)
-    runs = record_editor_runs(monkeypatch, windows=windows, executables=executables)
-
-    result = runner.invoke(app, ["config", "edit", editor])
-
-    assert result.exit_code == 0, result.output
-    assert runs == [[*expected_arguments, str(config_file)]]
-
-
-def test_config_edit_does_not_interpret_editor_metacharacters(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    config_file = tmp_path / "ezhpcy.toml"
-    use_config_file(monkeypatch, config_edit, config_file)
-    runs = record_editor_runs(monkeypatch, windows=False)
-
-    result = runner.invoke(app, ["config", "edit", "code;echo INJECTED"])
-
-    assert result.exit_code == 0, result.output
-    assert runs == [["code;echo", "INJECTED", str(config_file)]]
-
-
-def test_config_edit_refuses_metacharacters_for_batch_file_editor(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    config_file = tmp_path / "config&echo INJECTED.toml"
-    use_config_file(monkeypatch, config_edit, config_file)
-    runs = record_editor_runs(
-        monkeypatch, windows=True, executables={"code": r"C:\VS Code\bin\code.cmd"}
-    )
-
-    result = runner.invoke(app, ["config", "edit", "code"])
-
-    assert result.exit_code == 2
-    assert "cannot safely be given" in result.output
-    assert runs == []
-
-
-@pytest.mark.parametrize("editor", ['"unterminated', "   "])
-def test_config_edit_rejects_invalid_editor_command(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, editor: str
-) -> None:
-    use_config_file(monkeypatch, config_edit, tmp_path / "ezhpcy.toml")
-    runs = record_editor_runs(monkeypatch, windows=False)
-
-    result = runner.invoke(app, ["config", "edit", editor])
-
-    assert result.exit_code == 2
-    assert "Invalid editor command" in result.output
-    assert runs == []
-
-
-def test_config_edit_reports_editor_failure(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    use_config_file(monkeypatch, config_edit, tmp_path / "ezhpcy.toml")
-    record_editor_runs(monkeypatch, windows=False, returncode=3)
-
-    result = runner.invoke(app, ["config", "edit", "vi"])
-
-    assert result.exit_code == 1
-    assert "editor exited with status 3" in result.output
-
-
-def test_config_edit_reports_missing_editor(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    use_config_file(monkeypatch, config_edit, tmp_path / "ezhpcy.toml")
-    record_editor_runs(monkeypatch, windows=False)
-
-    def missing(command: list[str], *, check: bool) -> None:
-        raise FileNotFoundError(command[0])
-
-    monkeypatch.setattr(config_edit.subprocess, "run", missing)
-
-    result = runner.invoke(app, ["config", "edit", "no-such-editor"])
-
-    assert result.exit_code == 2
-    assert "Could not open configuration file" in result.output
+    selected_editor = editor or "default-editor"
+    if config_edit.IS_WINDOWS:
+        assert startfile_calls == [(selected_editor, f'"{config_file}"')]
+        assert process_calls == []
+    else:
+        assert process_calls == [[selected_editor, str(config_file)]]
+        assert startfile_calls == []
 
 
 def test_config_edit_is_listed_in_help() -> None:
@@ -332,3 +190,86 @@ def test_config_load_help_lists_available_presets() -> None:
     output = result.output.casefold()
     assert "{preset}:<dtu|generic>" in output
     assert "dtu" in output
+
+
+def test_config_edit_creates_file_and_uses_platform_editor_by_default(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config_file = tmp_path / "missing" / "ezhpcy.toml"
+    process_calls: list[list[str]] = []
+    startfile_calls: list[tuple[str, str]] = []
+    use_config_file(monkeypatch, config_edit, config_file)
+    monkeypatch.setattr(config_edit.shutil, "which", lambda _editor: None)
+    monkeypatch.setattr(
+        config_edit.subprocess,
+        "Popen",
+        lambda command: process_calls.append(command),
+    )
+    monkeypatch.setattr(
+        config_edit.os,
+        "startfile",
+        lambda executable, *, arguments: startfile_calls.append(
+            (executable, arguments)
+        ),
+        raising=False,
+    )
+    monkeypatch.delenv("VISUAL", raising=False)
+    monkeypatch.delenv("EDITOR", raising=False)
+
+    result = runner.invoke(app, ["config", "edit"])
+
+    assert result.exit_code == 0, result.output
+    assert config_file.is_file()
+    if config_edit.IS_WINDOWS:
+        assert startfile_calls == [(config_edit.DEFAULT_EDITOR, f'"{config_file}"')]
+        assert process_calls == []
+    else:
+        assert process_calls == [[config_edit.DEFAULT_EDITOR, str(config_file)]]
+        assert startfile_calls == []
+
+
+def test_config_edit_uses_non_shell_windows_launcher(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config_file = tmp_path / "config&echo INJECTED.toml"
+    resolved_editor = "C:/Program Files/Microsoft VS Code/bin/code"
+    startfile_calls: list[tuple[str, str]] = []
+    use_config_file(monkeypatch, config_edit, config_file)
+    monkeypatch.setattr(config_edit, "IS_WINDOWS", True)
+    monkeypatch.setattr(config_edit.shutil, "which", lambda _editor: resolved_editor)
+    monkeypatch.setattr(
+        config_edit.os,
+        "startfile",
+        lambda executable, *, arguments: startfile_calls.append(
+            (executable, arguments)
+        ),
+        raising=False,
+    )
+
+    result = runner.invoke(app, ["config", "edit", "code"])
+
+    assert result.exit_code == 0, result.output
+    assert startfile_calls == [(resolved_editor, f'"{config_file}"')]
+
+
+def test_config_edit_does_not_interpret_editor_metacharacters(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config_file = tmp_path / "ezhpcy.toml"
+    startfile_calls: list[tuple[str, str]] = []
+    use_config_file(monkeypatch, config_edit, config_file)
+    monkeypatch.setattr(config_edit, "IS_WINDOWS", True)
+    monkeypatch.setattr(config_edit.shutil, "which", lambda _editor: None)
+    monkeypatch.setattr(
+        config_edit.os,
+        "startfile",
+        lambda executable, *, arguments: startfile_calls.append(
+            (executable, arguments)
+        ),
+        raising=False,
+    )
+
+    result = runner.invoke(app, ["config", "edit", "code&echo INJECTED"])
+
+    assert result.exit_code == 0, result.output
+    assert startfile_calls == [("code&echo INJECTED", f'"{config_file}"')]

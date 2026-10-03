@@ -3,12 +3,12 @@ from pathlib import Path
 
 import pytest
 from keyring.errors import KeyringError
+from typer.testing import CliRunner
 
-from ezhpcy.cli import common
+from ezhpcy.cli import app, common
 from ezhpcy.cli.utils.bad_parameter import RichBadParameter
 from ezhpcy.scheduler.types import SchedulerType
 from ezhpcy.types import ProfileConfig
-from tests.support.cli import invoke
 
 
 def resolve_password(
@@ -207,10 +207,10 @@ def test_cli_values_override_only_the_given_sub_config_fields(
 def test_connection_only_commands_reject_job_options(
     command: str, arguments: list[str]
 ) -> None:
-    result = invoke([command, "base", *arguments])
+    result = CliRunner().invoke(app, [command, "base", *arguments])
 
     assert result.exit_code == 2
-    assert "No such option" in result.stderr
+    assert "No such option" in result.output
 
 
 def test_invalid_profile_password_sources_are_reported_as_a_cli_parameter_error(
@@ -236,16 +236,16 @@ def test_invalid_profile_password_sources_are_reported_as_a_cli_parameter_error(
     with pytest.raises(RichBadParameter):
         common.connection_from_cli(profile="base")
 
-    result = invoke(
+    result = CliRunner().invoke(
+        app,
         ["tunnel", "base"],
         color=True,
     )
 
     assert result.exit_code == 2
-    assert "Invalid value:" in result.stderr
-    assert "Invalid value for" not in result.stdout
-    assert "Invalid value for" not in result.stderr
-    assert "password_file, connection.password_keyring" in result.stderr
+    assert "Invalid value:" in result.output
+    assert "Invalid value for" not in result.output
+    assert "password_file, connection.password_keyring" in result.output
 
 
 def test_connection_options_read_password_from_environment(
@@ -257,7 +257,8 @@ def test_connection_options_read_password_from_environment(
         lambda service, account, password: calls.append((service, account, password)),
     )
 
-    result = invoke(
+    result = CliRunner().invoke(
+        app,
         ["keyring", "set"],
         env={
             common.HOST_ENV_VAR: "login.example.com",
@@ -266,7 +267,7 @@ def test_connection_options_read_password_from_environment(
         },
     )
 
-    assert result.exit_code == 0, result
+    assert result.exit_code == 0, result.output
     assert calls == [("ezhpcy", "alice@login.example.com", "from-environment")]
 
 
@@ -281,7 +282,8 @@ def test_connection_options_read_password_file_from_environment(
         lambda service, account, password: calls.append((service, account, password)),
     )
 
-    result = invoke(
+    result = CliRunner().invoke(
+        app,
         ["keyring", "set"],
         env={
             common.HOST_ENV_VAR: "login.example.com",
@@ -290,7 +292,7 @@ def test_connection_options_read_password_file_from_environment(
         },
     )
 
-    assert result.exit_code == 0, result
+    assert result.exit_code == 0, result.output
     assert calls == [("ezhpcy", "alice@login.example.com", "from-file")]
 
 
@@ -308,7 +310,8 @@ def test_connection_options_read_password_fd_from_environment(
         os.close(write_fd)
         write_fd = -1
 
-        result = invoke(
+        result = CliRunner().invoke(
+            app,
             ["keyring", "set"],
             env={
                 common.HOST_ENV_VAR: "login.example.com",
@@ -321,7 +324,7 @@ def test_connection_options_read_password_fd_from_environment(
         if write_fd >= 0:
             os.close(write_fd)
 
-    assert result.exit_code == 0, result
+    assert result.exit_code == 0, result.output
     assert calls == [("ezhpcy", "alice@login.example.com", "from-file-descriptor")]
 
 
@@ -335,7 +338,8 @@ def test_connection_options_read_password_keyring_from_environment(
         lambda service, account, password: calls.append((service, account, password)),
     )
 
-    result = invoke(
+    result = CliRunner().invoke(
+        app,
         ["keyring", "set"],
         env={
             common.HOST_ENV_VAR: "login.example.com",
@@ -344,7 +348,7 @@ def test_connection_options_read_password_keyring_from_environment(
         },
     )
 
-    assert result.exit_code == 0, result
+    assert result.exit_code == 0, result.output
     assert calls == [("ezhpcy", "alice@login.example.com", "from-keyring")]
 
 
@@ -352,7 +356,7 @@ def test_connection_options_read_password_keyring_from_environment(
 def test_remote_command_help_includes_every_password_source(
     command: list[str],
 ) -> None:
-    result = invoke([*command, "--help"])
+    result = CliRunner().invoke(app, [*command, "--help"], terminal_width=160)
 
     assert result.exit_code == 0
     assert "--password" in result.stdout

@@ -1,12 +1,12 @@
 from pathlib import Path
 
 import pytest
+from typer.testing import CliRunner
 
-from ezhpcy.cli import doctor as doctor_cli
+from ezhpcy.cli import app, doctor as doctor_cli
 from ezhpcy.config import config
 from ezhpcy.tunnel.ssh_config import WorkerHost, include_directive
 from ezhpcy.types import ProfileConfig
-from tests.support.cli import invoke
 
 
 @pytest.fixture(autouse=True)
@@ -54,9 +54,9 @@ def profiles(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_doctor_passes_when_everything_is_set_up(profiles: None) -> None:
 
-    result = invoke(["doctor"])
+    result = CliRunner().invoke(app, ["doctor"])
 
-    assert result.exit_code == 0, result
+    assert result.exit_code == 0, result.output
     assert "ok    Profile base is valid\n" in result.stdout
     assert "ok    Profile cpu is valid: alice@login.example.com" in result.stdout
     assert "ok    `ssh cpu` goes through EzHPCy" in result.stdout
@@ -68,7 +68,7 @@ def test_doctor_fails_without_a_configuration_file(
 ) -> None:
     config_file.unlink()
 
-    result = invoke(["doctor"])
+    result = CliRunner().invoke(app, ["doctor"])
 
     assert result.exit_code == 1
     assert "fail  Config file not found:" in result.stdout
@@ -81,9 +81,9 @@ def test_doctor_fails_without_a_configuration_file(
 def test_doctor_warns_without_profiles(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "profile", {})
 
-    result = invoke(["doctor"])
+    result = CliRunner().invoke(app, ["doctor"])
 
-    assert result.exit_code == 0, result
+    assert result.exit_code == 0, result.output
     assert "warn  No profiles are configured" in result.stdout
     assert "so the SSH setup cannot be checked" in result.stdout
     assert include_directive().splitlines()[-1] in result.stdout.splitlines()
@@ -109,7 +109,7 @@ def test_doctor_fails_on_invalid_profiles(
 ) -> None:
     monkeypatch.setattr(config, "profile", {"broken": profile})
 
-    result = invoke(["doctor"])
+    result = CliRunner().invoke(app, ["doctor"])
 
     assert result.exit_code == 1
     assert message in result.stdout
@@ -118,9 +118,9 @@ def test_doctor_fails_on_invalid_profiles(
 def test_doctor_regenerates_the_profile_ssh_hosts(
     profiles: None, isolated_runtime_dir: Path
 ) -> None:
-    result = invoke(["doctor"])
+    result = CliRunner().invoke(app, ["doctor"])
 
-    assert result.exit_code == 0, result
+    assert result.exit_code == 0, result.output
     profiles_conf = isolated_runtime_dir / "ssh-config" / "profiles.conf"
     content = profiles_conf.read_text(encoding="utf-8")
     assert "Host cpu\n" in content
@@ -137,7 +137,7 @@ def test_doctor_reports_ssh_config_write_failure(
 
     monkeypatch.setattr(doctor_cli, "write_profiles_config", fail)
 
-    result = invoke(["doctor"])
+    result = CliRunner().invoke(app, ["doctor"])
 
     assert result.exit_code == 1
     assert "Could not write SSH hosts: read-only file system" in (result.stdout)
@@ -151,7 +151,7 @@ def test_doctor_fails_when_openssh_resolves_a_host_elsewhere(
 
     monkeypatch.setattr(doctor_cli, "check_host_resolution", check)
 
-    result = invoke(["doctor"])
+    result = CliRunner().invoke(app, ["doctor"])
 
     assert result.exit_code == 1
     assert "fail  `ssh cpu` bypasses EzHPCy: shadowed by ~/.ssh/config" in result.stdout
@@ -171,7 +171,7 @@ def test_doctor_skips_host_resolution_without_ssh(
     monkeypatch.setattr(doctor_cli, "which", lambda _name: None)
     monkeypatch.setattr(doctor_cli, "check_host_resolution", unexpected)
 
-    result = invoke(["doctor"])
+    result = CliRunner().invoke(app, ["doctor"])
 
-    assert result.exit_code == 0, result
+    assert result.exit_code == 0, result.output
     assert "warn  SSH client not found on PATH" in result.stdout

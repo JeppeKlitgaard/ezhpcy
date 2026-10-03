@@ -5,8 +5,9 @@ from unittest.mock import patch
 
 import paramiko
 import pytest
+from typer.testing import CliRunner
 
-from ezhpcy.cli import common
+from ezhpcy.cli import app, common
 from ezhpcy.cli.prune import (
     prune_stale_installations,
     prune_stale_pixi_data,
@@ -31,7 +32,6 @@ from ezhpcy.provision_host import (
 from ezhpcy.provision_local import ensure_local_ssh_keys, pin_worker_host_key
 from ezhpcy.tunnel.sshd import absolute_sshd_command, sshd_config_arguments
 from ezhpcy.types import ProfileConfig, RemoteState
-from tests.support.cli import invoke
 
 
 class StubSFTP:
@@ -124,12 +124,12 @@ def configured_client(tmp_path: Path) -> Config:
 
 
 def test_provision_help_describes_idempotent_provisioning() -> None:
-    result = invoke(["provision", "--help"])
+    result = CliRunner().invoke(app, ["provision", "--help"])
 
     assert result.exit_code == 0
     assert "Provision EzHPCy worker infrastructure" in result.stdout
 
-    prune_help = invoke(["prune", "--help"])
+    prune_help = CliRunner().invoke(app, ["prune", "--help"])
     assert prune_help.exit_code == 0
     assert "--all" in prune_help.stdout
     assert "-a" in prune_help.stdout
@@ -143,7 +143,8 @@ def test_provision_accepts_anonymous_cli_configuration() -> None:
             "ezhpcy.cli.provision.provision_worker_infrastructure"
         ) as provision_infrastructure,
     ):
-        result = invoke(
+        result = CliRunner().invoke(
+            app,
             [
                 "provision",
                 "--host",
@@ -154,7 +155,7 @@ def test_provision_accepts_anonymous_cli_configuration() -> None:
             ],
         )
 
-    assert result.exit_code == 0, result
+    assert result.exit_code == 0, result.output
     provision_infrastructure.assert_called_once()
     assert provision_infrastructure.call_args.kwargs["remote_username"] == "alice"
     assert provision_infrastructure.call_args.kwargs["remote_host"] == (
@@ -169,7 +170,8 @@ def test_prune_accepts_anonymous_cli_configuration() -> None:
         patch("ezhpcy.cli.prune.prune_stale_installations") as prune_installations,
         patch("ezhpcy.cli.prune.prune_stale_pixi_data") as prune_pixi,
     ):
-        result = invoke(
+        result = CliRunner().invoke(
+            app,
             [
                 "prune",
                 "--host",
@@ -179,7 +181,7 @@ def test_prune_accepts_anonymous_cli_configuration() -> None:
             ],
         )
 
-    assert result.exit_code == 0, result
+    assert result.exit_code == 0, result.output
     prune_installations.assert_called_once_with(ssh, ssh.get_remote_state())
     prune_pixi.assert_called_once_with(ssh, ssh.get_remote_state())
 
@@ -218,11 +220,11 @@ def test_provision_is_repeatable(
             ),
         ),
     ):
-        first = invoke(["provision", "base", "--yes"])
-        second = invoke(["provision", "base", "--yes"])
+        first = CliRunner().invoke(app, ["provision", "base", "--yes"])
+        second = CliRunner().invoke(app, ["provision", "base", "--yes"])
 
-    assert first.exit_code == 0, first
-    assert second.exit_code == 0, second
+    assert first.exit_code == 0, first.output
+    assert second.exit_code == 0, second.output
     assert provision_files.call_count == 2
     assert len(ssh.commands) == 2
     assert all(command[:2] == ["bash", "-c"] for command in ssh.commands)
@@ -434,9 +436,9 @@ def test_prune_all_removes_the_package_cache_directory(tmp_path: Path) -> None:
         patch.object(common, "config", config),
         patch("ezhpcy.cli.prune.InteractiveSSHClient", return_value=ssh),
     ):
-        result = invoke(["prune", "base", "--all", "--yes"])
+        result = CliRunner().invoke(app, ["prune", "base", "--all", "--yes"])
 
-    assert result.exit_code == 0, result
+    assert result.exit_code == 0, result.output
     assert ssh.commands == [["rm", "-rf", "--", "/home/alice/.cache/ezhpcy"]]
 
 

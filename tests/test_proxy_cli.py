@@ -2,11 +2,11 @@ import logging
 from pathlib import Path
 
 import pytest
+from typer.testing import CliRunner
 
 from ezhpcy import ipc
-from ezhpcy.cli import proxy as proxy_module
+from ezhpcy.cli import app, proxy as proxy_module
 from ezhpcy.ipc import create_tunnel_backend
-from tests.support.cli import invoke
 
 
 @pytest.fixture
@@ -27,11 +27,11 @@ def test_proxy_relays_through_the_tunnel_published_for_its_alias(
     backend = create_tunnel_backend(alias="gpu", authkey=b"a" * 32)
     listener = backend.listen(lambda _connection: None)
     try:
-        result = invoke(["proxy", "gpu"])
+        result = CliRunner().invoke(app, ["proxy", "gpu"])
     finally:
         listener.close()
 
-    assert result.exit_code == 0, result
+    assert result.exit_code == 0, result.output
     assert len(relayed) == 1
     assert relayed[0].address == listener.address
     assert relayed[0].instance_id == backend.instance_id
@@ -40,7 +40,7 @@ def test_proxy_relays_through_the_tunnel_published_for_its_alias(
 def test_proxy_without_a_running_tunnel_reports_how_to_start_one(
     runtime_dir: Path,
 ) -> None:
-    result = invoke(["proxy", "gpu"])
+    result = CliRunner().invoke(app, ["proxy", "gpu"])
 
     assert result.exit_code == 1
     assert "ezhpcy proxy:" in result.stderr
@@ -51,7 +51,7 @@ def test_proxy_without_a_running_tunnel_reports_how_to_start_one(
 def test_proxy_rejects_an_alias_that_is_not_a_safe_name(
     runtime_dir: Path, alias: str
 ) -> None:
-    result = invoke(["proxy", alias])
+    result = CliRunner().invoke(app, ["proxy", alias])
 
     assert result.exit_code == 2
     assert "invalid host alias" in result.stderr
@@ -71,16 +71,16 @@ def test_proxy_takes_debug_logging_from_the_tunnel(
         lambda _connection: None
     )
     try:
-        result = invoke(["proxy", "gpu"])
+        result = CliRunner().invoke(app, ["proxy", "gpu"])
     finally:
         listener.close()
 
-    assert result.exit_code == 0, result
+    assert result.exit_code == 0, result.output
     assert levels == [logging.DEBUG]
 
 
 def test_proxy_requires_an_alias() -> None:
-    result = invoke(["proxy"])
+    result = CliRunner().invoke(app, ["proxy"])
 
     assert result.exit_code == 2
     assert "Missing argument 'alias'" in result.stderr

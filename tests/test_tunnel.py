@@ -11,8 +11,9 @@ from unittest.mock import ANY, call, patch
 import paramiko
 import pytest
 from pydantic import ValidationError
+from typer.testing import CliRunner
 
-from ezhpcy.cli import tunnel as tunnel_module
+from ezhpcy.cli import app, tunnel as tunnel_module
 from ezhpcy.cli.tunnel import (
     TunnelError,
     WorkerControl,
@@ -42,7 +43,6 @@ from ezhpcy.types import (
     SubmissionMode,
     TimingsConfig,
 )
-from tests.support.cli import invoke
 
 _MEBIBYTE = 1024**2
 
@@ -936,8 +936,8 @@ def test_tunnel_submits_batch_job_without_interactive_shell() -> None:
 
 
 def test_tunnel_help_exposes_scheduler_and_resource_options() -> None:
-    result = invoke(["tunnel", "--help"])
-    alias_result = invoke(["t", "--help"])
+    result = CliRunner().invoke(app, ["tunnel", "--help"], terminal_width=160)
+    alias_result = CliRunner().invoke(app, ["t", "--help"], terminal_width=160)
 
     assert result.exit_code == 0
     assert alias_result.exit_code == 0
@@ -964,7 +964,7 @@ def test_tunnel_help_exposes_scheduler_and_resource_options() -> None:
 
 
 def test_tunnel_command_requires_a_resolvable_configuration() -> None:
-    result = invoke(["tunnel"])
+    result = CliRunner().invoke(app, ["tunnel"])
 
     assert result.exit_code == 2
     assert "user" in result.stderr
@@ -981,7 +981,8 @@ def test_tunnel_command_accepts_anonymous_cli_configuration(
         lambda **kwargs: captured.update(kwargs),
     )
 
-    result = invoke(
+    result = CliRunner().invoke(
+        app,
         [
             "tunnel",
             "--host",
@@ -1001,7 +1002,7 @@ def test_tunnel_command_accepts_anonymous_cli_configuration(
         ],
     )
 
-    assert result.exit_code == 0, result
+    assert result.exit_code == 0, result.output
     assert captured["profile_name"] is None
     resolved = captured["resolved"]
     assert resolved.scheduler.type is SchedulerType.LSF
@@ -1014,7 +1015,8 @@ def test_tunnel_command_accepts_anonymous_cli_configuration(
 
 
 def test_tunnel_command_requires_submission_mode() -> None:
-    result = invoke(
+    result = CliRunner().invoke(
+        app,
         [
             "tunnel",
             "--host",
@@ -1027,7 +1029,7 @@ def test_tunnel_command_requires_submission_mode() -> None:
     )
 
     assert result.exit_code == 2
-    assert "submission_mode must be set" in result.stderr
+    assert "submission_mode must be set" in result.output
 
 
 def test_tunnel_command_accepts_batch_submission_mode(
@@ -1040,7 +1042,8 @@ def test_tunnel_command_accepts_batch_submission_mode(
         lambda **kwargs: captured.update(kwargs),
     )
 
-    result = invoke(
+    result = CliRunner().invoke(
+        app,
         [
             "tunnel",
             "--host",
@@ -1054,12 +1057,13 @@ def test_tunnel_command_accepts_batch_submission_mode(
         ],
     )
 
-    assert result.exit_code == 0, result
+    assert result.exit_code == 0, result.output
     assert captured["resolved"].scheduler.submission_mode is SubmissionMode.BATCH
 
 
 def test_tunnel_command_rejects_interactive_wrapper_in_batch_mode() -> None:
-    result = invoke(
+    result = CliRunner().invoke(
+        app,
         [
             "tunnel",
             "--host",
@@ -1076,7 +1080,7 @@ def test_tunnel_command_rejects_interactive_wrapper_in_batch_mode() -> None:
     )
 
     assert result.exit_code == 2
-    assert "requires scheduler.submission_mode" in result.stderr
+    assert "requires scheduler.submission_mode" in result.output
 
 
 def test_tunnel_command_accepts_cli_interactive_submission_command(
@@ -1089,7 +1093,8 @@ def test_tunnel_command_accepts_cli_interactive_submission_command(
         lambda **kwargs: captured.update(kwargs),
     )
 
-    result = invoke(
+    result = CliRunner().invoke(
+        app,
         [
             "tunnel",
             "--host",
@@ -1105,7 +1110,7 @@ def test_tunnel_command_accepts_cli_interactive_submission_command(
         ],
     )
 
-    assert result.exit_code == 0, result
+    assert result.exit_code == 0, result.output
     resolved = captured["resolved"]
     assert resolved.scheduler.interactive_submission_command == [
         "/lsf/local/bin/a100sh",
@@ -1115,7 +1120,8 @@ def test_tunnel_command_accepts_cli_interactive_submission_command(
 
 
 def test_tunnel_command_rejects_resources_with_cli_interactive_command() -> None:
-    result = invoke(
+    result = CliRunner().invoke(
+        app,
         [
             "tunnel",
             "--host",
@@ -1134,12 +1140,13 @@ def test_tunnel_command_rejects_resources_with_cli_interactive_command() -> None
     )
 
     assert result.exit_code == 2
-    assert "cannot be combined with submission options" in result.stderr
-    assert "--queue" in result.stderr
+    assert "cannot be combined with submission options" in result.output
+    assert "--queue" in result.output
 
 
 def test_tunnel_command_rejects_malformed_interactive_command_quoting() -> None:
-    result = invoke(
+    result = CliRunner().invoke(
+        app,
         [
             "tunnel",
             "--host",
@@ -1156,7 +1163,7 @@ def test_tunnel_command_rejects_malformed_interactive_command_quoting() -> None:
     )
 
     assert result.exit_code == 2
-    assert "No closing quotation" in result.stderr
+    assert "No closing quotation" in result.output
 
 
 def test_tunnel_command_resolves_profile_and_applies_cli_overrides(
@@ -1205,7 +1212,8 @@ def test_tunnel_command_resolves_profile_and_applies_cli_overrides(
         lambda **kwargs: captured.update(kwargs),
     )
 
-    result = invoke(
+    result = CliRunner().invoke(
+        app,
         [
             "tunnel",
             "gpu",
@@ -1225,7 +1233,7 @@ def test_tunnel_command_resolves_profile_and_applies_cli_overrides(
         ],
     )
 
-    assert result.exit_code == 0, result
+    assert result.exit_code == 0, result.output
     assert captured["profile_name"] == "gpu"
     resolved = captured["resolved"]
     assert resolved.scheduler.type is SchedulerType.LSF
@@ -1251,7 +1259,8 @@ def test_tunnel_command_resolves_profile_and_applies_cli_overrides(
     assert len(set(worker_ports)) == 6
 
     captured.clear()
-    result = invoke(
+    result = CliRunner().invoke(
+        app,
         [
             "tunnel",
             "base",
@@ -1262,7 +1271,7 @@ def test_tunnel_command_resolves_profile_and_applies_cli_overrides(
         ],
     )
 
-    assert result.exit_code == 0, result
+    assert result.exit_code == 0, result.output
     assert captured["worker_ports"] == (55000,)
     assert captured["resolved"].timings.job_poll_interval_seconds == 4
     assert captured["resolved"].timings.job_monitor_interval_seconds == 120
@@ -1294,9 +1303,9 @@ def test_tunnel_command_allows_wrapper_with_implicit_resource_defaults(
         lambda **kwargs: captured.update(kwargs),
     )
 
-    result = invoke(["tunnel", "base"])
+    result = CliRunner().invoke(app, ["tunnel", "base"])
 
-    assert result.exit_code == 0, result
+    assert result.exit_code == 0, result.output
     resolved = captured["resolved"]
     assert resolved.resources.queue is None
     assert resolved.resources.cores == 1
@@ -1335,9 +1344,9 @@ def test_tunnel_command_logs_inherited_submission_options_ignored_by_wrapper(
     monkeypatch.setattr(tunnel_module, "_run_tunnel", lambda **_kwargs: None)
 
     with patch("ezhpcy.cli.tunnel.logger") as logger:
-        result = invoke(["tunnel", "wrapper"])
+        result = CliRunner().invoke(app, ["tunnel", "wrapper"])
 
-    assert result.exit_code == 0, result
+    assert result.exit_code == 0, result.output
     logger.info.assert_called_once_with(
         "Ignoring inherited scheduler submission options for "
         "scheduler.interactive_submission_command: %s",
@@ -1378,11 +1387,11 @@ def test_tunnel_command_rejects_cli_resources_with_wrapper(
         },
     )
 
-    result = invoke(["tunnel", "base", *arguments])
+    result = CliRunner().invoke(app, ["tunnel", "base", *arguments])
 
     assert result.exit_code == 2
-    assert "cannot be combined with submission options" in result.stderr
-    assert option in result.stderr
+    assert "cannot be combined with submission options" in result.output
+    assert option in result.output
 
 
 @pytest.mark.parametrize(
@@ -1424,11 +1433,11 @@ def test_tunnel_command_rejects_configured_submission_options_with_wrapper(
         },
     )
 
-    result = invoke(["tunnel", "base"])
+    result = CliRunner().invoke(app, ["tunnel", "base"])
 
     assert result.exit_code == 2
-    assert "cannot be combined with submission options" in result.stderr
-    assert f"profile.base.{section}.{field}" in result.stderr
+    assert "cannot be combined with submission options" in result.output
+    assert f"profile.base.{section}.{field}" in result.output
 
 
 def test_tunnel_command_can_disable_auto_provision(
@@ -1462,9 +1471,9 @@ def test_tunnel_command_can_disable_auto_provision(
         lambda **kwargs: captured.update(kwargs),
     )
 
-    result = invoke(["tunnel", "base", "--no-auto-provision"])
+    result = CliRunner().invoke(app, ["tunnel", "base", "--no-auto-provision"])
 
-    assert result.exit_code == 0, result
+    assert result.exit_code == 0, result.output
     assert credentials_checked
     assert captured["auto_provision"] is False
 
@@ -1492,9 +1501,9 @@ def test_tunnel_command_can_enable_auto_provision_when_config_disables_it(
         lambda **kwargs: captured.update(kwargs),
     )
 
-    result = invoke(["tunnel", "base", "--auto-provision"])
+    result = CliRunner().invoke(app, ["tunnel", "base", "--auto-provision"])
 
-    assert result.exit_code == 0, result
+    assert result.exit_code == 0, result.output
     assert captured["auto_provision"] is True
 
 
@@ -1514,7 +1523,8 @@ def test_tunnel_command_rejects_conflicting_auto_provision_flags(
         },
     )
 
-    result = invoke(
+    result = CliRunner().invoke(
+        app,
         [
             "tunnel",
             "base",
@@ -1524,7 +1534,7 @@ def test_tunnel_command_rejects_conflicting_auto_provision_flags(
     )
 
     assert result.exit_code == 2
-    assert "cannot be used together" in result.stderr
+    assert "cannot be used together" in result.output
 
 
 def test_tunnel_command_rejects_unknown_profile_before_starting(
@@ -1547,7 +1557,7 @@ def test_tunnel_command_rejects_unknown_profile_before_starting(
 
     monkeypatch.setattr(tunnel_module, "_ensure_local_worker_credentials", start)
 
-    result = invoke(["tunnel", "missing"])
+    result = CliRunner().invoke(app, ["tunnel", "missing"])
 
     assert result.exit_code == 2
     assert "unknown profile 'missing'" in result.stderr
@@ -1593,9 +1603,9 @@ def test_profile_tunnel_alias_defaults_to_its_profiles_conf_block(
     monkeypatch.setattr(tunnel_module.config, "profile", _alias_profiles())
     captured = _capture_run_tunnel(monkeypatch)
 
-    result = invoke(["tunnel", "gpu"])
+    result = CliRunner().invoke(app, ["tunnel", "gpu"])
 
-    assert result.exit_code == 0, result
+    assert result.exit_code == 0, result.output
     ssh_host = captured["ssh_host"]
     assert isinstance(ssh_host, WorkerHost)
     assert (ssh_host.alias, ssh_host.user) == ("gpu", "alice")
@@ -1618,9 +1628,9 @@ def test_profile_tunnel_that_differs_from_profiles_conf_needs_its_own_block(
     monkeypatch.setattr(tunnel_module.config, "profile", _alias_profiles())
     captured = _capture_run_tunnel(monkeypatch)
 
-    result = invoke(["tunnel", "gpu", *arguments])
+    result = CliRunner().invoke(app, ["tunnel", "gpu", *arguments])
 
-    assert result.exit_code == 0, result
+    assert result.exit_code == 0, result.output
     ssh_host = captured["ssh_host"]
     assert isinstance(ssh_host, WorkerHost)
     assert (ssh_host.alias, ssh_host.user) == (alias, user)
@@ -1639,9 +1649,9 @@ def test_tunnel_falls_back_to_its_own_block_when_profiles_conf_cannot_be_written
     monkeypatch.setattr(tunnel_module, "write_profiles_config", fail)
 
     with patch("ezhpcy.cli.tunnel.logger") as logger:
-        result = invoke(["tunnel", "gpu"])
+        result = CliRunner().invoke(app, ["tunnel", "gpu"])
 
-    assert result.exit_code == 0, result
+    assert result.exit_code == 0, result.output
     assert captured["ssh_host_in_profiles_config"] is False
     logger.warning.assert_any_call(
         "Could not write the profile SSH configuration: %s", ANY
@@ -1654,8 +1664,8 @@ def test_anonymous_tunnel_alias_is_stable_for_identical_options(
     captured = _capture_run_tunnel(monkeypatch)
 
     def alias_for(*extra: str) -> str:
-        result = invoke([*_ANONYMOUS_TUNNEL_ARGS, *extra])
-        assert result.exit_code == 0, result
+        result = CliRunner().invoke(app, [*_ANONYMOUS_TUNNEL_ARGS, *extra])
+        assert result.exit_code == 0, result.output
         assert captured["ssh_host_in_profiles_config"] is False
         ssh_host = captured["ssh_host"]
         assert isinstance(ssh_host, WorkerHost)
@@ -1673,9 +1683,9 @@ def test_anonymous_tunnel_accepts_an_explicit_alias(
 ) -> None:
     captured = _capture_run_tunnel(monkeypatch)
 
-    result = invoke([*_ANONYMOUS_TUNNEL_ARGS, "--alias", "scratch"])
+    result = CliRunner().invoke(app, [*_ANONYMOUS_TUNNEL_ARGS, "--alias", "scratch"])
 
-    assert result.exit_code == 0, result
+    assert result.exit_code == 0, result.output
     ssh_host = captured["ssh_host"]
     assert isinstance(ssh_host, WorkerHost)
     assert ssh_host.alias == "scratch"
@@ -1696,7 +1706,7 @@ def test_tunnel_rejects_unusable_aliases(
     monkeypatch.setattr(tunnel_module.config, "profile", _alias_profiles())
     captured = _capture_run_tunnel(monkeypatch)
 
-    result = invoke(arguments)
+    result = CliRunner().invoke(app, arguments)
 
     assert result.exit_code == 2
     assert message in result.stderr

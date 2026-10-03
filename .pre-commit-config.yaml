@@ -22,8 +22,6 @@ repos:
       # Python
       - id: name-tests-test
         args: [--pytest-test-first]
-        # Shared test helpers, not test modules
-        exclude: ^tests/support/
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
     # Keep in sync with pyproject.toml

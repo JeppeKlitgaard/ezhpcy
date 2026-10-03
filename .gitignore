@@ -10,9 +10,5 @@ dist/
 .ruff_cache/
 .pytest_cache/
 
-# Test coverage
-.coverage
-htmlcov/
-
 # Environment
 .env

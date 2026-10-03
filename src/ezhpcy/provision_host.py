@@ -1,24 +1,24 @@
 import logging
-import shlex
-from pathlib import PurePosixPath
+lazy import shlex
+lazy from pathlib import PurePosixPath
 
-from ezhpcy.config import config
-from ezhpcy.constants import (
+lazy from ezhpcy.config import config
+lazy from ezhpcy.constants import (
     OPENSSH_MATCHSPEC,
     PIXI_INSTALLER_URL,
     PIXI_VERSION,
     SSH_DIRECTORY_NAME,
     WORKER_HOST_KEY_NAME,
 )
-from ezhpcy.provision_local import ensure_local_ssh_keys, pin_worker_host_key
-from ezhpcy.ssh import SSHClient
-from ezhpcy.tunnel.sshd import (
+lazy from ezhpcy.provision_local import ensure_local_ssh_keys, pin_worker_host_key
+lazy from ezhpcy.ssh import SSHClient
+lazy from ezhpcy.tunnel.sshd import (
     absolute_sshd_command,
     read_ed25519_public_key,
     sshd_config_arguments,
 )
-from ezhpcy.types import RemoteState
-from ezhpcy.utils import local_machine_id, ssh_connection_id
+lazy from ezhpcy.types import RemoteState
+lazy from ezhpcy.utils import local_machine_id, ssh_connection_id
 
 logger = logging.getLogger(__name__)
 

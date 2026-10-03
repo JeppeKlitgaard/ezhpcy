@@ -1,16 +1,16 @@
-from collections.abc import Iterator
 from dataclasses import dataclass
 from enum import StrEnum
-from shutil import which
+lazy from collections.abc import Iterator
+lazy from shutil import which
 
-from rich.markup import escape
-from rich.text import Text
+lazy from rich.markup import escape
+lazy from rich.text import Text
 
-from ezhpcy.cli._errors import rich_text, sentence
 from ezhpcy.config import Config, ProfilePasswordSourceError, config
-from ezhpcy.console import console, error_console
-from ezhpcy.permissions import FilePermissionError
-from ezhpcy.tunnel.ssh_config import (
+lazy from ezhpcy.cli._errors import rich_text, sentence
+lazy from ezhpcy.console import console, error_console
+lazy from ezhpcy.permissions import FilePermissionError
+lazy from ezhpcy.tunnel.ssh_config import (
     check_host_resolution,
     include_directive,
     profile_hosts,

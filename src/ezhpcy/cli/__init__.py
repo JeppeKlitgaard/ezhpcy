@@ -1,7 +1,7 @@
-import logging
-import sys
-from collections.abc import Sequence
-from typing import Annotated
+lazy import logging
+lazy import sys
+lazy from collections.abc import Sequence
+lazy from typing import Annotated
 
 from cyclopts import (
     App,
@@ -11,13 +11,11 @@ from cyclopts import (
     MissingArgumentError,
     Parameter,
 )
-from cyclopts.exceptions import STYLE_VALID_CHOICE
-from rich.console import Console
-from rich.panel import Panel
-from rich.text import Text
+lazy from cyclopts.exceptions import STYLE_VALID_CHOICE
+lazy from rich.console import Console
+lazy from rich.panel import Panel
+lazy from rich.text import Text
 
-from ezhpcy.cli._errors import CliUsageError
-from ezhpcy.cli._options import DEBUG_ENV_VAR
 from ezhpcy.cli.config import config_app
 from ezhpcy.cli.doctor import doctor_cmd
 from ezhpcy.cli.info import info_cmd
@@ -28,8 +26,10 @@ from ezhpcy.cli.proxy import proxy_cmd
 from ezhpcy.cli.prune import prune_cmd
 from ezhpcy.cli.tunnel import tunnel_cmd
 from ezhpcy.cli.version import version_cmd
-from ezhpcy.config import config
-from ezhpcy.logging import configure_logging
+lazy from ezhpcy.cli._errors import CliUsageError
+lazy from ezhpcy.cli._options import DEBUG_ENV_VAR
+lazy from ezhpcy.config import config as ezhpcy_config  # To avoid shadowing
+lazy from ezhpcy.logging import configure_logging
 
 
 def _format_error(error: CycloptsError) -> Panel:
@@ -86,7 +86,7 @@ def _meta(
         ),
     ] = False,
 ) -> object:
-    if debug or config.debug:
+    if debug or ezhpcy_config.debug:
         configure_logging(logging.DEBUG, include_timestamp=True)
     return app(tokens)
 

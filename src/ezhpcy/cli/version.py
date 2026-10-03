@@ -1,10 +1,10 @@
-import json as json_lib
-from typing import Annotated
+lazy import json as json_lib
+lazy from typing import Annotated
 
-from cyclopts import Parameter
+lazy from cyclopts import Parameter
 
-from ezhpcy import console
-from ezhpcy.utils import ezhpcy_version
+lazy from ezhpcy import console
+lazy from ezhpcy.utils import ezhpcy_version
 
 
 def version_cmd(

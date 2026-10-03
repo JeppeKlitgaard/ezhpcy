@@ -1,20 +1,20 @@
 """The tunnel server and ProxyCommand stream relays."""
 
-import itertools
 import logging
-import os
-import socket
-import threading
-import time
 from collections.abc import Callable
-from typing import BinaryIO
+lazy import itertools
+lazy import os
+lazy import socket
+lazy import threading
+lazy import time
+lazy from typing import BinaryIO
 
-import paramiko
+lazy import paramiko
 
-from ezhpcy.ipc.common import (
+lazy from ezhpcy.ipc.common import (
     IPCBackend,
 )
-from ezhpcy.ipc.protocol import (
+lazy from ezhpcy.ipc.protocol import (
     ready_worker_stream,
     reject_worker_stream,
     wait_for_worker_stream,

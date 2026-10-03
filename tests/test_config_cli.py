@@ -38,9 +38,7 @@ def record_editor_runs(
         return subprocess.CompletedProcess(command, returncode)
 
     monkeypatch.setattr(config_edit, "IS_WINDOWS", windows)
-    monkeypatch.setattr(
-        config_edit.shutil, "which", lambda name: (executables or {}).get(name)
-    )
+    monkeypatch.setattr(config_edit.shutil, "which", (executables or {}).get)
     monkeypatch.setattr(config_edit.subprocess, "run", run)
     monkeypatch.delenv("VISUAL", raising=False)
     monkeypatch.delenv("EDITOR", raising=False)

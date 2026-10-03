@@ -31,15 +31,39 @@ ezhpcy = "ezhpcy.cli:main"
 dev = [
     "prek>=0.4.9",
     "pytest>=9.1.1",
-    "ruff>=0.16.10",    # keep in sync with .pre-commit-config.yaml
+    "ruff>=0.16.10", # keep in sync with .pre-commit-config.yaml
 ]
 
 [tool.ruff.lint]
+preview = true
 extend-select = [
-    "I",  # isort
-    "UP", # pyupgrade
+    "I",   # isort
+    "UP",  # pyupgrade
+    "TID", # flake8-tidy-imports
+    "YTT", # flake8-2020
+    "B",   # flake8-bugbear
+    "A",   # flake8-builtins
+    "DTZ",  # flake8-datetimetz
+    "T10", #flake8-debugger
+    "EXE", #flake8-executable
+    "LOG", #flake8-logging
+    "INP", #flake8-no-pep420
+]
+ignore = [
+    "RUF106",  # rule-codecs-in-suppression-comments
 ]
 isort.combine-as-imports = true
+
+[tool.ruff.lint.per-file-ignores]
+# Tests
+"tests/**" = [
+    "RUF069",  # float-equality-comparison, in tests we sometimes want eq. check
+]
+
+# Standalone scripts
+"scripts/**" = [
+    "INP",  # no-pep420, scripts are standalone and not part of a package
+]
 
 [build-system]
 requires = ["uv_build>=0.11.28,<0.12"]

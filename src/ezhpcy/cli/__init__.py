@@ -16,16 +16,6 @@ lazy from rich.console import Console
 lazy from rich.panel import Panel
 lazy from rich.text import Text
 
-from ezhpcy.cli.config import config_app
-from ezhpcy.cli.doctor import doctor_cmd
-from ezhpcy.cli.info import info_cmd
-from ezhpcy.cli.keyring import keyring_app
-from ezhpcy.cli.list_profiles import list_profiles_cmd
-from ezhpcy.cli.provision import provision_cmd
-from ezhpcy.cli.proxy import proxy_cmd
-from ezhpcy.cli.prune import prune_cmd
-from ezhpcy.cli.tunnel import tunnel_cmd
-from ezhpcy.cli.version import version_cmd
 lazy from ezhpcy.cli._errors import CliUsageError
 lazy from ezhpcy.cli._options import DEBUG_ENV_VAR
 lazy from ezhpcy.config import config as ezhpcy_config  # To avoid shadowing
@@ -70,10 +60,10 @@ app = App(
 
 # Options that every command takes, such as `--debug`, need a meta app: it parses
 # them wherever they appear (before or after the command, up to `--`), then runs
-# `app` on the remaining tokens.
-app.meta.group_parameters = GLOBAL_OPTIONS
-
-
+# `app` on the remaining tokens. Each option names its group: setting
+# `app.meta.group_parameters` instead would also move every option of a lazily
+# registered command there, because Cyclopts resolves those with the meta app as
+# their parent.
 @app.meta.default
 def _meta(
     *tokens: Annotated[str, Parameter(show=False, allow_leading_hyphen=True)],
@@ -83,6 +73,7 @@ def _meta(
             name="--debug",
             help="Enable debug logging and include timestamps in log output.",
             env_var=DEBUG_ENV_VAR,
+            group=GLOBAL_OPTIONS,
         ),
     ] = False,
 ) -> object:
@@ -91,70 +82,109 @@ def _meta(
     return app(tokens)
 
 
-# Within each help group, `sort_key` sets the order; it's alphabetical otherwise.
+# Commands are registered by import path, so a command's module is imported only
+# when that command runs.
+# Sub-apps: they don't inherit help or version flags by default; pass explicitly
 app.command(
-    provision_cmd,
+    "ezhpcy.cli.provision:provision_cmd",
     name="provision",
     help="Provision EzHPCy worker infrastructure. Usually done automatically.",
     sort_key=1,
 )
 app.command(
-    prune_cmd, name="prune", help="Prune EzHPCy-managed remote data.", sort_key=2
+    "ezhpcy.cli.prune:prune_cmd",
+    name="prune",
+    help="Prune EzHPCy-managed remote data.",
+    sort_key=2,
 )
 app.command(
-    tunnel_cmd,
+    "ezhpcy.cli.tunnel:tunnel_cmd",
     name="tunnel",
     alias="t",
     help="Allocate a compute node and host an SSH tunnel to it.",
     sort_key=3,
 )
 app.command(
-    proxy_cmd,
+    "ezhpcy.cli.proxy:proxy_cmd",
     name="proxy",
     help="Connect through a running tunnel (SSH ProxyCommand).",
     sort_key=4,
 )
 
-config_app.group = CONFIGURATION_COMMANDS
-config_app.sort_key = 1
+
+## ezhpcy config
+config_app = App(
+    name="config",
+    help="Manage the EzHPCy configuration file.",
+    group=CONFIGURATION_COMMANDS,
+    sort_key=1,
+    help_flags=app.help_flags,
+    version_flags=app.version_flags,
+)
+# ezhpcy config edit
+config_app.command(
+    "ezhpcy.cli.config.edit:edit_cmd",
+    name="edit",
+    help="Open the configuration file in an editor.",
+)
+# ezhpcy config load
+config_app.command(
+    "ezhpcy.cli.config.load:load_cmd",
+    name="load",
+    help="Load a packaged configuration preset.",
+)
 app.command(config_app)
+
+# ezhpcy doctor
 app.command(
-    doctor_cmd,
+    "ezhpcy.cli.doctor:doctor_cmd",
     name="doctor",
     help="Validates the EzHPCy configuration and suggests fixes if necessary.",
     group=CONFIGURATION_COMMANDS,
     sort_key=2,
 )
-keyring_app.group = CONFIGURATION_COMMANDS
-keyring_app.sort_key = 3
+
+## ezhpcy keyring
+keyring_app = App(
+    name="keyring",
+    help="Manage login-node passwords in the system keyring.",
+    group=CONFIGURATION_COMMANDS,
+    sort_key=3,
+    help_flags=app.help_flags,
+    version_flags=app.version_flags,
+)
+# ezhpcy keyring set
+keyring_app.command(
+    "ezhpcy.cli.keyring:set_cmd", name="set", help="Store a login-node password."
+)
 app.command(keyring_app)
 
+# ezhpcy info
 app.command(
-    info_cmd,
+    "ezhpcy.cli.info:info_cmd",
     name="info",
     help="Show debug information.",
     group=META_COMMANDS,
     sort_key=1,
 )
+
+# ezhpcy version
 app.command(
-    version_cmd,
+    "ezhpcy.cli.version:version_cmd",
     name="version",
     help="Show the EzHPCy version.",
     group=META_COMMANDS,
     sort_key=2,
 )
+
+# ezhpcy list-profiles
 app.command(
-    list_profiles_cmd,
+    "ezhpcy.cli.list_profiles:list_profiles_cmd",
     name="list-profiles",
     help="List configured profiles.",
     group=META_COMMANDS,
     sort_key=3,
 )
-
-for sub_app in (config_app, keyring_app):
-    # Sub-apps don't inherit these from `app`, unlike function commands.
-    sub_app.help_flags = app.help_flags
-    sub_app.version_flags = app.version_flags
 
 # Cyclopts registers `--help` as a command; list it with `--debug` instead.
 # Sub-apps hide their own `--help` unless told otherwise.

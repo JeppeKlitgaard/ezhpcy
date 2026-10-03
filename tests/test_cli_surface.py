@@ -122,7 +122,7 @@ def test_provision_asks_first_and_can_be_cancelled(
 ) -> None:
     captured = capture(monkeypatch, "provision")
 
-    result = invoke(["provision", "base"], stdin="n\n")
+    result = invoke(["provision", "base"], input="n\n")
 
     assert result.exit_code == 1, result
     assert "Proceed?" in result.stdout
@@ -163,7 +163,7 @@ def test_prune_all_asks_first_and_defaults_to_no(
 ) -> None:
     captured = capture(monkeypatch, "prune")
 
-    result = invoke(["prune", "base", "--all"], stdin="\n")
+    result = invoke(["prune", "base", "--all"], input="\n")
 
     assert result.exit_code == 1, result
     assert "Proceed?" in result.stdout
@@ -189,7 +189,7 @@ def test_keyring_set_stores_the_password_for_user_at_host(
 
     result = invoke(
         ["keyring", "set", "--host", "login.example.com", "--user", "alice"],
-        stdin="typed\n",
+        input="typed\n",
     )
 
     assert result.exit_code == 0, result
@@ -321,13 +321,7 @@ def test_connection_options_reach_the_login_connection(
     expected: str,
 ) -> None:
     captured = capture(monkeypatch, command)
-    env = dict(
-        zip(
-            environment,
-            _filled(list(environment.values()), password_sources),
-            strict=True,
-        )
-    )
+    env = dict(zip(environment, _filled(list(environment.values()), password_sources)))
 
     result = invoke([command, "base", *_filled(arguments, password_sources)], env=env)
 
@@ -356,19 +350,13 @@ def test_connection_options_reach_keyring_set(
     env = {
         "EZHPCY_HOST": "login.example.com",
         "EZHPCY_USER": "alice",
-        **dict(
-            zip(
-                environment,
-                _filled(list(environment.values()), password_sources),
-                strict=True,
-            )
-        ),
+        **dict(zip(environment, _filled(list(environment.values()), password_sources))),
     }
 
     result = invoke(
         ["keyring", "set", *_filled(arguments, password_sources)],
         env=env,
-        stdin="typed\n",
+        input="typed\n",
     )
 
     assert result.exit_code == 0, result
@@ -795,7 +783,7 @@ def test_command_errors_are_usage_errors_with_their_key_message(
         else {}
     )
 
-    result = invoke([command, *arguments], stdin="typed\n")
+    result = invoke([command, *arguments], input="typed\n")
 
     assert result.exit_code == 2, result
     stderr = result.stderr.casefold()
@@ -879,10 +867,7 @@ def _help_panels(help_text: str, titles: list[str]) -> dict[str, str]:
     """Split help output into the text under each panel title."""
     starts = sorted((help_text.index(title), title) for title in titles)
     ends = [start for start, _ in starts[1:]] + [len(help_text)]
-    return {
-        title: help_text[start:end]
-        for (start, title), end in zip(starts, ends, strict=True)
-    }
+    return {title: help_text[start:end] for (start, title), end in zip(starts, ends)}
 
 
 _CONNECTION_OPTIONS = [

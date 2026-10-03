@@ -4,7 +4,7 @@ import io
 import logging
 import os
 import sys
-from collections.abc import Generator, Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import PurePosixPath
@@ -36,7 +36,7 @@ def invoke(
     args: Sequence[str],
     *,
     env: Mapping[str, str | None] | None = None,
-    stdin: str | None = None,
+    input: str | None = None,
     color: bool = False,
 ) -> Result:
     """
@@ -45,9 +45,7 @@ def invoke(
     With `color`, output is rendered as for a colour terminal, including ANSI
     styling.
     """
-    stdin_stream = io.TextIOWrapper(
-        io.BytesIO((stdin or "").encode()), encoding="utf-8"
-    )
+    stdin = io.TextIOWrapper(io.BytesIO((input or "").encode()), encoding="utf-8")
     # Like Click's runner, don't translate newlines to the platform's line ending.
     stdout = io.TextIOWrapper(io.BytesIO(), encoding="utf-8", newline="")
     stderr = io.TextIOWrapper(io.BytesIO(), encoding="utf-8", newline="")
@@ -55,7 +53,7 @@ def invoke(
     exception: BaseException | None = None
     with (
         _environment({"COLUMNS": str(_TERMINAL_WIDTH), **(env or {})}),
-        _streams(stdin_stream, stdout, stderr),
+        _streams(stdin, stdout, stderr),
     ):
         try:
             main(
@@ -107,7 +105,7 @@ def _written(stream: io.TextIOWrapper) -> str:
 
 
 @contextmanager
-def _environment(env: Mapping[str, str | None]) -> Generator[None]:
+def _environment(env: Mapping[str, str | None]) -> Iterator[None]:
     """Set (or, for `None`, unset) environment variables for the duration."""
     previous = {name: os.environ.get(name) for name in env}
     try:
@@ -126,7 +124,7 @@ def _update_environment(env: Mapping[str, str | None]) -> None:
 
 
 @contextmanager
-def _streams(stdin: TextIO, stdout: TextIO, stderr: TextIO) -> Generator[None]:
+def _streams(stdin: TextIO, stdout: TextIO, stderr: TextIO) -> Iterator[None]:
     previous = sys.stdin, sys.stdout, sys.stderr
     sys.stdin, sys.stdout, sys.stderr = stdin, stdout, stderr
     try:

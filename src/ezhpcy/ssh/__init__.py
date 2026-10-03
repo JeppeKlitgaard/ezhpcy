@@ -2,7 +2,7 @@ import logging
 from contextlib import contextmanager
 lazy import shlex
 lazy import stat
-lazy from collections.abc import Generator
+lazy from collections.abc import Iterator
 lazy from pathlib import PurePosixPath
 
 import paramiko
@@ -104,7 +104,7 @@ class SSHClient(paramiko.SSHClient):
         self.conn_info = conn_info
 
     @contextmanager
-    def sftp_client(self) -> Generator[SFTPClient]:
+    def sftp_client(self) -> Iterator[SFTPClient]:
         """Open an EzHPCy SFTP client for this SSH connection."""
         transport = self.get_transport()
         if transport is None or not transport.is_active():

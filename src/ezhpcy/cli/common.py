@@ -45,20 +45,6 @@ OptionalProfileArg = Annotated[
         envvar=PROFILE_ENV_VAR,
     ),
 ]
-AliasArg = Annotated[
-    str,
-    typer.Argument(help="SSH host alias of a running tunnel."),
-]
-AliasOpt = Annotated[
-    str | None,
-    typer.Option(
-        "--alias",
-        help=(
-            "SSH host alias for this tunnel; defaults to the profile name, "
-            "or to a stable generated name without a profile."
-        ),
-    ),
-]
 HostOpt = Annotated[
     str | None,
     typer.Option("--host", "-h", help="Login node address.", envvar=HOST_ENV_VAR),

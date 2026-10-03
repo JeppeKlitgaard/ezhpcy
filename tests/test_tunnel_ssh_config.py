@@ -1,416 +1,86 @@
-import os
-import shutil
-import subprocess
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 
-import pytest
+from typer.testing import CliRunner
 
-from ezhpcy.cli import tunnel as tunnel_module
-from ezhpcy.config import Config
-from ezhpcy.ipc import create_broker_backend
-from ezhpcy.tunnel import ssh_config
-from ezhpcy.tunnel.ssh_config import (
-    WorkerHost,
-    check_host_resolution,
-    include_directive,
-    prune_stale_active_configs,
-    remove_active_host_config,
-    write_active_host_config,
-    write_profiles_config,
-)
+from ezhpcy.cli import app, ssh_config
+from ezhpcy.cli.ssh_config import render_worker_ssh_config
 from ezhpcy.types import ProfileConfig
 
 
-def worker_host(alias: str = "gpu", user: str = "alice") -> WorkerHost:
-    return WorkerHost.for_endpoint(alias, user=user, host="login.example.com")
-
-
-def config_dir(runtime_dir: Path) -> Path:
-    return runtime_dir / "ssh-config"
-
-
-def test_render_contains_complete_strict_proxy_configuration(tmp_path: Path) -> None:
-    ssh_dir = tmp_path / "config with spaces" / "ssh"
-    python = tmp_path / "runtime with spaces" / "python.exe"
-    host = WorkerHost(
-        alias="gpu", user="alice", ssh_dir=ssh_dir, python_executable=python
+def test_render_worker_ssh_config_contains_complete_strict_proxy_configuration(
+    tmp_path: Path,
+) -> None:
+    rendered = render_worker_ssh_config(
+        user="alice",
+        profile_name="gpu",
+        ssh_dir=tmp_path / "config with spaces" / "ssh",
+        python_executable=tmp_path / "runtime with spaces" / "python.exe",
     )
 
-    assert host.render() == (
+    assert rendered == (
         "Host gpu\n"
         "    HostName gpu\n"
         "    User alice\n"
-        f'    IdentityFile "{(ssh_dir / "worker_client_ed25519").resolve().as_posix()}"\n'
+        f'    IdentityFile "{(tmp_path / "config with spaces" / "ssh" / "worker_client_ed25519").as_posix()}"\n'
         "    IdentitiesOnly yes\n"
-        f'    UserKnownHostsFile "{(ssh_dir / "worker_known_hosts").resolve().as_posix()}"\n'
+        f'    UserKnownHostsFile "{(tmp_path / "config with spaces" / "ssh" / "worker_known_hosts").as_posix()}"\n'
         "    HostKeyAlias ezhpcy-worker\n"
         "    StrictHostKeyChecking yes\n"
-        f'    ProxyCommand "{python.resolve().as_posix()}" -m ezhpcy.cli proxy gpu\n'
+        f'    ProxyCommand "{(tmp_path / "runtime with spaces" / "python.exe").as_posix()}" -m ezhpcy.cli proxy gpu\n'
     )
 
 
-def test_worker_host_uses_the_current_python_by_default() -> None:
-    assert worker_host().proxy_command == (
-        f'"{Path(sys.executable).resolve().as_posix()}" -m ezhpcy.cli proxy gpu'
+def test_ssh_config_command_is_available_and_uses_current_python(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "ezhpcy.utils.machineid.hashed_id", lambda _app_id: "machine-id"
+    )
+    monkeypatch.setattr(
+        ssh_config.config,
+        "profile",
+        {"default": ProfileConfig(host="login.example.com", user="alice")},
+    )
+    result = CliRunner().invoke(
+        app,
+        ["ssh-config", "default"],
     )
 
+    assert result.exit_code == 0
+    assert result.stdout.startswith("Host default\n")
+    assert "    User alice\n" in result.stdout
+    assert f'    ProxyCommand "{Path(sys.executable).as_posix()}"' in result.stdout
+    assert "proxy default" in result.stdout
+    expected_ssh_dir = (
+        ssh_config.config.local_file.config_dir
+        / "ssh"
+        / "machine-id"
+        / "alice@login.example.com"
+    ).resolve()
+    assert f'    IdentityFile "{expected_ssh_dir.as_posix()}/' in result.stdout
 
-@pytest.mark.parametrize("alias", ["", "two words", "wild*", "neg!ated", "a,b", "-x"])
-def test_worker_host_rejects_aliases_openssh_would_treat_as_patterns(
-    alias: str,
-) -> None:
-    with pytest.raises(ValueError, match="may contain only"):
-        worker_host(alias)
 
-
-def test_worker_host_rejects_a_user_with_whitespace() -> None:
-    with pytest.raises(ValueError, match="one non-whitespace token"):
-        worker_host(user="alice smith")
-
-
-def test_include_directive_is_a_commented_glob_over_the_runtime_directory(
-    isolated_runtime_dir: Path,
-) -> None:
-    directory = config_dir(isolated_runtime_dir).resolve().as_posix()
-
-    assert include_directive() == (
-        f'# Load EzHPCy static and dynamic SSH profiles\nInclude "{directory}/*.conf"'
+def test_ssh_config_command_accepts_an_alias_override(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "ezhpcy.utils.machineid.hashed_id", lambda _app_id: "machine-id"
     )
-
-
-def test_profile_hosts_skip_profiles_without_an_endpoint() -> None:
-    source = Config.from_mapping(
-        {
-            "profile": {
-                "base": {"scheduler": "LSF"},
-                "gpu": {"inherit": "base", "host": "login.example.com", "user": "al"},
-                "cpu": {"host": "login.example.com", "user": "al"},
-                "no-user": {"host": "login.example.com"},
-            }
-        }
-    )
-
-    assert [host.alias for host in ssh_config.profile_hosts(source)] == ["cpu", "gpu"]
-
-
-def test_profiles_config_holds_every_profile_host(isolated_runtime_dir: Path) -> None:
-    hosts = [worker_host("cpu"), worker_host("gpu")]
-
-    path = write_profiles_config(hosts)
-
-    assert path == config_dir(isolated_runtime_dir) / "profiles.conf"
-    content = path.read_text(encoding="utf-8")
-    assert content.startswith("# Generated by ezhpcy")
-    assert hosts[0].render() in content
-    assert hosts[1].render() in content
-
-
-def test_profiles_config_defaults_to_the_configured_profiles(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
     monkeypatch.setattr(
         ssh_config.config,
         "profile",
         {"gpu": ProfileConfig(host="login.example.com", user="alice")},
     )
 
-    content = write_profiles_config().read_text(encoding="utf-8")
-
-    assert worker_host("gpu").render() in content
-
-
-def test_files_are_restricted_before_the_include_glob_can_match_them(
-    isolated_runtime_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    restricted: list[Path] = []
-
-    def restrict(path: Path) -> None:
-        assert not path.match("*.conf")
-        assert not (config_dir(isolated_runtime_dir) / "profiles.conf").exists()
-        restricted.append(path)
-
-    monkeypatch.setattr(ssh_config, "restrict_to_current_user", restrict)
-
-    write_profiles_config([worker_host()])
-
-    assert len(restricted) == 1
-    assert [path.name for path in config_dir(isolated_runtime_dir).iterdir()] == [
-        "profiles.conf"
-    ]
-
-
-@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
-def test_generated_files_are_owner_only_on_posix() -> None:
-    path = write_profiles_config([worker_host()])
-
-    assert path.stat().st_mode & 0o777 == 0o600
-    assert path.parent.stat().st_mode & 0o777 == 0o700
-
-
-def test_active_config_is_tagged_with_its_tunnel(isolated_runtime_dir: Path) -> None:
-    path = write_active_host_config(worker_host("scratch"), instance_id="first")
-
-    assert path == config_dir(isolated_runtime_dir) / "active-scratch.conf"
-    content = path.read_text(encoding="utf-8")
-    assert content == "# ezhpcy-instance: first\n" + worker_host("scratch").render()
-
-
-def test_active_config_is_only_removed_by_the_tunnel_that_wrote_it() -> None:
-    path = write_active_host_config(worker_host("scratch"), instance_id="second")
-
-    remove_active_host_config("scratch", instance_id="first")
-    assert path.exists()
-
-    remove_active_host_config("scratch", instance_id="second")
-    assert not path.exists()
-
-
-def test_removing_an_absent_active_config_is_a_no_op() -> None:
-    remove_active_host_config("scratch", instance_id="first")
-
-
-def test_prune_keeps_only_active_configs_of_running_tunnels() -> None:
-    live = create_broker_backend(alias="live", authkey=b"a" * 32)
-    replaced = create_broker_backend(alias="replaced", authkey=b"b" * 32)
-    listeners = [live.listen(lambda _c: None), replaced.listen(lambda _c: None)]
-    try:
-        kept = write_active_host_config(
-            worker_host("live"), instance_id=live.instance_id
-        )
-        stale = write_active_host_config(
-            worker_host("replaced"), instance_id="an-older-tunnel"
-        )
-        orphan = write_active_host_config(worker_host("gone"), instance_id="gone")
-
-        prune_stale_active_configs()
-
-        assert kept.exists()
-        assert not stale.exists()
-        assert not orphan.exists()
-    finally:
-        for listener in listeners:
-            listener.close()
-
-
-def test_prune_without_a_config_directory_is_a_no_op() -> None:
-    prune_stale_active_configs()
-
-
-def ssh_g_output(host: WorkerHost, **overrides: str) -> str:
-    fields = {
-        "user": host.user,
-        "hostname": host.alias,
-        "identityfile": host.identity_file.resolve().as_posix(),
-        "proxycommand": host.proxy_command,
-        **overrides,
-    }
-    return "".join(f"{key} {value}\n" for key, value in fields.items())
-
-
-def fake_ssh(
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    stdout: str = "",
-    stderr: str = "",
-    returncode: int = 0,
-    error: Exception | None = None,
-) -> list[list[str]]:
-    commands: list[list[str]] = []
-
-    def run(command: list[str], **_kwargs: object) -> SimpleNamespace:
-        commands.append(command)
-        if error is not None:
-            raise error
-        return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
-
-    monkeypatch.setattr(ssh_config.subprocess, "run", run)
-    return commands
-
-
-def test_host_resolving_to_the_generated_block_has_no_problem(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    host = worker_host()
-    commands = fake_ssh(monkeypatch, stdout=ssh_g_output(host))
-
-    assert check_host_resolution(host) is None
-    assert commands == [["ssh", "-G", "gpu"]]
-
-
-@pytest.mark.parametrize(
-    ("overrides", "problem"),
-    [
-        ({"proxycommand": "none"}, "does not resolve it to the ezhpcy"),
-        ({"user": "bob"}, "different user"),
-        ({"identityfile": "~/.ssh/id_ed25519"}, "different IdentityFile"),
-    ],
-)
-def test_host_shadowed_by_other_configuration_is_reported(
-    monkeypatch: pytest.MonkeyPatch, overrides: dict[str, str], problem: str
-) -> None:
-    host = worker_host()
-    fake_ssh(monkeypatch, stdout=ssh_g_output(host, **overrides))
-
-    assert problem in (check_host_resolution(host) or "")
-
-
-def test_ssh_refusing_the_configuration_is_reported_verbatim(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    fake_ssh(
-        monkeypatch,
-        returncode=255,
-        stderr="Bad owner or permissions on\n  /x/profiles.conf\n",
+    result = CliRunner().invoke(
+        app,
+        ["ssh-config", "gpu", "--alias", "cluster-worker"],
     )
 
-    assert check_host_resolution(worker_host()) == (
-        "Bad owner or permissions on /x/profiles.conf"
-    )
+    assert result.exit_code == 0
+    assert result.stdout.startswith("Host cluster-worker\n")
+    assert "proxy gpu" in result.stdout
 
 
-def test_missing_ssh_skips_the_check(monkeypatch: pytest.MonkeyPatch) -> None:
-    fake_ssh(monkeypatch, error=FileNotFoundError("ssh"))
+def test_ssh_config_command_requires_a_profile_argument() -> None:
+    result = CliRunner().invoke(app, ["ssh-config"])
 
-    assert check_host_resolution(worker_host()) is None
-
-
-def test_hanging_ssh_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
-    fake_ssh(monkeypatch, error=subprocess.TimeoutExpired(["ssh"], 10))
-
-    assert "could not run `ssh -G gpu`" in (check_host_resolution(worker_host()) or "")
-
-
-def test_publish_writes_an_active_config_only_when_profiles_conf_lacks_it(
-    isolated_runtime_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr(tunnel_module, "check_host_resolution", lambda _host: None)
-    active = config_dir(isolated_runtime_dir) / "active-gpu.conf"
-    backend = create_broker_backend(alias="gpu")
-    listener = backend.listen(lambda _c: None)
-    try:
-        tunnel_module._publish_ssh_host(
-            worker_host(), instance_id=backend.instance_id, in_profiles_config=True
-        )
-        assert not active.exists()
-
-        tunnel_module._publish_ssh_host(
-            worker_host(), instance_id=backend.instance_id, in_profiles_config=False
-        )
-        assert active.exists()
-
-        tunnel_module._withdraw_ssh_host(worker_host(), instance_id=backend.instance_id)
-        assert not active.exists()
-    finally:
-        listener.close()
-
-
-def test_publish_prunes_an_older_tunnels_block_for_the_same_alias(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(tunnel_module, "check_host_resolution", lambda _host: None)
-    stale = write_active_host_config(worker_host(user="bob"), instance_id="old")
-    backend = create_broker_backend(alias="gpu")
-    listener = backend.listen(lambda _c: None)
-    try:
-        tunnel_module._publish_ssh_host(
-            worker_host(), instance_id=backend.instance_id, in_profiles_config=True
-        )
-    finally:
-        listener.close()
-
-    assert not stale.exists()
-
-
-def test_publish_explains_how_to_include_the_configuration(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.setattr(
-        tunnel_module, "check_host_resolution", lambda _host: "not ours"
-    )
-    warnings: list[str] = []
-    monkeypatch.setattr(
-        tunnel_module.logger,
-        "warning",
-        lambda message, *args: warnings.append(message % args),
-    )
-
-    tunnel_module._publish_ssh_host(
-        worker_host(), instance_id="instance", in_profiles_config=False
-    )
-
-    assert warnings and "`ssh gpu` will not reach this tunnel: not ours" in warnings[0]
-    stderr_lines = capsys.readouterr().err.splitlines()
-    assert stderr_lines[1:3] == include_directive().splitlines()
-
-
-def test_publish_failure_is_a_warning_not_an_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def fail(*_args: object, **_kwargs: object) -> None:
-        raise OSError("read-only file system")
-
-    monkeypatch.setattr(tunnel_module, "write_active_host_config", fail)
-    warnings: list[str] = []
-    monkeypatch.setattr(
-        tunnel_module.logger,
-        "warning",
-        lambda message, *args: warnings.append(message % args),
-    )
-
-    tunnel_module._publish_ssh_host(
-        worker_host(), instance_id="instance", in_profiles_config=False
-    )
-
-    assert warnings == [
-        "Could not write the SSH configuration for gpu: read-only file system"
-    ]
-
-
-requires_openssh = pytest.mark.skipif(
-    shutil.which("ssh") is None, reason="OpenSSH client is not installed"
-)
-
-
-def resolve_with_openssh(tmp_path: Path, alias: str) -> dict[str, str]:
-    """Resolve an alias through the real OpenSSH client and only our Include."""
-    main_config = tmp_path / "ssh_config"
-    main_config.write_text(include_directive() + "\n", encoding="utf-8")
-    result = subprocess.run(
-        ["ssh", "-F", str(main_config), "-G", alias],
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
-    assert result.returncode == 0, result.stderr
-    resolved: dict[str, str] = {}
-    for line in result.stdout.splitlines():
-        key, _, value = line.partition(" ")
-        resolved.setdefault(key, value)
-    return resolved
-
-
-@requires_openssh
-def test_openssh_accepts_the_generated_files_through_the_include(
-    tmp_path: Path,
-) -> None:
-    # Real permissions are applied here, so this also proves OpenSSH accepts the
-    # ACL or mode bits that restrict_to_current_user sets.
-    write_profiles_config([worker_host("gpu")])
-    write_active_host_config(worker_host("scratch"), instance_id="instance")
-
-    assert resolve_with_openssh(tmp_path, "gpu")["proxycommand"] == (
-        worker_host("gpu").proxy_command
-    )
-    assert resolve_with_openssh(tmp_path, "scratch")["user"] == "alice"
-
-
-@requires_openssh
-def test_openssh_prefers_an_active_block_over_the_profile_block(
-    tmp_path: Path,
-) -> None:
-    write_profiles_config([worker_host("gpu", user="alice")])
-    write_active_host_config(worker_host("gpu", user="bob"), instance_id="instance")
-
-    assert resolve_with_openssh(tmp_path, "gpu")["user"] == "bob"
+    assert result.exit_code == 2
+    assert "Missing argument 'PROFILE'" in result.stderr

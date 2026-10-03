@@ -1,5 +1,3 @@
-import subprocess
-
 from ezhpcy.utils import ezhpcy_version
 
 PACKAGE_NAME = "ezhpcy"
@@ -8,10 +6,6 @@ SSH_DIRECTORY_NAME = "ssh"
 WORKER_CLIENT_KEY_NAME = "worker_client_ed25519"
 WORKER_HOST_ALIAS = "ezhpcy-worker"
 WORKER_HOST_KEY_NAME = "ssh_host_ed25519_key"
-
-# Keeps helper commands (icacls, whoami, ssh) from flashing a console window on
-# Windows; 0 elsewhere.
-WINDOWS_CREATION_FLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 # Vendor software
 PIXI_VERSION = "0.73.0"

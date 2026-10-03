@@ -21,9 +21,7 @@ from ezhpcy.types import PASSWORD_SOURCE_FIELDS, ProfileConfig, ResolvedProfileC
 from ezhpcy.utils import ssh_connection_id
 
 _DIRS = PlatformDirs(PACKAGE_NAME, appauthor=False)
-# Profile names double as OpenSSH Host aliases, so they exclude whitespace and the
-# pattern characters `*`, `?`, `!` and `,`.
-PROFILE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+_PROFILE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
 
 class ProfilePasswordSourceError(ValueError):
@@ -94,7 +92,7 @@ class _ConfigValues(BaseModel):
         invalid_names = [
             name
             for name in self.profile
-            if PROFILE_NAME_PATTERN.fullmatch(name) is None
+            if _PROFILE_NAME_PATTERN.fullmatch(name) is None
         ]
         if invalid_names:
             raise ValueError(

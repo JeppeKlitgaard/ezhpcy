@@ -14,7 +14,6 @@ import paramiko
 import typer
 
 from ezhpcy.cli.common import (
-    AliasOpt,
     CoresOpt,
     ExclusiveOpt,
     GpusOpt,
@@ -38,7 +37,6 @@ from ezhpcy.cli.provision import (
     provision_worker_infrastructure,
     validate_worker_infrastructure,
 )
-from ezhpcy.cli.ssh_config import echo_include_directive
 from ezhpcy.cli.utils.bad_parameter import RichBadParameter
 from ezhpcy.cli.utils.ssh import (
     InteractiveSSHClient,
@@ -52,11 +50,11 @@ from ezhpcy.constants import (
     OPENSSH_MATCHSPEC,
     SSH_DIRECTORY_NAME,
     WORKER_CLIENT_KEY_NAME,
+    WORKER_HOST_ALIAS,
     WORKER_HOST_KEY_NAME,
 )
 from ezhpcy.ipc import create_broker_backend
 from ezhpcy.ipc.common import IPCError
-from ezhpcy.permissions import FilePermissionError
 from ezhpcy.scheduler.base import (
     InteractiveJob,
     JobInfo,
@@ -71,15 +69,6 @@ from ezhpcy.scheduler.pbs import PBSScheduler
 from ezhpcy.scheduler.types import SchedulerType
 from ezhpcy.ssh import SFTPClient
 from ezhpcy.tunnel.broker import ForegroundBroker
-from ezhpcy.tunnel.ssh_config import (
-    WorkerHost,
-    check_host_resolution,
-    profile_hosts,
-    prune_stale_active_configs,
-    remove_active_host_config,
-    write_active_host_config,
-    write_profiles_config,
-)
 from ezhpcy.types import RemoteState, ResolvedConfig, SubmissionMode
 from ezhpcy.utils import local_machine_id, ssh_connection_id
 
@@ -642,74 +631,10 @@ def _wait_for_selected_worker_port(
         time.sleep(min(0.1, remaining))
 
 
-def _publish_ssh_host(
-    host: WorkerHost, *, instance_id: str, in_profiles_config: bool
-) -> None:
-    """Expose a running tunnel's Host block and check OpenSSH resolves it."""
-    try:
-        # Pruning also drops an older tunnel's block for this alias, which
-        # would otherwise shadow the identical one in profiles.conf.
-        prune_stale_active_configs()
-        if not in_profiles_config:
-            write_active_host_config(host, instance_id=instance_id)
-    except (OSError, FilePermissionError) as error:
-        logger.warning(
-            "Could not write the SSH configuration for %s: %s", host.alias, error
-        )
-        return
-    problem = check_host_resolution(host)
-    if problem is not None:
-        logger.warning(
-            "`ssh %s` will not reach this tunnel: %s. If ~/.ssh/config does not "
-            "include EzHPCy's SSH profiles yet, copy the two highlighted lines "
-            "below to its top, before any Host or Match block:",
-            host.alias,
-            problem,
-        )
-        typer.echo(err=True)
-        echo_include_directive(err=True)
-
-
-def _withdraw_ssh_host(host: WorkerHost, *, instance_id: str) -> None:
-    try:
-        remove_active_host_config(host.alias, instance_id=instance_id)
-    except OSError as error:
-        logger.warning(
-            "Could not remove the SSH configuration for %s: %s", host.alias, error
-        )
-
-
-def _resolve_ssh_host(
-    alias: str | None,
-    *,
-    profile_name: str | None,
-    resolved: ResolvedConfig,
-) -> WorkerHost:
-    """Pick the Host alias this tunnel serves; profiles default to their name."""
-    if alias is None:
-        # Identical anonymous options yield the same alias across restarts, so
-        # saved hosts (e.g. in VS Code) keep working.
-        alias = profile_name or f"ezhpcy-{resolved.descriptor_digest()[:12]}"
-    if alias != profile_name and alias in config.profile:
-        raise RichBadParameter(
-            f"alias [bold red]{alias}[/bold red] is the name of profile "
-            f"[bold blue]{alias}[/bold blue]; choose another alias",
-            param_hint="--alias",
-        )
-    try:
-        return WorkerHost.for_endpoint(
-            alias, user=resolved.user, host=str(resolved.host)
-        )
-    except ValueError as error:
-        raise RichBadParameter(str(error), param_hint="--alias") from error
-
-
 def _run_tunnel(
     *,
     profile_name: str | None,
     profile: ResolvedConfig,
-    ssh_host: WorkerHost,
-    ssh_host_in_profiles_config: bool,
     conn_info: ConnectionInfo,
     scheduler_type: SchedulerType,
     queue: str | None,
@@ -1010,7 +935,8 @@ def _run_tunnel(
                     )
 
                     backend = create_broker_backend(
-                        alias=ssh_host.alias,
+                        profile=profile_name,
+                        resolved_config=(profile if profile_name is None else None),
                         debug=logger.isEnabledFor(logging.DEBUG),
                     )
                     broker = ForegroundBroker(
@@ -1039,21 +965,16 @@ def _run_tunnel(
                     )
                     monitor.start()
 
-                    _publish_ssh_host(
-                        ssh_host,
-                        instance_id=backend.instance_id,
-                        in_profiles_config=ssh_host_in_profiles_config,
-                    )
                     logger.info(
                         "Tunnel ready for %s via worker %s:%d (press Ctrl+C to stop).",
-                        ssh_host.alias,
+                        WORKER_HOST_ALIAS,
                         worker_host,
                         worker_port,
                     )
                     logger.info(
                         "Connect with `ssh %s` or select `%s` in VS Code Remote-SSH.",
-                        ssh_host.alias,
-                        ssh_host.alias,
+                        WORKER_HOST_ALIAS,
+                        WORKER_HOST_ALIAS,
                     )
                     shutdown_reason = "broker_stopped"
                     previous_sigbreak_handler = None
@@ -1068,9 +989,6 @@ def _run_tunnel(
                         logger.info("Stopping tunnel...")
                     finally:
                         monitor_stop.set()
-                        # Withdraw the Host block before the broker descriptor,
-                        # so a block never outlives the broker it points at.
-                        _withdraw_ssh_host(ssh_host, instance_id=backend.instance_id)
                         broker.close()
                         monitor.join(timeout=1)
                         if previous_sigbreak_handler is not None:
@@ -1143,7 +1061,6 @@ def tunnel_cmd(
     worker_heartbeat_interval_seconds: WorkerHeartbeatIntervalOpt = None,
     worker_heartbeat_timeout_seconds: WorkerHeartbeatTimeoutOpt = None,
     interactive_submission_command: InteractiveSubmissionCommandOpt = None,
-    alias: AliasOpt = None,
     worker_port: Annotated[
         int | None,
         typer.Option(
@@ -1249,15 +1166,6 @@ def tunnel_cmd(
                     "interactive_submission_command: %s",
                     ", ".join(sorted(inherited_submission_options)),
                 )
-        ssh_host = _resolve_ssh_host(
-            alias, profile_name=profile_context.name, resolved=resolved
-        )
-        written_profile_hosts = profile_hosts()
-        try:
-            write_profiles_config(written_profile_hosts)
-        except (OSError, FilePermissionError) as error:
-            logger.warning("Could not write the profile SSH configuration: %s", error)
-            written_profile_hosts = []
         if auto_provision and no_auto_provision:
             raise typer.BadParameter(
                 "--auto-provision and --no-auto-provision cannot be used together",
@@ -1279,10 +1187,6 @@ def tunnel_cmd(
         _run_tunnel(
             profile_name=profile_context.name,
             profile=resolved,
-            ssh_host=ssh_host,
-            # A profile tunnel without user/host overrides renders exactly the
-            # block profiles.conf already holds, so it needs no active file.
-            ssh_host_in_profiles_config=ssh_host in written_profile_hosts,
             conn_info=profile_context.connection,
             scheduler_type=resolved.scheduler,
             submission_mode=resolved.submission_mode,

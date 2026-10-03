@@ -1,12 +1,10 @@
 import logging
-import re
 import threading
 from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import timedelta
-from pathlib import Path, PurePosixPath
-from types import SimpleNamespace
-from unittest.mock import ANY, call, patch
+from pathlib import PurePosixPath
+from unittest.mock import call, patch
 
 import paramiko
 import pytest
@@ -32,7 +30,6 @@ from ezhpcy.config import ConnectionInfo
 from ezhpcy.constants import EZHPCY_VERSION, OPENSSH_MATCHSPEC, PIXI_VERSION
 from ezhpcy.scheduler.base import InteractiveJob, JobInfo, JobSpec, JobState
 from ezhpcy.scheduler.types import SchedulerType
-from ezhpcy.tunnel.ssh_config import WorkerHost
 from ezhpcy.types import (
     ProfileConfig,
     RemoteState,
@@ -66,31 +63,6 @@ def pbs_profile() -> ResolvedProfileConfig:
         queue="workq",
         pbs_command_directory=PurePosixPath("/opt/pbspro/bin"),
     )
-
-
-_BACKEND = SimpleNamespace(instance_id="instance-id")
-
-
-def worker_host(alias: str = "gpu") -> WorkerHost:
-    return WorkerHost(alias=alias, user="alice", ssh_dir=Path("ssh"))
-
-
-@pytest.fixture(autouse=True)
-def ssh_host_publication(
-    monkeypatch: pytest.MonkeyPatch,
-) -> list[tuple[str, str, str, bool | None]]:
-    """Record Host publication instead of writing files and running `ssh -G`."""
-    calls: list[tuple[str, str, str, bool | None]] = []
-
-    def publish(host: WorkerHost, *, instance_id: str, in_profiles_config: bool):
-        calls.append(("publish", host.alias, instance_id, in_profiles_config))
-
-    def withdraw(host: WorkerHost, *, instance_id: str):
-        calls.append(("withdraw", host.alias, instance_id, None))
-
-    monkeypatch.setattr(tunnel_module, "_publish_ssh_host", publish)
-    monkeypatch.setattr(tunnel_module, "_withdraw_ssh_host", withdraw)
-    return calls
 
 
 def test_worker_sshd_command_retries_ports_through_pixi() -> None:
@@ -624,9 +596,7 @@ def test_worker_endpoint_waits_for_an_ssh_banner() -> None:
         transport_logger.setLevel(previous_level)
 
 
-def test_tunnel_submits_worker_starts_broker_and_cancels(
-    ssh_host_publication: list[tuple[str, str, str, bool | None]],
-) -> None:
+def test_tunnel_submits_worker_starts_broker_and_cancels() -> None:
     transport = StubTransport()
     ssh = StubSSH(transport)
     scheduler = StubScheduler([snapshot(JobState.RUNNING, "RUN", "node42")])
@@ -663,7 +633,7 @@ def test_tunnel_submits_worker_starts_broker_and_cancels(
         ),
         patch("ezhpcy.cli.tunnel._wait_for_worker_endpoint"),
         patch(
-            "ezhpcy.cli.tunnel.create_broker_backend", return_value=_BACKEND
+            "ezhpcy.cli.tunnel.create_broker_backend", return_value=object()
         ) as create_backend,
         patch("ezhpcy.cli.tunnel.ForegroundBroker", side_effect=make_broker),
         patch("ezhpcy.cli.tunnel.logger") as logger,
@@ -672,8 +642,6 @@ def test_tunnel_submits_worker_starts_broker_and_cancels(
         _run_tunnel(
             profile_name=None,
             profile=configuration,
-            ssh_host=worker_host(),
-            ssh_host_in_profiles_config=False,
             conn_info=ConnectionInfo(user="alice", host="login.example.com"),
             scheduler_type=SchedulerType.LSF,
             queue="normal",
@@ -692,7 +660,11 @@ def test_tunnel_submits_worker_starts_broker_and_cancels(
         )
 
     assert len(scheduler.submitted) == 1
-    create_backend.assert_called_once_with(alias="gpu", debug=False)
+    create_backend.assert_called_once_with(
+        profile=None,
+        resolved_config=configuration,
+        debug=False,
+    )
     spec = scheduler.submitted[0]
     assert tuple(spec.command) == _worker_sshd_command(
         ssh.get_remote_state(),
@@ -742,11 +714,6 @@ def test_tunnel_submits_worker_starts_broker_and_cancels(
     )
     assert brokers[0].destination == ("node42", 54322)
     assert brokers[0].closed
-    # The Host block is published once the broker is up and withdrawn on exit.
-    assert ssh_host_publication == [
-        ("publish", "gpu", "instance-id", False),
-        ("withdraw", "gpu", "instance-id", None),
-    ]
     assert scheduler.cancelled == ["42"]
     assert scheduler.process.closed
     assert scheduler.command_starts == 1
@@ -757,7 +724,7 @@ def test_tunnel_submits_worker_starts_broker_and_cancels(
     logger.info.assert_any_call("Submitted worker job %s.", "42")
     logger.info.assert_any_call(
         "Tunnel ready for %s via worker %s:%d (press Ctrl+C to stop).",
-        "gpu",
+        "ezhpcy-worker",
         "node42",
         54322,
     )
@@ -799,8 +766,6 @@ def test_tunnel_cancels_job_when_worker_startup_fails() -> None:
         _run_tunnel(
             profile_name="base",
             profile=lsf_profile(),
-            ssh_host=worker_host(),
-            ssh_host_in_profiles_config=False,
             conn_info=ConnectionInfo(user="alice", host="login.example.com"),
             scheduler_type=SchedulerType.LSF,
             queue=None,
@@ -857,15 +822,13 @@ def test_tunnel_stops_when_the_login_connection_is_lost() -> None:
             return_value=54321,
         ),
         patch("ezhpcy.cli.tunnel._wait_for_worker_endpoint"),
-        patch("ezhpcy.cli.tunnel.create_broker_backend", return_value=_BACKEND),
+        patch("ezhpcy.cli.tunnel.create_broker_backend", return_value=object()),
         patch("ezhpcy.cli.tunnel.ForegroundBroker", side_effect=make_broker),
         pytest.raises(TunnelError, match="login-node SSH connection lost"),
     ):
         _run_tunnel(
             profile_name="base",
             profile=lsf_profile(),
-            ssh_host=worker_host(),
-            ssh_host_in_profiles_config=False,
             conn_info=ConnectionInfo(user="alice", host="login.example.com"),
             scheduler_type=SchedulerType.LSF,
             queue=None,
@@ -911,15 +874,13 @@ def test_tunnel_uses_explicit_pbs_and_linuxsh_defaults() -> None:
             return_value=54321,
         ),
         patch("ezhpcy.cli.tunnel._wait_for_worker_endpoint"),
-        patch("ezhpcy.cli.tunnel.create_broker_backend", return_value=_BACKEND),
+        patch("ezhpcy.cli.tunnel.create_broker_backend", return_value=object()),
         patch("ezhpcy.cli.tunnel.ForegroundBroker", StubBroker),
         patch("ezhpcy.cli.tunnel.logger") as logger,
     ):
         _run_tunnel(
             profile_name="pbs",
             profile=pbs_profile(),
-            ssh_host=worker_host(),
-            ssh_host_in_profiles_config=False,
             conn_info=ConnectionInfo(user="alice", host="login.example.com"),
             scheduler_type=SchedulerType.PBS,
             queue="workq",
@@ -972,14 +933,12 @@ def test_tunnel_submits_batch_job_without_interactive_shell() -> None:
         ),
         patch("ezhpcy.cli.tunnel._wait_for_selected_worker_port", return_value=54321),
         patch("ezhpcy.cli.tunnel._wait_for_worker_endpoint"),
-        patch("ezhpcy.cli.tunnel.create_broker_backend", return_value=_BACKEND),
+        patch("ezhpcy.cli.tunnel.create_broker_backend", return_value=object()),
         patch("ezhpcy.cli.tunnel.ForegroundBroker", StubBroker),
     ):
         _run_tunnel(
             profile_name="batch",
             profile=lsf_profile(),
-            ssh_host=worker_host(),
-            ssh_host_in_profiles_config=False,
             conn_info=ConnectionInfo(user="alice", host="login.example.com"),
             scheduler_type=SchedulerType.LSF,
             submission_mode=SubmissionMode.BATCH,
@@ -1610,152 +1569,3 @@ def test_tunnel_command_rejects_unknown_profile_before_starting(
     assert result.exit_code == 2
     assert "unknown profile 'missing'" in result.stderr
     assert not started
-
-
-def _alias_profiles() -> dict[str, ProfileConfig]:
-    return {
-        name: ProfileConfig(
-            host="login.example.com",
-            user="alice",
-            scheduler="LSF",
-            submission_mode="interactive",
-        )
-        for name in ("cpu", "gpu")
-    }
-
-
-def _capture_run_tunnel(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
-    captured: dict[str, object] = {}
-    monkeypatch.setattr(
-        tunnel_module, "_run_tunnel", lambda **kwargs: captured.update(kwargs)
-    )
-    return captured
-
-
-_ANONYMOUS_TUNNEL_ARGS = [
-    "tunnel",
-    "--host",
-    "login.example.com",
-    "--user",
-    "alice",
-    "--scheduler",
-    "LSF",
-    "--submission-mode",
-    "interactive",
-]
-
-
-def test_profile_tunnel_alias_defaults_to_its_profiles_conf_block(
-    monkeypatch: pytest.MonkeyPatch, isolated_runtime_dir: Path
-) -> None:
-    monkeypatch.setattr(tunnel_module.config, "profile", _alias_profiles())
-    captured = _capture_run_tunnel(monkeypatch)
-
-    result = CliRunner().invoke(app, ["tunnel", "gpu"])
-
-    assert result.exit_code == 0, result.output
-    ssh_host = captured["ssh_host"]
-    assert isinstance(ssh_host, WorkerHost)
-    assert (ssh_host.alias, ssh_host.user) == ("gpu", "alice")
-    assert captured["ssh_host_in_profiles_config"] is True
-    profiles_conf = isolated_runtime_dir / "ssh-config" / "profiles.conf"
-    assert "Host cpu\n" in profiles_conf.read_text(encoding="utf-8")
-    assert "Host gpu\n" in profiles_conf.read_text(encoding="utf-8")
-
-
-@pytest.mark.parametrize(
-    ("arguments", "alias", "user"),
-    [
-        (["--user", "bob"], "gpu", "bob"),
-        (["--alias", "my-gpu"], "my-gpu", "alice"),
-    ],
-)
-def test_profile_tunnel_that_differs_from_profiles_conf_needs_its_own_block(
-    monkeypatch: pytest.MonkeyPatch, arguments: list[str], alias: str, user: str
-) -> None:
-    monkeypatch.setattr(tunnel_module.config, "profile", _alias_profiles())
-    captured = _capture_run_tunnel(monkeypatch)
-
-    result = CliRunner().invoke(app, ["tunnel", "gpu", *arguments])
-
-    assert result.exit_code == 0, result.output
-    ssh_host = captured["ssh_host"]
-    assert isinstance(ssh_host, WorkerHost)
-    assert (ssh_host.alias, ssh_host.user) == (alias, user)
-    assert captured["ssh_host_in_profiles_config"] is False
-
-
-def test_tunnel_falls_back_to_its_own_block_when_profiles_conf_cannot_be_written(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(tunnel_module.config, "profile", _alias_profiles())
-    captured = _capture_run_tunnel(monkeypatch)
-
-    def fail(_hosts: object) -> None:
-        raise OSError("disk full")
-
-    monkeypatch.setattr(tunnel_module, "write_profiles_config", fail)
-
-    with patch("ezhpcy.cli.tunnel.logger") as logger:
-        result = CliRunner().invoke(app, ["tunnel", "gpu"])
-
-    assert result.exit_code == 0, result.output
-    assert captured["ssh_host_in_profiles_config"] is False
-    logger.warning.assert_any_call(
-        "Could not write the profile SSH configuration: %s", ANY
-    )
-
-
-def test_anonymous_tunnel_alias_is_stable_for_identical_options(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured = _capture_run_tunnel(monkeypatch)
-
-    def alias_for(*extra: str) -> str:
-        result = CliRunner().invoke(app, [*_ANONYMOUS_TUNNEL_ARGS, *extra])
-        assert result.exit_code == 0, result.output
-        assert captured["ssh_host_in_profiles_config"] is False
-        ssh_host = captured["ssh_host"]
-        assert isinstance(ssh_host, WorkerHost)
-        return ssh_host.alias
-
-    first = alias_for("--queue", "gpu")
-
-    assert re.fullmatch(r"ezhpcy-[0-9a-f]{12}", first)
-    assert alias_for("--queue", "gpu") == first
-    assert alias_for("--queue", "cpu") != first
-
-
-def test_anonymous_tunnel_accepts_an_explicit_alias(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured = _capture_run_tunnel(monkeypatch)
-
-    result = CliRunner().invoke(app, [*_ANONYMOUS_TUNNEL_ARGS, "--alias", "scratch"])
-
-    assert result.exit_code == 0, result.output
-    ssh_host = captured["ssh_host"]
-    assert isinstance(ssh_host, WorkerHost)
-    assert ssh_host.alias == "scratch"
-
-
-@pytest.mark.parametrize(
-    ("arguments", "message"),
-    [
-        (["tunnel", "gpu", "--alias", "cpu"], "is the name of profile"),
-        ([*_ANONYMOUS_TUNNEL_ARGS, "--alias", "gpu"], "is the name of profile"),
-        (["tunnel", "gpu", "--alias", "two words"], "may contain only"),
-        (["tunnel", "gpu", "--alias", "wild*"], "may contain only"),
-    ],
-)
-def test_tunnel_rejects_unusable_aliases(
-    monkeypatch: pytest.MonkeyPatch, arguments: list[str], message: str
-) -> None:
-    monkeypatch.setattr(tunnel_module.config, "profile", _alias_profiles())
-    captured = _capture_run_tunnel(monkeypatch)
-
-    result = CliRunner().invoke(app, arguments)
-
-    assert result.exit_code == 2
-    assert message in result.stderr
-    assert captured == {}

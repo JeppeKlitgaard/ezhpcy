@@ -1,7 +1,6 @@
 set minimum-version := '1.55.0'
 set default-list := true
 set dotenv-load := true
-set windows-shell := ["powershell.exe", "-NoLogo", "-NoProfile", "-Command"]
 
 # Run all checks
 all:

@@ -94,7 +94,7 @@ _LEASE_FILE_RETAIN_COUNT = 2
 logger = logging.getLogger(__name__)
 
 
-class TunnelError(RuntimeError):
+class ComputeTunnelError(RuntimeError):
     pass
 
 
@@ -214,13 +214,15 @@ class WorkerControl:
                 return None
         fields = value.split()
         if len(fields) != 4 or fields[:3] != ["v1", self._token, "ready"]:
-            raise TunnelError("worker wrote an invalid ready record")
+            raise ComputeTunnelError("worker wrote an invalid ready record")
         try:
             port = int(fields[3])
         except ValueError as error:
-            raise TunnelError("worker reported a non-numeric SSH port") from error
+            raise ComputeTunnelError(
+                "worker reported a non-numeric SSH port"
+            ) from error
         if port not in self._ports:
-            raise TunnelError(f"worker reported unexpected SSH port {port}")
+            raise ComputeTunnelError(f"worker reported unexpected SSH port {port}")
         return port
 
     def read_failure(self) -> str | None:
@@ -278,7 +280,7 @@ def _ensure_local_worker_credentials(conn_info: ConnectionInfo) -> None:
     )
     missing = [str(path) for path in required_files if not path.is_file()]
     if missing:
-        raise TunnelError(
+        raise ComputeTunnelError(
             "worker SSH credentials are missing; run `ezhpcy provision` first "
             f"(missing: {', '.join(missing)})"
         )
@@ -311,18 +313,18 @@ def _wait_for_running_job(
                 if info.exit_code is not None
                 else ""
             )
-            raise TunnelError(
+            raise ComputeTunnelError(
                 f"worker job {job_id} ended in scheduler state "
                 f"{info.raw_state}{exit_detail}"
             )
         if info.state is JobState.UNKNOWN:
-            raise TunnelError(
+            raise ComputeTunnelError(
                 f"worker job {job_id} entered unknown scheduler state {info.raw_state}"
             )
 
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            raise TunnelError(
+            raise ComputeTunnelError(
                 f"worker job {job_id} did not start within {timeout_seconds:g} seconds"
             )
         time.sleep(min(poll_interval, remaining))
@@ -349,7 +351,7 @@ def _wait_for_worker_endpoint(
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 detail = f": {last_error}" if last_error is not None else ""
-                raise TunnelError(
+                raise ComputeTunnelError(
                     f"worker SSH endpoint {destination[0]}:{destination[1]} did not "
                     f"become ready within {timeout_seconds:g} seconds{detail}"
                 )
@@ -371,7 +373,9 @@ def _wait_for_worker_endpoint(
                     banner.extend(chunk)
                 if bytes(banner).startswith(b"SSH-"):
                     return
-                last_error = TunnelError(f"unexpected worker banner {bytes(banner)!r}")
+                last_error = ComputeTunnelError(
+                    f"unexpected worker banner {bytes(banner)!r}"
+                )
                 logger.debug(
                     "Worker readiness returned an unexpected banner: "
                     "destination=%s:%d banner=%r",
@@ -405,7 +409,7 @@ def _monitor_job(
     broker: ForegroundBroker,
     stop_requested: threading.Event,
     job_finished: threading.Event,
-    errors: list[TunnelError],
+    errors: list[ComputeTunnelError],
     monitor_interval: float,
 ) -> None:
     """Watch the attached job without opening recurring scheduler SSH channels."""
@@ -429,7 +433,7 @@ def _monitor_job(
             )
             if exit_status == -1:
                 errors.append(
-                    TunnelError(
+                    ComputeTunnelError(
                         f"worker job {job.job_id} interactive submission channel "
                         "closed without an exit status; the login-node SSH "
                         "transport was likely lost"
@@ -455,7 +459,7 @@ def _send_worker_lease_heartbeats(
     interval_seconds: float,
     stop_requested: threading.Event,
     failed: threading.Event,
-    errors: list[TunnelError],
+    errors: list[ComputeTunnelError],
     failure_handler: Callable[[], None],
 ) -> None:
     """Renew the filesystem lease until shutdown or the login transport fails."""
@@ -477,7 +481,7 @@ def _send_worker_lease_heartbeats(
                 if hasattr(transport, "get_exception")
                 else None
             )
-            heartbeat_error = TunnelError(
+            heartbeat_error = ComputeTunnelError(
                 f"worker heartbeat write failed for job {job_id} at "
                 f"sequence {sequence}: {error}"
             )
@@ -530,7 +534,7 @@ def _monitor_scheduler_job(
     broker: ForegroundBroker,
     stop_requested: threading.Event,
     job_finished: threading.Event,
-    errors: list[TunnelError],
+    errors: list[ComputeTunnelError],
     monitor_interval: float,
 ) -> None:
     """Close the broker when the scheduler reports that its job has ended."""
@@ -551,7 +555,7 @@ def _monitor_scheduler_job(
                 exc_info=logger.isEnabledFor(logging.DEBUG),
             )
             errors.append(
-                TunnelError(f"could not monitor worker job {job_id}: {error}")
+                ComputeTunnelError(f"could not monitor worker job {job_id}: {error}")
             )
             broker.close()
             return
@@ -582,7 +586,7 @@ def _monitor_scheduler_job(
                 info.raw_state,
             )
             errors.append(
-                TunnelError(
+                ComputeTunnelError(
                     f"worker job {job_id} entered unknown scheduler state {info.raw_state}"
                 )
             )
@@ -590,7 +594,7 @@ def _monitor_scheduler_job(
             return
 
 
-def _raise_heartbeat_failure(errors: list[TunnelError]) -> None:
+def _raise_heartbeat_failure(errors: list[ComputeTunnelError]) -> None:
     if errors:
         raise errors[0]
 
@@ -619,7 +623,7 @@ def _wait_for_selected_worker_port(
     while True:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            raise TunnelError(
+            raise ComputeTunnelError(
                 "worker SSH daemon did not bind a candidate port within "
                 f"{timeout_seconds:g} seconds"
             )
@@ -627,11 +631,11 @@ def _wait_for_selected_worker_port(
         if port is not None:
             return port
         if failure := control.read_failure():
-            raise TunnelError(f"worker SSH daemon failed to start: {failure}")
+            raise ComputeTunnelError(f"worker SSH daemon failed to start: {failure}")
         time.sleep(min(0.1, remaining))
 
 
-def _run_tunnel(
+def _run_compute_tunnel(
     *,
     profile_name: str | None,
     profile: ResolvedConfig,
@@ -842,18 +846,18 @@ def _run_tunnel(
                 output_stop = threading.Event()
                 heartbeat_stop = threading.Event()
                 heartbeat_failed = threading.Event()
-                heartbeat_errors: list[TunnelError] = []
+                heartbeat_errors: list[ComputeTunnelError] = []
                 heartbeat_thread: threading.Thread | None = None
                 broker: ForegroundBroker | None = None
                 shutdown_reason = "startup_failure"
-                connection_errors: list[TunnelError] = []
+                connection_errors: list[ComputeTunnelError] = []
                 output_thread: threading.Thread | None = None
 
                 def handle_connection_lost(error: paramiko.SSHException) -> None:
                     nonlocal shutdown_reason
                     shutdown_reason = "login_connection_lost"
                     connection_errors.append(
-                        TunnelError(f"login-node SSH connection lost: {error}")
+                        ComputeTunnelError(f"login-node SSH connection lost: {error}")
                     )
                     if broker is not None:
                         broker.close()
@@ -867,7 +871,7 @@ def _run_tunnel(
                         target=_drain_interactive_job,
                         args=(interactive_job, output_stop),
                         daemon=True,
-                        name="ezhpcy-job-output",
+                        name="ezhpcy-compute-job-output",
                     )
                     output_thread.start()
                 try:
@@ -889,7 +893,7 @@ def _run_tunnel(
                     )
                     worker_host = info.primary_host
                     if worker_host is None:
-                        raise TunnelError(
+                        raise ComputeTunnelError(
                             f"scheduler did not report a host for running job {job_id}"
                         )
                     worker_port = _wait_for_selected_worker_port(
@@ -948,7 +952,7 @@ def _run_tunnel(
                         ),
                     )
                     monitor_stop = threading.Event()
-                    monitor_errors: list[TunnelError] = []
+                    monitor_errors: list[ComputeTunnelError] = []
                     monitor = threading.Thread(
                         target=_monitor_scheduler_job,
                         args=(
@@ -986,7 +990,7 @@ def _run_tunnel(
                         broker.serve_forever()
                     except KeyboardInterrupt:
                         shutdown_reason = "user_interrupt"
-                        logger.info("Stopping tunnel...")
+                        logger.info("Stopping compute-node tunnel...")
                     finally:
                         monitor_stop.set()
                         broker.close()
@@ -1016,7 +1020,7 @@ def _run_tunnel(
                         else None
                     )
                     logger.debug(
-                        "Tunnel cleanup: job=%s reason=%s job_finished=%s "
+                        "Compute tunnel cleanup: job=%s reason=%s job_finished=%s "
                         "heartbeat_failed=%s transport_active=%s transport_error=%r",
                         job_id,
                         shutdown_reason,
@@ -1043,7 +1047,7 @@ def _run_tunnel(
 
 
 @with_profile_context
-def tunnel_cmd(
+def compute_cmd(
     profile_context: ProfileContext,
     profile: OptionalProfileArg = None,
     scheduler_type: SchedulerOpt = None,
@@ -1184,7 +1188,7 @@ def tunnel_cmd(
             if worker_port is not None
             else _select_worker_ports(worker_port_retries + 1)
         )
-        _run_tunnel(
+        _run_compute_tunnel(
             profile_name=profile_context.name,
             profile=resolved,
             conn_info=profile_context.connection,
@@ -1206,10 +1210,10 @@ def tunnel_cmd(
             auto_provision=auto_provision_enabled,
         )
     except KeyboardInterrupt:
-        logger.info("Tunnel stopped.")
+        logger.info("Compute-node tunnel stopped.")
     except (IPCError, RuntimeError, paramiko.SSHException) as error:
         logger.error(
-            "Could not start tunnel: %s",
+            "Could not start compute-node tunnel: %s",
             error,
             exc_info=logger.isEnabledFor(logging.DEBUG),
         )

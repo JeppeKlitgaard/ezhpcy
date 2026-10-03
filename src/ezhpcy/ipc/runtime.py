@@ -30,7 +30,7 @@ def load_runtime_descriptor(path: Path) -> RuntimeDescriptor:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError as error:
         raise BrokerUnavailableError(
-            "foreground broker is not running; start `ezhpcy tunnel`"
+            "foreground broker is not running; start `ezhpcy broker`"
         ) from error
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise BrokerUnavailableError(

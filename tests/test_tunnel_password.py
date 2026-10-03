@@ -1,12 +1,13 @@
 import os
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 from keyring.errors import KeyringError
 from typer.testing import CliRunner
 
-from ezhpcy.cli import app, common, proxy as proxy_module
+from ezhpcy.cli import app, broker as broker_module, common, proxy as proxy_module
 from ezhpcy.cli.utils.bad_parameter import RichBadParameter
 from ezhpcy.types import ProfileConfig
 
@@ -172,6 +173,54 @@ def test_profile_context_can_be_resolved_entirely_from_cli_values() -> None:
     assert context.profile.gpus == 1
 
 
+def test_anonymous_broker_uses_configuration_descriptor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    backend = object()
+    transport = MagicMock()
+    transport.is_active.return_value = True
+    ssh = MagicMock()
+    ssh.__enter__.return_value = ssh
+    ssh.get_transport.return_value = transport
+    broker = MagicMock()
+
+    def create_backend(**kwargs):
+        captured.update(kwargs)
+        return backend
+
+    monkeypatch.setattr(broker_module, "create_broker_backend", create_backend)
+    monkeypatch.setattr(
+        broker_module,
+        "InteractiveSSHClient",
+        lambda _info, **_kwargs: ssh,
+    )
+    monkeypatch.setattr(
+        broker_module, "ForegroundBroker", lambda *_args, **_kwargs: broker
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "broker",
+            "worker.internal",
+            "--worker-port",
+            "2222",
+            "--host",
+            "login.example.com",
+            "--user",
+            "alice",
+            "--queue",
+            "gpu",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["profile"] is None
+    configuration = captured["resolved_config"]
+    assert getattr(configuration, "queue") == "gpu"
+
+
 def test_anonymous_proxy_loads_configuration_descriptor(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -225,7 +274,13 @@ def test_invalid_profile_password_sources_are_reported_as_a_cli_parameter_error(
 
     result = CliRunner().invoke(
         app,
-        ["tunnel", "base"],
+        [
+            "broker",
+            "base",
+            "worker.example.com",
+            "--worker-port",
+            "2222",
+        ],
         color=True,
     )
 
@@ -339,7 +394,7 @@ def test_connection_options_read_password_keyring_from_environment(
     assert calls == [("ezhpcy", "alice@login.example.com", "from-keyring")]
 
 
-@pytest.mark.parametrize("command", [["provision"], ["prune"], ["tunnel"]])
+@pytest.mark.parametrize("command", [["provision"], ["prune"], ["compute"], ["broker"]])
 def test_remote_command_help_includes_every_password_source(
     command: list[str],
 ) -> None:

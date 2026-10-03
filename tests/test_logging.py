@@ -38,11 +38,11 @@ def test_default_logger_writes_named_records_to_the_terminal() -> None:
     stream = io.StringIO()
     configured = configure_logging("INFO", stream=stream)
 
-    logging.getLogger("ezhpcy.cli.tunnel").info("Worker ready")
+    logging.getLogger("ezhpcy.cli.compute").info("Worker ready")
 
     assert configured is logging.getLogger(PACKAGE_NAME)
     rendered = " ".join(stream.getvalue().split())
-    assert rendered == "INFO [ezhpcy.cli.tunnel] Worker ready"
+    assert rendered == "INFO [ezhpcy.cli.compute] Worker ready"
 
 
 def test_default_logger_uses_a_rich_stderr_handler() -> None:
@@ -63,12 +63,12 @@ def test_debug_logger_includes_a_timestamp() -> None:
     stream = io.StringIO()
     configure_logging("DEBUG", stream=stream, include_timestamp=True)
 
-    logging.getLogger("ezhpcy.cli.tunnel").debug("Transport active")
+    logging.getLogger("ezhpcy.cli.compute").debug("Transport active")
 
     rendered = " ".join(stream.getvalue().split())
     assert re.fullmatch(
         r"DEBUG \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} "
-        r"\[ezhpcy\.cli\.tunnel\] Transport active",
+        r"\[ezhpcy\.cli\.compute\] Transport active",
         rendered,
     )
 

@@ -1,6 +1,7 @@
 import io
 import logging
 import re
+from unittest.mock import patch
 
 import pytest
 from rich.console import Console
@@ -69,6 +70,33 @@ def test_debug_logger_includes_a_timestamp() -> None:
         r"\[ezhpcy\.cli\.tunnel\] Transport active",
         rendered,
     )
+
+
+def test_root_debug_option_overrides_logging_configuration() -> None:
+    with patch("ezhpcy.cli.configure_logging") as configure:
+        result = invoke(["--debug", "version"])
+
+    assert result.exit_code == 0, result
+    configure.assert_called_once_with(logging.DEBUG, include_timestamp=True)
+
+
+def test_debug_env_var_overrides_logging_configuration_without_the_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("EZHPCY_DEBUG", "1")
+
+    with patch("ezhpcy.cli.configure_logging") as configure:
+        result = invoke(["version"])
+
+    assert result.exit_code == 0, result
+    configure.assert_called_once_with(logging.DEBUG, include_timestamp=True)
+
+
+def test_root_help_exposes_debug_option() -> None:
+    result = invoke(["--help"])
+
+    assert result.exit_code == 0, result
+    assert "--debug" in result.stdout
 
 
 def test_root_debug_help_exposes_its_env_var() -> None:

@@ -5,6 +5,16 @@ from ezhpcy.cli import keyring as keyring_cli
 from tests.support.cli import invoke
 
 
+def test_keyring_set_is_available_with_connection_options() -> None:
+    result = invoke(["keyring", "set", "--help"])
+
+    assert result.exit_code == 0
+    assert "--user" in result.stdout
+    assert "--host" in result.stdout
+    assert "--password-file" in result.stdout
+    assert "--password-fd" in result.stdout
+
+
 def test_keyring_set_stores_password_for_user_at_host(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

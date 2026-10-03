@@ -935,6 +935,42 @@ def test_tunnel_submits_batch_job_without_interactive_shell() -> None:
     assert scheduler.cancelled == ["42"]
 
 
+def test_tunnel_help_exposes_scheduler_and_resource_options() -> None:
+    result = invoke(["tunnel", "--help"])
+    alias_result = invoke(["t", "--help"])
+
+    assert result.exit_code == 0
+    assert alias_result.exit_code == 0
+    assert "--scheduler" in result.stdout
+    assert "--submission-mode" in result.stdout
+    assert "--queue" in result.stdout
+    assert "--cores" in result.stdout
+    assert "--gpus" in result.stdout
+    assert "--exclusive" in result.stdout
+    assert "--time-limit" in result.stdout
+    assert "--memory" in result.stdout
+    assert "--queue-timeout" in result.stdout
+    assert "--startup-timeout" in result.stdout
+    assert "--job-poll-interval" in result.stdout
+    assert "--job-monitor-inte" in result.stdout
+    assert "--worker-heartbeat" in result.stdout
+    assert "--interactive-subm" in result.stdout
+    assert "--worker-port" in result.stdout
+    # Rich abbreviates long option names in its fixed-width option column.
+    assert "--worker-port-retr" in result.stdout
+    assert "--auto-provision" in result.stdout
+    assert "--no-auto-provision" in result.stdout
+    assert "PROFILE" in result.stdout
+
+
+def test_tunnel_command_requires_a_resolvable_configuration() -> None:
+    result = invoke(["tunnel"])
+
+    assert result.exit_code == 2
+    assert "user" in result.stderr
+    assert "--user" in result.stderr
+
+
 def test_tunnel_command_accepts_anonymous_cli_configuration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -975,6 +1011,152 @@ def test_tunnel_command_accepts_anonymous_cli_configuration(
     assert resolved.timings.job_poll_interval_seconds == 2.5
     assert resolved.timings.job_monitor_interval_seconds == 60
     assert resolved.connection == ConnectionInfo(host="login.example.com", user="alice")
+
+
+def test_tunnel_command_requires_submission_mode() -> None:
+    result = invoke(
+        [
+            "tunnel",
+            "--host",
+            "login.example.com",
+            "--user",
+            "alice",
+            "--scheduler",
+            "LSF",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "submission_mode must be set" in result.stderr
+
+
+def test_tunnel_command_accepts_batch_submission_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        tunnel_module,
+        "_run_tunnel",
+        lambda **kwargs: captured.update(kwargs),
+    )
+
+    result = invoke(
+        [
+            "tunnel",
+            "--host",
+            "login.example.com",
+            "--user",
+            "alice",
+            "--scheduler",
+            "LSF",
+            "--submission-mode",
+            "batch",
+        ],
+    )
+
+    assert result.exit_code == 0, result
+    assert captured["resolved"].scheduler.submission_mode is SubmissionMode.BATCH
+
+
+def test_tunnel_command_rejects_interactive_wrapper_in_batch_mode() -> None:
+    result = invoke(
+        [
+            "tunnel",
+            "--host",
+            "login.example.com",
+            "--user",
+            "alice",
+            "--scheduler",
+            "LSF",
+            "--submission-mode",
+            "batch",
+            "--interactive-submission-command",
+            "/site/bin/interactive",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "requires scheduler.submission_mode" in result.stderr
+
+
+def test_tunnel_command_accepts_cli_interactive_submission_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        tunnel_module,
+        "_run_tunnel",
+        lambda **kwargs: captured.update(kwargs),
+    )
+
+    result = invoke(
+        [
+            "tunnel",
+            "--host",
+            "login.example.com",
+            "--user",
+            "alice",
+            "--scheduler",
+            "LSF",
+            "--submission-mode",
+            "interactive",
+            "--interactive-submission-command",
+            "/lsf/local/bin/a100sh --constraint 'gpu node'",
+        ],
+    )
+
+    assert result.exit_code == 0, result
+    resolved = captured["resolved"]
+    assert resolved.scheduler.interactive_submission_command == [
+        "/lsf/local/bin/a100sh",
+        "--constraint",
+        "gpu node",
+    ]
+
+
+def test_tunnel_command_rejects_resources_with_cli_interactive_command() -> None:
+    result = invoke(
+        [
+            "tunnel",
+            "--host",
+            "login.example.com",
+            "--user",
+            "alice",
+            "--scheduler",
+            "LSF",
+            "--submission-mode",
+            "interactive",
+            "--interactive-submission-command",
+            "/lsf/local/bin/a100sh",
+            "--queue",
+            "gpu",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "cannot be combined with submission options" in result.stderr
+    assert "--queue" in result.stderr
+
+
+def test_tunnel_command_rejects_malformed_interactive_command_quoting() -> None:
+    result = invoke(
+        [
+            "tunnel",
+            "--host",
+            "login.example.com",
+            "--user",
+            "alice",
+            "--scheduler",
+            "LSF",
+            "--submission-mode",
+            "interactive",
+            "--interactive-submission-command",
+            "'/lsf/local/bin/a100sh",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "No closing quotation" in result.stderr
 
 
 def test_tunnel_command_resolves_profile_and_applies_cli_overrides(
@@ -1247,6 +1429,129 @@ def test_tunnel_command_rejects_configured_submission_options_with_wrapper(
     assert result.exit_code == 2
     assert "cannot be combined with submission options" in result.stderr
     assert f"profile.base.{section}.{field}" in result.stderr
+
+
+def test_tunnel_command_can_disable_auto_provision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        tunnel_module.config,
+        "profile",
+        {
+            "base": ProfileConfig.model_validate(
+                {
+                    "connection": {"host": "login.example.com", "user": "alice"},
+                    "scheduler": {"type": "LSF", "submission_mode": "interactive"},
+                }
+            )
+        },
+    )
+    credentials_checked = False
+    captured: dict[str, object] = {}
+
+    def check_credentials(_connection: ConnectionInfo) -> None:
+        nonlocal credentials_checked
+        credentials_checked = True
+
+    monkeypatch.setattr(
+        tunnel_module, "_ensure_local_worker_credentials", check_credentials
+    )
+    monkeypatch.setattr(
+        tunnel_module,
+        "_run_tunnel",
+        lambda **kwargs: captured.update(kwargs),
+    )
+
+    result = invoke(["tunnel", "base", "--no-auto-provision"])
+
+    assert result.exit_code == 0, result
+    assert credentials_checked
+    assert captured["auto_provision"] is False
+
+
+def test_tunnel_command_can_enable_auto_provision_when_config_disables_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(tunnel_module.config, "auto_provision", False)
+    monkeypatch.setattr(
+        tunnel_module.config,
+        "profile",
+        {
+            "base": ProfileConfig.model_validate(
+                {
+                    "connection": {"host": "login.example.com", "user": "alice"},
+                    "scheduler": {"type": "LSF", "submission_mode": "interactive"},
+                }
+            )
+        },
+    )
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        tunnel_module,
+        "_run_tunnel",
+        lambda **kwargs: captured.update(kwargs),
+    )
+
+    result = invoke(["tunnel", "base", "--auto-provision"])
+
+    assert result.exit_code == 0, result
+    assert captured["auto_provision"] is True
+
+
+def test_tunnel_command_rejects_conflicting_auto_provision_flags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        tunnel_module.config,
+        "profile",
+        {
+            "base": ProfileConfig.model_validate(
+                {
+                    "connection": {"host": "login.example.com", "user": "alice"},
+                    "scheduler": {"type": "LSF", "submission_mode": "interactive"},
+                }
+            )
+        },
+    )
+
+    result = invoke(
+        [
+            "tunnel",
+            "base",
+            "--auto-provision",
+            "--no-auto-provision",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "--no-auto-provision specified multiple times" in result.stderr
+
+
+def test_tunnel_command_rejects_unknown_profile_before_starting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        tunnel_module.config,
+        "profile",
+        {
+            "base": ProfileConfig.model_validate(
+                {"connection": {"host": "login.example.com", "user": "alice"}}
+            )
+        },
+    )
+    started = False
+
+    def start(_connection: ConnectionInfo) -> None:
+        nonlocal started
+        started = True
+
+    monkeypatch.setattr(tunnel_module, "_ensure_local_worker_credentials", start)
+
+    result = invoke(["tunnel", "missing"])
+
+    assert result.exit_code == 2
+    assert 'Invalid value "missing" for PROFILE' in result.stderr
+    assert not started
 
 
 def _alias_profiles() -> dict[str, ProfileConfig]:

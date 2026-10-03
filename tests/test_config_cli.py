@@ -201,6 +201,14 @@ def test_config_edit_reports_missing_editor(
     assert "Could not open configuration file" in result.stderr
 
 
+def test_config_edit_is_listed_in_help() -> None:
+    result = invoke(["config", "--help"])
+
+    assert result.exit_code == 0, result
+    assert "edit" in result.stdout
+    assert "load" in result.stdout
+
+
 def test_list_profiles_shows_local_profile_metadata(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

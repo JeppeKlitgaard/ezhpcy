@@ -1,16 +1,16 @@
 """
 The CLI's user-facing surface: commands, options, validation and errors.
 
-These tests go through `invoke` and the `capture` seams only, and never compare
-exact help text. Behaviour that one command owns in depth (e.g. `config edit`'s
-editor handling, `doctor`'s checks, the proxy relay) is tested in that command's
-own test file instead; this file has one test per behaviour shared across the CLI.
+These tests go through `invoke` and the `capture` seams only, never through the CLI
+framework's objects, and never compare exact help text, so that they can stay
+unchanged when the framework behind the CLI changes.
 """
 
 import json
 import logging
 import os
 import re
+import sys
 from collections.abc import Iterator
 from datetime import timedelta
 from operator import attrgetter
@@ -171,6 +171,65 @@ def test_prune_all_asks_first_and_defaults_to_no(
     assert not _removes_cache_root(captured)
 
 
+def test_proxy_relays_for_the_given_alias(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured = capture(monkeypatch, "proxy")
+
+    result = invoke(["proxy", "gpu"])
+
+    assert result.exit_code == 0, result
+    assert captured["alias"] == "gpu"
+    assert result.stdout == RELAYED_BYTES.decode()
+
+
+@_PIPED_PASSWORD_PROMPT
+def test_keyring_set_stores_the_password_for_user_at_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = capture(monkeypatch, "keyring")
+
+    result = invoke(
+        ["keyring", "set", "--host", "login.example.com", "--user", "alice"],
+        stdin="typed\n",
+    )
+
+    assert result.exit_code == 0, result
+    assert captured == {
+        "service": "ezhpcy",
+        "account": "alice@login.example.com",
+        "password": "typed",
+    }
+
+
+def test_config_edit_opens_the_configuration_file_in_the_given_editor(
+    surface_config: Path,
+) -> None:
+    editor = f'"{sys.executable}" -c pass'
+
+    result = invoke(["config", "edit", editor])
+
+    assert result.exit_code == 0, result
+    assert surface_config.is_file()
+
+
+def test_config_load_writes_a_preset(surface_config: Path) -> None:
+    result = invoke(["config", "load", "dtu", "--user", "alice"])
+
+    assert result.exit_code == 0, result
+    assert 'user = "alice"' in surface_config.read_text(encoding="utf-8")
+
+
+def test_doctor_runs(surface_config: Path) -> None:
+    surface_config.write_text("", encoding="utf-8")
+
+    result = invoke(["doctor"])
+
+    # The outcome depends on the workstation's OpenSSH setup; only that it ran
+    # and checked the profiles is part of the surface.
+    assert result.exception is None, result
+    assert result.exit_code in (0, 1)
+    assert "Profile base is valid" in result.stdout
+
+
 @pytest.mark.parametrize("arguments", [[], ["--json"]])
 def test_info_runs(arguments: list[str]) -> None:
     result = invoke(["info", *arguments])
@@ -193,6 +252,14 @@ def test_version_json_prints_the_version_as_json() -> None:
 
     assert result.exit_code == 0, result
     assert json.loads(result.stdout) == {"version": ezhpcy_version()}
+
+
+def test_list_profiles_lists_the_configured_profiles() -> None:
+    result = invoke(["list-profiles"])
+
+    assert result.exit_code == 0, result
+    assert "base" in result.stdout
+    assert "exclusive" in result.stdout
 
 
 # Options reach the command
@@ -667,12 +734,6 @@ def test_invalid_resource_values_are_usage_errors(
         ),
         pytest.param(
             "tunnel",
-            ["--host", "login.example.com", "--user", "alice", "--scheduler", "LSF"],
-            ["scheduler.submission_mode must be set", "--submission-mode"],
-            id="missing-submission-mode",
-        ),
-        pytest.param(
-            "tunnel",
             [
                 "base",
                 "--submission-mode",
@@ -714,6 +775,12 @@ def test_invalid_resource_values_are_usage_errors(
             ],
             id="unknown-profile",
         ),
+        pytest.param(
+            "config",
+            ["load", "unknown"],
+            ["unknown", "dtu"],
+            id="unknown-preset",
+        ),
     ],
 )
 def test_command_errors_are_usage_errors_with_their_key_message(
@@ -722,7 +789,11 @@ def test_command_errors_are_usage_errors_with_their_key_message(
     arguments: list[str],
     messages: list[str],
 ) -> None:
-    captured = capture(monkeypatch, command)
+    captured = (
+        capture(monkeypatch, command)
+        if command in (*_LOGIN_COMMANDS, "keyring")
+        else {}
+    )
 
     result = invoke([command, *arguments], stdin="typed\n")
 

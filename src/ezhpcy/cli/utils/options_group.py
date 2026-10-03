@@ -8,49 +8,72 @@ from typing import Any, Concatenate
 class BadHookError(TypeError): ...
 
 
-# Adapted from https://github.com/fastapi/typer/discussions/742
+# https://github.com/fastapi/typer/discussions/742
 def attach_hook[**ParamsHook, RHook](
     hook_func: Callable[ParamsHook, RHook], hook_output_kwarg: str | None = None
 ) -> Callable[..., Any]:
     """
-    Build a decorator that runs `hook_func` before the decorated function.
+    Decorates a source function to be executed with a pre-execution hook function. The hook function's
+    output is passed to the source function as a specified keyword argument. This decorator
+    filters keyword arguments for the hook function according to its signature, and the rest of the arguments
+    are passed to the source function. It updates the wrapper function's signature to include the combined
+    list of arguments, excluding the internally managed hook_output_kwarg.
 
-    Typer derives CLI options from a function's signature, so sharing a group of
-    options between commands requires merging parameter lists. The returned
-    decorator does this: the wrapper's signature is the decorated function's
-    parameters (minus `hook_output_kwarg`) followed by the hook's parameters as
-    keyword-only. On call, the hook receives the keyword arguments it declares,
-    and its return value is passed to the decorated function as
-    `hook_output_kwarg`. Parameters present in both signatures are passed to
-    both functions.
+    The motivation for this utility is to allow combining groups of shared options for Typer cli scripts.
+    Typer infers the command line arguments from a functions type annotations, and to share common groups of arguments
+    between multiple scripts, there is a necessity to merge parameter lists of function.
 
-    Example:
-        ```
-        def logging_from_cli(
-            *, log_file: Annotated[Path | None, typer.Option()] = None
-        ) -> Logger: ...
+    Usage Examples:
 
-        with_logging = attach_hook(logging_from_cli, hook_output_kwarg="logger")
+    common.py
+    ```
+    def logging_options(
+        log_level: Annotated[int, typer.Option(help="Log level. Must be between 0 and 9."),
+        log_to_file: Annotated[Optional[pathlib.Path], typer.Option(help="A file to stream logs to.") = None
+        ):
+        if log_level < 0 or log_level > 9:
+          raise ValueError("log_level must be between 0 and 9.")
+        ...
+        # create logger
+        ...
+        return logger
+    ```
 
-        @app.command()
-        @with_logging
-        def run(size: int, logger: Logger) -> None: ...
-        ```
+    main1.py
+    ```
+    @attach_hook(common.logging_options, hook_output_kwarg="logger")
+    def foo(size: int, logger: Logger):
+        ....
 
-    Here `run` is exposed with the options `--size` and `--log-file`.
+    if __name__=="__main__":
+        typer.run(foo)
+    ```
+
+    main2.py
+    ```
+    @attach_hook(common.logging_options, hook_output_kwarg="logger")
+    def bar(color: str, logger: Logger):
+        ....
+
+    if __name__=="__main__":
+        typer.run(bar)
+    ```
+
+    in the example above both main1 and main2 cli's enable to specify shared logging arguments from the command line,
+    in addition to the specific argument of each script.
 
     Args:
-        hook_func: The function to run first. All of its parameters must be
-            passable as keyword arguments.
-        hook_output_kwarg: The parameter of the decorated function that receives
-            the hook's return value. Defaults to the hook function's name.
+        hook_func: The hook function to execute before the source function. All required argumenets must
+            be allowed to be passed as keyword arguments.
+        hook_output_kwarg: The keyword argument name for the hook's output passed to the source function.
+                           If None, defaults to the hook function's name.
 
     Raises:
-        BadHookError: When decorating, if a hook parameter without a default
-            has the same name as a parameter of the decorated function.
+        BadHookError: If the hook function has an argument with no default value that colildes with source.
 
     Returns:
-        A decorator that chains `hook_func` before the decorated function.
+        A decorator that chains the hook function with the source function, excluding the hook_output_kwarg
+        from the wrapper's external signature.
     """
     if hook_output_kwarg is None:
         hook_output_kwarg = hook_func.__name__

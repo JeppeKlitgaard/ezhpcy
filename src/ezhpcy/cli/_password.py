@@ -97,20 +97,10 @@ def resolve_password(
     if password_keyring:
         return _read_password_keyring(user=user, host=host)
 
-    configured_sources = [
-        name
-        for name, selected in (
-            (f"{config_prefix}.password_file", config_password_file is not None),
-            (f"{config_prefix}.password_fd", config_password_fd is not None),
-            (f"{config_prefix}.password_keyring", config_password_keyring),
-        )
-        if selected
-    ]
-    if len(configured_sources) > 1:
-        raise CliUsageError(
-            t"Profile password source settings are mutually exclusive: "
-            t"{configured_sources:name}."
-        )
+    # At most one of password source is set since `Config.resolve_profile`
+    # rejects a profile that sets several.
+    # Thus no need to check again.
+
     if config_password_file is not None:
         return _read_password_file(
             config_password_file, source=f"{config_prefix}.password_file"

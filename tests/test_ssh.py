@@ -8,9 +8,10 @@ import paramiko
 import pytest
 
 from ezhpcy.cli.utils.ssh import InteractiveSSHClient, _send_server_alive_requests
+from ezhpcy.config import ConnectionInfo
 from ezhpcy.constants import EZHPCY_VERSION, PIXI_VERSION
 from ezhpcy.ssh import SFTPClient, SSHClient
-from ezhpcy.types import ConnectionInfo, RemoteState
+from ezhpcy.types import RemoteState
 
 
 def test_interactive_ssh_prompts_after_key_authentication_fails() -> None:

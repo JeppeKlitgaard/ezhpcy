@@ -9,8 +9,8 @@ from paramiko.common import DEBUG
 from rich.prompt import Confirm, Prompt
 
 from ezhpcy import console
+from ezhpcy.config import ConnectionInfo
 from ezhpcy.ssh import SSHClient
-from ezhpcy.types import ConnectionInfo
 
 logger = logging.getLogger(__name__)
 

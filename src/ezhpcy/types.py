@@ -4,9 +4,9 @@ import re
 from datetime import timedelta
 from enum import StrEnum
 from pathlib import Path, PurePosixPath
-from typing import Annotated, ClassVar
+from typing import Annotated
 
-from pydantic import BaseModel, ByteSize, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ByteSize, Field, field_validator
 from pydantic_extra_types.domain import DomainStr
 
 from ezhpcy.constants import EZHPCY_VERSION, PACKAGE_NAME, PIXI_VERSION
@@ -42,46 +42,103 @@ def parse_time_limit(value: str | None) -> timedelta | None:
     return result
 
 
-class _SubConfig(BaseModel):
-    """A group of related profile settings, written as one table per profile."""
+class ProfileConfig(BaseModel):
+    """An inheritable profile as written in the configuration file."""
 
-    model_config = ConfigDict(extra="forbid")
+    # EzHPCy configuration
+    description: str | None = Field(default=None, min_length=1)
+    inherit: str | None = Field(default=None, min_length=1)
 
-
-class ConnectionConfig(_SubConfig):
-    """How to reach and authenticate with the login node."""
-
+    # Connection
     host: DomainStr | None = None
     user: str | None = Field(default=None, min_length=1)
-
-    # Accepted only to reject it with a helpful message: passwords must not be
-    # stored in configuration files.
     password: str | None = None
     password_file: Path | None = None
     password_fd: int | None = Field(default=None, ge=0)
+    password_keyring: bool | None = None
+    password_prompt: bool | None = None
+
+    # Scheduler setup
+    scheduler: SchedulerType | None = None
+    submission_mode: SubmissionMode | None = None
+    queue: str | None = Field(default=None, min_length=1)
+    cores: int | None = Field(default=None, ge=1)
+    gpus: int | None = Field(default=None, ge=0)
+    exclusive: bool | None = None
+    time_limit: str | None = None
+    memory: PositiveByteSize | None = None
+
+    # Connection timings
+    ssh_keepalive_interval_seconds: int | None = Field(default=None, gt=0)
+    worker_heartbeat_interval_seconds: float | None = Field(default=None, gt=0)
+    worker_heartbeat_timeout_seconds: float | None = Field(default=None, gt=0)
+    queue_timeout_seconds: float | None = Field(default=None, gt=0)
+    worker_startup_timeout_seconds: float | None = Field(default=None, gt=0)
+    job_poll_interval_seconds: float | None = Field(default=None, gt=0)
+    job_monitor_interval_seconds: float | None = Field(default=None, gt=0)
+
+    # Scheduler options - Interactive
+    interactive_submission_command: list[str] | None = Field(default=None, min_length=1)
+
+    # Scheduler Options - LSF
+    lsf_resource_reserve_per_task: bool | None = None
+    lsf_application_profile: str | None = Field(default=None, min_length=1)
+    lsf_submission_environment: dict[str, str] | None = None
+    lsf_export_environment: list[str] | None = None
+
+    # Scheduler Options - PBS
+    pbs_command_directory: PurePosixPath | None = None
+
+    @field_validator("time_limit")
+    @classmethod
+    def validate_time_limit(cls, value: str | None) -> str | None:
+        parse_time_limit(value)
+        return value
+
+
+class _ResolvedConfigBase(BaseModel):
+    """Fields shared by partially and fully resolved configurations."""
+
+    # EzHPCy configuration
+    description: str | None = None
+
+    # Connection
+    password: str | None = None
+    password_file: Path | None = None
+    password_fd: int | None = None
     password_keyring: bool = False
     password_prompt: bool = True
 
-    ssh_keepalive_interval_seconds: int = Field(default=30, gt=0)
-
-
-class SchedulerConfig(_SubConfig):
-    """Which scheduler allocates the worker, and how the job is submitted."""
-
-    type: SchedulerType | None = None
+    # Scheduler setup
+    scheduler: SchedulerType | None = None
     submission_mode: SubmissionMode | None = None
-    interactive_submission_command: list[str] | None = Field(default=None, min_length=1)
-
-
-class ResourcesConfig(_SubConfig):
-    """What the worker job requests from the scheduler."""
-
-    queue: str | None = Field(default=None, min_length=1)
+    queue: str | None = None
     cores: int = Field(default=1, ge=1)
     gpus: int = Field(default=0, ge=0)
     exclusive: bool = False
     time_limit: str | None = None
     memory: PositiveByteSize | None = None
+
+    # Connection timings
+    ssh_keepalive_interval_seconds: int = Field(default=30, gt=0)
+    worker_heartbeat_interval_seconds: float = Field(default=30, gt=0)
+    worker_heartbeat_timeout_seconds: float = Field(default=90, gt=0)
+    queue_timeout_seconds: float = Field(default=15 * 60, gt=0)
+    worker_startup_timeout_seconds: float = Field(default=60, gt=0)
+    job_poll_interval_seconds: float = Field(default=2.5, gt=0)
+    job_monitor_interval_seconds: float = Field(default=60, gt=0)
+
+    # Scheduler options - Interactive
+    interactive_submission_command: list[str] | None = None
+
+    ## Scheduler Options - LSF
+    lsf_resource_reserve_per_task: bool = False
+    lsf_application_profile: str | None = None
+    lsf_submission_environment: dict[str, str] = Field(default_factory=dict)
+    lsf_export_environment: list[str] = Field(default_factory=list)
+
+    # Scheduler Options - PBS
+    pbs_command_directory: PurePosixPath | None = None
 
     @field_validator("time_limit")
     @classmethod
@@ -94,69 +151,11 @@ class ResourcesConfig(_SubConfig):
         return parse_time_limit(self.time_limit)
 
 
-class TimingsConfig(_SubConfig):
-    """Timeouts and intervals of the tunnel's scheduler and worker checks."""
+class ResolvedProfileConfig(_ResolvedConfigBase):
+    """An inherited profile before environment and CLI values are applied."""
 
-    queue_timeout_seconds: float = Field(default=15 * 60, gt=0)
-    worker_startup_timeout_seconds: float = Field(default=60, gt=0)
-    job_poll_interval_seconds: float = Field(default=2.5, gt=0)
-    job_monitor_interval_seconds: float = Field(default=60, gt=0)
-    worker_heartbeat_interval_seconds: float = Field(default=30, gt=0)
-    worker_heartbeat_timeout_seconds: float = Field(default=90, gt=0)
-
-
-class LSFConfig(_SubConfig):
-    """Options only used by the LSF scheduler."""
-
-    resource_reserve_per_task: bool = False
-    application_profile: str | None = Field(default=None, min_length=1)
-    submission_environment: dict[str, str] = Field(default_factory=dict)
-    export_environment: list[str] = Field(default_factory=list)
-
-
-class PBSConfig(_SubConfig):
-    """Options only used by the PBS scheduler."""
-
-    command_directory: PurePosixPath | None = None
-
-
-class ConnectionInfo(BaseModel):
-    """A login-node connection with its password source resolved."""
-
+    host: DomainStr | None = None
     user: str | None = None
-    password: str | None = None
-    host: DomainStr
-    password_prompt: bool = True
-    ssh_keepalive_interval_seconds: int = Field(default=30, gt=0)
-
-
-class _ProfileSettings(BaseModel):
-    """The settings a profile holds, grouped into sub-configs."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    description: str | None = Field(default=None, min_length=1)
-    connection: ConnectionConfig = Field(default_factory=ConnectionConfig)
-    scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
-    resources: ResourcesConfig = Field(default_factory=ResourcesConfig)
-    timings: TimingsConfig = Field(default_factory=TimingsConfig)
-    lsf: LSFConfig = Field(default_factory=LSFConfig)
-    pbs: PBSConfig = Field(default_factory=PBSConfig)
-
-
-class ProfileConfig(_ProfileSettings):
-    """An inheritable profile as written in the configuration file."""
-
-    inherit: str | None = Field(default=None, min_length=1)
-
-
-class ResolvedProfileConfig(_ProfileSettings):
-    """
-    An inherited profile before CLI values are applied.
-
-    The `model_fields_set` of each sub-config holds the fields the profile or
-    one of its ancestors configured.
-    """
 
 
 class RemoteState(BaseModel):
@@ -188,73 +187,83 @@ class RemoteState(BaseModel):
         return self.package_cache_dir() / "logs" / "worker"
 
 
-class ResolvedConfig(BaseModel):
+class ResolvedConfig(_ResolvedConfigBase):
     """
-    A profile after CLI values are applied and its password source resolved.
+    A profile after required environment and CLI values are applied.
 
     This enforces the invariants required for a full connection.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    host: DomainStr
+    user: str = Field(min_length=1)
 
-    description: str | None = None
-    connection: ConnectionInfo
-    scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
-    resources: ResourcesConfig = Field(default_factory=ResourcesConfig)
-    timings: TimingsConfig = Field(default_factory=TimingsConfig)
-    lsf: LSFConfig = Field(default_factory=LSFConfig)
-    pbs: PBSConfig = Field(default_factory=PBSConfig)
+    _DIGEST_EXCLUDE_FIELDS = frozenset(
+        {
+            # These fields are any that do not affect the identity of the connection or job setup.
+            # Since these can have security implications, we conservatively _exclude_ them from the digest.
+            # Note that only password and secret fields are excluded,
+            # and environment variables should be included in the digest as they do affect the job setup.
+            # Password fields are excluded.
+            # In short, exclude anything that does not affect the identity of the connection or job setup
+            # Ezhpcy configs
+            "description",
+            "inherit",
+            # Connection timings
+            "queue_timeout_seconds",
+            "worker_startup_timeout_seconds",
+            "ssh_keepalive_interval_seconds",
+            "worker_heartbeat_interval_seconds",
+            "worker_heartbeat_timeout_seconds",
+            "job_poll_interval_seconds",
+            "job_monitor_interval_seconds",
+            # Password sources
+            "password",
+            "password_file",
+            "password_fd",
+            "password_keyring",
+            "password_prompt",
+        }
+    )
 
-    # Exclude anything that does not affect the identity of the connection or
-    # job setup. Since these can have security implications, password fields
-    # are conservatively excluded, while environment variables are included as
-    # they do affect the job setup.
-    _DIGEST_EXCLUDE_FIELDS: ClassVar[dict[str, bool | set[str]]] = {
-        "description": True,
-        "timings": True,
-        "connection": {"password", "password_prompt", "ssh_keepalive_interval_seconds"},
-    }
-
-    # These are only listed as a reminder that they are included in the digest.
-    # This way, when new fields are added, we are forced to make a deliberate
-    # decision to include them!
-    _DIGEST_INCLUDE_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
-        "connection": frozenset({"host", "user"}),
-        "scheduler": frozenset(
-            {"type", "submission_mode", "interactive_submission_command"}
-        ),
-        "resources": frozenset(
-            {"queue", "cores", "gpus", "exclusive", "time_limit", "memory"}
-        ),
-        "lsf": frozenset(
-            {
-                "resource_reserve_per_task",
-                "application_profile",
-                "submission_environment",
-                "export_environment",
-            }
-        ),
-        "pbs": frozenset({"command_directory"}),
-    }
-
-    @field_validator("connection")
-    @classmethod
-    def validate_user(cls, value: ConnectionInfo) -> ConnectionInfo:
-        if not value.user:
-            raise ValueError("user must be set")
-        return value
+    _DIGEST_INCLUDE_FIELDS = frozenset(
+        {
+            # These fields are only specified as a reminder that they are included in the digest.
+            # This way, when new fields are added, we are forced to make a deliberate decision to include them!
+            # Connection
+            "host",
+            "user",
+            # Scheduler setup
+            "scheduler",
+            "submission_mode",
+            "queue",
+            "cores",
+            "gpus",
+            "exclusive",
+            "time_limit",
+            "memory",
+            # Scheduler options - Interactive
+            "interactive_submission_command",
+            # Scheduler options - LSF
+            "lsf_resource_reserve_per_task",
+            "lsf_application_profile",
+            "lsf_submission_environment",
+            "lsf_export_environment",
+            # Scheduler options - PBS
+            "pbs_command_directory",
+        }
+    )
 
     def descriptor_digest(self) -> str:
         """Return the identity for an anonymous descriptor."""
         # This is all a bit over the top
-        digest_participants = self.model_dump(
-            mode="json", exclude=self._DIGEST_EXCLUDE_FIELDS
-        )
+        digest_participants = {
+            key: value
+            for key, value in self.model_dump(
+                exclude=self._DIGEST_EXCLUDE_FIELDS,
+            ).items()
+        }
 
-        assert {
-            section: frozenset(fields)
-            for section, fields in digest_participants.items()
-        } == self._DIGEST_INCLUDE_FIELDS, (
+        assert set(digest_participants.keys()) == self._DIGEST_INCLUDE_FIELDS, (
             "BUG: ResolvedConfig.digest_participants must include all fields in _DIGEST_INCLUDE_FIELDS "
             "and exclude all fields in _DIGEST_EXCLUDE_FIELDS"
         )

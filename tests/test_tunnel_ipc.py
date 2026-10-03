@@ -51,14 +51,16 @@ def test_descriptor_path_rejects_aliases_that_are_not_safe_file_names(
 def test_anonymous_alias_digest_is_order_independent() -> None:
     first = ResolvedConfig.model_validate(
         {
-            "connection": {"user": "alice", "host": "login.example.com"},
-            "lsf": {"submission_environment": {"A": "first", "Z": "last"}},
+            "user": "alice",
+            "host": "login.example.com",
+            "lsf_submission_environment": {"A": "first", "Z": "last"},
         }
     )
     second = ResolvedConfig.model_validate(
         {
-            "connection": {"host": "login.example.com", "user": "alice"},
-            "lsf": {"submission_environment": {"Z": "last", "A": "first"}},
+            "host": "login.example.com",
+            "user": "alice",
+            "lsf_submission_environment": {"Z": "last", "A": "first"},
         }
     )
 
@@ -66,58 +68,44 @@ def test_anonymous_alias_digest_is_order_independent() -> None:
 
 
 def test_anonymous_alias_digest_excludes_password_sources() -> None:
-    without_password = ResolvedConfig.model_validate(
-        {"connection": {"user": "alice", "host": "login.example.com"}}
-    )
     password = ResolvedConfig.model_validate(
         {
-            "connection": {
-                "user": "alice",
-                "host": "login.example.com",
-                "password": "secret",
-                "password_prompt": False,
-            }
+            "user": "alice",
+            "host": "login.example.com",
+            "password": "secret",
         }
     )
-
-    assert password.descriptor_digest() == without_password.descriptor_digest()
-
-
-def test_anonymous_alias_digest_excludes_timings() -> None:
-    connection = {"user": "alice", "host": "login.example.com"}
-    default = ResolvedConfig.model_validate({"connection": connection})
-    changed = ResolvedConfig.model_validate(
+    password_file = ResolvedConfig.model_validate(
         {
-            "connection": {**connection, "ssh_keepalive_interval_seconds": 75},
-            "timings": {"queue_timeout_seconds": 60},
+            "user": "alice",
+            "host": "login.example.com",
+            "password_file": "password.txt",
         }
     )
 
-    assert default.descriptor_digest() == changed.descriptor_digest()
+    assert password.descriptor_digest() == password_file.descriptor_digest()
 
 
 @pytest.mark.parametrize(
-    ("section", "field", "value"),
+    ("field", "value"),
     [
-        ("connection", "user", "bob"),
-        ("connection", "host", "other.example.com"),
-        ("resources", "queue", "cpu"),
-        ("resources", "cores", 16),
-        ("scheduler", "interactive_submission_command", ["/site/bin/interactive"]),
-        ("pbs", "command_directory", "/opt/pbspro/bin"),
+        ("user", "bob"),
+        ("host", "other.example.com"),
+        ("queue", "cpu"),
+        ("cores", 16),
+        ("interactive_submission_command", ["/site/bin/interactive"]),
     ],
 )
 def test_anonymous_alias_digest_includes_job_configuration(
-    section: str, field: str, value: object
+    field: str, value: object
 ) -> None:
-    base_values: dict[str, dict[str, object]] = {
-        "connection": {"user": "alice", "host": "login.example.com"},
-        "resources": {"queue": "gpu", "cores": 8},
+    base_values: dict[str, object] = {
+        "user": "alice",
+        "host": "login.example.com",
+        "queue": "gpu",
+        "cores": 8,
     }
-    changed_values = {
-        **base_values,
-        section: {**base_values.get(section, {}), field: value},
-    }
+    changed_values = {**base_values, field: value}
 
     assert (
         ResolvedConfig.model_validate(base_values).descriptor_digest()

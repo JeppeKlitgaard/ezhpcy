@@ -8,8 +8,8 @@ from ezhpcy.cli.common import (
     with_direct_connection_options,
 )
 from ezhpcy.cli.utils.alias import AliasGroup
+from ezhpcy.config import ConnectionInfo
 from ezhpcy.console import console
-from ezhpcy.types import ConnectionInfo
 
 keyring_app = typer.Typer(
     cls=AliasGroup,

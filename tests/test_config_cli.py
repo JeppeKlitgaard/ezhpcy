@@ -112,22 +112,29 @@ def test_config_load_creates_dtu_config_case_insensitively(
     contents = config_file.read_text(encoding="utf-8")
     assert contents.startswith("### DTU HPC configuration for EzHPCy.\n")
     loaded = tomllib.loads(contents)
-    assert loaded["profile"]["dtu-base"]["connection"]["user"] == "alice"
+    assert loaded["profile"]["dtu-base"]["user"] == "alice"
     loaded_config = Config.from_mapping(loaded)
-    dtu_base = loaded_config.resolve_profile("dtu-base")
-    assert str(dtu_base.connection.host) == "login.hpc.dtu.dk"
-    gpul40s = loaded_config.resolve_profile("dtu-gpul40s")
-    assert gpul40s.resources.cores == 8
-    assert gpul40s.scheduler.submission_mode is SubmissionMode.BATCH
+    assert str(loaded_config.resolve_profile("dtu-base").host) == "login.hpc.dtu.dk"
+    assert loaded_config.resolve_profile("dtu-gpul40s").cores == 8
+    assert (
+        loaded_config.resolve_profile("dtu-gpul40s").submission_mode
+        is SubmissionMode.BATCH
+    )
     a100sh = loaded_config.resolve_profile("dtu-a100sh")
-    assert a100sh.scheduler.submission_mode is SubmissionMode.INTERACTIVE
-    assert a100sh.scheduler.interactive_submission_command == ["/lsf/local/bin/a100sh"]
-    assert a100sh.lsf.application_profile == "qrsh"
-    assert a100sh.lsf.submission_environment == {}
-    assert a100sh.lsf.export_environment == []
-    assert not loaded_config.profile["dtu-a100sh"].lsf.model_fields_set
-    dtu_base_pbs = loaded_config.resolve_profile("dtu-base-pbs")
-    assert str(dtu_base_pbs.pbs.command_directory) == "/opt/pbspro/bin"
+    assert a100sh.submission_mode is SubmissionMode.INTERACTIVE
+    assert a100sh.interactive_submission_command == ["/lsf/local/bin/a100sh"]
+    assert a100sh.lsf_application_profile == "qrsh"
+    assert a100sh.lsf_submission_environment == {}
+    assert a100sh.lsf_export_environment == []
+    assert {
+        "lsf_resource_reserve_per_task",
+        "lsf_application_profile",
+        "lsf_submission_environment",
+        "lsf_export_environment",
+    }.isdisjoint(loaded_config.profile["dtu-a100sh"].model_fields_set)
+    assert str(loaded_config.resolve_profile("dtu-base-pbs").pbs_command_directory) == (
+        "/opt/pbspro/bin"
+    )
 
 
 def test_config_load_existing_file_defaults_to_no(
@@ -135,7 +142,7 @@ def test_config_load_existing_file_defaults_to_no(
 ) -> None:
     config_file = tmp_path / "ezhpcy.toml"
     config_file.write_text(
-        '[profile.old]\nconnection.host = "old.example.com"\n',
+        '[profile.old]\nhost = "old.example.com"\n',
         encoding="utf-8",
     )
     use_config_file(monkeypatch, config_load, config_file)
@@ -146,12 +153,12 @@ def test_config_load_existing_file_defaults_to_no(
 
     assert result.exit_code == 1
     assert "Warning" in result.output
-    assert '-connection.host = "old.example.com"' in result.output
-    assert '+connection.host = "login.hpc.dtu.dk"' in result.output
+    assert '-host = "old.example.com"' in result.output
+    assert '+host = "login.hpc.dtu.dk"' in result.output
     assert "[y/n] (n)" in result.output
     assert "configuration unchanged" in result.output
     assert config_file.read_text(encoding="utf-8") == (
-        '[profile.old]\nconnection.host = "old.example.com"\n'
+        '[profile.old]\nhost = "old.example.com"\n'
     )
 
 
@@ -160,7 +167,7 @@ def test_config_load_yes_overwrites_existing_file(
 ) -> None:
     config_file = tmp_path / "ezhpcy.toml"
     config_file.write_text(
-        '[profile.old]\nconnection.host = "old.example.com"\n',
+        '[profile.old]\nhost = "old.example.com"\n',
         encoding="utf-8",
     )
     use_config_file(monkeypatch, config_load, config_file)

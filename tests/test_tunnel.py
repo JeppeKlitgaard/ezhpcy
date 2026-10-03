@@ -27,20 +27,17 @@ from ezhpcy.cli.tunnel import (
     _worker_client_alive,
     _worker_sshd_command,
 )
+from ezhpcy.config import ConnectionInfo
 from ezhpcy.constants import EZHPCY_VERSION, OPENSSH_MATCHSPEC, PIXI_VERSION
 from ezhpcy.scheduler.base import InteractiveJob, JobInfo, JobSpec, JobState
 from ezhpcy.scheduler.types import SchedulerType
 from ezhpcy.tunnel.ssh_config import WorkerHost
 from ezhpcy.tunnel.sshd import retrying_sshd_script, sshd_config_arguments
 from ezhpcy.types import (
-    ConnectionInfo,
-    LSFConfig,
-    PBSConfig,
     ProfileConfig,
     RemoteState,
     ResolvedConfig,
-    ResourcesConfig,
-    SchedulerConfig,
+    ResolvedProfileConfig,
     SubmissionMode,
 )
 
@@ -49,27 +46,25 @@ _MEBIBYTE = 1024**2
 
 def lsf_profile() -> ResolvedConfig:
     return ResolvedConfig(
-        connection=ConnectionInfo(host="login.example.com", user="alice"),
-        scheduler=SchedulerConfig(
-            type=SchedulerType.LSF, submission_mode=SubmissionMode.INTERACTIVE
-        ),
-        lsf=LSFConfig(
-            resource_reserve_per_task=True,
-            application_profile="qrsh",
-            submission_environment={"LSF_QRSH": "true"},
-            export_environment=["TERM", "LSF_QRSH"],
-        ),
+        host="login.example.com",
+        user="alice",
+        scheduler="LSF",
+        submission_mode="interactive",
+        lsf_resource_reserve_per_task=True,
+        lsf_application_profile="qrsh",
+        lsf_submission_environment={"LSF_QRSH": "true"},
+        lsf_export_environment=["TERM", "LSF_QRSH"],
     )
 
 
-def pbs_profile() -> ResolvedConfig:
-    return ResolvedConfig(
-        connection=ConnectionInfo(host="login.example.com", user="alice"),
-        scheduler=SchedulerConfig(
-            type=SchedulerType.PBS, submission_mode=SubmissionMode.INTERACTIVE
-        ),
-        resources=ResourcesConfig(queue="workq"),
-        pbs=PBSConfig(command_directory=PurePosixPath("/opt/pbspro/bin")),
+def pbs_profile() -> ResolvedProfileConfig:
+    return ResolvedProfileConfig(
+        host="login.example.com",
+        user="alice",
+        scheduler="PBS",
+        submission_mode="interactive",
+        queue="workq",
+        pbs_command_directory=PurePosixPath("/opt/pbspro/bin"),
     )
 
 
@@ -430,14 +425,14 @@ def snapshot(state: JobState, raw_state: str, host: str | None = None) -> JobInf
 def test_parse_memory_normalizes_sizes_to_bytes(
     value: str | None, expected_bytes: int | None
 ) -> None:
-    memory = ResourcesConfig(memory=value).memory
+    memory = ResolvedProfileConfig(memory=value).memory
     assert (int(memory) if memory is not None else None) == expected_bytes
 
 
 @pytest.mark.parametrize("value", ["0", "-1GB", "GB", "12QQ", "lots"])
 def test_parse_memory_rejects_invalid_sizes(value: str) -> None:
     with pytest.raises(ValidationError, match="memory"):
-        ResourcesConfig(memory=value)
+        ResolvedProfileConfig(memory=value)
 
 
 def test_wait_for_running_job_reports_transitions_and_returns_host() -> None:
@@ -691,10 +686,8 @@ def test_tunnel_submits_worker_starts_server_and_cancels(
             memory_bytes=2048 * _MEBIBYTE,
             queue_timeout_seconds=10,
             startup_timeout_seconds=10,
-            job_poll_interval_seconds=configuration.timings.job_poll_interval_seconds,
-            job_monitor_interval_seconds=(
-                configuration.timings.job_monitor_interval_seconds
-            ),
+            job_poll_interval_seconds=configuration.job_poll_interval_seconds,
+            job_monitor_interval_seconds=configuration.job_monitor_interval_seconds,
             worker_ports=(54321, 54322),
             auto_provision=True,
             submission_mode=SubmissionMode.INTERACTIVE,
@@ -1095,8 +1088,8 @@ def test_tunnel_command_accepts_anonymous_cli_configuration(
         host="login.example.com", user="alice"
     )
     resolved = captured["profile"]
-    assert resolved.connection.user == "alice"
-    assert str(resolved.connection.host) == "login.example.com"
+    assert resolved.user == "alice"
+    assert str(resolved.host) == "login.example.com"
 
 
 def test_tunnel_command_requires_submission_mode() -> None:
@@ -1165,7 +1158,7 @@ def test_tunnel_command_rejects_interactive_wrapper_in_batch_mode() -> None:
     )
 
     assert result.exit_code == 2
-    assert "requires scheduler.submission_mode" in result.output
+    assert "requires submission_mode" in result.output
 
 
 def test_tunnel_command_accepts_cli_interactive_submission_command(
@@ -1197,7 +1190,7 @@ def test_tunnel_command_accepts_cli_interactive_submission_command(
 
     assert result.exit_code == 0, result.output
     resolved = captured["profile"]
-    assert resolved.scheduler.interactive_submission_command == [
+    assert resolved.interactive_submission_command == [
         "/lsf/local/bin/a100sh",
         "--constraint",
         "gpu node",
@@ -1258,33 +1251,24 @@ def test_tunnel_command_resolves_profile_and_applies_cli_overrides(
         tunnel_module.config,
         "profile",
         {
-            "base": ProfileConfig.model_validate(
-                {
-                    "connection": {
-                        "host": "login.example.com",
-                        "user": "alice",
-                        "ssh_keepalive_interval_seconds": 75,
-                    },
-                    "scheduler": {"type": "LSF", "submission_mode": "interactive"},
-                    "resources": {
-                        "queue": "normal",
-                        "cores": 4,
-                        "gpus": 1,
-                        "exclusive": True,
-                        "time_limit": "1:00",
-                        "memory": "32GB",
-                    },
-                    "timings": {
-                        "worker_heartbeat_interval_seconds": 20,
-                        "worker_heartbeat_timeout_seconds": 60,
-                        "job_poll_interval_seconds": 4,
-                        "job_monitor_interval_seconds": 120,
-                    },
-                }
+            "base": ProfileConfig(
+                host="login.example.com",
+                user="alice",
+                scheduler="LSF",
+                submission_mode="interactive",
+                queue="normal",
+                cores=4,
+                gpus=1,
+                exclusive=True,
+                time_limit="1:00",
+                memory="32GB",
+                ssh_keepalive_interval_seconds=75,
+                worker_heartbeat_interval_seconds=20,
+                worker_heartbeat_timeout_seconds=60,
+                job_poll_interval_seconds=4,
+                job_monitor_interval_seconds=120,
             ),
-            "gpu": ProfileConfig.model_validate(
-                {"inherit": "base", "resources": {"queue": "gpu", "cores": 8}}
-            ),
+            "gpu": ProfileConfig(inherit="base", queue="gpu", cores=8),
         },
     )
     captured: dict[str, object] = {}
@@ -1368,15 +1352,12 @@ def test_tunnel_command_allows_wrapper_with_implicit_resource_defaults(
         tunnel_module.config,
         "profile",
         {
-            "base": ProfileConfig.model_validate(
-                {
-                    "connection": {"host": "login.example.com", "user": "alice"},
-                    "scheduler": {
-                        "type": "LSF",
-                        "submission_mode": "interactive",
-                        "interactive_submission_command": ["/site/bin/interactive-lsf"],
-                    },
-                }
+            "base": ProfileConfig(
+                host="login.example.com",
+                user="alice",
+                scheduler="LSF",
+                submission_mode="interactive",
+                interactive_submission_command=["/site/bin/interactive-lsf"],
             )
         },
     )
@@ -1395,9 +1376,7 @@ def test_tunnel_command_allows_wrapper_with_implicit_resource_defaults(
     assert captured["gpus"] == 0
     assert captured["exclusive"] is False
     profile = captured["profile"]
-    assert profile.scheduler.interactive_submission_command == [
-        "/site/bin/interactive-lsf"
-    ]
+    assert profile.interactive_submission_command == ["/site/bin/interactive-lsf"]
 
 
 def test_tunnel_command_logs_inherited_submission_options_ignored_by_wrapper(
@@ -1407,21 +1386,17 @@ def test_tunnel_command_logs_inherited_submission_options_ignored_by_wrapper(
         tunnel_module.config,
         "profile",
         {
-            "base": ProfileConfig.model_validate(
-                {
-                    "connection": {"host": "login.example.com", "user": "alice"},
-                    "scheduler": {"type": "LSF", "submission_mode": "interactive"},
-                    "resources": {"queue": "normal"},
-                    "lsf": {"application_profile": "qrsh"},
-                }
+            "base": ProfileConfig(
+                host="login.example.com",
+                user="alice",
+                scheduler="LSF",
+                submission_mode="interactive",
+                queue="normal",
+                lsf_application_profile="qrsh",
             ),
-            "wrapper": ProfileConfig.model_validate(
-                {
-                    "inherit": "base",
-                    "scheduler": {
-                        "interactive_submission_command": ["/site/bin/interactive-lsf"]
-                    },
-                }
+            "wrapper": ProfileConfig(
+                inherit="base",
+                interactive_submission_command=["/site/bin/interactive-lsf"],
             ),
         },
     )
@@ -1433,8 +1408,8 @@ def test_tunnel_command_logs_inherited_submission_options_ignored_by_wrapper(
     assert result.exit_code == 0, result.output
     logger.info.assert_called_once_with(
         "Ignoring inherited scheduler submission options for "
-        "scheduler.interactive_submission_command: %s",
-        "lsf.application_profile, resources.queue",
+        "interactive_submission_command: %s",
+        "lsf_application_profile, queue",
     )
 
 
@@ -1458,15 +1433,12 @@ def test_tunnel_command_rejects_cli_resources_with_wrapper(
         tunnel_module.config,
         "profile",
         {
-            "base": ProfileConfig.model_validate(
-                {
-                    "connection": {"host": "login.example.com", "user": "alice"},
-                    "scheduler": {
-                        "type": "LSF",
-                        "submission_mode": "interactive",
-                        "interactive_submission_command": ["/site/bin/interactive-lsf"],
-                    },
-                }
+            "base": ProfileConfig(
+                host="login.example.com",
+                user="alice",
+                scheduler="LSF",
+                submission_mode="interactive",
+                interactive_submission_command=["/site/bin/interactive-lsf"],
             )
         },
     )
@@ -1479,23 +1451,22 @@ def test_tunnel_command_rejects_cli_resources_with_wrapper(
 
 
 @pytest.mark.parametrize(
-    ("section", "field", "value"),
+    ("field", "value"),
     [
-        ("resources", "queue", "normal"),
-        ("resources", "cores", 1),
-        ("resources", "gpus", 0),
-        ("resources", "exclusive", False),
-        ("resources", "time_limit", "1:00"),
-        ("resources", "memory", "1GB"),
-        ("lsf", "resource_reserve_per_task", False),
-        ("lsf", "application_profile", "qrsh"),
-        ("lsf", "submission_environment", {"LSF_QRSH": "true"}),
-        ("lsf", "export_environment", ["TERM"]),
+        ("queue", "normal"),
+        ("cores", 1),
+        ("gpus", 0),
+        ("exclusive", False),
+        ("time_limit", "1:00"),
+        ("memory", "1GB"),
+        ("lsf_resource_reserve_per_task", False),
+        ("lsf_application_profile", "qrsh"),
+        ("lsf_submission_environment", {"LSF_QRSH": "true"}),
+        ("lsf_export_environment", ["TERM"]),
     ],
 )
 def test_tunnel_command_rejects_configured_submission_options_with_wrapper(
     monkeypatch: pytest.MonkeyPatch,
-    section: str,
     field: str,
     value: object,
 ) -> None:
@@ -1503,16 +1474,13 @@ def test_tunnel_command_rejects_configured_submission_options_with_wrapper(
         tunnel_module.config,
         "profile",
         {
-            "base": ProfileConfig.model_validate(
-                {
-                    "connection": {"host": "login.example.com", "user": "alice"},
-                    "scheduler": {
-                        "type": "LSF",
-                        "submission_mode": "interactive",
-                        "interactive_submission_command": ["/site/bin/interactive-lsf"],
-                    },
-                    section: {field: value},
-                }
+            "base": ProfileConfig(
+                host="login.example.com",
+                user="alice",
+                scheduler="LSF",
+                submission_mode="interactive",
+                interactive_submission_command=["/site/bin/interactive-lsf"],
+                **{field: value},
             )
         },
     )
@@ -1521,7 +1489,7 @@ def test_tunnel_command_rejects_configured_submission_options_with_wrapper(
 
     assert result.exit_code == 2
     assert "cannot be combined with submission options" in result.output
-    assert f"profile.base.{section}.{field}" in result.output
+    assert f"profile.base.{field}" in result.output
 
 
 def test_tunnel_command_can_disable_auto_provision(
@@ -1531,11 +1499,11 @@ def test_tunnel_command_can_disable_auto_provision(
         tunnel_module.config,
         "profile",
         {
-            "base": ProfileConfig.model_validate(
-                {
-                    "connection": {"host": "login.example.com", "user": "alice"},
-                    "scheduler": {"type": "LSF", "submission_mode": "interactive"},
-                }
+            "base": ProfileConfig(
+                host="login.example.com",
+                user="alice",
+                scheduler="LSF",
+                submission_mode="interactive",
             )
         },
     )
@@ -1570,11 +1538,11 @@ def test_tunnel_command_can_enable_auto_provision_when_config_disables_it(
         tunnel_module.config,
         "profile",
         {
-            "base": ProfileConfig.model_validate(
-                {
-                    "connection": {"host": "login.example.com", "user": "alice"},
-                    "scheduler": {"type": "LSF", "submission_mode": "interactive"},
-                }
+            "base": ProfileConfig(
+                host="login.example.com",
+                user="alice",
+                scheduler="LSF",
+                submission_mode="interactive",
             )
         },
     )
@@ -1598,11 +1566,11 @@ def test_tunnel_command_rejects_conflicting_auto_provision_flags(
         tunnel_module.config,
         "profile",
         {
-            "base": ProfileConfig.model_validate(
-                {
-                    "connection": {"host": "login.example.com", "user": "alice"},
-                    "scheduler": {"type": "LSF", "submission_mode": "interactive"},
-                }
+            "base": ProfileConfig(
+                host="login.example.com",
+                user="alice",
+                scheduler="LSF",
+                submission_mode="interactive",
             )
         },
     )
@@ -1627,11 +1595,7 @@ def test_tunnel_command_rejects_unknown_profile_before_starting(
     monkeypatch.setattr(
         tunnel_module.config,
         "profile",
-        {
-            "base": ProfileConfig.model_validate(
-                {"connection": {"host": "login.example.com", "user": "alice"}}
-            )
-        },
+        {"base": ProfileConfig(host="login.example.com", user="alice")},
     )
     started = False
 
@@ -1650,11 +1614,11 @@ def test_tunnel_command_rejects_unknown_profile_before_starting(
 
 def _alias_profiles() -> dict[str, ProfileConfig]:
     return {
-        name: ProfileConfig.model_validate(
-            {
-                "connection": {"host": "login.example.com", "user": "alice"},
-                "scheduler": {"type": "LSF", "submission_mode": "interactive"},
-            }
+        name: ProfileConfig(
+            host="login.example.com",
+            user="alice",
+            scheduler="LSF",
+            submission_mode="interactive",
         )
         for name in ("cpu", "gpu")
     }

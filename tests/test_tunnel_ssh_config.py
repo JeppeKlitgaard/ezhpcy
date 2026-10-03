@@ -84,13 +84,10 @@ def test_profile_hosts_skip_profiles_without_an_endpoint() -> None:
     source = Config.from_mapping(
         {
             "profile": {
-                "base": {"scheduler": {"type": "LSF"}},
-                "gpu": {
-                    "inherit": "base",
-                    "connection": {"host": "login.example.com", "user": "al"},
-                },
-                "cpu": {"connection": {"host": "login.example.com", "user": "al"}},
-                "no-user": {"connection": {"host": "login.example.com"}},
+                "base": {"scheduler": "LSF"},
+                "gpu": {"inherit": "base", "host": "login.example.com", "user": "al"},
+                "cpu": {"host": "login.example.com", "user": "al"},
+                "no-user": {"host": "login.example.com"},
             }
         }
     )
@@ -116,11 +113,7 @@ def test_profiles_config_defaults_to_the_configured_profiles(
     monkeypatch.setattr(
         ssh_config.config,
         "profile",
-        {
-            "gpu": ProfileConfig.model_validate(
-                {"connection": {"host": "login.example.com", "user": "alice"}}
-            )
-        },
+        {"gpu": ProfileConfig(host="login.example.com", user="alice")},
     )
 
     content = write_profiles_config().read_text(encoding="utf-8")

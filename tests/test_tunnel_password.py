@@ -7,7 +7,6 @@ from typer.testing import CliRunner
 
 from ezhpcy.cli import app, common
 from ezhpcy.cli.utils.bad_parameter import RichBadParameter
-from ezhpcy.scheduler.types import SchedulerType
 from ezhpcy.types import ProfileConfig
 
 
@@ -49,11 +48,8 @@ def without_default_password(monkeypatch: pytest.MonkeyPatch) -> None:
         common.config,
         "profile",
         {
-            "base": ProfileConfig.model_validate(
-                {
-                    "connection": {"host": "login.example.com", "user": "alice"},
-                    "scheduler": {"type": "LSF"},
-                }
+            "base": ProfileConfig(
+                host="login.example.com", user="alice", scheduler="LSF"
             )
         },
     )
@@ -157,60 +153,22 @@ def test_explicit_password_sources_are_mutually_exclusive(tmp_path: Path) -> Non
         resolve_password(password="secret", password_file=password_file)
 
 
-def test_sub_configs_can_be_resolved_entirely_from_cli_values() -> None:
-    connection = common.connection_from_cli(user="alice", host="login.example.com")
-    scheduler = common.scheduler_from_cli(scheduler_type=SchedulerType.LSF)
-    resources = common.resources_from_cli(queue="gpu", cores=8, gpus=1)
-
-    assert connection.user == "alice"
-    assert str(connection.host) == "login.example.com"
-    assert scheduler.type is SchedulerType.LSF
-    assert resources.queue == "gpu"
-    assert resources.cores == 8
-    assert resources.gpus == 1
-
-
-def test_cli_values_override_only_the_given_sub_config_fields(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        common.config,
-        "profile",
-        {
-            "base": ProfileConfig.model_validate(
-                {
-                    "connection": {
-                        "host": "login.example.com",
-                        "user": "alice",
-                        "password_prompt": False,
-                        "ssh_keepalive_interval_seconds": 75,
-                    },
-                    "resources": {"queue": "normal", "cores": 4},
-                }
-            )
-        },
+def test_profile_context_can_be_resolved_entirely_from_cli_values() -> None:
+    context = common.profile_context_from_cli(
+        user="alice",
+        host="login.example.com",
+        scheduler_type="LSF",
+        queue="gpu",
+        cores=8,
+        gpus=1,
     )
 
-    connection = common.connection_from_cli(profile="base", user="bob")
-    resources = common.resources_from_cli(profile="base", cores=8)
-
-    assert (connection.user, str(connection.host)) == ("bob", "login.example.com")
-    assert connection.password_prompt is False
-    assert connection.ssh_keepalive_interval_seconds == 75
-    assert (resources.queue, resources.cores) == ("normal", 8)
-
-
-@pytest.mark.parametrize(
-    "arguments", [["--queue", "gpu"], ["--scheduler", "LSF"], ["--queue-timeout", "5"]]
-)
-@pytest.mark.parametrize("command", ["provision", "prune"])
-def test_connection_only_commands_reject_job_options(
-    command: str, arguments: list[str]
-) -> None:
-    result = CliRunner().invoke(app, [command, "base", *arguments])
-
-    assert result.exit_code == 2
-    assert "No such option" in result.output
+    assert context.name is None
+    assert context.profile.user == "alice"
+    assert str(context.profile.host) == "login.example.com"
+    assert context.profile.queue == "gpu"
+    assert context.profile.cores == 8
+    assert context.profile.gpus == 1
 
 
 def test_invalid_profile_password_sources_are_reported_as_a_cli_parameter_error(
@@ -220,21 +178,17 @@ def test_invalid_profile_password_sources_are_reported_as_a_cli_parameter_error(
         common.config,
         "profile",
         {
-            "base": ProfileConfig.model_validate(
-                {
-                    "connection": {
-                        "host": "login.example.com",
-                        "user": "alice",
-                        "password_file": Path("password.txt"),
-                        "password_keyring": True,
-                    }
-                }
+            "base": ProfileConfig(
+                host="login.example.com",
+                user="alice",
+                password_file=Path("password.txt"),
+                password_keyring=True,
             )
         },
     )
 
     with pytest.raises(RichBadParameter):
-        common.connection_from_cli(profile="base")
+        common.profile_context_from_cli(profile="base")
 
     result = CliRunner().invoke(
         app,
@@ -245,7 +199,7 @@ def test_invalid_profile_password_sources_are_reported_as_a_cli_parameter_error(
     assert result.exit_code == 2
     assert "Invalid value:" in result.output
     assert "Invalid value for" not in result.output
-    assert "password_file, connection.password_keyring" in result.output
+    assert "password_file, password_keyring" in result.output
 
 
 def test_connection_options_read_password_from_environment(

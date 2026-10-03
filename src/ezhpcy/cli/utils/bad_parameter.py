@@ -1,5 +1,5 @@
 from rich.text import Text
-from typer import BadParameter
+from typer._click.exceptions import BadParameter
 
 
 class _ManualMarkupText(Text):

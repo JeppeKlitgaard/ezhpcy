@@ -30,6 +30,11 @@ SCHEDULER_PANEL = Group("Scheduler Options", sort_key=2)
 RESOURCES_PANEL = Group("Resource Options", sort_key=3)
 TIMINGS_PANEL = Group("Timing Options", sort_key=4)
 
+# Not shown in help: it only makes the password options mutually exclusive.
+PASSWORD_SOURCES = Group(
+    "Password sources", show=False, validator=validators.MutuallyExclusive()
+)
+
 
 def _readable(_type: type, value: Path | None) -> None:
     """Reject a path the current user can't read."""
@@ -94,7 +99,7 @@ PasswordOpt = Annotated[
             "Note: Specifying this is potentially a security risk."
         ),
         env_var=PASSWORD_ENV_VAR,
-        group=CONNECTION_PANEL,
+        group=(CONNECTION_PANEL, PASSWORD_SOURCES),
     ),
 ]
 PasswordFileOpt = Annotated[
@@ -104,7 +109,7 @@ PasswordFileOpt = Annotated[
         validator=(validators.Path(exists=True, dir_okay=False), _readable),
         help="Read the password from a UTF-8 file.",
         env_var=PASSWORD_FILE_ENV_VAR,
-        group=CONNECTION_PANEL,
+        group=(CONNECTION_PANEL, PASSWORD_SOURCES),
     ),
 ]
 PasswordFdOpt = Annotated[
@@ -114,7 +119,7 @@ PasswordFdOpt = Annotated[
         validator=validators.Number(gte=0),
         help="Read the password from an already-open file descriptor.",
         env_var=PASSWORD_FD_ENV_VAR,
-        group=CONNECTION_PANEL,
+        group=(CONNECTION_PANEL, PASSWORD_SOURCES),
     ),
 ]
 PasswordKeyringOpt = Annotated[
@@ -126,7 +131,7 @@ PasswordKeyringOpt = Annotated[
             f"'{KEYRING_SERVICE_NAME}' under USER@HOST."
         ),
         env_var=PASSWORD_KEYRING_ENV_VAR,
-        group=CONNECTION_PANEL,
+        group=(CONNECTION_PANEL, PASSWORD_SOURCES),
     ),
 ]
 SchedulerOpt = Annotated[

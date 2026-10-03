@@ -1,21 +1,17 @@
 """Run the EzHPCy CLI in-process, independently of the CLI framework behind it."""
 
-import io
 import logging
-import os
-import sys
-from collections.abc import Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from types import SimpleNamespace
-from typing import BinaryIO, Literal, TextIO
+from typing import BinaryIO, Literal
 
 import keyring
 import pytest
-from rich.console import Console
+from typer.testing import CliRunner
 
-from ezhpcy.cli import main, provision, proxy, prune, tunnel
+from ezhpcy.cli import app, provision, proxy, prune, tunnel
 from ezhpcy.types import ConnectionInfo, RemoteState
 
 # Wide enough that help and error panels never wrap: at any narrower width, which
@@ -45,92 +41,24 @@ def invoke(
     With `color`, output is rendered as for a colour terminal, including ANSI
     styling.
     """
-    stdin = io.TextIOWrapper(io.BytesIO((input or "").encode()), encoding="utf-8")
-    # Like Click's runner, don't translate newlines to the platform's line ending.
-    stdout = io.TextIOWrapper(io.BytesIO(), encoding="utf-8", newline="")
-    stderr = io.TextIOWrapper(io.BytesIO(), encoding="utf-8", newline="")
-    exit_code = 0
-    exception: BaseException | None = None
-    with (
-        _environment({"COLUMNS": str(_TERMINAL_WIDTH), **(env or {})}),
-        _streams(stdin, stdout, stderr),
-    ):
-        try:
-            main(
-                list(args),
-                console=_console(stdout, color=color),
-                error_console=_console(stderr, color=color),
-            )
-        except SystemExit as error:
-            exit_code = _exit_code(error.code)
-        # Report any exception that escapes the command, as Click's runner did.
-        except Exception as error:  # noqa: BLE001
-            exit_code = 1
-            exception = error
+    result = CliRunner().invoke(
+        app,
+        list(args),
+        # Rich takes its width from COLUMNS, not from Click's terminal width.
+        env={"COLUMNS": str(_TERMINAL_WIDTH), **(env or {})},
+        input=input,
+        color=color,
+        terminal_width=_TERMINAL_WIDTH,
+    )
+    exception = result.exception
+    if isinstance(exception, SystemExit):
+        exception = None
     return Result(
-        exit_code=exit_code,
-        stdout=_written(stdout),
-        stderr=_written(stderr),
+        exit_code=result.exit_code,
+        stdout=result.stdout,
+        stderr=result.stderr,
         exception=exception,
     )
-
-
-def _console(file: TextIO, *, color: bool) -> Console:
-    return Console(
-        file=file,
-        width=_TERMINAL_WIDTH,
-        force_terminal=color,
-        no_color=not color,
-        color_system="standard" if color else None,
-        # Render the same on every Windows console, as Cyclopts' testing docs advise.
-        legacy_windows=False,
-    )
-
-
-def _exit_code(code: str | int | None) -> int:
-    if code is None:
-        return 0
-    if isinstance(code, int):
-        return code
-    # `sys.exit("message")` prints the message and exits with status 1.
-    print(code, file=sys.stderr)
-    return 1
-
-
-def _written(stream: io.TextIOWrapper) -> str:
-    stream.flush()
-    buffer = stream.buffer
-    assert isinstance(buffer, io.BytesIO)
-    return buffer.getvalue().decode("utf-8", errors="replace")
-
-
-@contextmanager
-def _environment(env: Mapping[str, str | None]) -> Iterator[None]:
-    """Set (or, for `None`, unset) environment variables for the duration."""
-    previous = {name: os.environ.get(name) for name in env}
-    try:
-        _update_environment(env)
-        yield
-    finally:
-        _update_environment(previous)
-
-
-def _update_environment(env: Mapping[str, str | None]) -> None:
-    for name, value in env.items():
-        if value is None:
-            os.environ.pop(name, None)
-        else:
-            os.environ[name] = value
-
-
-@contextmanager
-def _streams(stdin: TextIO, stdout: TextIO, stderr: TextIO) -> Iterator[None]:
-    previous = sys.stdin, sys.stdout, sys.stderr
-    sys.stdin, sys.stdout, sys.stderr = stdin, stdout, stderr
-    try:
-        yield
-    finally:
-        sys.stdin, sys.stdout, sys.stderr = previous
 
 
 type CapturedCommand = Literal["tunnel", "provision", "prune", "proxy", "keyring"]

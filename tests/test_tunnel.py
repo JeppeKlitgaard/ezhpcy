@@ -1550,7 +1550,7 @@ def test_tunnel_command_rejects_unknown_profile_before_starting(
     result = invoke(["tunnel", "missing"])
 
     assert result.exit_code == 2
-    assert 'Invalid value "missing" for PROFILE' in result.stderr
+    assert "unknown profile 'missing'" in result.stderr
     assert not started
 
 

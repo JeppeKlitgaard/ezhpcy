@@ -6,7 +6,7 @@ from unittest.mock import patch
 import paramiko
 import pytest
 
-from ezhpcy.cli import _resolve
+from ezhpcy.cli import common
 from ezhpcy.cli.prune import (
     prune_stale_installations,
     prune_stale_pixi_data,
@@ -201,7 +201,7 @@ def test_provision_is_repeatable(
     machine_ssh_dir.mkdir(parents=True)
     with (
         patch("ezhpcy.utils.machineid.hashed_id", return_value="machine-id"),
-        patch.object(_resolve, "config", config),
+        patch.object(common, "config", config),
         patch("ezhpcy.provision_host.config", config),
         patch("ezhpcy.cli.provision.InteractiveSSHClient", return_value=ssh),
         patch(
@@ -431,7 +431,7 @@ def test_prune_all_removes_the_package_cache_directory(tmp_path: Path) -> None:
     config = configured_client(tmp_path)
 
     with (
-        patch.object(_resolve, "config", config),
+        patch.object(common, "config", config),
         patch("ezhpcy.cli.prune.InteractiveSSHClient", return_value=ssh),
     ):
         result = invoke(["prune", "base", "--all", "--yes"])

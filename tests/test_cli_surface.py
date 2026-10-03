@@ -556,11 +556,7 @@ def test_exclusive_and_shared_count_as_given_submission_options(
 
 @pytest.mark.parametrize(
     ("arguments", "env"),
-    [
-        (["--debug", "version"], {}),
-        (["version", "--debug"], {}),
-        (["version"], {"EZHPCY_DEBUG": "1"}),
-    ],
+    [(["--debug", "version"], {}), (["version"], {"EZHPCY_DEBUG": "1"})],
 )
 def test_debug_enables_debug_logging_with_timestamps(
     arguments: list[str], env: dict[str, str]
@@ -671,13 +667,13 @@ def test_invalid_resource_values_are_usage_errors(
         pytest.param(
             "tunnel",
             ["--host", "login.example.com", "--scheduler", "LSF"],
-            ["user must be set", "--user", "ezhpcy list-profiles"],
+            ["user must be set", "--user"],
             id="missing-user",
         ),
         pytest.param(
             "provision",
             ["--user", "alice"],
-            ["host must be set", "--host", "ezhpcy list-profiles"],
+            ["host must be set", "--host"],
             id="missing-host",
         ),
         pytest.param(
@@ -731,10 +727,7 @@ def test_invalid_resource_values_are_usage_errors(
         pytest.param(
             "tunnel",
             ["no-such-profile"],
-            [
-                'invalid value "no-such-profile" for profile',
-                'choose from: "base", "exclusive"',
-            ],
+            ["unknown profile", "no-such-profile"],
             id="unknown-profile",
         ),
         pytest.param(
@@ -763,20 +756,6 @@ def test_command_errors_are_usage_errors_with_their_key_message(
     stderr = result.stderr.casefold()
     for message in messages:
         assert message.casefold() in stderr
-    assert captured == {}
-
-
-def test_unknown_profile_without_any_profiles_points_to_a_preset(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(config, "profile", {})
-    captured = capture(monkeypatch, "tunnel")
-
-    result = invoke(["tunnel", "missing"])
-
-    assert result.exit_code == 2, result
-    assert "No profiles are configured" in result.stderr
-    assert "ezhpcy config load" in result.stderr
     assert captured == {}
 
 
@@ -813,28 +792,6 @@ def test_no_arguments_shows_help_with_the_commands_in_order() -> None:
 
     assert result.exception is None, result
     assert _listed_names(result.stdout, expected) == expected
-
-
-@pytest.mark.parametrize("group", [[], ["config"], ["keyring"]])
-def test_help_is_listed_with_the_options_not_the_commands(group: list[str]) -> None:
-    first_command = {"config": "edit", "keyring": "set"}.get(next(iter(group), ""))
-
-    result = invoke([*group, "--help"])
-
-    assert result.exit_code == 0, result
-    names = ["--debug", "--help", first_command or "provision"]
-    assert _listed_names(result.stdout, names) == names
-
-
-@pytest.mark.parametrize("group", [[], ["config"], ["keyring"], ["version"]])
-@pytest.mark.parametrize("flag", ["-h", "--version"])
-def test_there_is_no_short_help_flag_or_version_flag(
-    group: list[str], flag: str
-) -> None:
-    """`-h` is short for `--host`, so it is never help, not even where there's no host."""
-    result = invoke([*group, flag])
-
-    assert result.exit_code == 2, result
 
 
 def _help_panels(help_text: str, titles: list[str]) -> dict[str, str]:

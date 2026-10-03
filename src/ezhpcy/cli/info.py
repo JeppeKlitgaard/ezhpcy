@@ -8,7 +8,7 @@ from ezhpcy.config import config
 from ezhpcy.utils import ezhpcy_version, local_machine_id
 
 
-def info_cmd(*, json: bool = False) -> None:
+def info_cmd(json: bool = False) -> None:
     """Show debug information for EzHPCy."""
 
     datas = [

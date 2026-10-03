@@ -1,3 +1,3 @@
-from ezhpcy.cli import main
+from ezhpcy.cli import app
 
-main()
+app()

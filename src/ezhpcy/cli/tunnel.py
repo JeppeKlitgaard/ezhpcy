@@ -11,9 +11,8 @@ from typing import Annotated
 
 import paramiko
 import typer
-from cyclopts import Parameter, validators
 
-from ezhpcy.cli._options import (
+from ezhpcy.cli.common import (
     AliasOpt,
     CoresOpt,
     ExclusiveOpt,
@@ -22,8 +21,6 @@ from ezhpcy.cli._options import (
     OptionalProfileArg,
     QueueOpt,
     TimeLimitOpt,
-)
-from ezhpcy.cli._resolve import (
     resolve_profile_config,
     with_connection,
     with_resources,
@@ -1055,13 +1052,11 @@ def _run_tunnel(
 @with_resources
 @with_timings
 def tunnel_cmd(
-    profile: OptionalProfileArg = None,
-    /,
-    *,
     connection: ConnectionInfo,
     scheduler: SchedulerConfig,
     resources: ResourcesConfig,
     timings: TimingsConfig,
+    profile: OptionalProfileArg = None,
     # Shared with `with_resources`, to tell resources given on the command line
     # apart from configured ones.
     queue: QueueOpt = None,
@@ -1073,17 +1068,18 @@ def tunnel_cmd(
     alias: AliasOpt = None,
     worker_port: Annotated[
         int | None,
-        Parameter(
-            name="--worker-port",
-            validator=validators.Number(gte=1024, lte=65535),
+        typer.Option(
+            "--worker-port",
+            min=1024,
+            max=65535,
             help="Worker SSH port; defaults to a random dynamic port.",
         ),
     ] = None,
     worker_port_retries: Annotated[
         int,
-        Parameter(
-            name="--worker-port-retries",
-            validator=validators.Number(gte=0),
+        typer.Option(
+            "--worker-port-retries",
+            min=0,
             help=(
                 "Alternate random worker SSH ports to try after a bind failure; "
                 "ignored with --worker-port."
@@ -1092,15 +1088,15 @@ def tunnel_cmd(
     ] = _DEFAULT_WORKER_PORT_RETRIES,
     auto_provision: Annotated[
         bool,
-        Parameter(
-            name="--auto-provision",
+        typer.Option(
+            "--auto-provision",
             help="Provision or repair worker infrastructure before submission.",
         ),
     ] = False,
     no_auto_provision: Annotated[
         bool,
-        Parameter(
-            name="--no-auto-provision",
+        typer.Option(
+            "--no-auto-provision",
             help="Do not provision or repair worker infrastructure before submission.",
         ),
     ] = False,

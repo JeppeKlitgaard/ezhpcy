@@ -31,10 +31,7 @@ PASSWORD_KEYRING_ENV_VAR = "EZHPCY_PASSWORD_KEYRING"
 ProfileArg = Annotated[
     str,
     typer.Argument(
-        help=(
-            "Configured EzHPCy profile to use. Run `ezhpcy list-profiles` to see "
-            "available profiles."
-        ),
+        help="Configured EzHPCy profile to use.",
         envvar=PROFILE_ENV_VAR,
     ),
 ]
@@ -43,20 +40,14 @@ OptionalProfileArg = Annotated[
     typer.Argument(
         help=(
             "Optional configured EzHPCy profile. When omitted, provide enough "
-            "options to form a complete configuration. Run `ezhpcy list-profiles` "
-            "to see available profiles."
+            "options to form a complete configuration."
         ),
         envvar=PROFILE_ENV_VAR,
     ),
 ]
 AliasArg = Annotated[
     str,
-    typer.Argument(
-        help=(
-            "SSH host alias of a running tunnel; usually its profile name "
-            "(see `ezhpcy list-profiles`)."
-        ),
-    ),
+    typer.Argument(help="SSH host alias of a running tunnel."),
 ]
 AliasOpt = Annotated[
     str | None,

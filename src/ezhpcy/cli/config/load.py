@@ -1,9 +1,8 @@
 import difflib
 import tomllib
 from importlib import resources
-from importlib.resources.abc import Traversable
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 import typer
 from jinja2 import Environment, StrictUndefined, TemplateError
@@ -13,24 +12,29 @@ from rich.text import Text
 
 from ezhpcy import console
 from ezhpcy.cli.common import UserOpt
-from ezhpcy.cli.utils.choice import Choice
 from ezhpcy.config import Config, config
 
 PRESET_DIRECTORY = "static/config/presets"
 PRESET_SUFFIX = ".toml.j2"
 
 
-def _available_presets() -> dict[str, Traversable]:
+def _available_presets() -> dict[str, tuple[str, resources.abc.Traversable]]:
     preset_directory = resources.files("ezhpcy").joinpath(PRESET_DIRECTORY)
-    presets = {
-        resource.name.removesuffix(PRESET_SUFFIX): resource
+    return {
+        resource.name.removesuffix(PRESET_SUFFIX).casefold(): (
+            resource.name.removesuffix(PRESET_SUFFIX),
+            resource,
+        )
         for resource in preset_directory.iterdir()
         if resource.is_file() and resource.name.endswith(PRESET_SUFFIX)
     }
-    return dict(sorted(presets.items(), key=lambda item: item[0].casefold()))
 
 
-_PRESETS = _available_presets()
+_AVAILABLE_PRESET_NAMES = sorted(
+    (name for name, _resource in _available_presets().values()),
+    key=str.casefold,
+)
+PresetName = Literal[*_AVAILABLE_PRESET_NAMES]
 
 
 def _render_preset(template_text: str, *, preset: str, user: str) -> str:
@@ -70,10 +74,10 @@ def _diff_text(
 
 def load_cmd(
     preset: Annotated[
-        str,
+        PresetName,
         typer.Argument(
             help="Packaged configuration preset to load.",
-            click_type=Choice(_PRESETS, case_sensitive=False),
+            case_sensitive=False,
         ),
     ],
     user: UserOpt = None,
@@ -87,25 +91,37 @@ def load_cmd(
     ] = False,
 ) -> None:
     """Render a packaged preset into the EzHPCy configuration file."""
-    # Typer validates `preset` against `_PRESETS` and normalizes its case.
-    preset_resource = _PRESETS[preset]
+    presets = _available_presets()
+    preset_entry = presets.get(preset.casefold())
+    if preset_entry is None:
+        available = (
+            ", ".join(
+                sorted((name for name, _resource in presets.values()), key=str.casefold)
+            )
+            or "none"
+        )
+        raise typer.BadParameter(
+            f"Unknown preset {preset!r}. Available presets: {available}.",
+            param_hint="preset",
+        )
+    preset_name, preset_resource = preset_entry
 
     try:
         template_text = preset_resource.read_text(encoding="utf-8")
     except OSError as error:
         raise typer.BadParameter(
-            f"Could not read preset {preset!r}: {error}",
+            f"Could not read preset {preset_name!r}: {error}",
             param_hint="preset",
         ) from error
 
     if user is None:
         user = Prompt.ask("Username", console=console)
     try:
-        rendered = _render_preset(template_text, preset=preset, user=user)
+        rendered = _render_preset(template_text, preset=preset_name, user=user)
         Config.from_mapping(tomllib.loads(rendered))
     except (TemplateError, tomllib.TOMLDecodeError, ValidationError) as error:
         raise typer.BadParameter(
-            f"Preset {preset!r} produced invalid configuration: {error}",
+            f"Preset {preset_name!r} produced invalid configuration: {error}",
             param_hint="preset",
         ) from error
     config_file = config.local_file.config_file
@@ -126,7 +142,7 @@ def load_cmd(
             current,
             rendered,
             config_file=config_file,
-            preset=preset,
+            preset=preset_name,
         )
         console.print(
             diff if diff else Text("(no changes)\n", style="dim"),
@@ -153,6 +169,6 @@ def load_cmd(
         ) from error
 
     console.print(
-        f"[bold green]Success[/bold green]: loaded the [bold purple]{preset}[/bold purple] "
+        f"[bold green]Success[/bold green]: loaded the [bold purple]{preset_name}[/bold purple] "
         f"preset into [bold blue]{config_file}[/bold blue]."
     )

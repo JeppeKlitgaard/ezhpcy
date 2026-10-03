@@ -1,15 +1,15 @@
 import logging
+import shlex
+import stat
+from collections.abc import Iterator
 from contextlib import contextmanager
-lazy import shlex
-lazy import stat
-lazy from collections.abc import Iterator
-lazy from pathlib import PurePosixPath
+from pathlib import PurePosixPath
 
 import paramiko
-lazy from paramiko.channel import ChannelFile, ChannelStderrFile
+from paramiko.channel import ChannelFile, ChannelStderrFile
 
-lazy from ezhpcy.scheduler.base import RemoteProcess
-lazy from ezhpcy.types import ConnectionInfo, RemoteState
+from ezhpcy.scheduler.base import RemoteProcess
+from ezhpcy.types import ConnectionInfo, RemoteState
 
 logger = logging.getLogger(__name__)
 

@@ -1,13 +1,13 @@
 from abc import ABC, abstractmethod
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import timedelta
 from enum import StrEnum
+from pathlib import PurePosixPath
+from types import MappingProxyType
 from typing import Protocol
-lazy from collections.abc import Callable, Mapping, Sequence
-lazy from datetime import timedelta
-lazy from pathlib import PurePosixPath
-lazy from types import MappingProxyType
 
-lazy from ezhpcy.scheduler.types import SchedulerType
+from ezhpcy.scheduler.types import SchedulerType
 
 
 class JobState(StrEnum):

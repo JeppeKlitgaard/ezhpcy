@@ -1,11 +1,11 @@
 """Race-safe threaded listener for authenticated loopback IPC."""
 
-lazy import socket
-lazy import threading
-lazy from collections.abc import Callable
+import socket
+import threading
+from collections.abc import Callable
 
-lazy from ezhpcy.ipc.common import IPCAddress, IPCAuthenticationError
-lazy from ezhpcy.ipc.protocol import AuthenticationError, authenticate_server
+from ezhpcy.ipc.common import IPCAddress, IPCAuthenticationError
+from ezhpcy.ipc.protocol import AuthenticationError, authenticate_server
 
 IPC_BACKLOG = 32
 _ACCEPT_POLL_INTERVAL = 0.05

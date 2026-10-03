@@ -5,13 +5,14 @@ A long-lived tunnel listens for connections on a loopback socket, which short-li
 The tunnel forwards the requests to a target SSH server.
 """
 
+import secrets
+import socket
+import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
-lazy import secrets
-lazy import socket
-lazy import uuid
-lazy from collections.abc import Callable
-lazy from pathlib import Path
+from pathlib import Path
 
+from ezhpcy.config import PROFILE_NAME_PATTERN, config
 from ezhpcy.ipc.common import (
     LOOPBACK_HOST,
     IPCAddress,
@@ -25,14 +26,13 @@ from ezhpcy.ipc.protocol import (
     AuthenticationError,
     authenticate_client,
 )
-lazy from ezhpcy.config import PROFILE_NAME_PATTERN, config
-lazy from ezhpcy.ipc.runtime import (
+from ezhpcy.ipc.runtime import (
     load_runtime_descriptor,
     publish_runtime_descriptor,
     remove_runtime_descriptor,
     tunnel_not_running,
 )
-lazy from ezhpcy.ipc.server import AuthenticatedIPCServer
+from ezhpcy.ipc.server import AuthenticatedIPCServer
 
 _DEFAULT_BIND_ADDRESS = IPCAddress(LOOPBACK_HOST, 0, allow_zero_port=True)
 

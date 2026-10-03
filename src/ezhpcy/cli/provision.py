@@ -1,14 +1,14 @@
-lazy from typing import Annotated
+from typing import Annotated
 
-lazy from cyclopts import Parameter
-lazy from rich.prompt import Confirm
+from cyclopts import Parameter
+from rich.prompt import Confirm
 
+from ezhpcy import console
 from ezhpcy.cli._options import ConnectionOptions, OptionalProfileArg
-lazy from ezhpcy import console
-lazy from ezhpcy.cli._resolve import connection_from_cli, resolve_profile_config
-lazy from ezhpcy.cli.utils.ssh import InteractiveSSHClient
-lazy from ezhpcy.provision_host import provision_worker_infrastructure
-lazy from ezhpcy.utils import local_machine_id
+from ezhpcy.cli._resolve import connection_from_cli, resolve_profile_config
+from ezhpcy.cli.utils.ssh import InteractiveSSHClient
+from ezhpcy.provision_host import provision_worker_infrastructure
+from ezhpcy.utils import local_machine_id
 
 
 # ruff: ignore[B008]  # See the comment above the option dataclasses in _options.py

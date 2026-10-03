@@ -1,9 +1,9 @@
 import logging
+import os
 import re
-lazy import os
-lazy from pathlib import Path
-lazy from string.templatelib import Template
-lazy from typing import Any, Self
+from pathlib import Path
+from string.templatelib import Template
+from typing import Any, Self
 
 from platformdirs import PlatformDirs
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -16,13 +16,13 @@ from pydantic_settings import (
 
 from ezhpcy.constants import LOGIN_KNOWN_HOSTS_NAME, PACKAGE_NAME, SSH_DIRECTORY_NAME
 from ezhpcy.logging import configure_logging
-lazy from ezhpcy.messages import plain
-lazy from ezhpcy.types import (
+from ezhpcy.messages import plain
+from ezhpcy.types import (
     PASSWORD_SOURCE_FIELDS,
     ProfileConfig,
     ResolvedProfileConfig,
 )
-lazy from ezhpcy.utils import ssh_connection_id
+from ezhpcy.utils import ssh_connection_id
 
 _DIRS = PlatformDirs(PACKAGE_NAME, appauthor=False)
 # Profile names double as OpenSSH Host aliases, so they exclude whitespace and the

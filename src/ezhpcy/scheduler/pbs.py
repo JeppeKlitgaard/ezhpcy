@@ -1,11 +1,11 @@
+import json
+import math
 import re
-lazy import json
-lazy import math
-lazy import shlex
-lazy import time
-lazy from collections.abc import Callable, Sequence
-lazy from pathlib import PurePosixPath
-lazy from typing import Any
+import shlex
+import time
+from collections.abc import Callable, Sequence
+from pathlib import PurePosixPath
+from typing import Any
 
 from ezhpcy.scheduler.base import (
     InteractiveJob,
@@ -19,7 +19,7 @@ from ezhpcy.scheduler.base import (
     SchedulerError,
     SchedulerOutputError,
 )
-lazy from ezhpcy.scheduler.types import SchedulerType
+from ezhpcy.scheduler.types import SchedulerType
 
 _PBS_JOB_ID_PATTERN = re.compile(r"\d+(?:\.[A-Za-z0-9_.-]+)?")
 _INTERACTIVE_JOB_PATTERN = re.compile(

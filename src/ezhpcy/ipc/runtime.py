@@ -1,14 +1,14 @@
 """Secure publication and discovery of tunnel runtime descriptors."""
 
+import base64
+import json
+import os
+import stat
+import uuid
 from dataclasses import dataclass
-lazy import base64
-lazy import json
-lazy import os
-lazy import stat
-lazy import uuid
-lazy from pathlib import Path
+from pathlib import Path
 
-lazy from ezhpcy.ipc.common import (
+from ezhpcy.ipc.common import (
     IPCAddress,
     IPCError,
     TunnelUnavailableError,

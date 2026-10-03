@@ -1,17 +1,17 @@
-lazy import io
-lazy import os
-lazy from pathlib import Path
+import io
+import os
+from pathlib import Path
 
-lazy import paramiko
-lazy from cryptography.hazmat.primitives import serialization
-lazy from cryptography.hazmat.primitives.asymmetric import ed25519
+import paramiko
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ed25519
 
-lazy from ezhpcy.constants import (
+from ezhpcy.constants import (
     WORKER_CLIENT_KEY_NAME,
     WORKER_HOST_ALIAS,
     WORKER_HOST_KEY_NAME,
 )
-lazy from ezhpcy.permissions import restrict_to_current_user
+from ezhpcy.permissions import restrict_to_current_user
 
 
 def ensure_local_key_pair(

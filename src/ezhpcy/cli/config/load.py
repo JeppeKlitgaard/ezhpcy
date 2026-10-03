@@ -1,21 +1,21 @@
+import difflib
+import tomllib
 from enum import Enum
-lazy import difflib
-lazy import tomllib
-lazy from importlib import resources
-lazy from importlib.resources.abc import Traversable
-lazy from pathlib import Path
-lazy from typing import Annotated
+from importlib import resources
+from importlib.resources.abc import Traversable
+from pathlib import Path
+from typing import Annotated
 
-lazy from cyclopts import Parameter
-lazy from jinja2 import Environment, StrictUndefined, TemplateError
-lazy from pydantic import ValidationError
-lazy from rich.prompt import Confirm, Prompt
-lazy from rich.text import Text
+from cyclopts import Parameter
+from jinja2 import Environment, StrictUndefined, TemplateError
+from pydantic import ValidationError
+from rich.prompt import Confirm, Prompt
+from rich.text import Text
 
-lazy from ezhpcy import console
-lazy from ezhpcy.cli._errors import CliUsageError
-lazy from ezhpcy.cli._options import UserOpt
-lazy from ezhpcy.config import Config, config
+from ezhpcy import console
+from ezhpcy.cli._errors import CliUsageError
+from ezhpcy.cli._options import UserOpt
+from ezhpcy.config import Config, config
 
 PRESET_DIRECTORY = "static/config/presets"
 PRESET_SUFFIX = ".toml.j2"
@@ -133,7 +133,7 @@ def load_cmd(
             preset=preset_name,
         )
         console.print(
-            diff or Text("(no changes)\n", style="dim"),
+            diff if diff else Text("(no changes)\n", style="dim"),
             end="",
             soft_wrap=True,
         )

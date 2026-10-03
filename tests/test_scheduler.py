@@ -582,7 +582,7 @@ def test_pbs_inspection_parses_json_state_hosts_and_exit_status() -> None:
 def test_pbs_missing_job_and_cancellation_use_exact_job_id() -> None:
     runner = FakeRunner()
     runner.error = RuntimeError("qstat: Unknown Job Id 42.server")
-    with pytest.raises(JobNotFoundError, match=r"'42\.server'"):
+    with pytest.raises(JobNotFoundError, match="'42.server'"):
         PBSScheduler(runner).inspect("42.server")
 
     assert runner.commands == [

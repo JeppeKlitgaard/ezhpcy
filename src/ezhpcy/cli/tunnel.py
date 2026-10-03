@@ -1,18 +1,19 @@
 import logging
-lazy import math
-lazy import secrets
-lazy import shlex
-lazy import signal
-lazy import sys
-lazy import threading
-lazy import time
-lazy from collections.abc import Callable
-lazy from pathlib import PurePosixPath
-lazy from typing import Annotated
+import math
+import secrets
+import shlex
+import signal
+import sys
+import threading
+import time
+from collections.abc import Callable
+from pathlib import PurePosixPath
+from typing import Annotated
 
-lazy import paramiko
-lazy from cyclopts import Parameter, validators
+import paramiko
+from cyclopts import Parameter, validators
 
+from ezhpcy.cli._errors import CliUsageError, sentence
 from ezhpcy.cli._options import (
     AliasOpt,
     ConnectionOptions,
@@ -21,8 +22,7 @@ from ezhpcy.cli._options import (
     SchedulerOptions,
     TimingOptions,
 )
-lazy from ezhpcy.cli._errors import CliUsageError, sentence
-lazy from ezhpcy.cli._resolve import (
+from ezhpcy.cli._resolve import (
     LIST_PROFILES_HINT,
     connection_from_cli,
     missing_setting_error,
@@ -31,24 +31,24 @@ lazy from ezhpcy.cli._resolve import (
     scheduler_from_cli,
     timings_from_cli,
 )
-lazy from ezhpcy.cli.doctor import echo_include_directive
-lazy from ezhpcy.cli.utils.ssh import InteractiveSSHClient
-lazy from ezhpcy.config import config
-lazy from ezhpcy.console import error_console
-lazy from ezhpcy.constants import (
+from ezhpcy.cli.doctor import echo_include_directive
+from ezhpcy.cli.utils.ssh import InteractiveSSHClient
+from ezhpcy.config import config
+from ezhpcy.console import error_console
+from ezhpcy.constants import (
     OPENSSH_MATCHSPEC,
     SSH_DIRECTORY_NAME,
     WORKER_CLIENT_KEY_NAME,
     WORKER_HOST_KEY_NAME,
 )
-lazy from ezhpcy.ipc import create_tunnel_backend
-lazy from ezhpcy.ipc.common import IPCError
-lazy from ezhpcy.permissions import FilePermissionError
-lazy from ezhpcy.provision_host import (
+from ezhpcy.ipc import create_tunnel_backend
+from ezhpcy.ipc.common import IPCError
+from ezhpcy.permissions import FilePermissionError
+from ezhpcy.provision_host import (
     provision_worker_infrastructure,
     validate_worker_infrastructure,
 )
-lazy from ezhpcy.scheduler.base import (
+from ezhpcy.scheduler.base import (
     InteractiveJob,
     JobInfo,
     JobSpec,
@@ -57,12 +57,12 @@ lazy from ezhpcy.scheduler.base import (
     SchedulerError,
     UnsupportedSchedulerError,
 )
-lazy from ezhpcy.scheduler.lsf import LSFScheduler
-lazy from ezhpcy.scheduler.pbs import PBSScheduler
-lazy from ezhpcy.scheduler.types import SchedulerType
-lazy from ezhpcy.ssh import SFTPClient
-lazy from ezhpcy.tunnel.server import TunnelServer
-lazy from ezhpcy.tunnel.ssh_config import (
+from ezhpcy.scheduler.lsf import LSFScheduler
+from ezhpcy.scheduler.pbs import PBSScheduler
+from ezhpcy.scheduler.types import SchedulerType
+from ezhpcy.ssh import SFTPClient
+from ezhpcy.tunnel.server import TunnelServer
+from ezhpcy.tunnel.ssh_config import (
     WorkerHost,
     check_host_resolution,
     profile_hosts,
@@ -71,13 +71,13 @@ lazy from ezhpcy.tunnel.ssh_config import (
     write_active_host_config,
     write_profiles_config,
 )
-lazy from ezhpcy.tunnel.sshd import (
+from ezhpcy.tunnel.sshd import (
     read_ed25519_public_key,
     retrying_sshd_command,
     retrying_sshd_script,
     sshd_config_arguments,
 )
-lazy from ezhpcy.types import (
+from ezhpcy.types import (
     ConnectionInfo,
     RemoteState,
     ResolvedConfig,
@@ -85,7 +85,7 @@ lazy from ezhpcy.types import (
     SchedulerConfig,
     SubmissionMode,
 )
-lazy from ezhpcy.utils import local_machine_id, ssh_connection_id
+from ezhpcy.utils import local_machine_id, ssh_connection_id
 
 _FIRST_DYNAMIC_PORT = 49152
 _LAST_DYNAMIC_PORT = 65535

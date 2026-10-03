@@ -1,15 +1,15 @@
 import os
-lazy import shlex
-lazy import shutil
-lazy import subprocess
-lazy from pathlib import Path
-lazy from typing import Annotated
+import shlex
+import shutil
+import subprocess
+from pathlib import Path
+from typing import Annotated
 
-lazy from cyclopts import Parameter
+from cyclopts import Parameter
 
-lazy from ezhpcy.cli._errors import CliUsageError
-lazy from ezhpcy.config import config
-lazy from ezhpcy.console import console
+from ezhpcy.cli._errors import CliUsageError
+from ezhpcy.config import config
+from ezhpcy.console import console
 
 IS_WINDOWS = os.name == "nt"
 DEFAULT_EDITOR = "notepad" if IS_WINDOWS else "vi"

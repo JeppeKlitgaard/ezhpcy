@@ -1,4 +1,4 @@
-lazy from string.templatelib import Interpolation, Template
+from string.templatelib import Interpolation, Template
 
 from cyclopts.exceptions import (
     STYLE_NAME,
@@ -6,9 +6,9 @@ from cyclopts.exceptions import (
     STYLE_SUGGESTION,
     STYLE_VALID_CHOICE,
 )
-lazy from rich.text import Text
+from rich.text import Text
 
-lazy from ezhpcy.messages import QUOTED_KINDS, parts, plain
+from ezhpcy.messages import QUOTED_KINDS, parts, plain
 
 # The kinds of message part (see `ezhpcy.messages`) in the style of Cyclopts' own
 # errors, e.g. `Invalid value "nope" for PRESET. Choose from: "dtu", "generic".`

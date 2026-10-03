@@ -1,12 +1,12 @@
-lazy import logging
-lazy import sys
+import logging
+import sys
 
-lazy from ezhpcy.cli._options import AliasArg
-lazy from ezhpcy.console import error_console
-lazy from ezhpcy.ipc import load_tunnel_backend
-lazy from ezhpcy.ipc.common import IPCError
-lazy from ezhpcy.logging import configure_logging
-lazy from ezhpcy.tunnel.server import relay_proxy_stdio
+from ezhpcy.cli._options import AliasArg
+from ezhpcy.console import error_console
+from ezhpcy.ipc import load_tunnel_backend
+from ezhpcy.ipc.common import IPCError
+from ezhpcy.logging import configure_logging
+from ezhpcy.tunnel.server import relay_proxy_stdio
 
 
 def proxy_cmd(alias: AliasArg, /) -> None:

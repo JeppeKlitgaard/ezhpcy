@@ -9,8 +9,8 @@ separated by commas, and a nested template is rendered in place:
     t"Choose from: {names:choice}."  # Choose from: "a", "b".
 """
 
-lazy from collections.abc import Iterator
-lazy from string.templatelib import Interpolation, Template, convert
+from collections.abc import Iterator
+from string.templatelib import Interpolation, Template, convert
 
 KINDS = frozenset({"", "name", "value", "choice", "suggestion"})
 QUOTED_KINDS = frozenset({"value", "choice"})

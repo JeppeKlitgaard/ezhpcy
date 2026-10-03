@@ -1,8 +1,8 @@
+import math
 import re
-lazy import math
-lazy import shlex
-lazy import time
-lazy from collections.abc import Callable, Mapping, Sequence
+import shlex
+import time
+from collections.abc import Callable, Mapping, Sequence
 
 from ezhpcy.scheduler.base import (
     InteractiveJob,
@@ -16,7 +16,7 @@ from ezhpcy.scheduler.base import (
     SchedulerError,
     SchedulerOutputError,
 )
-lazy from ezhpcy.scheduler.types import SchedulerType
+from ezhpcy.scheduler.types import SchedulerType
 
 _SUBMITTED_JOB_PATTERN = re.compile(r"Job <(?P<job_id>\d+)> is submitted")
 _LSF_JOB_ID_PATTERN = re.compile(r"\d+")

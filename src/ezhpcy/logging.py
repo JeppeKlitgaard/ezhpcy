@@ -1,10 +1,10 @@
 import logging
-lazy from typing import TextIO
+from typing import TextIO
 
-lazy from rich.console import Console
-lazy from rich.logging import RichHandler
+from rich.console import Console
+from rich.logging import RichHandler
 
-lazy from ezhpcy.constants import PACKAGE_NAME
+from ezhpcy.constants import PACKAGE_NAME
 
 TERMINAL_HANDLER_NAME = "ezhpcy-terminal"
 LOG_FORMAT = "[%(name)s] %(message)s"

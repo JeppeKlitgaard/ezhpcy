@@ -1,11 +1,11 @@
-lazy import os
-lazy from pathlib import Path
+import os
+from pathlib import Path
 
-lazy import keyring
-lazy from keyring.errors import KeyringError
+import keyring
+from keyring.errors import KeyringError
 
-lazy from ezhpcy.cli._errors import CliUsageError
-lazy from ezhpcy.cli._options import KEYRING_SERVICE_NAME
+from ezhpcy.cli._errors import CliUsageError
+from ezhpcy.cli._options import KEYRING_SERVICE_NAME
 
 
 def _without_trailing_line_endings(value: str) -> str:

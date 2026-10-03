@@ -22,7 +22,7 @@ def ensure_local_key_pair(
     public_key = private_key.with_suffix(".pub")
 
     ssh_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chmod(ssh_dir, 0o700)
+    ssh_dir.chmod(0o700)
     if private_key.exists() != public_key.exists():
         raise RuntimeError(
             f"Incomplete SSH key pair at {private_key}; restore or remove it."
@@ -51,7 +51,7 @@ def ensure_local_key_pair(
             encoding="ascii",
         )
     restrict_to_current_user(private_key)
-    os.chmod(public_key, 0o644)
+    public_key.chmod(0o644)
     return private_key, public_key
 
 
@@ -85,4 +85,4 @@ def pin_worker_host_key(host_public_key: str, known_hosts: Path) -> None:
         if not line.split(maxsplit=1) or line.split(maxsplit=1)[0] != WORKER_HOST_ALIAS
     ]
     known_hosts.write_text("".join(retained) + replacement, encoding="utf-8")
-    os.chmod(known_hosts, 0o600)
+    known_hosts.chmod(0o600)

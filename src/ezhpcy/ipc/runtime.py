@@ -100,7 +100,7 @@ def publish_runtime_descriptor(
             file.flush()
             os.fsync(file.fileno())
         if directory_fd is None:
-            os.replace(temporary, path)
+            temporary.replace(path)
         else:
             os.replace(
                 temporary_name,

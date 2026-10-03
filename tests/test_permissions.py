@@ -103,7 +103,7 @@ def test_posix_permissions_need_no_helper_commands(
     path.touch()
 
     with (
-        patch("ezhpcy.permissions.os.chmod") as chmod,
+        patch.object(Path, "chmod", autospec=True) as chmod,
         patch("ezhpcy.permissions.subprocess.run") as run,
     ):
         restrict_to_current_user(path)

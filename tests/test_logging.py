@@ -11,6 +11,7 @@ from ezhpcy.logging import (
     TERMINAL_HANDLER_NAME,
     configure_logging,
 )
+from tests.support.cli import invoke
 
 
 @pytest.fixture(autouse=True)
@@ -68,6 +69,13 @@ def test_debug_logger_includes_a_timestamp() -> None:
         r"\[ezhpcy\.cli\.tunnel\] Transport active",
         rendered,
     )
+
+
+def test_root_debug_help_exposes_its_env_var() -> None:
+    result = invoke(["--help"])
+
+    assert result.exit_code == 0, result
+    assert "EZHPCY_DEBUG" in result.stdout
 
 
 def test_configure_logging_is_idempotent() -> None:

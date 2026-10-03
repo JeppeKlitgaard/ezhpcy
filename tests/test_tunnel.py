@@ -1524,7 +1524,7 @@ def test_tunnel_command_rejects_conflicting_auto_provision_flags(
     )
 
     assert result.exit_code == 2
-    assert "--no-auto-provision specified multiple times" in result.stderr
+    assert "cannot be used together" in result.stderr
 
 
 def test_tunnel_command_rejects_unknown_profile_before_starting(

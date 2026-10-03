@@ -523,7 +523,7 @@ def test_auto_provision_flags_conflict(monkeypatch: pytest.MonkeyPatch) -> None:
     result = invoke(["tunnel", "base", "--auto-provision", "--no-auto-provision"])
 
     assert result.exit_code == 2, result
-    assert "--no-auto-provision specified multiple times" in result.stderr
+    assert "cannot be used together" in result.stderr
     assert captured == {}
 
 

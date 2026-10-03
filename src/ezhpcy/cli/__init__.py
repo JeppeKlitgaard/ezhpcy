@@ -186,6 +186,14 @@ app.command(
     sort_key=3,
 )
 
+# Add shell completion installation command.
+# Powershell not currently supported, see:
+# https://github.com/BrianPugh/cyclopts/issues/985
+app.register_install_completion_command(
+    help="Install completion for the current shell (bash, zsh or fish).",
+    group=GLOBAL_OPTIONS,
+)
+
 # Cyclopts registers `--help` as a command; list it with `--debug` instead.
 # Sub-apps hide their own `--help` unless told otherwise.
 for help_app in (app, config_app, keyring_app):

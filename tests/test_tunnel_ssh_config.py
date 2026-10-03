@@ -9,7 +9,7 @@ import pytest
 
 from ezhpcy.cli import tunnel as tunnel_module
 from ezhpcy.config import Config
-from ezhpcy.ipc import create_tunnel_backend
+from ezhpcy.ipc import create_broker_backend
 from ezhpcy.tunnel import ssh_config
 from ezhpcy.tunnel.ssh_config import (
     WorkerHost,
@@ -172,8 +172,8 @@ def test_removing_an_absent_active_config_is_a_no_op() -> None:
 
 
 def test_prune_keeps_only_active_configs_of_running_tunnels() -> None:
-    live = create_tunnel_backend(alias="live", authkey=b"a" * 32)
-    replaced = create_tunnel_backend(alias="replaced", authkey=b"b" * 32)
+    live = create_broker_backend(alias="live", authkey=b"a" * 32)
+    replaced = create_broker_backend(alias="replaced", authkey=b"b" * 32)
     listeners = [live.listen(lambda _c: None), replaced.listen(lambda _c: None)]
     try:
         kept = write_active_host_config(
@@ -287,7 +287,7 @@ def test_publish_writes_an_active_config_only_when_profiles_conf_lacks_it(
 ) -> None:
     monkeypatch.setattr(tunnel_module, "check_host_resolution", lambda _host: None)
     active = config_dir(isolated_runtime_dir) / "active-gpu.conf"
-    backend = create_tunnel_backend(alias="gpu")
+    backend = create_broker_backend(alias="gpu")
     listener = backend.listen(lambda _c: None)
     try:
         tunnel_module._publish_ssh_host(
@@ -311,7 +311,7 @@ def test_publish_prunes_an_older_tunnels_block_for_the_same_alias(
 ) -> None:
     monkeypatch.setattr(tunnel_module, "check_host_resolution", lambda _host: None)
     stale = write_active_host_config(worker_host(user="bob"), instance_id="old")
-    backend = create_tunnel_backend(alias="gpu")
+    backend = create_broker_backend(alias="gpu")
     listener = backend.listen(lambda _c: None)
     try:
         tunnel_module._publish_ssh_host(

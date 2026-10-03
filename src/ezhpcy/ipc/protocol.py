@@ -1,4 +1,4 @@
-"""Fixed-size authentication and readiness messages for tunnel IPC."""
+"""Fixed-size authentication and readiness messages for broker IPC."""
 
 import hmac
 import secrets
@@ -27,7 +27,7 @@ def _receive_stream_bytes(stream: socket.socket, size: int) -> bytes:
     while len(chunks) < size:
         chunk = stream.recv(size - len(chunks))
         if not chunk:
-            raise EOFError("tunnel IPC connection closed")
+            raise EOFError("broker IPC connection closed")
         chunks.extend(chunk)
     return bytes(chunks)
 
@@ -37,12 +37,12 @@ def wait_for_worker_stream(stream: socket.socket) -> None:
     if status == _READY:
         return
     if status != _ERROR:
-        raise ProtocolError("tunnel returned an invalid readiness response")
+        raise ProtocolError("broker returned an invalid readiness response")
     size = struct.unpack("!H", _receive_stream_bytes(stream, 2))[0]
     if size > MAX_ERROR_SIZE:
-        raise ProtocolError("tunnel returned an oversized error response")
+        raise ProtocolError("broker returned an oversized error response")
     message = _receive_stream_bytes(stream, size).decode("utf-8", errors="replace")
-    raise IPCError(message or "tunnel rejected stream")
+    raise IPCError(message or "broker rejected stream")
 
 
 def ready_worker_stream(stream: socket.socket) -> None:
@@ -61,7 +61,7 @@ def _deadline(timeout: float) -> float:
 def _remaining(deadline: float) -> float:
     remaining = deadline - time.monotonic()
     if remaining <= 0:
-        raise TimeoutError("tunnel authentication timed out")
+        raise TimeoutError("broker authentication timed out")
     return remaining
 
 
@@ -97,7 +97,7 @@ def authenticate_client(stream: socket.socket, authkey: bytes, timeout: float) -
     deadline = _deadline(timeout)
     greeting = _receive_exact(stream, len(AUTH_MAGIC) + AUTH_NONCE_SIZE, deadline)
     if greeting[: len(AUTH_MAGIC)] != AUTH_MAGIC:
-        raise AuthenticationError("tunnel authentication protocol is invalid")
+        raise AuthenticationError("broker authentication protocol is invalid")
     server_nonce = greeting[len(AUTH_MAGIC) :]
     client_nonce = secrets.token_bytes(AUTH_NONCE_SIZE)
     _send_exact(
@@ -108,7 +108,7 @@ def authenticate_client(stream: socket.socket, authkey: bytes, timeout: float) -
     proof = _receive_exact(stream, AUTH_DIGEST_SIZE, deadline)
     expected = _server_digest(authkey, server_nonce, client_nonce)
     if not hmac.compare_digest(proof, expected):
-        raise AuthenticationError("tunnel authentication proof is invalid")
+        raise AuthenticationError("broker authentication proof is invalid")
 
 
 def authenticate_server(stream: socket.socket, authkey: bytes, timeout: float) -> None:

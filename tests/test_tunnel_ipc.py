@@ -13,14 +13,14 @@ import ezhpcy.ipc.runtime as runtime
 from ezhpcy import ipc
 from ezhpcy.ipc import (
     AuthenticatedIPCBackend,
-    create_tunnel_backend,
-    load_tunnel_backend,
+    create_broker_backend,
+    load_broker_backend,
 )
 from ezhpcy.ipc.common import (
+    BrokerUnavailableError,
     IPCAddress,
     IPCAuthenticationError,
     IPCError,
-    TunnelUnavailableError,
 )
 from ezhpcy.types import ResolvedConfig
 
@@ -117,11 +117,11 @@ def test_backend_publishes_and_loads_by_alias(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(ipc.config.local_file, "runtime_dir", tmp_path)
-    backend = create_tunnel_backend(alias="ezhpcy-0123456789ab", authkey=AUTHKEY)
+    backend = create_broker_backend(alias="ezhpcy-0123456789ab", authkey=AUTHKEY)
     listener = backend.listen(lambda _connection: None)
     descriptor = ipc.descriptor_path("ezhpcy-0123456789ab")
     try:
-        loaded = load_tunnel_backend("ezhpcy-0123456789ab")
+        loaded = load_broker_backend("ezhpcy-0123456789ab")
 
         assert descriptor.is_file()
         assert loaded.address == listener.address
@@ -182,7 +182,7 @@ def test_runtime_descriptor_publishes_capability_and_is_removed(
 ) -> None:
     monkeypatch.setattr(ipc.config.local_file, "runtime_dir", tmp_path)
     descriptor = ipc.descriptor_path("test")
-    server = create_tunnel_backend(
+    server = create_broker_backend(
         alias="test",
         authkey=AUTHKEY,
     )
@@ -193,7 +193,7 @@ def test_runtime_descriptor_publishes_capability_and_is_removed(
         connection.sendall(b"pong")
 
     listener, thread = start_server(server, serve)
-    client_backend = load_tunnel_backend("test")
+    client_backend = load_broker_backend("test")
     payload = json.loads(descriptor.read_text(encoding="utf-8"))
 
     assert descriptor.is_file()
@@ -221,10 +221,10 @@ def test_debug_reaches_the_proxy_through_the_runtime_descriptor(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(ipc.config.local_file, "runtime_dir", tmp_path)
-    backend = create_tunnel_backend(alias="test", debug=True)
+    backend = create_broker_backend(alias="test", debug=True)
     listener = backend.listen(lambda _connection: None)
     try:
-        assert load_tunnel_backend("test").debug is True
+        assert load_broker_backend("test").debug is True
     finally:
         listener.close()
 
@@ -233,10 +233,10 @@ def test_debug_defaults_to_disabled_for_the_proxy(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(ipc.config.local_file, "runtime_dir", tmp_path)
-    backend = create_tunnel_backend(alias="test")
+    backend = create_broker_backend(alias="test")
     listener = backend.listen(lambda _connection: None)
     try:
-        assert load_tunnel_backend("test").debug is False
+        assert load_broker_backend("test").debug is False
     finally:
         listener.close()
 
@@ -244,7 +244,7 @@ def test_debug_defaults_to_disabled_for_the_proxy(
 def test_descriptor_from_an_older_version_is_rejected(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """A stale descriptor must fail loudly; restarting the tunnel is trivial."""
+    """A stale descriptor must fail loudly; restarting the broker is trivial."""
     monkeypatch.setattr(ipc.config.local_file, "runtime_dir", tmp_path)
     descriptor = ipc.descriptor_path("test")
     descriptor.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -261,8 +261,8 @@ def test_descriptor_from_an_older_version_is_rejected(
         encoding="utf-8",
     )
 
-    with pytest.raises(TunnelUnavailableError, match="restart the tunnel"):
-        load_tunnel_backend("test")
+    with pytest.raises(BrokerUnavailableError, match="restart the foreground broker"):
+        load_broker_backend("test")
 
 
 def test_descriptor_with_a_non_boolean_debug_field_is_rejected(
@@ -285,8 +285,8 @@ def test_descriptor_with_a_non_boolean_debug_field_is_rejected(
         encoding="utf-8",
     )
 
-    with pytest.raises(TunnelUnavailableError, match="invalid"):
-        load_tunnel_backend("test")
+    with pytest.raises(BrokerUnavailableError, match="invalid"):
+        load_broker_backend("test")
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
@@ -295,7 +295,7 @@ def test_runtime_descriptor_is_owner_only_on_posix(
 ) -> None:
     monkeypatch.setattr(ipc.config.local_file, "runtime_dir", tmp_path)
     descriptor = ipc.descriptor_path("test")
-    backend = create_tunnel_backend(alias="test")
+    backend = create_broker_backend(alias="test")
     listener = backend.listen(lambda _connection: None)
     try:
         assert descriptor.stat().st_mode & 0o077 == 0
@@ -313,7 +313,7 @@ def test_runtime_descriptor_rejects_symlinked_directory(
     linked_directory = tmp_path / "linked-runtime"
     linked_directory.symlink_to(real_directory, target_is_directory=True)
     monkeypatch.setattr(ipc.config.local_file, "runtime_dir", linked_directory)
-    backend = create_tunnel_backend(alias="test")
+    backend = create_broker_backend(alias="test")
 
     with pytest.raises(IPCError, match="must not be a symbolic link"):
         backend.listen(lambda _connection: None)
@@ -326,7 +326,7 @@ def test_runtime_descriptor_rejects_non_directory_runtime_path(
     runtime_path = tmp_path / "runtime"
     runtime_path.touch()
     monkeypatch.setattr(ipc.config.local_file, "runtime_dir", runtime_path)
-    backend = create_tunnel_backend(alias="test")
+    backend = create_broker_backend(alias="test")
 
     with pytest.raises(IPCError, match="is not a directory"):
         backend.listen(lambda _connection: None)
@@ -342,7 +342,7 @@ def test_runtime_descriptor_rejects_directory_owned_by_another_user(
         runtime.os, "getuid", lambda: runtime_directory.stat().st_uid + 1
     )
     monkeypatch.setattr(ipc.config.local_file, "runtime_dir", runtime_directory)
-    backend = create_tunnel_backend(alias="test")
+    backend = create_broker_backend(alias="test")
 
     with pytest.raises(IPCError, match="not owned by the current user"):
         backend.listen(lambda _connection: None)
@@ -356,7 +356,7 @@ def test_runtime_descriptor_restricts_precreated_directory(
     runtime_directory.mkdir(mode=0o777)
     runtime_directory.chmod(0o777)
     monkeypatch.setattr(ipc.config.local_file, "runtime_dir", runtime_directory)
-    backend = create_tunnel_backend(alias="test")
+    backend = create_broker_backend(alias="test")
     listener = backend.listen(lambda _connection: None)
     try:
         assert runtime_directory.stat().st_mode & 0o777 == 0o700
@@ -368,10 +368,8 @@ def test_missing_runtime_descriptor_fails_quickly(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(ipc.config.local_file, "runtime_dir", tmp_path)
-    with pytest.raises(
-        TunnelUnavailableError, match="no tunnel is running for `missing`"
-    ):
-        load_tunnel_backend("missing")
+    with pytest.raises(BrokerUnavailableError, match="broker is not running"):
+        load_broker_backend("missing")
 
 
 def test_ipc_endpoint_absence_fails_quickly() -> None:
@@ -380,7 +378,7 @@ def test_ipc_endpoint_absence_fails_quickly() -> None:
         address = IPCAddress(*reserved.getsockname())
     backend = AuthenticatedIPCBackend(address, AUTHKEY)
     started = time.monotonic()
-    with pytest.raises(TunnelUnavailableError, match="no tunnel is running; start"):
+    with pytest.raises(BrokerUnavailableError, match="broker is not running"):
         backend.connect(timeout=0.05)
     assert time.monotonic() - started < 1
 
@@ -463,7 +461,7 @@ def test_client_rejects_invalid_server_proof() -> None:
         listener.listen()
         address = IPCAddress(*listener.getsockname())
 
-        def impersonate_tunnel() -> None:
+        def impersonate_broker() -> None:
             connection, _address = listener.accept()
             with connection:
                 connection.sendall(
@@ -475,7 +473,7 @@ def test_client_rejects_invalid_server_proof() -> None:
                     response.extend(connection.recv(response_size - len(response)))
                 connection.sendall(b"x" * protocol.AUTH_DIGEST_SIZE)
 
-        thread = threading.Thread(target=impersonate_tunnel)
+        thread = threading.Thread(target=impersonate_broker)
         thread.start()
         backend = AuthenticatedIPCBackend(address, AUTHKEY)
         with pytest.raises(IPCAuthenticationError, match="authentication failed"):
@@ -548,33 +546,33 @@ def test_runtime_descriptor_rejects_non_loopback_address(
         encoding="utf-8",
     )
 
-    with pytest.raises(TunnelUnavailableError, match="runtime information is invalid"):
-        load_tunnel_backend("test")
+    with pytest.raises(BrokerUnavailableError, match="runtime information is invalid"):
+        load_broker_backend("test")
 
 
-def test_latest_tunnel_descriptor_wins_and_old_close_preserves_it(
+def test_latest_broker_descriptor_wins_and_old_close_preserves_it(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(ipc.config.local_file, "runtime_dir", tmp_path)
     descriptor = ipc.descriptor_path("test")
-    first = create_tunnel_backend(
+    first = create_broker_backend(
         alias="test",
         authkey=b"a" * 32,
     )
-    second = create_tunnel_backend(
+    second = create_broker_backend(
         alias="test",
         authkey=b"b" * 32,
     )
     first_listener = first.listen(lambda _connection: None)
     second_listener = second.listen(lambda _connection: None)
     try:
-        current = load_tunnel_backend("test")
+        current = load_broker_backend("test")
         assert current.address == second_listener.address
         assert current.authkey == b"b" * 32
 
         first_listener.close()
         assert descriptor.is_file()
-        assert load_tunnel_backend("test").instance_id == second.instance_id
+        assert load_broker_backend("test").instance_id == second.instance_id
     finally:
         first_listener.close()
         second_listener.close()

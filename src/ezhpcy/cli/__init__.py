@@ -57,7 +57,7 @@ app.command(name="proxy", help="Connect through a running tunnel (SSH ProxyComma
 app.add_typer(config_app, name="config", rich_help_panel="Configuration Commands")
 app.command(
     name="ssh-config",
-    help="Regenerate the profile SSH hosts, print the Include line and check each alias.",
+    help="Print the OpenSSH configuration for the broker-backed worker.",
     rich_help_panel="Configuration Commands",
 )(ssh_config_cmd)
 app.add_typer(keyring_app, name="keyring", rich_help_panel="Configuration Commands")

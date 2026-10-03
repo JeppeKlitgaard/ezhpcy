@@ -9,9 +9,9 @@ from unittest.mock import MagicMock
 import pytest
 
 from ezhpcy import ipc
-from ezhpcy.ipc import create_tunnel_backend, load_tunnel_backend
+from ezhpcy.ipc import create_broker_backend, load_broker_backend
 from ezhpcy.ipc.common import IPCError
-from ezhpcy.tunnel.server import TunnelServer, relay_proxy_stdio
+from ezhpcy.tunnel.broker import ForegroundBroker, relay_proxy_stdio
 
 
 class ClientBackend:
@@ -33,7 +33,7 @@ class EchoTransport:
 
     def open_channel(self, _kind, *, dest_addr, src_addr):
         assert src_addr == ("ezhpcy-proxy", 0)
-        tunnel_channel, worker = socket.socketpair()
+        broker_channel, worker = socket.socketpair()
         with self._lock:
             self.destinations.append(dest_addr)
 
@@ -47,7 +47,7 @@ class EchoTransport:
             worker.close()
 
         threading.Thread(target=echo, daemon=True).start()
-        return tunnel_channel
+        return broker_channel
 
 
 class FailingTransport(EchoTransport):
@@ -57,7 +57,7 @@ class FailingTransport(EchoTransport):
 
 class ClientFirstTransport(EchoTransport):
     def open_channel(self, _kind, *, dest_addr, src_addr):
-        tunnel_channel, worker = socket.socketpair()
+        broker_channel, worker = socket.socketpair()
 
         def respond_after_client() -> None:
             request = bytearray()
@@ -68,12 +68,12 @@ class ClientFirstTransport(EchoTransport):
             worker.close()
 
         threading.Thread(target=respond_after_client, daemon=True).start()
-        return tunnel_channel
+        return broker_channel
 
 
 class BannerTransport(EchoTransport):
     def open_channel(self, _kind, *, dest_addr, src_addr):
-        tunnel_channel, worker = socket.socketpair()
+        broker_channel, worker = socket.socketpair()
 
         def serve_ssh_bytes() -> None:
             worker.sendall(b"SSH-2.0-test-worker\r\n")
@@ -85,19 +85,19 @@ class BannerTransport(EchoTransport):
             worker.close()
 
         threading.Thread(target=serve_ssh_bytes, daemon=True).start()
-        return tunnel_channel
+        return broker_channel
 
 
 class ClosingBannerTransport(EchoTransport):
     def open_channel(self, _kind, *, dest_addr, src_addr):
-        tunnel_channel, worker = socket.socketpair()
+        broker_channel, worker = socket.socketpair()
 
         def send_banner_and_close() -> None:
             worker.sendall(b"SSH-2.0-test-worker\r\n")
             worker.close()
 
         threading.Thread(target=send_banner_and_close, daemon=True).start()
-        return tunnel_channel
+        return broker_channel
 
 
 class FilenoOnlyStdin:
@@ -113,26 +113,26 @@ class FilenoOnlyStdin:
         raise AssertionError("ProxyCommand stdin must use the raw descriptor")
 
 
-def run_proxy(tunnel: TunnelServer, payload: bytes) -> bytes:
+def run_proxy(broker: ForegroundBroker, payload: bytes) -> bytes:
     client, server = socket.socketpair()
-    tunnel_thread = threading.Thread(
-        target=tunnel._serve_client,
+    broker_thread = threading.Thread(
+        target=broker._serve_client,
         args=(server,),
     )
-    tunnel_thread.start()
+    broker_thread.start()
     output = io.BytesIO()
     relay_proxy_stdio(ClientBackend(client), io.BytesIO(payload), output)
-    tunnel_thread.join(timeout=1)
-    assert not tunnel_thread.is_alive()
+    broker_thread.join(timeout=1)
+    assert not broker_thread.is_alive()
     return output.getvalue()
 
 
 def test_two_sequential_proxies_reuse_one_transport() -> None:
     transport = EchoTransport()
-    tunnel = TunnelServer(transport, ("worker.internal", 3333), MagicMock())
+    broker = ForegroundBroker(transport, ("worker.internal", 3333), MagicMock())
 
-    assert run_proxy(tunnel, b"first") == b"worker:first"
-    assert run_proxy(tunnel, b"second") == b"worker:second"
+    assert run_proxy(broker, b"first") == b"worker:first"
+    assert run_proxy(broker, b"second") == b"worker:second"
     assert transport.destinations == [
         ("worker.internal", 3333),
         ("worker.internal", 3333),
@@ -141,13 +141,13 @@ def test_two_sequential_proxies_reuse_one_transport() -> None:
 
 def test_two_simultaneous_proxies_get_independent_channels() -> None:
     transport = EchoTransport()
-    tunnel = TunnelServer(transport, ("worker.internal", 3333), MagicMock())
+    broker = ForegroundBroker(transport, ("worker.internal", 3333), MagicMock())
     barrier = threading.Barrier(3)
     outputs: dict[str, bytes] = {}
 
     def connect(name: str) -> None:
         barrier.wait()
-        outputs[name] = run_proxy(tunnel, name.encode())
+        outputs[name] = run_proxy(broker, name.encode())
 
     threads = [threading.Thread(target=connect, args=(name,)) for name in ("a", "b")]
     for thread in threads:
@@ -164,15 +164,15 @@ def test_two_simultaneous_proxies_get_independent_channels() -> None:
 
 
 def test_proxy_does_not_leave_a_buffered_stdin_reader_at_shutdown() -> None:
-    tunnel = TunnelServer(
+    broker = ForegroundBroker(
         ClosingBannerTransport(), ("worker.internal", 3333), MagicMock()
     )
     client, server = socket.socketpair()
-    tunnel_thread = threading.Thread(
-        target=tunnel._serve_client,
+    broker_thread = threading.Thread(
+        target=broker._serve_client,
         args=(server,),
     )
-    tunnel_thread.start()
+    broker_thread.start()
     read_descriptor, write_descriptor = os.pipe()
     stdin = FilenoOnlyStdin(read_descriptor)
     output = io.BytesIO()
@@ -189,32 +189,32 @@ def test_proxy_does_not_leave_a_buffered_stdin_reader_at_shutdown() -> None:
             assert time.monotonic() < deadline
             time.sleep(0.01)
         os.close(read_descriptor)
-        tunnel_thread.join(timeout=1)
+        broker_thread.join(timeout=1)
 
 
 def test_authentication_transport_loss_is_actionable_and_opens_no_channel() -> None:
     transport = EchoTransport(active=False)
-    tunnel = TunnelServer(transport, ("worker.internal", 3333), MagicMock())
+    broker = ForegroundBroker(transport, ("worker.internal", 3333), MagicMock())
     client, server = socket.socketpair()
     thread = threading.Thread(
-        target=tunnel._serve_client,
+        target=broker._serve_client,
         args=(server,),
     )
     thread.start()
 
-    with pytest.raises(IPCError, match="restart the tunnel"):
+    with pytest.raises(IPCError, match="restart the foreground broker"):
         relay_proxy_stdio(ClientBackend(client), io.BytesIO(), io.BytesIO())
     thread.join(timeout=1)
     assert transport.destinations == []
 
 
 def test_worker_channel_open_failure_is_actionable() -> None:
-    tunnel = TunnelServer(
+    broker = ForegroundBroker(
         FailingTransport(), ("wrong-worker.internal", 3333), MagicMock()
     )
     client, server = socket.socketpair()
     thread = threading.Thread(
-        target=tunnel._serve_client,
+        target=broker._serve_client,
         args=(server,),
     )
     thread.start()
@@ -225,35 +225,37 @@ def test_worker_channel_open_failure_is_actionable() -> None:
 
 
 def test_proxy_sends_client_bytes_before_worker_sends_any_bytes() -> None:
-    tunnel = TunnelServer(
+    broker = ForegroundBroker(
         ClientFirstTransport(), ("worker.internal", 3333), MagicMock()
     )
 
-    assert run_proxy(tunnel, b"client-identification") == (
+    assert run_proxy(broker, b"client-identification") == (
         b"worker:client-identification"
     )
 
 
-def test_loopback_tunnel_relays_server_banner_while_waiting_for_client(
+def test_loopback_broker_relays_server_banner_while_waiting_for_client(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(ipc.config.local_file, "runtime_dir", tmp_path)
-    server_backend = create_tunnel_backend(alias="test", authkey=b"a" * 32)
-    tunnel = TunnelServer(BannerTransport(), ("worker.internal", 3333), server_backend)
-    tunnel_thread = threading.Thread(target=tunnel.serve_forever, daemon=True)
-    tunnel_thread.start()
+    server_backend = create_broker_backend(alias="test", authkey=b"a" * 32)
+    broker = ForegroundBroker(
+        BannerTransport(), ("worker.internal", 3333), server_backend
+    )
+    broker_thread = threading.Thread(target=broker.serve_forever, daemon=True)
+    broker_thread.start()
     output = io.BytesIO()
 
     relay_proxy_stdio(
-        load_tunnel_backend("test"),
+        load_broker_backend("test"),
         io.BytesIO(b"SSH-2.0-test-client\r\n"),
         output,
     )
-    tunnel.close()
-    tunnel_thread.join(timeout=1)
+    broker.close()
+    broker_thread.join(timeout=1)
 
     assert output.getvalue() == (
         b"SSH-2.0-test-worker\r\nworker:SSH-2.0-test-client\r\n"
     )
-    assert not tunnel_thread.is_alive()
+    assert not broker_thread.is_alive()

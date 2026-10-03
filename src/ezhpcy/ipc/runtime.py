@@ -56,9 +56,9 @@ def load_runtime_descriptor(path: Path) -> RuntimeDescriptor:
         if not all(
             isinstance(value, str) for value in (host, encoded_authkey, instance_id)
         ):
-            raise TypeError("runtime descriptor values have invalid types")
+            raise ValueError("runtime descriptor values have invalid types")
         if not isinstance(debug, bool):
-            raise TypeError("runtime descriptor values have invalid types")
+            raise ValueError("runtime descriptor values have invalid types")
         address = IPCAddress(host, port)
         authkey = base64.b64decode(encoded_authkey, validate=True)
     except (KeyError, TypeError, ValueError) as error:

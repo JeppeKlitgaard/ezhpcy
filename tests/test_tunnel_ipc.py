@@ -8,13 +8,13 @@ from pathlib import Path
 
 import pytest
 
+import ezhpcy.ipc.protocol as protocol
+import ezhpcy.ipc.runtime as runtime
 from ezhpcy import ipc
 from ezhpcy.ipc import (
     AuthenticatedIPCBackend,
     create_tunnel_backend,
     load_tunnel_backend,
-    protocol,
-    runtime,
 )
 from ezhpcy.ipc.common import (
     IPCAddress,

@@ -48,7 +48,9 @@ class PromptMissingHostKeyPolicy(paramiko.MissingHostKeyPolicy):
                 client.save_host_keys(client._host_keys_filename)
                 client._log(
                     DEBUG,
-                    f"Adding {key.get_name()} host key for {hostname}: {hexlify(key.get_fingerprint())}",
+                    "Adding {} host key for {}: {}".format(
+                        key.get_name(), hostname, hexlify(key.get_fingerprint())
+                    ),
                 )
             console.print(f"Host key for {hostname} added to known hosts.")
         else:

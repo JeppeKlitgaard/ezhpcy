@@ -96,7 +96,7 @@ class TunnelServer:
             # EOFError, socket errors, and exceptions from socket wrappers.
             # Keep this client boundary broad so every channel-open failure is
             # returned to the proxy without terminating the tunnel.
-            except Exception as error:  # noqa: BLE001
+            except Exception as error:
                 reject_worker_stream(
                     stream,
                     f"worker channel could not be opened: {error}",

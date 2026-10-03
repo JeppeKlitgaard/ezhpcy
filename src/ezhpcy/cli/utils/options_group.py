@@ -2,14 +2,19 @@ import functools
 import inspect
 import typing
 from collections.abc import Callable
-from typing import Any, Concatenate
+from typing import Any, Concatenate, ParamSpec, TypeVar
+
+RHook = TypeVar("RHook")
+ParamsHook = ParamSpec("ParamsHook")
+RSource = TypeVar("RSource")
+ParamsSource = ParamSpec("ParamsSource")
 
 
 class BadHookError(TypeError): ...
 
 
 # https://github.com/fastapi/typer/discussions/742
-def attach_hook[**ParamsHook, RHook](
+def attach_hook(
     hook_func: Callable[ParamsHook, RHook], hook_output_kwarg: str | None = None
 ) -> Callable[..., Any]:
     """
@@ -78,7 +83,7 @@ def attach_hook[**ParamsHook, RHook](
     if hook_output_kwarg is None:
         hook_output_kwarg = hook_func.__name__
 
-    def decorator[**ParamsSource, RSource](
+    def decorator(
         source_func: Callable[Concatenate[RHook, ParamsSource], RSource],
     ) -> Callable[Concatenate[ParamsSource, ParamsHook], RSource]:
         source_params = inspect.signature(source_func).parameters

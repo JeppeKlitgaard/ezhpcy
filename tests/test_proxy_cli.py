@@ -83,4 +83,4 @@ def test_proxy_requires_an_alias() -> None:
     result = CliRunner().invoke(app, ["proxy"])
 
     assert result.exit_code == 2
-    assert "Missing argument 'alias'" in result.stderr
+    assert "Missing argument 'ALIAS'" in result.stderr

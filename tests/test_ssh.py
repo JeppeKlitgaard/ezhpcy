@@ -284,9 +284,9 @@ def test_sftp_client_context_manager_closes_custom_client() -> None:
     with (
         patch.object(client, "get_transport", return_value=transport),
         patch.object(SFTPClient, "from_transport", return_value=sftp) as from_transport,
-        client.sftp_client() as opened_sftp,
     ):
-        assert opened_sftp is sftp
+        with client.sftp_client() as opened_sftp:
+            assert opened_sftp is sftp
 
     from_transport.assert_called_once_with(transport)
     sftp.close.assert_called_once_with()

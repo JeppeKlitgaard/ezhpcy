@@ -104,8 +104,7 @@ class AuthenticatedIPCServer:
             stream.settimeout(None)
             try:
                 self._client_handler(stream)
-            # Report any handler failure without taking down the server.
-            except Exception as error:  # noqa: BLE001
+            except Exception as error:
                 self._report(error)
         finally:
             with self._clients_lock:

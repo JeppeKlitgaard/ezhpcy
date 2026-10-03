@@ -1,7 +1,11 @@
+import typing
+
 from ezhpcy.cli.utils.bad_parameter import RichBadParameter
 
+T = typing.TypeVar("T")
 
-def resolve_forbidden_none[T](
+
+def resolve_forbidden_none(
     *,
     cli_value: T | None,
     config_value: T | None,

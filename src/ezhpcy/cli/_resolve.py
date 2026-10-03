@@ -7,9 +7,8 @@ lazy from pydantic import BaseModel, ValidationError
 lazy from ezhpcy.cli._errors import CliUsageError, sentence
 lazy from ezhpcy.cli._options import (
     ConnectionOptions,
-    ResourceOptions,
     SchedulerOptions,
-    TimingOptions,
+    given_options,
 )
 lazy from ezhpcy.cli._password import resolve_password
 lazy from ezhpcy.config import ProfilePasswordSourceError, config
@@ -17,9 +16,7 @@ lazy from ezhpcy.types import (
     ConnectionConfig,
     ConnectionInfo,
     ResolvedProfileConfig,
-    ResourcesConfig,
     SchedulerConfig,
-    TimingsConfig,
 )
 
 LIST_PROFILES_HINT = (
@@ -123,22 +120,24 @@ def resolve_profile_config(profile: str | None) -> ResolvedProfileConfig:
         ) from error
 
 
-def _with_cli_values[SubConfigT: BaseModel](
-    sub_config: SubConfigT, **cli_values: tuple[str, object]
+def with_cli_options[SubConfigT: BaseModel](
+    sub_config: SubConfigT, options: object, **parsed: object
 ) -> SubConfigT:
-    """Apply the CLI values that were given on top of a resolved sub-config.
+    """Apply the options given on the command line on top of a resolved sub-config.
 
-    Each value comes with the option that gave it, for error messages.
+    `options` is an option dataclass whose fields are named like `sub_config`'s.
+    `parsed` replaces the raw value of a given option, by field.
     """
+    given = given_options(options)
     values = {
         **sub_config.model_dump(exclude_unset=True),
-        **{name: value for name, (_, value) in cli_values.items() if value is not None},
+        **{name: parsed.get(name, value) for name, (_, value) in given.items()},
     }
     try:
         return type(sub_config).model_validate(values)
     except ValidationError as error:
-        options = {name: option for name, (option, _) in cli_values.items()}
-        raise _validation_usage_error(error, options) from error
+        flags = {name: flag for name, (flag, _) in given.items()}
+        raise _validation_usage_error(error, flags) from error
 
 
 def connection_from_cli(
@@ -201,58 +200,12 @@ def connection_from_cli(
 def scheduler_from_cli(
     options: SchedulerOptions, configured: SchedulerConfig
 ) -> SchedulerConfig:
-    return _with_cli_values(
+    """`with_cli_options`, splitting `--interactive-submission-command` first."""
+    return with_cli_options(
         configured,
-        type=("--scheduler", options.scheduler_type),
-        submission_mode=("--submission-mode", options.submission_mode),
-        interactive_submission_command=(
-            "--interactive-submission-command",
-            _parse_interactive_submission_command(
-                options.interactive_submission_command
-            ),
-        ),
-    )
-
-
-def resources_from_cli(
-    options: ResourceOptions, configured: ResourcesConfig
-) -> ResourcesConfig:
-    return _with_cli_values(
-        configured,
-        queue=("--queue", options.queue),
-        cores=("--cores", options.cores),
-        gpus=("--gpus", options.gpus),
-        exclusive=("--exclusive/--shared", options.exclusive),
-        time_limit=("--time-limit", options.time_limit),
-        memory=("--memory", options.memory),
-    )
-
-
-def timings_from_cli(
-    options: TimingOptions, configured: TimingsConfig
-) -> TimingsConfig:
-    return _with_cli_values(
-        configured,
-        queue_timeout_seconds=("--queue-timeout", options.queue_timeout_seconds),
-        worker_startup_timeout_seconds=(
-            "--startup-timeout",
-            options.startup_timeout_seconds,
-        ),
-        job_poll_interval_seconds=(
-            "--job-poll-interval",
-            options.job_poll_interval_seconds,
-        ),
-        job_monitor_interval_seconds=(
-            "--job-monitor-interval",
-            options.job_monitor_interval_seconds,
-        ),
-        worker_heartbeat_interval_seconds=(
-            "--worker-heartbeat-interval",
-            options.worker_heartbeat_interval_seconds,
-        ),
-        worker_heartbeat_timeout_seconds=(
-            "--worker-heartbeat-timeout",
-            options.worker_heartbeat_timeout_seconds,
+        options,
+        interactive_submission_command=_parse_interactive_submission_command(
+            options.interactive_submission_command
         ),
     )
 

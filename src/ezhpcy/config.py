@@ -9,12 +9,10 @@ from platformdirs import PlatformDirs
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic_settings import (
     BaseSettings,
-    EnvSettingsSource,
     PydanticBaseSettingsSource,
     SettingsConfigDict,
     TomlConfigSettingsSource,
 )
-lazy from pydantic.fields import FieldInfo
 
 from ezhpcy.constants import LOGIN_KNOWN_HOSTS_NAME, PACKAGE_NAME, SSH_DIRECTORY_NAME
 from ezhpcy.logging import configure_logging
@@ -184,22 +182,6 @@ def _validate_profile_password_source(
         )
 
 
-# Settings that `EZHPCY_<NAME>` environment variables can't set: they're tables, and
-# `EZHPCY_PROFILE` is the CLI's PROFILE argument.
-_NOT_FROM_ENV = frozenset({"profile", "local_file"})
-
-
-class _EnvSettingsSource(EnvSettingsSource):
-    """Read every setting but `_NOT_FROM_ENV` from the environment."""
-
-    def get_field_value(
-        self, field: FieldInfo, field_name: str
-    ) -> tuple[Any, str, bool]:
-        if field_name in _NOT_FROM_ENV:
-            return None, field_name, False
-        return super().get_field_value(field, field_name)
-
-
 class Config(BaseSettings, _ConfigValues):
     """Configuration loaded from the local workstation settings sources."""
 
@@ -219,7 +201,7 @@ class Config(BaseSettings, _ConfigValues):
     ) -> tuple[PydanticBaseSettingsSource, ...]:
         return (
             init_settings,
-            _EnvSettingsSource(settings_cls),
+            env_settings,
             dotenv_settings,
             TomlConfigSettingsSource(settings_cls),
             file_secret_settings,

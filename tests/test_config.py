@@ -231,30 +231,11 @@ def test_local_file_cannot_be_set_in_the_config_file(tmp_path: Path) -> None:
         FileConfig()
 
 
-@pytest.mark.parametrize(
-    ("variable", "value"),
-    [
-        # The CLI's PROFILE argument, not the `profile` table.
-        ("EZHPCY_PROFILE", "base"),
-        ("EZHPCY_PROFILE", '{"base": {"connection": {"host": "elsewhere"}}}'),
-        ("EZHPCY_LOCAL_FILE", '{"config_dir": "elsewhere"}'),
-    ],
-)
-def test_tables_are_not_read_from_the_environment(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, variable: str, value: str
-) -> None:
-    class FileConfig(config_module.Config):
-        model_config = SettingsConfigDict(toml_file=tmp_path / "ezhpcy.toml")
+def test_local_file_cannot_be_set_from_the_environment(monkeypatch) -> None:
+    monkeypatch.setenv("EZHPCY_LOCAL_FILE", '{"config_dir": "elsewhere"}')
 
-    monkeypatch.setenv(variable, value)
-    monkeypatch.setenv("EZHPCY_AUTO_PROVISION", "false")
-
-    config = FileConfig()
-
-    assert config.profile == {}
-    assert config.local_file == config_module.LocalFileConfig()
-    # Plain settings still come from the environment.
-    assert config.auto_provision is False
+    with pytest.raises(ValidationError, match="local_file cannot be configured"):
+        config_module.Config()
 
 
 def test_config_singleton_applies_its_log_level() -> None:

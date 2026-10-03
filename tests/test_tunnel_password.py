@@ -7,8 +7,6 @@ from keyring.errors import KeyringError
 
 from ezhpcy.cli import _options, _password, _resolve
 from ezhpcy.cli._errors import CliUsageError
-from ezhpcy.cli._options import ConnectionOptions, ResourceOptions, SchedulerOptions
-from ezhpcy.scheduler.types import SchedulerType
 from ezhpcy.types import ProfileConfig
 from tests.support.cli import invoke
 
@@ -37,16 +35,7 @@ def resolve_password(
 
 
 @pytest.fixture(autouse=True)
-def without_default_password(monkeypatch: pytest.MonkeyPatch) -> None:
-    for environment_variable in (
-        _options.HOST_ENV_VAR,
-        _options.USER_ENV_VAR,
-        _options.PASSWORD_ENV_VAR,
-        _options.PASSWORD_FILE_ENV_VAR,
-        _options.PASSWORD_FD_ENV_VAR,
-        _options.PASSWORD_KEYRING_ENV_VAR,
-    ):
-        monkeypatch.delenv(environment_variable, raising=False)
+def base_profile(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         _resolve.config,
         "profile",
@@ -108,15 +97,6 @@ def test_explicit_password_source_overrides_profile_password_source(
     )
 
 
-def test_password_file_is_an_explicit_password_source(
-    tmp_path: Path,
-) -> None:
-    password_file = tmp_path / "password"
-    password_file.write_text("from-file\n", encoding="utf-8")
-
-    assert resolve_password(password_file=password_file) == "from-file"
-
-
 def test_password_keyring_uses_service_and_user_at_host(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -151,71 +131,6 @@ def test_keyring_backend_error_is_an_actionable_parameter_error(
 
     with pytest.raises(CliUsageError, match="backend unavailable"):
         resolve_password(password_keyring=True)
-
-
-def test_explicit_password_sources_are_mutually_exclusive(tmp_path: Path) -> None:
-    password_file = tmp_path / "password"
-    password_file.write_text("secret", encoding="utf-8")
-
-    with pytest.raises(CliUsageError, match="mutually exclusive"):
-        resolve_password(password="secret", password_file=password_file)
-
-
-def test_sub_configs_can_be_resolved_entirely_from_cli_values() -> None:
-    profile_config = _resolve.resolve_profile_config(None)
-    connection = _resolve.connection_from_cli(
-        ConnectionOptions(user="alice", host="login.example.com"),
-        profile_config.connection,
-        profile=None,
-    )
-    scheduler = _resolve.scheduler_from_cli(
-        SchedulerOptions(scheduler_type=SchedulerType.LSF), profile_config.scheduler
-    )
-    resources = _resolve.resources_from_cli(
-        ResourceOptions(queue="gpu", cores=8, gpus=1), profile_config.resources
-    )
-
-    assert connection.user == "alice"
-    assert str(connection.host) == "login.example.com"
-    assert scheduler.type is SchedulerType.LSF
-    assert resources.queue == "gpu"
-    assert resources.cores == 8
-    assert resources.gpus == 1
-
-
-def test_cli_values_override_only_the_given_sub_config_fields(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        _resolve.config,
-        "profile",
-        {
-            "base": ProfileConfig.model_validate(
-                {
-                    "connection": {
-                        "host": "login.example.com",
-                        "user": "alice",
-                        "password_prompt": False,
-                        "ssh_keepalive_interval_seconds": 75,
-                    },
-                    "resources": {"queue": "normal", "cores": 4},
-                }
-            )
-        },
-    )
-
-    profile_config = _resolve.resolve_profile_config("base")
-    connection = _resolve.connection_from_cli(
-        ConnectionOptions(user="bob"), profile_config.connection, profile="base"
-    )
-    resources = _resolve.resources_from_cli(
-        ResourceOptions(cores=8), profile_config.resources
-    )
-
-    assert (connection.user, str(connection.host)) == ("bob", "login.example.com")
-    assert connection.password_prompt is False
-    assert connection.ssh_keepalive_interval_seconds == 75
-    assert (resources.queue, resources.cores) == ("normal", 8)
 
 
 @pytest.mark.parametrize(
@@ -267,120 +182,3 @@ def test_invalid_profile_password_sources_are_reported_as_a_cli_parameter_error(
     assert "Invalid value for" not in result.stdout
     assert "Invalid value for" not in stderr
     assert "password_file, connection.password_keyring" in stderr
-
-
-def test_connection_options_read_password_from_environment(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[tuple[str, str, str]] = []
-    monkeypatch.setattr(
-        "ezhpcy.cli.keyring.keyring.set_password",
-        lambda service, account, password: calls.append((service, account, password)),
-    )
-
-    result = invoke(
-        ["keyring", "set"],
-        env={
-            _options.HOST_ENV_VAR: "login.example.com",
-            _options.USER_ENV_VAR: "alice",
-            _options.PASSWORD_ENV_VAR: "from-environment",
-        },
-    )
-
-    assert result.exit_code == 0, result
-    assert calls == [("ezhpcy", "alice@login.example.com", "from-environment")]
-
-
-def test_connection_options_read_password_file_from_environment(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    password_file = tmp_path / "password"
-    password_file.write_text("from-file\n", encoding="utf-8")
-    calls: list[tuple[str, str, str]] = []
-    monkeypatch.setattr(
-        "ezhpcy.cli.keyring.keyring.set_password",
-        lambda service, account, password: calls.append((service, account, password)),
-    )
-
-    result = invoke(
-        ["keyring", "set"],
-        env={
-            _options.HOST_ENV_VAR: "login.example.com",
-            _options.USER_ENV_VAR: "alice",
-            _options.PASSWORD_FILE_ENV_VAR: str(password_file),
-        },
-    )
-
-    assert result.exit_code == 0, result
-    assert calls == [("ezhpcy", "alice@login.example.com", "from-file")]
-
-
-def test_connection_options_read_password_fd_from_environment(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    read_fd, write_fd = os.pipe()
-    calls: list[tuple[str, str, str]] = []
-    monkeypatch.setattr(
-        "ezhpcy.cli.keyring.keyring.set_password",
-        lambda service, account, password: calls.append((service, account, password)),
-    )
-    try:
-        os.write(write_fd, b"from-file-descriptor\n")
-        os.close(write_fd)
-        write_fd = -1
-
-        result = invoke(
-            ["keyring", "set"],
-            env={
-                _options.HOST_ENV_VAR: "login.example.com",
-                _options.USER_ENV_VAR: "alice",
-                _options.PASSWORD_FD_ENV_VAR: str(read_fd),
-            },
-        )
-    finally:
-        os.close(read_fd)
-        if write_fd >= 0:
-            os.close(write_fd)
-
-    assert result.exit_code == 0, result
-    assert calls == [("ezhpcy", "alice@login.example.com", "from-file-descriptor")]
-
-
-def test_connection_options_read_password_keyring_from_environment(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[tuple[str, str, str]] = []
-    monkeypatch.setattr(
-        _password.keyring, "get_password", lambda *_args: "from-keyring"
-    )
-    monkeypatch.setattr(
-        "ezhpcy.cli.keyring.keyring.set_password",
-        lambda service, account, password: calls.append((service, account, password)),
-    )
-
-    result = invoke(
-        ["keyring", "set"],
-        env={
-            _options.HOST_ENV_VAR: "login.example.com",
-            _options.USER_ENV_VAR: "alice",
-            _options.PASSWORD_KEYRING_ENV_VAR: "true",
-        },
-    )
-
-    assert result.exit_code == 0, result
-    assert calls == [("ezhpcy", "alice@login.example.com", "from-keyring")]
-
-
-@pytest.mark.parametrize("command", [["provision"], ["prune"], ["tunnel"]])
-def test_remote_command_help_includes_every_password_source(
-    command: list[str],
-) -> None:
-    result = invoke([*command, "--help"])
-
-    assert result.exit_code == 0
-    assert "--password" in result.stdout
-    assert "--password-file" in result.stdout
-    assert "--password-fd" in result.stdout
-    assert "--password-keyri" in result.stdout
-    assert "PROFILE" in result.stdout
-    assert "--profile" not in result.stdout

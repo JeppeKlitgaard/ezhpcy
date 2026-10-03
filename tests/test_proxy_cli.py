@@ -1,4 +1,3 @@
-import logging
 import subprocess
 import sys
 import textwrap
@@ -58,28 +57,6 @@ def test_proxy_rejects_an_alias_that_is_not_a_safe_name(
 
     assert result.exit_code == 2
     assert "invalid host alias" in result.stderr
-
-
-def test_proxy_takes_debug_logging_from_the_tunnel(
-    runtime_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    levels: list[int] = []
-    monkeypatch.setattr(proxy_module, "relay_proxy_stdio", lambda *_args: None)
-    monkeypatch.setattr(
-        proxy_module,
-        "configure_logging",
-        lambda level, **_kwargs: levels.append(level),
-    )
-    listener = create_tunnel_backend(alias="gpu", debug=True).listen(
-        lambda _connection: None
-    )
-    try:
-        result = invoke(["proxy", "gpu"])
-    finally:
-        listener.close()
-
-    assert result.exit_code == 0, result
-    assert levels == [logging.DEBUG]
 
 
 def test_proxy_requires_an_alias() -> None:

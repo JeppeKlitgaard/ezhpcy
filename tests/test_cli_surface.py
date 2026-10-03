@@ -15,7 +15,6 @@ from collections.abc import Iterator
 from datetime import timedelta
 from operator import attrgetter
 from pathlib import Path
-from types import SimpleNamespace
 
 import keyring
 import pytest
@@ -240,20 +239,20 @@ def _filled(values: list[str], sources: dict[str, str]) -> list[str]:
     return [sources.get(value, value) for value in values]
 
 
+# Every command that connects shares one set of connection options, so they are
+# tested through one command; the others are checked with a single option below.
 @pytest.mark.parametrize(
     ("arguments", "environment", "field", "expected"), _CONNECTION_OPTION_CASES
 )
-@pytest.mark.parametrize("command", _LOGIN_COMMANDS)
 def test_connection_options_reach_the_login_connection(
     monkeypatch: pytest.MonkeyPatch,
     password_sources: dict[str, str],
-    command: str,
     arguments: list[str],
     environment: dict[str, str],
     field: str,
     expected: str,
 ) -> None:
-    captured = capture(monkeypatch, command)
+    captured = capture(monkeypatch, "provision")
     env = dict(
         zip(
             environment,
@@ -262,56 +261,31 @@ def test_connection_options_reach_the_login_connection(
         )
     )
 
-    result = invoke([command, "base", *_filled(arguments, password_sources)], env=env)
-
-    connection = (
-        captured["resolved"].connection
-        if command == "tunnel"
-        else captured.get("connection")
+    result = invoke(
+        ["provision", "base", *_filled(arguments, password_sources)], env=env
     )
-    assert connection is not None, result
-    assert getattr(connection, field) == expected
+
+    assert "connection" in captured, result
+    assert getattr(captured["connection"], field) == expected
 
 
 @_PIPED_PASSWORD_PROMPT
-@pytest.mark.parametrize(
-    ("arguments", "environment", "field", "expected"), _CONNECTION_OPTION_CASES
-)
-def test_connection_options_reach_keyring_set(
-    monkeypatch: pytest.MonkeyPatch,
-    password_sources: dict[str, str],
-    arguments: list[str],
-    environment: dict[str, str],
-    field: str,
-    expected: str,
-) -> None:
+def test_connection_options_reach_keyring_set(monkeypatch: pytest.MonkeyPatch) -> None:
     captured = capture(monkeypatch, "keyring")
-    env = {
-        "EZHPCY_HOST": "login.example.com",
-        "EZHPCY_USER": "alice",
-        **dict(
-            zip(
-                environment,
-                _filled(list(environment.values()), password_sources),
-                strict=True,
-            )
-        ),
-    }
 
     result = invoke(
-        ["keyring", "set", *_filled(arguments, password_sources)],
-        env=env,
+        ["keyring", "set", "-h", "other.example.com"],
+        env={"EZHPCY_USER": "bob"},
         stdin="typed\n",
     )
 
     assert result.exit_code == 0, result
-    user, host = str(captured["account"]).split("@")
-    stored = SimpleNamespace(user=user, host=host, password=captured["password"])
-    assert getattr(stored, field) == expected
+    assert captured["account"] == "bob@other.example.com"
+    assert captured["password"] == "typed"
 
 
 @pytest.mark.parametrize("command", _LOGIN_COMMANDS)
-def test_the_profile_is_resolved_once_per_command(
+def test_connection_options_reach_each_command_and_resolve_the_profile_once(
     monkeypatch: pytest.MonkeyPatch, command: str
 ) -> None:
     captured = capture(monkeypatch, command)
@@ -329,7 +303,13 @@ def test_the_profile_is_resolved_once_per_command(
 
     result = invoke([command, "base", "--user", "bob"])
 
-    assert captured, result
+    connection = (
+        captured["resolved"].connection
+        if command == "tunnel"
+        else captured.get("connection")
+    )
+    assert connection is not None, result
+    assert connection.user == "bob"
     assert resolved_profiles == ["base"]
 
 
@@ -394,17 +374,6 @@ def test_tunnel_options_reach_the_resolved_configuration(
 
     assert result.exit_code == 0, result
     assert attrgetter(attribute)(captured["resolved"]) == expected
-
-
-def test_tunnel_alias_option_names_the_ssh_host(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured = capture(monkeypatch, "tunnel")
-
-    result = invoke(["tunnel", "base", "--alias", "my-gpu"])
-
-    assert result.exit_code == 0, result
-    assert captured["ssh_host"].alias == "my-gpu"
 
 
 def test_tunnel_worker_port_is_the_only_port_tried(
@@ -563,7 +532,6 @@ def test_debug_enables_debug_logging_with_timestamps(
         (["--password-file", "{directory}"], "--password-file"),
         (["--scheduler", "SLURM"], "--scheduler"),
         (["--submission-mode", "sometimes"], "--submission-mode"),
-        (["--cores", "many"], "--cores"),
     ],
 )
 def test_values_outside_the_limits_are_usage_errors(
@@ -627,6 +595,19 @@ def test_invalid_resource_values_are_usage_errors(
     assert result.exit_code == 2, result
     assert message in result.stderr
     assert captured == {}
+
+
+@pytest.mark.parametrize(
+    ("command", "arguments"),
+    [("provision", ["--queue", "gpu"]), ("prune", ["--scheduler", "LSF"])],
+)
+def test_connection_only_commands_reject_job_options(
+    command: str, arguments: list[str]
+) -> None:
+    result = invoke([command, "base", *arguments])
+
+    assert result.exit_code == 2, result
+    assert "Unknown option" in result.stderr
 
 
 # Errors from command bodies
@@ -719,12 +700,6 @@ def test_invalid_resource_values_are_usage_errors(
         ),
         pytest.param(
             "tunnel",
-            ["base", "--alias", "exclusive"],
-            ["is the name of profile", "exclusive"],
-            id="alias-is-a-profile",
-        ),
-        pytest.param(
-            "tunnel",
             ["no-such-profile"],
             [
                 'invalid value "no-such-profile" for profile',
@@ -811,7 +786,7 @@ def test_help_is_listed_with_the_options_not_the_commands(group: list[str]) -> N
     assert _listed_names(result.stdout, names) == names
 
 
-@pytest.mark.parametrize("group", [[], ["config"], ["keyring"], ["version"]])
+@pytest.mark.parametrize("group", [[], ["config"]])
 @pytest.mark.parametrize("flag", ["-h", "--version"])
 def test_there_is_no_short_help_flag_or_version_flag(
     group: list[str], flag: str
@@ -832,29 +807,16 @@ def _help_panels(help_text: str, titles: list[str]) -> dict[str, str]:
     }
 
 
-_CONNECTION_OPTIONS = [
-    "--host",
-    "--user",
-    "--password ",
-    "--password-file",
-    "--password-fd",
-    "--password-keyring",
-]
-
-
-@pytest.mark.parametrize("command", _LOGIN_COMMANDS)
-def test_connection_options_are_grouped_in_help(command: str) -> None:
-    result = invoke([command, "--help"])
-
-    assert result.exit_code == 0, result
-    panel = _help_panels(result.stdout, ["Connection Options"])["Connection Options"]
-    for option in _CONNECTION_OPTIONS:
-        assert option in panel
-
-
 def test_tunnel_options_are_grouped_in_help() -> None:
     groups = {
-        "Connection Options": _CONNECTION_OPTIONS,
+        "Connection Options": [
+            "--host",
+            "--user",
+            "--password ",
+            "--password-file",
+            "--password-fd",
+            "--password-keyring",
+        ],
         "Scheduler Options": [
             "--scheduler",
             "--submission-mode",

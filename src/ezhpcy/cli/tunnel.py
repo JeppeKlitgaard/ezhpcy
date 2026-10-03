@@ -81,6 +81,8 @@ from ezhpcy.types import (
     ConnectionInfo,
     RemoteState,
     ResolvedConfig,
+    ResolvedProfileConfig,
+    SchedulerConfig,
     SubmissionMode,
 )
 from ezhpcy.utils import local_machine_id, ssh_connection_id
@@ -1055,6 +1057,101 @@ def _run_tunnel(
                 control.close()
 
 
+def _check_interactive_submission_command(
+    scheduler: SchedulerConfig,
+    *,
+    scheduler_options: SchedulerOptions,
+    resource_options: ResourceOptions,
+    profile: str | None,
+    profile_config: ResolvedProfileConfig,
+) -> None:
+    """Reject an interactive submission command that would drop requested settings.
+
+    The command is a site wrapper (e.g. DTU's `a100sh`) that EzHPCy runs instead of
+    building its own scheduler request, so:
+
+    - It only makes sense in interactive submission mode.
+    - It decides the resources itself, so every `resources.*` (and, for LSF,
+      `lsf.*`) setting is ignored. Asking for one explicitly, on the CLI or in
+      the selected profile itself, is an error rather than silently getting
+      something else.
+    - Settings the profile only inherits are logged and ignored instead, because
+      wrapper profiles typically inherit from a base profile that sets resources
+      (e.g. `dtu-a100sh` inherits from `dtu-base-lsf`). Telling inherited from
+      direct settings is why the raw `config.profile[profile]` is consulted.
+    """
+    command = scheduler.interactive_submission_command
+    if command is None:
+        return
+    # The command comes from the CLI or, failing that, from the profile.
+    if scheduler_options.interactive_submission_command is not None:
+        command_source = "--interactive-submission-command"
+        command_value = scheduler_options.interactive_submission_command
+    else:
+        command_source = f"profile.{profile}.scheduler.interactive_submission_command"
+        command_value = shlex.join(command)
+    if scheduler.submission_mode is SubmissionMode.BATCH:
+        raise CliUsageError(
+            t"It requires {'scheduler.submission_mode':name} to be "
+            t"{'interactive':choice}.",
+            param_hint=command_source,
+            value=command_value,
+        )
+
+    submission_sections = ["resources"]
+    if scheduler.type is SchedulerType.LSF:
+        submission_sections.append("lsf")
+    configured_submission_options = {
+        f"{section}.{field}"
+        for section in submission_sections
+        for field in getattr(profile_config, section).model_fields_set
+    }
+    directly_configured_submission_options = (
+        {
+            f"{section}.{field}"
+            for section in submission_sections
+            for field in getattr(config.profile[profile], section).model_fields_set
+        }
+        if profile is not None
+        else set()
+    )
+    cli_submission_options = [
+        t"{option:name}={value}"
+        for option, value in (
+            ("--queue", resource_options.queue),
+            ("--cores", resource_options.cores),
+            ("--gpus", resource_options.gpus),
+            ("--exclusive/--shared", resource_options.exclusive),
+            ("--time-limit", resource_options.time_limit),
+            ("--memory", resource_options.memory),
+        )
+        if value is not None
+    ]
+    conflicts = [
+        *(
+            t"{f'profile.{profile}.{option}':name}"
+            for option in sorted(directly_configured_submission_options)
+        ),
+        *cli_submission_options,
+    ]
+    if conflicts:
+        raise CliUsageError(
+            t"It replaces the scheduler-generated request and cannot be "
+            t"combined with submission options: {conflicts}.",
+            param_hint=command_source,
+            value=command_value,
+        )
+    inherited_submission_options = (
+        configured_submission_options - directly_configured_submission_options
+    )
+    if inherited_submission_options:
+        logger.info(
+            "Ignoring inherited scheduler submission options for "
+            "scheduler.interactive_submission_command: %s",
+            ", ".join(sorted(inherited_submission_options)),
+        )
+
+
 # ruff: ignore[B008]  # See the comment above the option dataclasses in _options.py
 def tunnel_cmd(
     profile: OptionalProfileArg = None,
@@ -1085,19 +1182,16 @@ def tunnel_cmd(
         ),
     ] = _DEFAULT_WORKER_PORT_RETRIES,
     auto_provision: Annotated[
-        bool,
+        bool | None,
         Parameter(
             name="--auto-provision",
-            help="Provision or repair worker infrastructure before submission.",
+            negative="--no-auto-provision",
+            help=(
+                "Provision or repair worker infrastructure before submission. "
+                "Defaults to the auto_provision setting."
+            ),
         ),
-    ] = False,
-    no_auto_provision: Annotated[
-        bool,
-        Parameter(
-            name="--no-auto-provision",
-            help="Do not provision or repair worker infrastructure before submission.",
-        ),
-    ] = False,
+    ] = None,
 ) -> None:
     """Allocate a compute node and expose its SSH service through a tunnel."""
     profile_config = resolve_profile_config(profile)
@@ -1130,80 +1224,13 @@ def tunnel_cmd(
                     ),
                     hint=LIST_PROFILES_HINT if profile is None else t"",
                 )
-        # The command comes from the CLI or, failing that, from the profile.
-        if scheduler_options.interactive_submission_command is not None:
-            command_source = "--interactive-submission-command"
-            command_value = scheduler_options.interactive_submission_command
-        else:
-            command_source = (
-                f"profile.{profile}.scheduler.interactive_submission_command"
-            )
-            command_value = shlex.join(scheduler.interactive_submission_command or [])
-        if (
-            scheduler.submission_mode is SubmissionMode.BATCH
-            and scheduler.interactive_submission_command is not None
-        ):
-            raise CliUsageError(
-                t"It requires {'scheduler.submission_mode':name} to be "
-                t"{'interactive':choice}.",
-                param_hint=command_source,
-                value=command_value,
-            )
-        if scheduler.interactive_submission_command is not None:
-            submission_sections = ["resources"]
-            if scheduler.type is SchedulerType.LSF:
-                submission_sections.append("lsf")
-            configured_submission_options = {
-                f"{section}.{field}"
-                for section in submission_sections
-                for field in getattr(profile_config, section).model_fields_set
-            }
-            directly_configured_submission_options = (
-                {
-                    f"{section}.{field}"
-                    for section in submission_sections
-                    for field in getattr(
-                        config.profile[profile], section
-                    ).model_fields_set
-                }
-                if profile is not None
-                else set()
-            )
-            cli_submission_options = [
-                t"{option:name}={value}"
-                for option, value in (
-                    ("--queue", resource_options.queue),
-                    ("--cores", resource_options.cores),
-                    ("--gpus", resource_options.gpus),
-                    ("--exclusive/--shared", resource_options.exclusive),
-                    ("--time-limit", resource_options.time_limit),
-                    ("--memory", resource_options.memory),
-                )
-                if value is not None
-            ]
-            conflicts = [
-                *(
-                    t"{f'profile.{profile}.{option}':name}"
-                    for option in sorted(directly_configured_submission_options)
-                ),
-                *cli_submission_options,
-            ]
-            if conflicts:
-                raise CliUsageError(
-                    t"It replaces the scheduler-generated request and cannot be "
-                    t"combined with submission options: {conflicts}.",
-                    param_hint=command_source,
-                    value=command_value,
-                )
-            inherited_submission_options = (
-                configured_submission_options - directly_configured_submission_options
-            )
-            if inherited_submission_options:
-                logger.info(
-                    "Ignoring inherited scheduler submission options for "
-                    "scheduler.interactive_submission_command: %s",
-                    ", ".join(sorted(inherited_submission_options)),
-                )
+        _check_interactive_submission_command(
+            scheduler,
+            scheduler_options=scheduler_options,
+            resource_options=resource_options,
+            profile=profile,
+            profile_config=profile_config,
+        )
         ssh_host = _resolve_ssh_host(alias, profile_name=profile, resolved=resolved)
         written_profile_hosts = profile_hosts()
         try:
@@ -1211,18 +1238,9 @@ def tunnel_cmd(
         except (OSError, FilePermissionError) as error:
             logger.warning("Could not write the profile SSH configuration: %s", error)
             written_profile_hosts = []
-        if auto_provision and no_auto_provision:
-            raise CliUsageError(
-                t"{'--auto-provision':name} and {'--no-auto-provision':name} "
-                t"cannot be used together."
-            )
-        if auto_provision:
-            auto_provision_enabled = True
-        elif no_auto_provision:
-            auto_provision_enabled = False
-        else:
-            auto_provision_enabled = config.auto_provision
-        if not auto_provision_enabled:
+        if auto_provision is None:
+            auto_provision = config.auto_provision
+        if not auto_provision:
             _ensure_local_worker_credentials(connection)
         worker_ports = (
             (worker_port,)
@@ -1237,7 +1255,7 @@ def tunnel_cmd(
             # block profiles.conf already holds, so it needs no active file.
             ssh_host_in_profiles_config=ssh_host in written_profile_hosts,
             worker_ports=worker_ports,
-            auto_provision=auto_provision_enabled,
+            auto_provision=auto_provision,
         )
     except KeyboardInterrupt:
         logger.info("Tunnel stopped.")

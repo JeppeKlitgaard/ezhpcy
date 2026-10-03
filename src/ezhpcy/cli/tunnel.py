@@ -34,7 +34,7 @@ from ezhpcy.cli.common import (
     WorkerHeartbeatTimeoutOpt,
     with_profile_context,
 )
-from ezhpcy.cli.doctor import echo_include_directive
+from ezhpcy.cli.ssh_config import echo_include_directive
 from ezhpcy.cli.utils.bad_parameter import RichBadParameter
 from ezhpcy.cli.utils.ssh import InteractiveSSHClient
 from ezhpcy.config import ConnectionInfo, config

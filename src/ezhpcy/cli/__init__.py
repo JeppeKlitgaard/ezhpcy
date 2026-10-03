@@ -5,13 +5,13 @@ import typer
 
 from ezhpcy.cli.common import DEBUG_ENV_VAR
 from ezhpcy.cli.config import config_app
-from ezhpcy.cli.doctor import doctor_cmd
 from ezhpcy.cli.info import info_cmd
 from ezhpcy.cli.keyring import keyring_app
 from ezhpcy.cli.list_profiles import list_profiles_cmd
 from ezhpcy.cli.provision import provision_cmd
 from ezhpcy.cli.proxy import proxy_cmd
 from ezhpcy.cli.prune import prune_cmd
+from ezhpcy.cli.ssh_config import ssh_config_cmd
 from ezhpcy.cli.tunnel import tunnel_cmd
 from ezhpcy.cli.utils.group import EzhpcyTyperGroup
 from ezhpcy.cli.version import version_cmd
@@ -56,10 +56,10 @@ app.command(name="proxy", help="Connect through a running tunnel (SSH ProxyComma
 # Configuration Commands
 app.add_typer(config_app, name="config", rich_help_panel="Configuration Commands")
 app.command(
-    name="doctor",
-    help="Validates the EzHPCy configuration and suggests fixes if necessary.",
+    name="ssh-config",
+    help="Regenerate the profile SSH hosts, print the Include line and check each alias.",
     rich_help_panel="Configuration Commands",
-)(doctor_cmd)
+)(ssh_config_cmd)
 app.add_typer(keyring_app, name="keyring", rich_help_panel="Configuration Commands")
 
 
@@ -84,7 +84,7 @@ EzhpcyTyperGroup.command_order = (
     "proxy",
     # Configuration Commands
     "config",
-    "doctor",
+    "ssh-config",
     "keyring",
     # Meta Commands
     "info",

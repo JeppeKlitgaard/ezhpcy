@@ -278,7 +278,7 @@ def test_config_load_existing_file_defaults_to_no(
     )
     use_config_file(monkeypatch, config_load, config_file)
 
-    result = invoke(["config", "load", "dtu", "--user", "alice"], input="\n")
+    result = invoke(["config", "load", "dtu", "--user", "alice"], stdin="\n")
 
     assert result.exit_code == 1
     assert "Warning" in result.stdout

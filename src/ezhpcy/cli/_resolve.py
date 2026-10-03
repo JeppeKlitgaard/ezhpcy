@@ -11,16 +11,34 @@ from rich.markup import escape
 
 from ezhpcy.cli._errors import CliUsageError
 from ezhpcy.cli._options import (
-    ConnectionOptions,
-    ResourceOptions,
-    SchedulerOptions,
-    TimingOptions,
+    CoresOpt,
+    ExclusiveOpt,
+    GpusOpt,
+    HostOpt,
+    InteractiveSubmissionCommandOpt,
+    JobMonitorIntervalOpt,
+    JobPollIntervalOpt,
+    MemoryOpt,
+    OptionalProfileArg,
+    PasswordFdOpt,
+    PasswordFileOpt,
+    PasswordKeyringOpt,
+    PasswordOpt,
+    QueueOpt,
+    QueueTimeoutOpt,
+    SchedulerOpt,
+    StartupTimeoutOpt,
+    SubmissionModeOpt,
+    TimeLimitOpt,
+    UserOpt,
+    WorkerHeartbeatIntervalOpt,
+    WorkerHeartbeatTimeoutOpt,
 )
 from ezhpcy.cli._password import resolve_password
 from ezhpcy.cli.utils.bad_parameter import RichBadParameter
+from ezhpcy.cli.utils.options_group import attach_hook
 from ezhpcy.config import ProfilePasswordSourceError, config
 from ezhpcy.types import (
-    ConnectionConfig,
     ConnectionInfo,
     ResolvedProfileConfig,
     ResourcesConfig,
@@ -114,17 +132,21 @@ def _with_cli_values[SubConfigT: BaseModel](
 
 
 def connection_from_cli(
-    options: ConnectionOptions,
-    configured: ConnectionConfig,
     *,
-    profile: str | None,
+    profile: OptionalProfileArg = None,
+    user: UserOpt = None,
+    password: PasswordOpt = None,
+    password_file: PasswordFileOpt = None,
+    password_fd: PasswordFdOpt = None,
+    password_keyring: PasswordKeyringOpt = False,
+    host: HostOpt = None,
 ) -> ConnectionInfo:
-    """Resolve the login connection from the CLI options and `profile`'s config."""
+    configured = resolve_profile_config(profile).connection
     config_prefix = f"profile.{profile}.connection" if profile is not None else None
     # Without a profile, the likely fix is to give one.
     hint = _LIST_PROFILES_HINT if profile is None else None
     user = resolve_forbidden_none(
-        cli_value=options.user,
+        cli_value=user,
         config_value=configured.user,
         name="user",
         cli_param="--user",
@@ -132,7 +154,7 @@ def connection_from_cli(
         hint=hint,
     )
     resolved_host = resolve_forbidden_none(
-        cli_value=options.host,
+        cli_value=host,
         config_value=str(configured.host) if configured.host else None,
         name="host",
         cli_param="--host",
@@ -140,10 +162,10 @@ def connection_from_cli(
         hint=hint,
     )
     resolved_password = resolve_password(
-        password=options.password,
-        password_file=options.password_file,
-        password_fd=options.password_fd,
-        password_keyring=options.password_keyring,
+        password=password,
+        password_file=password_file,
+        password_fd=password_fd,
+        password_keyring=password_keyring,
         user=user,
         host=resolved_host,
         config_password_file=configured.password_file,
@@ -166,62 +188,104 @@ def connection_from_cli(
         raise RichBadParameter(str(error)) from error
 
 
+with_connection = attach_hook(connection_from_cli, hook_output_kwarg="connection")
+
+
 def scheduler_from_cli(
-    options: SchedulerOptions, configured: SchedulerConfig
+    *,
+    profile: OptionalProfileArg = None,
+    scheduler_type: SchedulerOpt = None,
+    submission_mode: SubmissionModeOpt = None,
+    interactive_submission_command: InteractiveSubmissionCommandOpt = None,
 ) -> SchedulerConfig:
     return _with_cli_values(
-        configured,
-        type=options.scheduler_type,
-        submission_mode=options.submission_mode,
+        resolve_profile_config(profile).scheduler,
+        type=scheduler_type,
+        submission_mode=submission_mode,
         interactive_submission_command=_parse_interactive_submission_command(
-            options.interactive_submission_command
+            interactive_submission_command
         ),
     )
+
+
+with_scheduler = attach_hook(scheduler_from_cli, hook_output_kwarg="scheduler")
 
 
 def resources_from_cli(
-    options: ResourceOptions, configured: ResourcesConfig
+    *,
+    profile: OptionalProfileArg = None,
+    queue: QueueOpt = None,
+    cores: CoresOpt = None,
+    gpus: GpusOpt = None,
+    exclusive: ExclusiveOpt = None,
+    time_limit: TimeLimitOpt = None,
+    memory: MemoryOpt = None,
 ) -> ResourcesConfig:
     return _with_cli_values(
-        configured,
-        queue=options.queue,
-        cores=options.cores,
-        gpus=options.gpus,
-        exclusive=options.exclusive,
-        time_limit=options.time_limit,
-        memory=options.memory,
+        resolve_profile_config(profile).resources,
+        queue=queue,
+        cores=cores,
+        gpus=gpus,
+        exclusive=exclusive,
+        time_limit=time_limit,
+        memory=memory,
     )
+
+
+with_resources = attach_hook(resources_from_cli, hook_output_kwarg="resources")
 
 
 def timings_from_cli(
-    options: TimingOptions, configured: TimingsConfig
+    *,
+    profile: OptionalProfileArg = None,
+    queue_timeout_seconds: QueueTimeoutOpt = None,
+    startup_timeout_seconds: StartupTimeoutOpt = None,
+    job_poll_interval_seconds: JobPollIntervalOpt = None,
+    job_monitor_interval_seconds: JobMonitorIntervalOpt = None,
+    worker_heartbeat_interval_seconds: WorkerHeartbeatIntervalOpt = None,
+    worker_heartbeat_timeout_seconds: WorkerHeartbeatTimeoutOpt = None,
 ) -> TimingsConfig:
     return _with_cli_values(
-        configured,
-        queue_timeout_seconds=options.queue_timeout_seconds,
-        worker_startup_timeout_seconds=options.startup_timeout_seconds,
-        job_poll_interval_seconds=options.job_poll_interval_seconds,
-        job_monitor_interval_seconds=options.job_monitor_interval_seconds,
-        worker_heartbeat_interval_seconds=options.worker_heartbeat_interval_seconds,
-        worker_heartbeat_timeout_seconds=options.worker_heartbeat_timeout_seconds,
+        resolve_profile_config(profile).timings,
+        queue_timeout_seconds=queue_timeout_seconds,
+        worker_startup_timeout_seconds=startup_timeout_seconds,
+        job_poll_interval_seconds=job_poll_interval_seconds,
+        job_monitor_interval_seconds=job_monitor_interval_seconds,
+        worker_heartbeat_interval_seconds=worker_heartbeat_interval_seconds,
+        worker_heartbeat_timeout_seconds=worker_heartbeat_timeout_seconds,
     )
 
 
-def direct_connection_from_cli(options: ConnectionOptions) -> ConnectionInfo:
-    """Resolve a connection from the CLI options alone, without a profile."""
-    if options.user is None:
+with_timings = attach_hook(timings_from_cli, hook_output_kwarg="timings")
+
+
+def direct_connection_info_from_options(
+    *,
+    host: HostOpt = None,
+    user: UserOpt = None,
+    password: PasswordOpt = None,
+    password_file: PasswordFileOpt = None,
+    password_fd: PasswordFdOpt = None,
+    password_keyring: PasswordKeyringOpt = False,
+) -> ConnectionInfo:
+    if user is None:
         raise RichBadParameter("user must be set via --user", param_hint="--user")
-    if options.host is None:
+    if host is None:
         raise RichBadParameter("host must be set via --host", param_hint="--host")
     return ConnectionInfo(
-        user=options.user,
-        host=options.host,
+        user=user,
+        host=host,
         password=resolve_password(
-            password=options.password,
-            password_file=options.password_file,
-            password_fd=options.password_fd,
-            password_keyring=options.password_keyring,
-            user=options.user,
-            host=options.host,
+            password=password,
+            password_file=password_file,
+            password_fd=password_fd,
+            password_keyring=password_keyring,
+            user=user,
+            host=host,
         ),
     )
+
+
+with_direct_connection_options = attach_hook(
+    direct_connection_info_from_options, hook_output_kwarg="conn_info"
+)

@@ -8,11 +8,11 @@ from cyclopts import Parameter
 from rich.prompt import Confirm
 
 from ezhpcy import console
-from ezhpcy.cli._options import ConnectionOptions, OptionalProfileArg
-from ezhpcy.cli._resolve import connection_from_cli, resolve_profile_config
+from ezhpcy.cli._options import OptionalProfileArg
+from ezhpcy.cli._resolve import with_connection
 from ezhpcy.cli.utils.ssh import InteractiveSSHClient
 from ezhpcy.ssh import SSHClient
-from ezhpcy.types import RemoteState
+from ezhpcy.types import ConnectionInfo, RemoteState
 
 _INSTALLATION_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+!-]*$")
 
@@ -97,12 +97,12 @@ def prune_all_remote_data(ssh: SSHClient, remote_state: RemoteState) -> None:
     ssh.run(["rm", "-rf", "--", str(remote_root)])
 
 
-# ruff: ignore[B008]  # See the comment above the option dataclasses in _options.py
+@with_connection
 def prune_cmd(
     profile: OptionalProfileArg = None,
     /,
     *,
-    connection_options: ConnectionOptions = ConnectionOptions(),
+    connection: ConnectionInfo,
     all_data: Annotated[
         bool,
         Parameter(
@@ -119,9 +119,6 @@ def prune_cmd(
     ] = False,
 ) -> None:
     """Prune stale installations and Pixi data."""
-    connection = connection_from_cli(
-        connection_options, resolve_profile_config(profile).connection, profile=profile
-    )
     ssh = InteractiveSSHClient(connection, password_prompt=connection.password_prompt)
     ssh.interactive_connect()
     remote_state = ssh.get_remote_state()

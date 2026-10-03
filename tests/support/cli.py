@@ -1,9 +1,11 @@
-"""Run the EzHPCy CLI in-process through its `main()`."""
+"""Run the EzHPCy CLI in-process, independently of the CLI framework behind it."""
 
 import io
 import logging
+import os
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Generator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from types import SimpleNamespace
@@ -33,7 +35,7 @@ class Result:
 def invoke(
     args: Sequence[str],
     *,
-    env: Mapping[str, str] | None = None,
+    env: Mapping[str, str | None] | None = None,
     stdin: str | None = None,
     color: bool = False,
 ) -> Result:
@@ -43,23 +45,18 @@ def invoke(
     With `color`, output is rendered as for a colour terminal, including ANSI
     styling.
     """
-    # Don't translate newlines to the platform's line ending.
+    stdin_stream = io.TextIOWrapper(
+        io.BytesIO((stdin or "").encode()), encoding="utf-8"
+    )
+    # Like Click's runner, don't translate newlines to the platform's line ending.
     stdout = io.TextIOWrapper(io.BytesIO(), encoding="utf-8", newline="")
     stderr = io.TextIOWrapper(io.BytesIO(), encoding="utf-8", newline="")
     exit_code = 0
     exception: BaseException | None = None
-    with pytest.MonkeyPatch.context() as monkeypatch:
-        for name, value in {"COLUMNS": str(_TERMINAL_WIDTH), **(env or {})}.items():
-            monkeypatch.setenv(name, value)
-        # Prompts read `sys.stdin`, the proxy relays through `sys.stdout.buffer`
-        # and interactive job output goes to `sys.stderr`.
-        monkeypatch.setattr(
-            sys,
-            "stdin",
-            io.TextIOWrapper(io.BytesIO((stdin or "").encode()), encoding="utf-8"),
-        )
-        monkeypatch.setattr(sys, "stdout", stdout)
-        monkeypatch.setattr(sys, "stderr", stderr)
+    with (
+        _environment({"COLUMNS": str(_TERMINAL_WIDTH), **(env or {})}),
+        _streams(stdin_stream, stdout, stderr),
+    ):
         try:
             main(
                 list(args),
@@ -67,10 +64,8 @@ def invoke(
                 error_console=_console(stderr, color=color),
             )
         except SystemExit as error:
-            # Commands exit with a status code, never `sys.exit("message")`.
-            assert error.code is None or isinstance(error.code, int), error.code
-            exit_code = error.code or 0
-        # Report any exception that escapes the command.
+            exit_code = _exit_code(error.code)
+        # Report any exception that escapes the command, as Click's runner did.
         except Exception as error:  # noqa: BLE001
             exit_code = 1
             exception = error
@@ -94,11 +89,50 @@ def _console(file: TextIO, *, color: bool) -> Console:
     )
 
 
+def _exit_code(code: str | int | None) -> int:
+    if code is None:
+        return 0
+    if isinstance(code, int):
+        return code
+    # `sys.exit("message")` prints the message and exits with status 1.
+    print(code, file=sys.stderr)
+    return 1
+
+
 def _written(stream: io.TextIOWrapper) -> str:
     stream.flush()
     buffer = stream.buffer
     assert isinstance(buffer, io.BytesIO)
     return buffer.getvalue().decode("utf-8", errors="replace")
+
+
+@contextmanager
+def _environment(env: Mapping[str, str | None]) -> Generator[None]:
+    """Set (or, for `None`, unset) environment variables for the duration."""
+    previous = {name: os.environ.get(name) for name in env}
+    try:
+        _update_environment(env)
+        yield
+    finally:
+        _update_environment(previous)
+
+
+def _update_environment(env: Mapping[str, str | None]) -> None:
+    for name, value in env.items():
+        if value is None:
+            os.environ.pop(name, None)
+        else:
+            os.environ[name] = value
+
+
+@contextmanager
+def _streams(stdin: TextIO, stdout: TextIO, stderr: TextIO) -> Generator[None]:
+    previous = sys.stdin, sys.stdout, sys.stderr
+    sys.stdin, sys.stdout, sys.stderr = stdin, stdout, stderr
+    try:
+        yield
+    finally:
+        sys.stdin, sys.stdout, sys.stderr = previous
 
 
 type CapturedCommand = Literal["tunnel", "provision", "prune", "proxy", "keyring"]

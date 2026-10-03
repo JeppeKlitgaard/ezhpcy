@@ -199,7 +199,10 @@ class SSHClient(paramiko.SSHClient):
         Respects XDG directory specifications.
         """
 
-        cmd = 'printf \'{"cache_dir":"%s"}\' "${XDG_CACHE_HOME:-$HOME/.cache}"'
+        cmd = (
+            'printf \'{"cache_dir":"%s","state_dir":"%s"}\' '
+            '"${XDG_CACHE_HOME:-$HOME/.cache}" "${XDG_STATE_HOME:-$HOME/.local/state}"'
+        )
         raw = self.run(["bash", "-lc", cmd]).strip()
 
         remote_state = RemoteState.model_validate_json(raw, strict=True)

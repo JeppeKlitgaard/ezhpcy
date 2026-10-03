@@ -169,6 +169,7 @@ class RemoteState(BaseModel):
     """
 
     cache_dir: PurePosixPath
+    state_dir: PurePosixPath
 
     def package_cache_root(self) -> PurePosixPath:
         return self.cache_dir / PACKAGE_NAME
@@ -188,8 +189,17 @@ class RemoteState(BaseModel):
     def worker_cwd_dir(self) -> PurePosixPath:
         return self.package_cache_dir() / "worker_cwd"
 
+    def package_state_root(self) -> PurePosixPath:
+        return self.state_dir / PACKAGE_NAME
+
+    def package_state_dir(self) -> PurePosixPath:
+        return self.package_state_root() / EZHPCY_VERSION
+
     def worker_logs_dir(self) -> PurePosixPath:
-        return self.package_cache_dir() / "logs" / "worker"
+        return self.package_state_dir() / "logs" / "worker"
+
+    def worker_control_root(self) -> PurePosixPath:
+        return self.package_state_dir() / "worker_control"
 
 
 class ResolvedConfig(BaseModel):

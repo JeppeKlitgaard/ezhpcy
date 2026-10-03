@@ -81,6 +81,7 @@ class StubSSH:
         self.pixi_commands: list[list[str]] = []
         self.remote_state = RemoteState(
             cache_dir=PurePosixPath("/home/alice/.cache"),
+            state_dir=PurePosixPath("/home/alice/.local/state"),
         )
 
     def interactive_connect(self) -> None:
@@ -329,25 +330,18 @@ def test_provision_openssh_reuses_absolute_sshd_command() -> None:
     ]
 
 
-def test_default_prune_removes_stale_ezhpcy_installations() -> None:
+def test_default_prune_removes_stale_ezhpcy_cache_and_state() -> None:
     ssh = StubSSH()
-    ssh.sftp.directory_entries = [EZHPCY_VERSION, "0.0.9", "legacy"]
+    ssh.sftp.directory_entries = [EZHPCY_VERSION, "0.0.9", "keep me"]
 
     removed = prune_stale_installations(  # type: ignore[arg-type]
         ssh, ssh.remote_state
     )
 
-    remote_root = PurePosixPath("/home/alice/.cache/ezhpcy")
-    assert removed == (remote_root / "0.0.9", remote_root / "legacy")
-    assert ssh.commands == [
-        [
-            "rm",
-            "-rf",
-            "--",
-            str(remote_root / "0.0.9"),
-            str(remote_root / "legacy"),
-        ]
-    ]
+    stale_cache = PurePosixPath("/home/alice/.cache/ezhpcy/0.0.9")
+    stale_state = PurePosixPath("/home/alice/.local/state/ezhpcy/0.0.9")
+    assert removed == (stale_cache, stale_state)
+    assert ssh.commands == [["rm", "-rf", "--", str(stale_cache), str(stale_state)]]
 
 
 def test_default_prune_removes_stale_pixi_homes_and_caches() -> None:
@@ -414,7 +408,9 @@ def test_validate_worker_infrastructure_reports_missing_files() -> None:
     ) in str(exc_info.value)
 
 
-def test_prune_all_removes_the_package_cache_directory(tmp_path: Path) -> None:
+def test_prune_all_removes_the_package_cache_and_state_directories(
+    tmp_path: Path,
+) -> None:
     ssh = StubSSH()
     config = configured_client(tmp_path)
 
@@ -425,7 +421,15 @@ def test_prune_all_removes_the_package_cache_directory(tmp_path: Path) -> None:
         result = invoke(["prune", "base", "--all", "--yes"])
 
     assert result.exit_code == 0, result
-    assert ssh.commands == [["rm", "-rf", "--", "/home/alice/.cache/ezhpcy"]]
+    assert ssh.commands == [
+        [
+            "rm",
+            "-rf",
+            "--",
+            "/home/alice/.cache/ezhpcy",
+            "/home/alice/.local/state/ezhpcy",
+        ]
+    ]
 
 
 def test_sshd_config_is_expressed_as_cli_arguments() -> None:

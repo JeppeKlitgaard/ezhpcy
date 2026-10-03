@@ -40,7 +40,7 @@ from tests.test_tunnel import (
 _WORKER_PORT = 54321
 _TOKEN = "LEASETOKEN"
 _CONTROL_DIR = PurePosixPath(
-    f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/worker_control/{_TOKEN}"
+    f"/home/alice/.local/state/ezhpcy/{EZHPCY_VERSION}/worker_control/{_TOKEN}"
 )
 _WAIT_SECONDS = 5
 

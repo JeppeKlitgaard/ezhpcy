@@ -129,7 +129,10 @@ class _FakeLoginClient:
         pass
 
     def get_remote_state(self) -> RemoteState:
-        return RemoteState(cache_dir=PurePosixPath("/home/alice/.cache"))
+        return RemoteState(
+            cache_dir=PurePosixPath("/home/alice/.cache"),
+            state_dir=PurePosixPath("/home/alice/.local/state"),
+        )
 
     def __getattr__(self, name: str):
         def remote_operation(*args: object, **kwargs: object):

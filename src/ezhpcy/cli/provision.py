@@ -5,20 +5,19 @@ from cyclopts import Parameter
 from rich.prompt import Confirm
 
 from ezhpcy import console
-from ezhpcy.cli._options import OptionalProfileArg
-from ezhpcy.cli._resolve import with_connection
+from ezhpcy.cli._options import ConnectionOptions, OptionalProfileArg
+from ezhpcy.cli._resolve import connection_from_cli, resolve_profile_config
 from ezhpcy.cli.utils.ssh import InteractiveSSHClient
 from ezhpcy.provision_host import provision_worker_infrastructure
-from ezhpcy.types import ConnectionInfo
 from ezhpcy.utils import local_machine_id
 
 
-@with_connection
+# ruff: ignore[B008]  # See the comment above the option dataclasses in _options.py
 def provision_cmd(
     profile: OptionalProfileArg = None,
     /,
     *,
-    connection: ConnectionInfo,
+    connection_options: ConnectionOptions = ConnectionOptions(),
     yes: Annotated[
         bool,
         Parameter(
@@ -28,6 +27,9 @@ def provision_cmd(
     ] = False,
 ) -> None:
     """Idempotently provision worker infrastructure on the remote HPC host."""
+    connection = connection_from_cli(
+        connection_options, resolve_profile_config(profile).connection, profile=profile
+    )
     ssh = InteractiveSSHClient(connection, password_prompt=connection.password_prompt)
     ssh.interactive_connect()
     remote_state = ssh.get_remote_state()

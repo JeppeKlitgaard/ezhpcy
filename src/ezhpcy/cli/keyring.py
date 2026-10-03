@@ -1,11 +1,11 @@
-import keyring
 from cyclopts import App
-from keyring.errors import KeyringError
-from rich.prompt import Prompt
+lazy import keyring
+lazy from keyring.errors import KeyringError
+lazy from rich.prompt import Prompt
 
 from ezhpcy.cli._options import KEYRING_SERVICE_NAME, ConnectionOptions
-from ezhpcy.cli._resolve import direct_connection_from_cli
-from ezhpcy.console import console
+lazy from ezhpcy.cli._resolve import direct_connection_from_cli
+lazy from ezhpcy.console import console
 
 keyring_app = App(
     name="keyring", help="Manage login-node passwords in the system keyring."

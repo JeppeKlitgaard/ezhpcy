@@ -1,7 +1,7 @@
-from importlib.metadata import PackageNotFoundError, version
-from urllib.parse import quote
+lazy from importlib.metadata import PackageNotFoundError, version
+lazy from urllib.parse import quote
 
-import machineid
+lazy import machineid
 
 
 def ezhpcy_version() -> str:

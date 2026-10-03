@@ -1,4 +1,4 @@
-from pathlib import Path, PurePosixPath
+lazy from pathlib import Path, PurePosixPath
 
 _EXEC_ABSOLUTE_SSHD = (
     'sshd_path="$(command -v sshd)" || exit; '

@@ -1,17 +1,17 @@
-import hashlib
-import json
 import re
-from datetime import timedelta
 from enum import StrEnum
-from pathlib import Path, PurePosixPath
 from typing import Annotated, ClassVar
+lazy import hashlib
+lazy import json
+lazy from datetime import timedelta
+lazy from pathlib import Path, PurePosixPath
 
 from pydantic import BaseModel, ByteSize, ConfigDict, Field, field_validator
-from pydantic_extra_types.domain import DomainStr
+lazy from pydantic_extra_types.domain import DomainStr
 
-from ezhpcy.constants import EZHPCY_VERSION, PACKAGE_NAME, PIXI_VERSION
-from ezhpcy.scheduler.types import SchedulerType
-from ezhpcy.utils import local_machine_id
+lazy from ezhpcy.constants import EZHPCY_VERSION, PACKAGE_NAME, PIXI_VERSION
+lazy from ezhpcy.scheduler.types import SchedulerType
+lazy from ezhpcy.utils import local_machine_id
 
 _TIME_LIMIT_PATTERN = re.compile(r"^(?P<hours>\d+):(?P<minutes>\d{1,2})$")
 PositiveByteSize = Annotated[ByteSize, Field(gt=0)]

@@ -1,16 +1,16 @@
 import logging
-import threading
-import time
 from collections.abc import Callable
-from pathlib import Path
+lazy import threading
+lazy import time
+lazy from pathlib import Path
 
 import paramiko
-from rich.prompt import Confirm, Prompt
+lazy from rich.prompt import Confirm, Prompt
 
-from ezhpcy import console
-from ezhpcy.config import config
 from ezhpcy.ssh import SSHClient
-from ezhpcy.types import ConnectionInfo
+lazy from ezhpcy import console
+lazy from ezhpcy.config import config
+lazy from ezhpcy.types import ConnectionInfo
 
 logger = logging.getLogger(__name__)
 

@@ -1,12 +1,12 @@
 """Local file permissions that OpenSSH accepts on POSIX and Windows."""
 
-import csv
 import functools
-import os
-import subprocess
-from pathlib import Path
+lazy import csv
+lazy import os
+lazy import subprocess
+lazy from pathlib import Path
 
-from ezhpcy.constants import WINDOWS_CREATION_FLAGS
+lazy from ezhpcy.constants import WINDOWS_CREATION_FLAGS
 
 
 class FilePermissionError(RuntimeError):

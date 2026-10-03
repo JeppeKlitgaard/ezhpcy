@@ -1,19 +1,19 @@
-import shlex
-from collections.abc import Mapping
-from string.templatelib import Template
+lazy import shlex
+lazy from collections.abc import Mapping
+lazy from string.templatelib import Template
 
-from pydantic import BaseModel, ValidationError
+lazy from pydantic import BaseModel, ValidationError
 
-from ezhpcy.cli._errors import CliUsageError, sentence
-from ezhpcy.cli._options import (
+lazy from ezhpcy.cli._errors import CliUsageError, sentence
+lazy from ezhpcy.cli._options import (
     ConnectionOptions,
     ResourceOptions,
     SchedulerOptions,
     TimingOptions,
 )
-from ezhpcy.cli._password import resolve_password
-from ezhpcy.config import ProfilePasswordSourceError, config
-from ezhpcy.types import (
+lazy from ezhpcy.cli._password import resolve_password
+lazy from ezhpcy.config import ProfilePasswordSourceError, config
+lazy from ezhpcy.types import (
     ConnectionConfig,
     ConnectionInfo,
     ResolvedProfileConfig,

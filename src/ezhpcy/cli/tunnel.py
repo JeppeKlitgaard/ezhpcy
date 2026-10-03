@@ -763,9 +763,7 @@ def _run_tunnel(
         )
 
         heartbeat_token = secrets.token_hex(16)
-        control_dir = (
-            remote_state.package_cache_dir() / "worker_control" / heartbeat_token
-        )
+        control_dir = remote_state.worker_control_root() / heartbeat_token
         with ssh.sftp_client() as sftp:
             sftp.mkdir(worker_cwd_dir, parents=True, exist_ok=True)
             sftp.mkdir(worker_logs_dir, parents=True, exist_ok=True)

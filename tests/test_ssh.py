@@ -416,6 +416,7 @@ def test_run_pixi_uses_ezhpcy_xdg_directories() -> None:
     client = SSHClient(ConnectionInfo(host="login.example.com"))
     remote_state = RemoteState(
         cache_dir=PurePosixPath("/cache"),
+        state_dir=PurePosixPath("/state"),
     )
 
     with patch.object(client, "run", return_value="pixi output") as run:
@@ -555,13 +556,15 @@ def test_start_login_shell_opens_pty_and_keeps_channel_running() -> None:
     assert shlex.split(login_argv[2]) == command
 
 
-def test_get_remote_state_maps_the_xdg_cache_directory() -> None:
+def test_get_remote_state_maps_the_xdg_cache_and_state_directories() -> None:
     client = SSHClient(ConnectionInfo(host="login.example.com"))
-    response = '{"cache_dir":"/cache"}'
+    response = '{"cache_dir":"/cache","state_dir":"/state"}'
 
     with patch.object(client, "run", return_value=response) as run:
         remote_state = client.get_remote_state()
 
     assert remote_state.cache_dir == PurePosixPath("/cache")
+    assert remote_state.state_dir == PurePosixPath("/state")
     remote_script = run.call_args.args[0][2]
     assert "XDG_CACHE_HOME" in remote_script
+    assert "XDG_STATE_HOME" in remote_script

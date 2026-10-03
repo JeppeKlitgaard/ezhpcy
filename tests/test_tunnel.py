@@ -110,7 +110,10 @@ def ssh_host_publication(
 
 
 def test_worker_sshd_command_retries_ports_through_pixi() -> None:
-    remote_state = RemoteState(cache_dir=PurePosixPath("/home/alice/.cache"))
+    remote_state = RemoteState(
+        cache_dir=PurePosixPath("/home/alice/.cache"),
+        state_dir=PurePosixPath("/home/alice/.local/state"),
+    )
     command = _worker_sshd_command(
         remote_state,
         ports=(54321, 54322),
@@ -149,7 +152,7 @@ def test_worker_sshd_command_retries_ports_through_pixi() -> None:
         "LEASETOKEN",
         "90",
         "1",
-        f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/logs/worker",
+        f"/home/alice/.local/state/ezhpcy/{EZHPCY_VERSION}/logs/worker",
         "/home/alice/.cache/ezhpcy/control/test",
     )
     worker_script = retrying_sshd_script()
@@ -338,6 +341,7 @@ class StubSSH:
     def get_remote_state(self) -> RemoteState:
         return RemoteState(
             cache_dir=PurePosixPath("/home/alice/.cache"),
+            state_dir=PurePosixPath("/home/alice/.local/state"),
         )
 
     @contextmanager
@@ -672,7 +676,7 @@ def test_tunnel_submits_worker_starts_server_and_cancels(
         heartbeat_timeout_seconds=90,
         heartbeat_debug=False,
         control_dir=PurePosixPath(
-            f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/worker_control/LEASETOKEN"
+            f"/home/alice/.local/state/ezhpcy/{EZHPCY_VERSION}/worker_control/LEASETOKEN"
         ),
         read_script_from_stdin=False,
         sshd_arguments=sshd_config_arguments(
@@ -696,20 +700,22 @@ def test_tunnel_submits_worker_starts_server_and_cancels(
     assert scheduler_constructor.call_args.kwargs["resource_reserve_per_task"]
     assert ssh.directories[:2] == [
         PurePosixPath(f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/worker_cwd"),
-        PurePosixPath(f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/logs/worker"),
+        PurePosixPath(f"/home/alice/.local/state/ezhpcy/{EZHPCY_VERSION}/logs/worker"),
     ]
     assert (
-        PurePosixPath(f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/worker_control"),
+        PurePosixPath(
+            f"/home/alice/.local/state/ezhpcy/{EZHPCY_VERSION}/worker_control"
+        ),
         0o700,
     ) in ssh.chmods
     assert spec.working_directory == PurePosixPath(
         f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/worker_cwd"
     )
     assert spec.stdout_path == PurePosixPath(
-        f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/logs/worker/worker-LEASETOKEN.out"
+        f"/home/alice/.local/state/ezhpcy/{EZHPCY_VERSION}/logs/worker/worker-LEASETOKEN.out"
     )
     assert spec.stderr_path == PurePosixPath(
-        f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/logs/worker/worker-LEASETOKEN.err"
+        f"/home/alice/.local/state/ezhpcy/{EZHPCY_VERSION}/logs/worker/worker-LEASETOKEN.err"
     )
     assert tunnels[0].destination == ("node42", 54322)
     assert tunnels[0].closed

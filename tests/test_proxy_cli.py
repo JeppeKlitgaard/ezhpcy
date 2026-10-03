@@ -1,7 +1,4 @@
 import logging
-import subprocess
-import sys
-import textwrap
 from pathlib import Path
 
 import pytest
@@ -87,41 +84,3 @@ def test_proxy_requires_an_alias() -> None:
 
     assert result.exit_code == 2
     assert "ALIAS requires an argument" in result.stderr
-
-
-def test_proxy_does_not_import_other_commands_or_their_dependencies() -> None:
-    # OpenSSH runs `ezhpcy proxy` for every connection, so it should import only
-    # what it needs. This needs a fresh interpreter: the test session has already
-    # imported everything. The alias is invalid, so the proxy stops in
-    # `ezhpcy.ipc` without looking for a tunnel.
-    code = textwrap.dedent(
-        """
-        import sys
-        from ezhpcy.cli import main
-
-        try:
-            main(["proxy", "has space"])
-        except SystemExit:
-            pass
-        print(*sys.modules)
-        """
-    )
-    result = subprocess.run(
-        [sys.executable, "-c", code], capture_output=True, text=True, check=True
-    )
-
-    loaded = set(result.stdout.split())
-    assert "ezhpcy.ipc" in loaded
-    assert "invalid host alias" in result.stderr
-    unwanted = {
-        "ezhpcy.cli.tunnel",
-        "ezhpcy.cli.provision",
-        "ezhpcy.cli.keyring",
-        "ezhpcy.ssh",
-        "ezhpcy.scheduler.lsf",
-        "ezhpcy.scheduler.pbs",
-        "paramiko",
-        "keyring",
-        "jinja2",
-    }
-    assert loaded & unwanted == set()

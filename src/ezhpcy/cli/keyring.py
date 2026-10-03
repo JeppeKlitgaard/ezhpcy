@@ -1,3 +1,4 @@
+from cyclopts import App
 lazy import keyring
 lazy from keyring.errors import KeyringError
 lazy from rich.prompt import Prompt
@@ -5,6 +6,10 @@ lazy from rich.prompt import Prompt
 from ezhpcy.cli._options import KEYRING_SERVICE_NAME, ConnectionOptions
 lazy from ezhpcy.cli._resolve import direct_connection_from_cli
 lazy from ezhpcy.console import console
+
+keyring_app = App(
+    name="keyring", help="Manage login-node passwords in the system keyring."
+)
 
 
 # ruff: ignore[B008]  # See the comment above the option dataclasses in _options.py
@@ -30,3 +35,6 @@ def set_cmd(*, connection_options: ConnectionOptions = ConnectionOptions()) -> N
         raise SystemExit(1) from error
 
     console.print(f"Stored password in the system keyring for {account}.")
+
+
+keyring_app.command(set_cmd, name="set", help="Store a login-node password.")

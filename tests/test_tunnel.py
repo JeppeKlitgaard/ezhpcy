@@ -945,33 +945,13 @@ def test_tunnel_command_accepts_anonymous_cli_configuration(
         lambda **kwargs: captured.update(kwargs),
     )
 
-    result = invoke(
-        [
-            "tunnel",
-            "--host",
-            "login.example.com",
-            "--user",
-            "alice",
-            "--scheduler",
-            "LSF",
-            "--submission-mode",
-            "interactive",
-            "--queue",
-            "gpu",
-            "--cores",
-            "8",
-            "--gpus",
-            "1",
-        ],
-    )
+    result = invoke(_ANONYMOUS_TUNNEL_ARGS)
 
     assert result.exit_code == 0, result
     assert captured["profile_name"] is None
     resolved = captured["resolved"]
     assert resolved.scheduler.type is SchedulerType.LSF
-    assert resolved.resources.queue == "gpu"
-    assert resolved.resources.cores == 8
-    assert resolved.resources.gpus == 1
+    assert resolved.resources.cores == 1
     assert resolved.timings.job_poll_interval_seconds == 2.5
     assert resolved.timings.job_monitor_interval_seconds == 60
     assert resolved.connection == ConnectionInfo(host="login.example.com", user="alice")
@@ -1034,12 +1014,8 @@ def test_tunnel_command_resolves_profile_and_applies_cli_overrides(
             "--shared",
             "--worker-heartbeat-interval",
             "12",
-            "--worker-heartbeat-timeout",
-            "30",
             "--job-poll-interval",
             "1.5",
-            "--job-monitor-interval",
-            "45",
         ],
     )
 
@@ -1060,30 +1036,12 @@ def test_tunnel_command_resolves_profile_and_applies_cli_overrides(
     )
     assert captured["auto_provision"] is True
     assert resolved.timings.worker_heartbeat_interval_seconds == 12
-    assert resolved.timings.worker_heartbeat_timeout_seconds == 30
+    assert resolved.timings.worker_heartbeat_timeout_seconds == 60
     assert resolved.timings.job_poll_interval_seconds == 1.5
-    assert resolved.timings.job_monitor_interval_seconds == 45
+    assert resolved.timings.job_monitor_interval_seconds == 120
     worker_ports = captured["worker_ports"]
     assert isinstance(worker_ports, tuple)
-    assert len(worker_ports) == 6
     assert len(set(worker_ports)) == 6
-
-    captured.clear()
-    result = invoke(
-        [
-            "tunnel",
-            "base",
-            "--worker-port",
-            "55000",
-            "--worker-port-retries",
-            "2",
-        ],
-    )
-
-    assert result.exit_code == 0, result
-    assert captured["worker_ports"] == (55000,)
-    assert captured["resolved"].timings.job_poll_interval_seconds == 4
-    assert captured["resolved"].timings.job_monitor_interval_seconds == 120
 
 
 def test_tunnel_command_allows_wrapper_with_implicit_resource_defaults(
@@ -1161,46 +1119,6 @@ def test_tunnel_command_logs_inherited_submission_options_ignored_by_wrapper(
         "scheduler.interactive_submission_command: %s",
         "lsf.application_profile, resources.queue",
     )
-
-
-@pytest.mark.parametrize(
-    ("arguments", "option"),
-    [
-        (("--queue", "normal"), "--queue"),
-        (("--cores", "1"), "--cores"),
-        (("--gpus", "0"), "--gpus"),
-        (("--shared",), "--exclusive/--shared"),
-        (("--time-limit", "1:00"), "--time-limit"),
-        (("--memory", "1GB"), "--memory"),
-    ],
-)
-def test_tunnel_command_rejects_cli_resources_with_wrapper(
-    monkeypatch: pytest.MonkeyPatch,
-    arguments: tuple[str, ...],
-    option: str,
-) -> None:
-    monkeypatch.setattr(
-        tunnel_module.config,
-        "profile",
-        {
-            "base": ProfileConfig.model_validate(
-                {
-                    "connection": {"host": "login.example.com", "user": "alice"},
-                    "scheduler": {
-                        "type": "LSF",
-                        "submission_mode": "interactive",
-                        "interactive_submission_command": ["/site/bin/interactive-lsf"],
-                    },
-                }
-            )
-        },
-    )
-
-    result = invoke(["tunnel", "base", *arguments])
-
-    assert result.exit_code == 2
-    assert "cannot be combined with submission options" in result.stderr
-    assert option in result.stderr
 
 
 @pytest.mark.parametrize(

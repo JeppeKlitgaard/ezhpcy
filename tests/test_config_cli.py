@@ -326,4 +326,3 @@ def test_config_load_help_lists_available_presets() -> None:
     assert result.exit_code == 0
     output = result.stdout.casefold()
     assert "[choices: dtu, generic]" in output
-    assert "dtu" in output

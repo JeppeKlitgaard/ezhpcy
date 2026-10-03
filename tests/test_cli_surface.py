@@ -366,6 +366,29 @@ def test_connection_options_reach_keyring_set(
     assert getattr(stored, field) == expected
 
 
+@pytest.mark.parametrize("command", _LOGIN_COMMANDS)
+def test_the_profile_is_resolved_once_per_command(
+    monkeypatch: pytest.MonkeyPatch, command: str
+) -> None:
+    captured = capture(monkeypatch, command)
+    resolve_profile = type(config).resolve_profile
+    resolved_profiles: list[str] = []
+
+    def counting_resolve_profile(self, name: str, **kwargs: bool):
+        # `tunnel` also resolves every profile, without validating password
+        # sources, to write their SSH `Host` blocks. Only count the CLI's own.
+        if not kwargs:
+            resolved_profiles.append(name)
+        return resolve_profile(self, name, **kwargs)
+
+    monkeypatch.setattr(type(config), "resolve_profile", counting_resolve_profile)
+
+    result = invoke([command, "base", "--user", "bob"])
+
+    assert captured, result
+    assert resolved_profiles == ["base"]
+
+
 def test_profile_argument_can_come_from_the_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

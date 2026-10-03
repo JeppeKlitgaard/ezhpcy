@@ -1,4 +1,5 @@
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated
 
@@ -262,3 +263,54 @@ InteractiveSubmissionCommandOpt = Annotated[
         group=SCHEDULER_PANEL,
     ),
 ]
+
+
+# One dataclass per option panel. `name="*"` flattens its fields into top-level
+# options of the command that takes it.
+#
+# Commands give a default instance, since Cyclopts passes `None`
+# when none of the fields were given.
+# They're frozen, so the default is safe to share
+# ruff's B008 rule does not detect this, so we locally ignore it at call-sites.
+#
+# They're dataclasses rather than Pydantic models on purpose:
+# Cyclopts hands a model the raw strings and shows Pydantic's own, uglier error
+@Parameter(name="*")
+@dataclass(frozen=True, kw_only=True)
+class ConnectionOptions:
+    host: HostOpt = None
+    user: UserOpt = None
+    password: PasswordOpt = None
+    password_file: PasswordFileOpt = None
+    password_fd: PasswordFdOpt = None
+    password_keyring: PasswordKeyringOpt = False
+
+
+@Parameter(name="*")
+@dataclass(frozen=True, kw_only=True)
+class SchedulerOptions:
+    scheduler_type: SchedulerOpt = None
+    submission_mode: SubmissionModeOpt = None
+    interactive_submission_command: InteractiveSubmissionCommandOpt = None
+
+
+@Parameter(name="*")
+@dataclass(frozen=True, kw_only=True)
+class ResourceOptions:
+    queue: QueueOpt = None
+    cores: CoresOpt = None
+    gpus: GpusOpt = None
+    exclusive: ExclusiveOpt = None
+    time_limit: TimeLimitOpt = None
+    memory: MemoryOpt = None
+
+
+@Parameter(name="*")
+@dataclass(frozen=True, kw_only=True)
+class TimingOptions:
+    queue_timeout_seconds: QueueTimeoutOpt = None
+    startup_timeout_seconds: StartupTimeoutOpt = None
+    job_poll_interval_seconds: JobPollIntervalOpt = None
+    job_monitor_interval_seconds: JobMonitorIntervalOpt = None
+    worker_heartbeat_interval_seconds: WorkerHeartbeatIntervalOpt = None
+    worker_heartbeat_timeout_seconds: WorkerHeartbeatTimeoutOpt = None

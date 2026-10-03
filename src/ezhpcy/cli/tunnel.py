@@ -15,20 +15,18 @@ from cyclopts import Parameter, validators
 
 from ezhpcy.cli._options import (
     AliasOpt,
-    CoresOpt,
-    ExclusiveOpt,
-    GpusOpt,
-    MemoryOpt,
+    ConnectionOptions,
     OptionalProfileArg,
-    QueueOpt,
-    TimeLimitOpt,
+    ResourceOptions,
+    SchedulerOptions,
+    TimingOptions,
 )
 from ezhpcy.cli._resolve import (
+    connection_from_cli,
     resolve_profile_config,
-    with_connection,
-    with_resources,
-    with_scheduler,
-    with_timings,
+    resources_from_cli,
+    scheduler_from_cli,
+    timings_from_cli,
 )
 from ezhpcy.cli.doctor import echo_include_directive
 from ezhpcy.cli.utils.bad_parameter import RichBadParameter
@@ -80,10 +78,7 @@ from ezhpcy.types import (
     ConnectionInfo,
     RemoteState,
     ResolvedConfig,
-    ResourcesConfig,
-    SchedulerConfig,
     SubmissionMode,
-    TimingsConfig,
 )
 from ezhpcy.utils import local_machine_id, ssh_connection_id
 
@@ -1050,26 +1045,15 @@ def _run_tunnel(
                 control.close()
 
 
-@with_connection
-@with_scheduler
-@with_resources
-@with_timings
+# ruff: ignore[B008]  # See the comment above the option dataclasses in _options.py
 def tunnel_cmd(
     profile: OptionalProfileArg = None,
     /,
     *,
-    connection: ConnectionInfo,
-    scheduler: SchedulerConfig,
-    resources: ResourcesConfig,
-    timings: TimingsConfig,
-    # Shared with `with_resources`, to tell resources given on the command line
-    # apart from configured ones.
-    queue: QueueOpt = None,
-    cores: CoresOpt = None,
-    gpus: GpusOpt = None,
-    exclusive: ExclusiveOpt = None,
-    time_limit: TimeLimitOpt = None,
-    memory: MemoryOpt = None,
+    connection_options: ConnectionOptions = ConnectionOptions(),
+    scheduler_options: SchedulerOptions = SchedulerOptions(),
+    resource_options: ResourceOptions = ResourceOptions(),
+    timing_options: TimingOptions = TimingOptions(),
     alias: AliasOpt = None,
     worker_port: Annotated[
         int | None,
@@ -1106,8 +1090,14 @@ def tunnel_cmd(
     ] = False,
 ) -> None:
     """Allocate a compute node and expose its SSH service through a tunnel."""
+    profile_config = resolve_profile_config(profile)
+    connection = connection_from_cli(
+        connection_options, profile_config.connection, profile=profile
+    )
+    scheduler = scheduler_from_cli(scheduler_options, profile_config.scheduler)
+    resources = resources_from_cli(resource_options, profile_config.resources)
+    timings = timings_from_cli(timing_options, profile_config.timings)
     try:
-        profile_config = resolve_profile_config(profile)
         resolved = ResolvedConfig(
             description=profile_config.description,
             connection=connection,
@@ -1160,12 +1150,12 @@ def tunnel_cmd(
             cli_submission_options = {
                 f"[bold red]{option}[/bold red]=[bold blue]{value}[/bold blue]"
                 for option, value in (
-                    ("--queue", queue),
-                    ("--cores", cores),
-                    ("--gpus", gpus),
-                    ("--exclusive/--shared", exclusive),
-                    ("--time-limit", time_limit),
-                    ("--memory", memory),
+                    ("--queue", resource_options.queue),
+                    ("--cores", resource_options.cores),
+                    ("--gpus", resource_options.gpus),
+                    ("--exclusive/--shared", resource_options.exclusive),
+                    ("--time-limit", resource_options.time_limit),
+                    ("--memory", resource_options.memory),
                 )
                 if value is not None
             }

@@ -14,7 +14,7 @@ dependencies = [
     "cryptography>=46.0.5",
     # CLI
     "rich>=15.0.0",
-    "cyclopts>=5.1.1",
+    "cyclopts>=5.2.0",
     # Keyring, secretstorage is for keyring on Linux
     "keyring>=25.7.0",
     "secretstorage>=3.5.0 ; sys_platform == 'linux'",

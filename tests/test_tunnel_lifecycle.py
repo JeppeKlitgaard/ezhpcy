@@ -6,6 +6,13 @@ from unittest.mock import patch
 import paramiko
 import pytest
 
+from ezhpcy._legacy_provision_host import (
+    ProvisioningError,
+    provision_openssh,
+    provision_pixi,
+    provision_sshd_files,
+    validate_worker_infrastructure,
+)
 from ezhpcy.cli import _resolve
 from ezhpcy.cli.prune import (
     prune_stale_installations,
@@ -20,13 +27,6 @@ from ezhpcy.constants import (
     WORKER_CLIENT_KEY_NAME,
     WORKER_HOST_ALIAS,
     WORKER_HOST_KEY_NAME,
-)
-from ezhpcy.provision_host import (
-    ProvisioningError,
-    provision_openssh,
-    provision_pixi,
-    provision_sshd_files,
-    validate_worker_infrastructure,
 )
 from ezhpcy.provision_local import ensure_local_ssh_keys, pin_worker_host_key
 from ezhpcy.tunnel.sshd import absolute_sshd_command, sshd_config_arguments
@@ -191,14 +191,14 @@ def test_provision_is_repeatable(
     with (
         patch("ezhpcy.utils.machineid.hashed_id", return_value="machine-id"),
         patch.object(_resolve, "config", config),
-        patch("ezhpcy.provision_host.config", config),
+        patch("ezhpcy._legacy_provision_host.config", config),
         patch("ezhpcy.cli.provision.InteractiveSSHClient", return_value=ssh),
         patch(
-            "ezhpcy.provision_host.provision_sshd_files",
+            "ezhpcy._legacy_provision_host.provision_sshd_files",
             wraps=provision_sshd_files,
         ) as provision_files,
         patch(
-            "ezhpcy.provision_host.ensure_local_ssh_keys",
+            "ezhpcy._legacy_provision_host.ensure_local_ssh_keys",
             return_value=(
                 private_key,
                 public_key,

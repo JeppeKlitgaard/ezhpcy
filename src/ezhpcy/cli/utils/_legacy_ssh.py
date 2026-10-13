@@ -7,7 +7,7 @@ lazy from pathlib import Path
 import paramiko
 lazy from rich.prompt import Confirm, Prompt
 
-from ezhpcy.ssh import SSHClient
+from ezhpcy._legacy_ssh import SSHClient
 lazy from ezhpcy import console
 lazy from ezhpcy.config import config
 lazy from ezhpcy.types import ConnectionInfo

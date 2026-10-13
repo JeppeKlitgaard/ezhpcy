@@ -1,6 +1,9 @@
 from pathlib import Path
 
-from ezhpcy.cli import app
+import pytest
+
+from ezhpcy.cli import _options, app
+from ezhpcy.config import Config
 from tests.support.cli import invoke
 
 
@@ -25,3 +28,19 @@ def test_install_completion_writes_the_script(tmp_path: Path) -> None:
     # Lazily registered commands are included.
     assert "tunnel" in contents
     assert "list-profiles" in contents
+
+
+@pytest.mark.parametrize("command", ["provision", "prune", "tunnel"])
+def test_profiles_complete_with_their_descriptions(
+    monkeypatch: pytest.MonkeyPatch, command: str
+) -> None:
+    config = Config.from_mapping(
+        {"profile": {"gpu": {"description": "GPU jobs"}, "default": {}}}
+    )
+    monkeypatch.setattr(_options, "config", config)
+
+    result = invoke(["__complete", command, ""])
+
+    assert result.exit_code == 0, result
+    candidates = result.stdout.split("\x1fbegin\n")[1].splitlines()
+    assert candidates == ["gpu\tGPU jobs", "default"]

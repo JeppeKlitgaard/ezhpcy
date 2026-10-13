@@ -13,6 +13,7 @@ lazy from cyclopts import Token
 from ezhpcy.constants import PACKAGE_NAME
 from ezhpcy.scheduler.types import SchedulerType
 from ezhpcy.types import SubmissionMode
+lazy from ezhpcy.config import config
 
 KEYRING_SERVICE_NAME = PACKAGE_NAME
 
@@ -42,6 +43,11 @@ def _readable(_type: type, value: Path | None) -> None:
         raise ValueError(f'"{value}" is not readable.')
 
 
+def _complete_profiles(_context: object) -> dict[str, str]:
+    """Offer the configured profiles, described like `ezhpcy list-profiles`."""
+    return {name: profile.description or "" for name, profile in config.profile.items()}
+
+
 OptionalProfileArg = Annotated[
     str | None,
     Parameter(
@@ -51,6 +57,7 @@ OptionalProfileArg = Annotated[
             "to see available profiles."
         ),
         env_var=PROFILE_ENV_VAR,
+        completer=_complete_profiles,
     ),
 ]
 AliasArg = Annotated[

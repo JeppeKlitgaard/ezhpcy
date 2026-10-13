@@ -8,9 +8,9 @@ lazy from rich.prompt import Confirm
 
 from ezhpcy.cli._options import ConnectionOptions, OptionalProfileArg
 lazy from ezhpcy import console
+lazy from ezhpcy._legacy_ssh import SSHClient
 lazy from ezhpcy.cli._resolve import connection_from_cli, resolve_profile_config
-lazy from ezhpcy.cli.utils.ssh import InteractiveSSHClient
-lazy from ezhpcy.ssh import SSHClient
+lazy from ezhpcy.cli.utils._legacy_ssh import InteractiveSSHClient
 lazy from ezhpcy.types import RemoteState
 
 _INSTALLATION_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+!-]*$")

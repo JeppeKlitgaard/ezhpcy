@@ -2,6 +2,7 @@ import logging
 lazy import shlex
 lazy from pathlib import PurePosixPath
 
+lazy from ezhpcy._legacy_ssh import SSHClient
 lazy from ezhpcy.config import config
 lazy from ezhpcy.constants import (
     OPENSSH_MATCHSPEC,
@@ -11,7 +12,6 @@ lazy from ezhpcy.constants import (
     WORKER_HOST_KEY_NAME,
 )
 lazy from ezhpcy.provision_local import ensure_local_ssh_keys, pin_worker_host_key
-lazy from ezhpcy.ssh import SSHClient
 lazy from ezhpcy.tunnel.sshd import (
     absolute_sshd_command,
     read_ed25519_public_key,

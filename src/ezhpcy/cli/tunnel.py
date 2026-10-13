@@ -22,6 +22,11 @@ from ezhpcy.cli._options import (
     TimingOptions,
     given_options,
 )
+lazy from ezhpcy._legacy_provision_host import (
+    provision_worker_infrastructure,
+    validate_worker_infrastructure,
+)
+lazy from ezhpcy._legacy_ssh import SFTPClient
 lazy from ezhpcy.cli._errors import CliUsageError, sentence
 lazy from ezhpcy.cli._resolve import (
     LIST_PROFILES_HINT,
@@ -31,7 +36,7 @@ lazy from ezhpcy.cli._resolve import (
     with_cli_options,
 )
 lazy from ezhpcy.cli.doctor import echo_include_directive
-lazy from ezhpcy.cli.utils.ssh import InteractiveSSHClient
+lazy from ezhpcy.cli.utils._legacy_ssh import InteractiveSSHClient
 lazy from ezhpcy.config import config
 lazy from ezhpcy.console import error_console
 lazy from ezhpcy.constants import (
@@ -43,10 +48,6 @@ lazy from ezhpcy.constants import (
 lazy from ezhpcy.ipc import create_tunnel_backend
 lazy from ezhpcy.ipc.common import IPCError
 lazy from ezhpcy.permissions import FilePermissionError
-lazy from ezhpcy.provision_host import (
-    provision_worker_infrastructure,
-    validate_worker_infrastructure,
-)
 lazy from ezhpcy.scheduler.base import (
     InteractiveJob,
     JobInfo,
@@ -59,7 +60,6 @@ lazy from ezhpcy.scheduler.base import (
 lazy from ezhpcy.scheduler.lsf import LSFScheduler
 lazy from ezhpcy.scheduler.pbs import PBSScheduler
 lazy from ezhpcy.scheduler.types import SchedulerType
-lazy from ezhpcy.ssh import SFTPClient
 lazy from ezhpcy.tunnel.server import TunnelServer
 lazy from ezhpcy.tunnel.ssh_config import (
     WorkerHost,

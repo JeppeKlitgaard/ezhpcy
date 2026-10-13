@@ -7,13 +7,13 @@ from unittest.mock import MagicMock, call, patch
 import paramiko
 import pytest
 
-from ezhpcy.cli.utils.ssh import (
+from ezhpcy._legacy_ssh import RemoteCommandError, SFTPClient, SSHClient
+from ezhpcy.cli.utils._legacy_ssh import (
     InteractiveSSHClient,
     PromptMissingHostKeyPolicy,
     _send_server_alive_requests,
 )
 from ezhpcy.constants import EZHPCY_VERSION, PIXI_VERSION
-from ezhpcy.ssh import RemoteCommandError, SFTPClient, SSHClient
 from ezhpcy.types import ConnectionInfo, RemoteState
 
 
@@ -31,7 +31,7 @@ def test_interactive_ssh_prompts_after_key_authentication_fails() -> None:
             side_effect=[paramiko.AuthenticationException("keys rejected"), None],
         ) as connect,
         patch(
-            "ezhpcy.cli.utils.ssh.Prompt.ask",
+            "ezhpcy.cli.utils._legacy_ssh.Prompt.ask",
             return_value="secret",
         ) as prompt,
         patch.object(client, "get_transport", return_value=transport),
@@ -99,7 +99,7 @@ def _missing_host_key(client: InteractiveSSHClient, answer: str) -> paramiko.PKe
     """Run the missing-host-key policy with `answer` typed at the prompt."""
     key = paramiko.ECDSAKey.generate()
     policy = PromptMissingHostKeyPolicy(client.known_hosts_file)
-    with patch("ezhpcy.cli.utils.ssh.Confirm.get_input", return_value=answer):
+    with patch("ezhpcy.cli.utils._legacy_ssh.Confirm.get_input", return_value=answer):
         policy.missing_host_key(client, "login.example.com", key)
     return key
 
@@ -260,7 +260,7 @@ def test_interactive_ssh_does_not_prompt_for_unsupported_password_auth() -> None
 
     with (
         patch.object(client, "connect", side_effect=error),
-        patch("ezhpcy.cli.utils.ssh.Prompt.ask") as prompt,
+        patch("ezhpcy.cli.utils._legacy_ssh.Prompt.ask") as prompt,
         pytest.raises(paramiko.BadAuthenticationType),
     ):
         client.interactive_connect()
@@ -280,7 +280,7 @@ def test_interactive_ssh_does_not_prompt_when_password_prompt_is_disabled() -> N
 
     with (
         patch.object(client, "connect", side_effect=error) as connect,
-        patch("ezhpcy.cli.utils.ssh.Prompt.ask") as prompt,
+        patch("ezhpcy.cli.utils._legacy_ssh.Prompt.ask") as prompt,
         pytest.raises(paramiko.AuthenticationException) as raised,
     ):
         client.interactive_connect()
@@ -309,7 +309,7 @@ def test_interactive_ssh_propagates_explicit_password_failure() -> None:
             "connect",
             side_effect=paramiko.AuthenticationException("incorrect password"),
         ),
-        patch("ezhpcy.cli.utils.ssh.Prompt.ask") as prompt,
+        patch("ezhpcy.cli.utils._legacy_ssh.Prompt.ask") as prompt,
         pytest.raises(paramiko.AuthenticationException),
     ):
         client.interactive_connect()

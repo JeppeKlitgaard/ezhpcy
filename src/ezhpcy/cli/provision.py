@@ -5,9 +5,9 @@ lazy from rich.prompt import Confirm
 
 from ezhpcy.cli._options import ConnectionOptions, OptionalProfileArg
 lazy from ezhpcy import console
+lazy from ezhpcy._legacy_provision_host import provision_worker_infrastructure
 lazy from ezhpcy.cli._resolve import connection_from_cli, resolve_profile_config
-lazy from ezhpcy.cli.utils.ssh import InteractiveSSHClient
-lazy from ezhpcy.provision_host import provision_worker_infrastructure
+lazy from ezhpcy.cli.utils._legacy_ssh import InteractiveSSHClient
 lazy from ezhpcy.utils import local_machine_id
 
 

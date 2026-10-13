@@ -1,8 +1,17 @@
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
 from ezhpcy.config import config
+from tests.support.sshserver import SSHTestServer
+
+
+@pytest.fixture
+def ssh_server(tmp_path: Path) -> Iterator[SSHTestServer]:
+    """An in-process SSH server whose remote files live in `tmp_path / "remote"`."""
+    with SSHTestServer(tmp_path / "remote") as server:
+        yield server
 
 
 @pytest.fixture(autouse=True)

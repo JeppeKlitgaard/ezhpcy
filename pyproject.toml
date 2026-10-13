@@ -31,9 +31,16 @@ ezhpcy = "ezhpcy.cli:main"
 dev = [
     "prek>=0.4.9",
     "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
-    "ruff>=0.16.10", # keep in sync with .pre-commit-config.yaml
+    "ruff>=0.16.10",         # keep in sync with .pre-commit-config.yaml
 ]
+
+# Tests
+[tool.pytest.ini_options]
+# `async def` tests and fixtures run on asyncio without a marker
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 
 # Test coverage
 [tool.coverage.run]
@@ -48,19 +55,20 @@ skip_covered = true
 [tool.ruff.lint]
 preview = true
 extend-select = [
-    "A",    # flake8-builtins
-    "B",    # flake8-bugbear
-    "DTZ",  # flake8-datetimetz
-    "EXE",  #flake8-executable
-    "FURB", # refurb
-    "I",    # isort
-    "INP",  #flake8-no-pep420
-    "LOG",  #flake8-logging
-    "PTH",  #flake8-use-pathlib
-    "T10",  #flake8-debugger
-    "TID",  # flake8-tidy-imports
-    "UP",   # pyupgrade
-    "YTT",  # flake8-2020
+    "A",     # flake8-builtins
+    "ASYNC", # flake8-async
+    "B",     # flake8-bugbear
+    "DTZ",   # flake8-datetimetz
+    "EXE",   # flake8-executable
+    "FURB",  # refurb
+    "I",     # isort
+    "INP",   # flake8-no-pep420
+    "LOG",   # flake8-logging
+    "PTH",   # flake8-use-pathlib
+    "T10",   # flake8-debugger
+    "TID",   # flake8-tidy-imports
+    "UP",    # pyupgrade
+    "YTT",   # flake8-2020
 ]
 ignore = [
     "RUF106", # rule-codecs-in-suppression-comments

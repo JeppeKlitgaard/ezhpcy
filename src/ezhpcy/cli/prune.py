@@ -3,14 +3,16 @@ import re
 lazy from pathlib import PurePosixPath
 lazy from typing import Annotated
 
+lazy import asyncssh
 lazy from cyclopts import Parameter
 lazy from rich.prompt import Confirm
 
 from ezhpcy.cli._options import ConnectionOptions, OptionalProfileArg
 lazy from ezhpcy import console
-lazy from ezhpcy._legacy_ssh import SSHClient
 lazy from ezhpcy.cli._resolve import connection_from_cli, resolve_profile_config
-lazy from ezhpcy.cli.utils._legacy_ssh import InteractiveSSHClient
+lazy from ezhpcy.cli.utils.prompt import ask
+lazy from ezhpcy.cli.utils.ssh import connect_or_exit
+lazy from ezhpcy.ssh import RemoteHost
 lazy from ezhpcy.types import RemoteState
 
 _INSTALLATION_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+!-]*$")
@@ -18,8 +20,8 @@ _INSTALLATION_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+!-]*$")
 logger = logging.getLogger(__name__)
 
 
-def prune_stale_installations(
-    ssh: SSHClient, remote_state: RemoteState
+async def prune_stale_installations(
+    login: RemoteHost, remote_state: RemoteState
 ) -> tuple[PurePosixPath, ...]:
     """Remove remote EzHPCy cache and state other than the current version's."""
     current_directories = (
@@ -27,18 +29,17 @@ def prune_stale_installations(
         remote_state.package_state_dir(),
     )
     stale: list[PurePosixPath] = []
-    with ssh.sftp_client() as sftp:
+    async with login.sftp() as sftp:
         for current_directory in current_directories:
             root = current_directory.parent
             try:
-                entries = sftp.listdir_attr(str(root))
-            except FileNotFoundError:
+                names = await sftp.listdir(root)
+            except asyncssh.SFTPNoSuchFile:
                 logger.info("No remote EzHPCy data exists at %s.", root)
                 continue
 
-            for entry in entries:
-                name = entry.filename
-                if name == current_directory.name:
+            for name in names:
+                if name in {".", "..", current_directory.name}:
                     continue
                 if _INSTALLATION_NAME_PATTERN.fullmatch(name) is None:
                     logger.warning(
@@ -48,7 +49,7 @@ def prune_stale_installations(
                 stale.append(root / name)
 
     if stale:
-        ssh.run(["rm", "-rf", "--", *(str(path) for path in stale)])
+        await login.run(["rm", "-rf", "--", *(str(path) for path in stale)])
         for path in stale:
             logger.info("Pruned stale EzHPCy data %s.", path)
     else:
@@ -56,8 +57,8 @@ def prune_stale_installations(
     return tuple(stale)
 
 
-def prune_stale_pixi_data(
-    ssh: SSHClient, remote_state: RemoteState
+async def prune_stale_pixi_data(
+    login: RemoteHost, remote_state: RemoteState
 ) -> tuple[PurePosixPath, ...]:
     """Remove Pixi homes and caches other than the pinned Pixi version."""
     current_directories = (
@@ -65,18 +66,17 @@ def prune_stale_pixi_data(
         remote_state.pixi_cache_dir(),
     )
     stale: list[PurePosixPath] = []
-    with ssh.sftp_client() as sftp:
+    async with login.sftp() as sftp:
         for current_directory in current_directories:
             root = current_directory.parent
             try:
-                entries = sftp.listdir_attr(str(root))
-            except FileNotFoundError:
+                names = await sftp.listdir(root)
+            except asyncssh.SFTPNoSuchFile:
                 logger.info("No remote Pixi cache exists at %s.", root)
                 continue
 
-            for entry in entries:
-                name = entry.filename
-                if name == current_directory.name:
+            for name in names:
+                if name in {".", "..", current_directory.name}:
                     continue
                 if _INSTALLATION_NAME_PATTERN.fullmatch(name) is None:
                     logger.warning(
@@ -86,7 +86,7 @@ def prune_stale_pixi_data(
                 stale.append(root / name)
 
     if stale:
-        ssh.run(["rm", "-rf", "--", *(str(path) for path in stale)])
+        await login.run(["rm", "-rf", "--", *(str(path) for path in stale)])
         for path in stale:
             logger.info("Pruned stale Pixi data %s.", path)
     else:
@@ -94,9 +94,9 @@ def prune_stale_pixi_data(
     return tuple(stale)
 
 
-def prune_all_remote_data(ssh: SSHClient, remote_state: RemoteState) -> None:
+async def prune_all_remote_data(login: RemoteHost, remote_state: RemoteState) -> None:
     """Remove the complete EzHPCy-managed remote footprint."""
-    ssh.run(
+    await login.run(
         [
             "rm",
             "-rf",
@@ -108,7 +108,7 @@ def prune_all_remote_data(ssh: SSHClient, remote_state: RemoteState) -> None:
 
 
 # ruff: ignore[B008]  # See the comment above the option dataclasses in _options.py
-def prune_cmd(
+async def prune_cmd(
     profile: OptionalProfileArg = None,
     /,
     *,
@@ -132,26 +132,26 @@ def prune_cmd(
     connection = connection_from_cli(
         connection_options, resolve_profile_config(profile).connection, profile=profile
     )
-    ssh = InteractiveSSHClient(connection, password_prompt=connection.password_prompt)
-    ssh.interactive_connect()
-    remote_state = ssh.get_remote_state()
+    async with await connect_or_exit(connection) as login:
+        remote_state = await login.remote_state()
 
-    if not all_data:
-        prune_stale_installations(ssh, remote_state)
-        prune_stale_pixi_data(ssh, remote_state)
-        return
+        if not all_data:
+            await prune_stale_installations(login, remote_state)
+            await prune_stale_pixi_data(login, remote_state)
+            return
 
-    user_accepts = yes or Confirm.ask(
-        "This will remove [bold red]all[/bold red] EzHPCy-managed remote "
-        "infrastructure and data under "
-        f"[bold blue]{remote_state.package_cache_root()}[/bold blue] and "
-        f"[bold blue]{remote_state.package_state_root()}[/bold blue]. Proceed?",
-        console=console,
-        default=False,
-    )
-    if not user_accepts:
-        console.print("[bold yellow]Aborted[/bold yellow]: prune cancelled.")
-        raise SystemExit(1)
+        user_accepts = yes or ask(
+            Confirm.ask,
+            "This will remove [bold red]all[/bold red] EzHPCy-managed remote "
+            "infrastructure and data under "
+            f"[bold blue]{remote_state.package_cache_root()}[/bold blue] and "
+            f"[bold blue]{remote_state.package_state_root()}[/bold blue]. Proceed?",
+            console=console,
+            default=False,
+        )
+        if not user_accepts:
+            console.print("[bold yellow]Aborted[/bold yellow]: prune cancelled.")
+            raise SystemExit(1)
 
-    prune_all_remote_data(ssh, remote_state)
+        await prune_all_remote_data(login, remote_state)
     console.print("[bold green]Success[/bold green]: all managed remote data removed.")

@@ -9,6 +9,7 @@ LOGIN_KNOWN_HOSTS_NAME = "known_hosts"
 WORKER_CLIENT_KEY_NAME = "worker_client_ed25519"
 WORKER_HOST_ALIAS = "ezhpcy-worker"
 WORKER_HOST_KEY_NAME = "ssh_host_ed25519_key"
+WORKER_KNOWN_HOSTS_NAME = "worker_known_hosts"
 
 # Keeps helper commands (icacls, whoami, ssh) from flashing a console window on
 # Windows; 0 elsewhere.

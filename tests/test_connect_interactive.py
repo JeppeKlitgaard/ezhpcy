@@ -6,7 +6,6 @@ import signal
 import socket
 import time
 from collections.abc import Iterator
-from contextlib import AbstractAsyncContextManager
 from pathlib import Path
 
 import asyncssh
@@ -76,7 +75,7 @@ def warnings() -> Iterator[list[str]]:
     logger.removeHandler(handler)
 
 
-def _connect(
+async def _connect(
     server: SSHTestServer,
     known_hosts_file: Path,
     *,
@@ -84,7 +83,7 @@ def _connect(
     password: str | None = None,
     password_prompt: bool = True,
     **options: object,
-) -> AbstractAsyncContextManager[RemoteHost]:
+) -> RemoteHost:
     # `model_construct`, because `ConnectionInfo.host` accepts domain names only.
     conn_info = ConnectionInfo.model_construct(
         user=server.user,
@@ -97,7 +96,7 @@ def _connect(
         "client_keys": [server.client_key],
         "agent_path": None,
     }
-    return connect_interactive(
+    return await connect_interactive(
         conn_info, known_hosts_file=known_hosts_file, **(defaults | options)
     )
 
@@ -136,7 +135,7 @@ async def test_key_authentication_needs_no_prompt(
     _trust(ssh_server, known_hosts_file)
     ssh_server.command("hostname", reply(stdout="login1\n"))
 
-    async with _connect(ssh_server, known_hosts_file) as host:
+    async with await _connect(ssh_server, known_hosts_file) as host:
         assert await host.run(["hostname"]) == "login1\n"
 
     assert prompts.asked == []
@@ -150,7 +149,7 @@ async def test_password_is_asked_for_after_keys_fail(
     _only_passwords(ssh_server)
     prompts.answers = ["secret"]
 
-    async with _connect(ssh_server, known_hosts_file):
+    async with await _connect(ssh_server, known_hosts_file):
         pass
 
     assert prompts.asked == [("Enter password for alice@127.0.0.1", True)]
@@ -172,7 +171,7 @@ async def test_a_wrong_password_can_be_retried(
     _only_passwords(ssh_server)
     prompts.answers = ["wrong", "secret"]
 
-    async with _connect(ssh_server, known_hosts_file):
+    async with await _connect(ssh_server, known_hosts_file):
         pass
 
     assert _password_attempts(ssh_server) == [False, True]
@@ -192,7 +191,7 @@ async def test_three_wrong_passwords_fail(
     prompts.answers = ["wrong", "wrong", "wrong"]
 
     with pytest.raises(asyncssh.PermissionDenied):
-        async with _connect(ssh_server, known_hosts_file):
+        async with await _connect(ssh_server, known_hosts_file):
             pass
 
     assert len(prompts.asked) == 3
@@ -211,7 +210,7 @@ async def test_a_prompted_password_answers_a_keyboard_interactive_password_promp
     ssh_server.auth.kbdint = [KbdintPrompt("Password: ", "secret")]
     prompts.answers = ["secret"]
 
-    async with _connect(ssh_server, known_hosts_file):
+    async with await _connect(ssh_server, known_hosts_file):
         pass
 
     assert prompts.asked == [("Enter password for alice@127.0.0.1", True)]
@@ -227,7 +226,7 @@ async def test_each_password_is_tried_once_whatever_the_methods(
     prompts.answers = ["wrong", "wrong", "wrong"]
 
     with pytest.raises(asyncssh.PermissionDenied):
-        async with _connect(ssh_server, known_hosts_file):
+        async with await _connect(ssh_server, known_hosts_file):
             pass
 
     assert len(prompts.asked) == 3
@@ -246,7 +245,7 @@ async def test_a_profile_password_is_tried_once_without_a_prompt(
     _only_passwords(ssh_server)
 
     try:
-        async with _connect(ssh_server, known_hosts_file, password=password):
+        async with await _connect(ssh_server, known_hosts_file, password=password):
             pass
     except asyncssh.PermissionDenied:
         assert not connects
@@ -264,7 +263,7 @@ async def test_a_profile_password_answers_a_keyboard_interactive_password_prompt
     ssh_server.auth.client_keys = []
     ssh_server.auth.kbdint = [KbdintPrompt("Password: ", "secret")]
 
-    async with _connect(ssh_server, known_hosts_file, password="secret"):
+    async with await _connect(ssh_server, known_hosts_file, password="secret"):
         pass
 
     assert prompts.asked == []
@@ -279,7 +278,7 @@ async def test_no_prompt_when_prompting_is_off(
     ssh_server.auth.kbdint = [KbdintPrompt("Password: ", "secret")]
 
     with pytest.raises(asyncssh.PermissionDenied):
-        async with _connect(ssh_server, known_hosts_file, password_prompt=False):
+        async with await _connect(ssh_server, known_hosts_file, password_prompt=False):
             pass
 
     assert prompts.asked == []
@@ -294,7 +293,7 @@ async def test_ctrl_c_at_the_password_prompt_stops_connecting(
     prompts.answers = [KeyboardInterrupt()]
 
     with pytest.raises(KeyboardInterrupt):
-        async with _connect(ssh_server, known_hosts_file):
+        async with await _connect(ssh_server, known_hosts_file):
             pass
 
     assert len(prompts.asked) == 1
@@ -317,7 +316,7 @@ def test_ctrl_c_at_the_password_prompt_stops_the_command_at_once(
     monkeypatch.setattr(Prompt, "ask", interrupted)
 
     async def main() -> None:
-        async with _connect(ssh_server, known_hosts_file):
+        async with await _connect(ssh_server, known_hosts_file):
             pass
 
     started = time.monotonic()
@@ -342,7 +341,7 @@ async def test_an_accepted_host_key_is_saved_to_ezhpcys_file(
 ):
     prompts.answers = [True]
 
-    async with _connect(ssh_server, known_hosts_file):
+    async with await _connect(ssh_server, known_hosts_file):
         pass
 
     output = capsys.readouterr().out
@@ -354,7 +353,7 @@ async def test_an_accepted_host_key_is_saved_to_ezhpcys_file(
     assert not system_known_hosts.exists()
 
     # Known from now on.
-    async with _connect(ssh_server, known_hosts_file):
+    async with await _connect(ssh_server, known_hosts_file):
         pass
     assert len(prompts.asked) == 1
 
@@ -367,7 +366,7 @@ async def test_an_accepted_key_is_appended_on_a_line_of_its_own(
     known_hosts_file.write_text(other)
     prompts.answers = [True]
 
-    async with _connect(ssh_server, known_hosts_file):
+    async with await _connect(ssh_server, known_hosts_file):
         pass
 
     assert known_hosts_file.read_text() == f"{other}\n{ssh_server.known_hosts_line}"
@@ -379,7 +378,7 @@ async def test_a_rejected_host_key_is_not_saved(
     prompts.answers = [False]
 
     with pytest.raises(asyncssh.HostKeyNotVerifiable, match="rejected by user"):
-        async with _connect(ssh_server, known_hosts_file):
+        async with await _connect(ssh_server, known_hosts_file):
             pass
 
     assert not known_hosts_file.exists()
@@ -392,7 +391,7 @@ async def test_ctrl_c_at_the_host_key_prompt_stops_connecting(
     prompts.answers = [KeyboardInterrupt()]
 
     with pytest.raises(KeyboardInterrupt):
-        async with _connect(ssh_server, known_hosts_file):
+        async with await _connect(ssh_server, known_hosts_file):
             pass
 
     assert not known_hosts_file.exists()
@@ -410,9 +409,9 @@ async def test_a_host_key_that_cant_be_saved_is_trusted_for_this_connection(
     known_hosts_file = tmp_path / "not-a-directory" / "known_hosts"
     prompts.answers = [True, True]
 
-    async with _connect(ssh_server, known_hosts_file):
+    async with await _connect(ssh_server, known_hosts_file):
         pass
-    async with _connect(ssh_server, known_hosts_file):
+    async with await _connect(ssh_server, known_hosts_file):
         pass
 
     # Asked again, as the key wasn't remembered.
@@ -436,7 +435,7 @@ async def test_a_changed_host_key_is_refused_without_a_prompt(
     file.write_text(_other_key_line(f"[{ssh_server.host}]:{ssh_server.port}"))
 
     with pytest.raises(asyncssh.HostKeyNotVerifiable) as raised:
-        async with _connect(ssh_server, known_hosts_file):
+        async with await _connect(ssh_server, known_hosts_file):
             pass
 
     assert prompts.asked == []
@@ -459,7 +458,7 @@ async def test_a_bad_line_in_the_system_file_is_skipped(
         f"@unknown-marker example.com ssh-ed25519 AAAA\n{ssh_server.known_hosts_line}"
     )
 
-    async with _connect(ssh_server, known_hosts_file):
+    async with await _connect(ssh_server, known_hosts_file):
         pass
 
     assert prompts.asked == []
@@ -481,7 +480,7 @@ async def test_the_system_file_is_never_written(
     system_known_hosts.write_bytes(original.encode())
     prompts.answers = [True]
 
-    async with _connect(ssh_server, known_hosts_file):
+    async with await _connect(ssh_server, known_hosts_file):
         pass
 
     assert system_known_hosts.read_bytes() == original.encode()
@@ -510,7 +509,7 @@ async def test_an_unknown_host_is_offered_openssh_s_key_types(
 
     monkeypatch.setattr(asyncssh, "connect", recording_connect)
 
-    async with _connect(ssh_server, known_hosts_file):
+    async with await _connect(ssh_server, known_hosts_file):
         pass
 
     if known:
@@ -547,7 +546,7 @@ async def test_a_host_known_only_by_its_address_counts_as_unknown(
     prompts.answers = [True]
 
     # IPv4 only, so "localhost" is the server's address.
-    async with _connect(
+    async with await _connect(
         ssh_server, known_hosts_file, host="localhost", family=socket.AF_INET
     ):
         pass

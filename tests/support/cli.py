@@ -7,13 +7,14 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from types import SimpleNamespace
-from typing import BinaryIO, Literal, TextIO
+from typing import BinaryIO, Literal, Self, TextIO
 
 import keyring
 import pytest
 from rich.console import Console
 
-from ezhpcy.cli import main, provision, proxy, prune, tunnel
+from ezhpcy.cli import main, proxy, tunnel
+from ezhpcy.cli.utils import ssh as cli_ssh
 from ezhpcy.types import ConnectionInfo, RemoteState
 
 # Wide enough that help and error panels never wrap: at any narrower width, which
@@ -111,30 +112,27 @@ class _Reached(Exception):
     """Raised by a fake to stop a command once what it received is recorded."""
 
 
-class _FakeLoginClient:
-    """Records the connection, then stops at the first remote operation."""
+class _FakeLogin:
+    """Stands in for the login connection, and stops at the first remote operation
+    after `remote_state`."""
 
-    def __init__(
-        self,
-        captured: dict[str, object],
-        connection: ConnectionInfo,
-        *,
-        password_prompt: bool,
-    ):
-        captured["connection"] = connection
-        captured["password_prompt"] = password_prompt
+    def __init__(self, captured: dict[str, object]) -> None:
         self._captured = captured
 
-    def interactive_connect(self) -> None:
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(self, *_exc_info: object) -> None:
         pass
 
-    def get_remote_state(self) -> RemoteState:
+    async def remote_state(self) -> RemoteState:
         return RemoteState(
             cache_dir=PurePosixPath("/home/alice/.cache"),
             state_dir=PurePosixPath("/home/alice/.local/state"),
         )
 
     def __getattr__(self, name: str):
+        # Raises when called, so it also stops `async with login.sftp()`.
         def remote_operation(*args: object, **kwargs: object):
             self._captured["remote_operation"] = (name, args, kwargs)
             raise _Reached(name)
@@ -155,9 +153,9 @@ def capture(
 
     - `tunnel`: the keyword arguments of `_run_tunnel` (`resolved`, `ssh_host`, ...).
       The command then exits normally.
-    - `provision`, `prune`: `connection` and `password_prompt` given to the login
-      SSH client, and `remote_operation` (name, args, kwargs) for the first
-      operation after connecting, at which the command stops with an exception.
+    - `provision`, `prune`: the `connection` given to `connect_interactive`, and
+      `remote_operation` (name, args, kwargs) for the first operation after
+      `remote_state`, at which the command stops with an exception.
     - `proxy`: the tunnel `alias` it looked up. The relay writes `RELAYED_BYTES` to
       stdout and logs one debug record; `tunnel_debug` is the tunnel's `--debug`.
     - `keyring`: `service`, `account` and `password` given to the system keyring.
@@ -169,12 +167,12 @@ def capture(
                 tunnel, "_run_tunnel", lambda **kwargs: captured.update(kwargs)
             )
         case "provision" | "prune":
-            module = provision if command == "provision" else prune
-            monkeypatch.setattr(
-                module,
-                "InteractiveSSHClient",
-                lambda *args, **kwargs: _FakeLoginClient(captured, *args, **kwargs),
-            )
+
+            async def connect_interactive(connection: ConnectionInfo) -> _FakeLogin:
+                captured["connection"] = connection
+                return _FakeLogin(captured)
+
+            monkeypatch.setattr(cli_ssh, "connect_interactive", connect_interactive)
         case "proxy":
 
             def load_tunnel_backend(alias: str) -> SimpleNamespace:

@@ -1,26 +1,122 @@
-lazy import io
-lazy import os
-lazy from pathlib import Path
+"""The worker's SSH credentials on this machine, and where they go on the login node."""
 
-lazy import paramiko
+from dataclasses import dataclass
+lazy import os
+lazy from pathlib import Path, PurePosixPath
+lazy from typing import Self
+
 lazy from cryptography.hazmat.primitives import serialization
 lazy from cryptography.hazmat.primitives.asymmetric import ed25519
 
+lazy from ezhpcy.config import config
 lazy from ezhpcy.constants import (
+    SSH_DIRECTORY_NAME,
     WORKER_CLIENT_KEY_NAME,
     WORKER_HOST_ALIAS,
     WORKER_HOST_KEY_NAME,
+    WORKER_KNOWN_HOSTS_NAME,
 )
 lazy from ezhpcy.permissions import restrict_to_current_user
+lazy from ezhpcy.types import ConnectionInfo, RemoteState
+lazy from ezhpcy.utils import ssh_connection_id
 
 
-def ensure_local_key_pair(
-    ssh_dir: Path, *, key_name: str, comment: str
-) -> tuple[Path, Path]:
+@dataclass(frozen=True)
+class WorkerCredentials:
+    """
+    The worker's SSH credentials for one login endpoint: where they live on this
+    machine and on the login node, and creating them locally. Each local machine
+    has its own for each login user and host, so two login nodes never share
+    keys.
+    """
+
+    machine_id: str
+    login_user: str
+    login_host: str
+
+    @classmethod
+    def for_login(cls, conn_info: ConnectionInfo, *, machine_id: str) -> Self:
+        assert conn_info.user is not None
+        return cls(machine_id, conn_info.user, str(conn_info.host))
+
+    @property
+    def local_dir(self) -> Path:
+        return config.local_file.ssh_dir(
+            self.machine_id, user=self.login_user, host=self.login_host
+        )
+
+    @property
+    def client_key(self) -> Path:
+        return self.local_dir / WORKER_CLIENT_KEY_NAME
+
+    @property
+    def client_public_key(self) -> Path:
+        return self.local_dir / f"{WORKER_CLIENT_KEY_NAME}.pub"
+
+    @property
+    def host_key(self) -> Path:
+        return self.local_dir / WORKER_HOST_KEY_NAME
+
+    @property
+    def host_public_key(self) -> Path:
+        return self.local_dir / f"{WORKER_HOST_KEY_NAME}.pub"
+
+    @property
+    def known_hosts(self) -> Path:
+        """Pins the worker's host key for OpenSSH."""
+        return self.local_dir / WORKER_KNOWN_HOSTS_NAME
+
+    def remote_dir(self, remote_state: RemoteState) -> PurePosixPath:
+        return (
+            remote_state.package_cache_dir()
+            / SSH_DIRECTORY_NAME
+            / self.machine_id
+            / ssh_connection_id(self.login_user, self.login_host)
+        )
+
+    def remote_host_key(self, remote_state: RemoteState) -> PurePosixPath:
+        return self.remote_dir(remote_state) / WORKER_HOST_KEY_NAME
+
+    def remote_host_public_key(self, remote_state: RemoteState) -> PurePosixPath:
+        return self.remote_dir(remote_state) / f"{WORKER_HOST_KEY_NAME}.pub"
+
+    def ensure_local_keys(self) -> None:
+        """Create the client and host key pairs if they don't exist."""
+        _ensure_key_pair(
+            self.client_key, self.client_public_key, comment="ezhpcy worker client"
+        )
+        _ensure_key_pair(
+            self.host_key, self.host_public_key, comment="ezhpcy worker host"
+        )
+
+    def pin_host_key(self) -> None:
+        """
+        Pin the worker's host key in `known_hosts` under EzHPCy's stable alias,
+        replacing the previous entry and keeping unrelated hosts.
+        """
+        fields = self.host_public_key.read_text(encoding="utf-8").split()
+        if len(fields) < 2:
+            raise RuntimeError(
+                f"The worker host public key at {self.host_public_key} is malformed."
+            )
+        replacement = f"{WORKER_HOST_ALIAS} {fields[0]} {fields[1]}\n"
+        known_hosts = self.known_hosts
+        existing = (
+            known_hosts.read_text(encoding="utf-8") if known_hosts.exists() else ""
+        )
+        retained = [
+            line
+            for line in existing.splitlines(keepends=True)
+            if not line.split(maxsplit=1)
+            or line.split(maxsplit=1)[0] != WORKER_HOST_ALIAS
+        ]
+        known_hosts.write_text("".join(retained) + replacement, encoding="utf-8")
+        known_hosts.chmod(0o600)
+
+
+def _ensure_key_pair(private_key: Path, public_key: Path, *, comment: str) -> None:
     """Create one dedicated local Ed25519 key pair if it does not exist."""
-    private_key = ssh_dir / key_name
-    public_key = private_key.with_suffix(".pub")
-
+    ssh_dir = private_key.parent
     ssh_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     ssh_dir.chmod(0o700)
     if private_key.exists() != public_key.exists():
@@ -34,8 +130,13 @@ def ensure_local_key_pair(
             format=serialization.PrivateFormat.OpenSSH,
             encryption_algorithm=serialization.NoEncryption(),
         ).decode("ascii")
-        paramiko_key = paramiko.Ed25519Key.from_private_key(
-            io.StringIO(private_key_text)
+        public_key_text = (
+            cryptography_key.public_key()
+            .public_bytes(
+                encoding=serialization.Encoding.OpenSSH,
+                format=serialization.PublicFormat.OpenSSH,
+            )
+            .decode("ascii")
         )
         # Create with owner-only permissions immediately and refuse a raced-in file;
         # writing first and chmodding afterward briefly exposes private key material.
@@ -47,42 +148,8 @@ def ensure_local_key_pair(
         with os.fdopen(private_key_fd, "w", encoding="ascii", newline="\n") as file:
             file.write(private_key_text)
         public_key.write_text(
-            f"{paramiko_key.get_name()} {paramiko_key.get_base64()} {comment}\n",
+            f"{public_key_text} {comment}\n",
             encoding="ascii",
         )
     restrict_to_current_user(private_key)
     public_key.chmod(0o644)
-    return private_key, public_key
-
-
-def ensure_local_ssh_keys(
-    ssh_dir: Path,
-) -> tuple[Path, Path, Path, Path]:
-    """Ensure both worker client and worker host key pairs exist locally."""
-    client_keys = ensure_local_key_pair(
-        ssh_dir,
-        key_name=WORKER_CLIENT_KEY_NAME,
-        comment="ezhpcy worker client",
-    )
-    host_keys = ensure_local_key_pair(
-        ssh_dir,
-        key_name=WORKER_HOST_KEY_NAME,
-        comment="ezhpcy worker host",
-    )
-    return *client_keys, *host_keys
-
-
-def pin_worker_host_key(host_public_key: str, known_hosts: Path) -> None:
-    """Replace EzHPCy's stable alias entry without touching unrelated hosts."""
-    fields = host_public_key.strip().split()
-    if len(fields) < 2:
-        raise RuntimeError("The remote worker host public key is malformed.")
-    replacement = f"{WORKER_HOST_ALIAS} {fields[0]} {fields[1]}\n"
-    existing = known_hosts.read_text(encoding="utf-8") if known_hosts.exists() else ""
-    retained = [
-        line
-        for line in existing.splitlines(keepends=True)
-        if not line.split(maxsplit=1) or line.split(maxsplit=1)[0] != WORKER_HOST_ALIAS
-    ]
-    known_hosts.write_text("".join(retained) + replacement, encoding="utf-8")
-    known_hosts.chmod(0o600)

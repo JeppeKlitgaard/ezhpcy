@@ -39,15 +39,11 @@ lazy from ezhpcy.cli.doctor import echo_include_directive
 lazy from ezhpcy.cli.utils._legacy_ssh import InteractiveSSHClient
 lazy from ezhpcy.config import config
 lazy from ezhpcy.console import error_console
-lazy from ezhpcy.constants import (
-    OPENSSH_MATCHSPEC,
-    SSH_DIRECTORY_NAME,
-    WORKER_CLIENT_KEY_NAME,
-    WORKER_HOST_KEY_NAME,
-)
+lazy from ezhpcy.constants import OPENSSH_MATCHSPEC
 lazy from ezhpcy.ipc import create_tunnel_backend
 lazy from ezhpcy.ipc.common import IPCError
 lazy from ezhpcy.permissions import FilePermissionError
+lazy from ezhpcy.provision_local import WorkerCredentials
 lazy from ezhpcy.scheduler.base import (
     InteractiveJob,
     JobInfo,
@@ -77,14 +73,13 @@ lazy from ezhpcy.tunnel.sshd import (
     sshd_config_arguments,
 )
 lazy from ezhpcy.types import (
-    ConnectionInfo,
     RemoteState,
     ResolvedConfig,
     ResolvedProfileConfig,
     SchedulerConfig,
     SubmissionMode,
 )
-lazy from ezhpcy.utils import local_machine_id, ssh_connection_id
+lazy from ezhpcy.utils import local_machine_id
 
 _FIRST_DYNAMIC_PORT = 49152
 _LAST_DYNAMIC_PORT = 65535
@@ -265,16 +260,11 @@ def _select_worker_ports(count: int) -> tuple[int, ...]:
     return tuple(ports)
 
 
-def _ensure_local_worker_credentials(conn_info: ConnectionInfo) -> None:
-    remote_username = conn_info.user
-    assert remote_username is not None
-    ssh_directory = config.local_file.ssh_dir(
-        local_machine_id(), user=remote_username, host=str(conn_info.host)
-    )
+def _ensure_local_worker_credentials(credentials: WorkerCredentials) -> None:
     required_files = (
-        ssh_directory / WORKER_CLIENT_KEY_NAME,
-        ssh_directory / f"{WORKER_CLIENT_KEY_NAME}.pub",
-        ssh_directory / "worker_known_hosts",
+        credentials.client_key,
+        credentials.client_public_key,
+        credentials.known_hosts,
     )
     missing = [str(path) for path in required_files if not path.is_file()]
     if missing:
@@ -674,16 +664,14 @@ def _run_tunnel(
             raise paramiko.SSHException("Login-node SSH session is not active")
 
         remote_state = ssh.get_remote_state()
-        remote_username = conn_info.user
-        assert remote_username is not None
-        remote_host = str(conn_info.host)
-        connection_id = ssh_connection_id(remote_username, remote_host)
+        credentials = WorkerCredentials.for_login(conn_info, machine_id=machine_id)
+        remote_username = credentials.login_user
         if auto_provision:
             provision_worker_infrastructure(
                 ssh,
                 remote_state,
                 remote_username=remote_username,
-                remote_host=remote_host,
+                remote_host=credentials.login_host,
                 machine_id=machine_id,
             )
         else:
@@ -691,16 +679,10 @@ def _run_tunnel(
                 ssh,
                 remote_state,
                 remote_username=remote_username,
-                remote_host=remote_host,
+                remote_host=credentials.login_host,
                 machine_id=machine_id,
             )
-        client_public_key = (
-            config.local_file.ssh_dir(
-                machine_id, user=remote_username, host=remote_host
-            )
-            / f"{WORKER_CLIENT_KEY_NAME}.pub"
-        )
-        key_type, key_blob = read_ed25519_public_key(client_public_key)
+        key_type, key_blob = read_ed25519_public_key(credentials.client_public_key)
         match scheduler_type:
             case SchedulerType.LSF:
                 scheduler: Scheduler = LSFScheduler(
@@ -754,13 +736,7 @@ def _run_tunnel(
         )
         worker_cwd_dir = remote_state.worker_cwd_dir()
         worker_logs_dir = remote_state.worker_logs_dir()
-        remote_host_key = (
-            remote_state.package_cache_dir()
-            / SSH_DIRECTORY_NAME
-            / machine_id
-            / connection_id
-            / WORKER_HOST_KEY_NAME
-        )
+        remote_host_key = credentials.remote_host_key(remote_state)
 
         heartbeat_token = secrets.token_hex(16)
         control_dir = remote_state.worker_control_root() / heartbeat_token
@@ -1230,7 +1206,9 @@ def tunnel_cmd(
         if auto_provision is None:
             auto_provision = config.auto_provision
         if not auto_provision:
-            _ensure_local_worker_credentials(connection)
+            _ensure_local_worker_credentials(
+                WorkerCredentials.for_login(connection, machine_id=local_machine_id())
+            )
         worker_ports = (
             (worker_port,)
             if worker_port is not None

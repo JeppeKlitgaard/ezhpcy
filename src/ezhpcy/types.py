@@ -72,6 +72,17 @@ class SchedulerConfig(_SubConfig):
     submission_mode: SubmissionMode | None = None
     interactive_submission_command: list[str] | None = Field(default=None, min_length=1)
 
+    @field_validator("interactive_submission_command")
+    @classmethod
+    def validate_interactive_submission_command(
+        cls, value: list[str] | None
+    ) -> list[str] | None:
+        if value is not None and any(
+            not argument or "\0" in argument for argument in value
+        ):
+            raise ValueError("arguments must not be empty or contain NUL")
+        return value
+
 
 class ResourcesConfig(_SubConfig):
     """What the worker job requests from the scheduler."""

@@ -40,8 +40,8 @@ lazy from ezhpcy.cli.utils._legacy_ssh import InteractiveSSHClient
 lazy from ezhpcy.config import config
 lazy from ezhpcy.console import error_console
 lazy from ezhpcy.constants import OPENSSH_MATCHSPEC
-lazy from ezhpcy.ipc import create_tunnel_backend
-lazy from ezhpcy.ipc.common import IPCError
+lazy from ezhpcy.ipc import IPCError
+lazy from ezhpcy.ipc._legacy_server import create_tunnel_backend
 lazy from ezhpcy.permissions import FilePermissionError
 lazy from ezhpcy.provision_local import WorkerCredentials
 lazy from ezhpcy.scheduler._legacy.base import (

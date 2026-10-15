@@ -9,7 +9,7 @@ import pytest
 
 from ezhpcy.cli import tunnel as tunnel_module
 from ezhpcy.config import Config
-from ezhpcy.ipc import create_tunnel_backend
+from ezhpcy.ipc.descriptor import TunnelDescriptor
 from ezhpcy.tunnel import ssh_config
 from ezhpcy.tunnel.ssh_config import (
     WorkerHost,
@@ -178,27 +178,27 @@ def test_removing_an_absent_active_config_is_a_no_op() -> None:
     remove_active_host_config("scratch", instance_id="first")
 
 
+def running_tunnel(alias: str) -> TunnelDescriptor:
+    """Publish a descriptor, as a tunnel serving `alias` does."""
+    descriptor = TunnelDescriptor(alias, port=4321, authkey=b"a" * 32)
+    descriptor.publish()
+    return descriptor
+
+
 def test_prune_keeps_only_active_configs_of_running_tunnels() -> None:
-    live = create_tunnel_backend(alias="live", authkey=b"a" * 32)
-    replaced = create_tunnel_backend(alias="replaced", authkey=b"b" * 32)
-    listeners = [live.listen(lambda _c: None), replaced.listen(lambda _c: None)]
-    try:
-        kept = write_active_host_config(
-            worker_host("live"), instance_id=live.instance_id
-        )
-        stale = write_active_host_config(
-            worker_host("replaced"), instance_id="an-older-tunnel"
-        )
-        orphan = write_active_host_config(worker_host("gone"), instance_id="gone")
+    live = running_tunnel("live")
+    running_tunnel("replaced")
+    kept = write_active_host_config(worker_host("live"), instance_id=live.instance_id)
+    stale = write_active_host_config(
+        worker_host("replaced"), instance_id="an-older-tunnel"
+    )
+    orphan = write_active_host_config(worker_host("gone"), instance_id="gone")
 
-        prune_stale_active_configs()
+    prune_stale_active_configs()
 
-        assert kept.exists()
-        assert not stale.exists()
-        assert not orphan.exists()
-    finally:
-        for listener in listeners:
-            listener.close()
+    assert kept.exists()
+    assert not stale.exists()
+    assert not orphan.exists()
 
 
 def test_prune_without_a_config_directory_is_a_no_op() -> None:
@@ -294,23 +294,20 @@ def test_publish_writes_an_active_config_only_when_profiles_conf_lacks_it(
 ) -> None:
     monkeypatch.setattr(tunnel_module, "check_host_resolution", lambda _host: None)
     active = config_dir(isolated_runtime_dir) / "active-gpu.conf"
-    backend = create_tunnel_backend(alias="gpu")
-    listener = backend.listen(lambda _c: None)
-    try:
-        tunnel_module._publish_ssh_host(
-            worker_host(), instance_id=backend.instance_id, in_profiles_config=True
-        )
-        assert not active.exists()
+    instance_id = running_tunnel("gpu").instance_id
 
-        tunnel_module._publish_ssh_host(
-            worker_host(), instance_id=backend.instance_id, in_profiles_config=False
-        )
-        assert active.exists()
+    tunnel_module._publish_ssh_host(
+        worker_host(), instance_id=instance_id, in_profiles_config=True
+    )
+    assert not active.exists()
 
-        tunnel_module._withdraw_ssh_host(worker_host(), instance_id=backend.instance_id)
-        assert not active.exists()
-    finally:
-        listener.close()
+    tunnel_module._publish_ssh_host(
+        worker_host(), instance_id=instance_id, in_profiles_config=False
+    )
+    assert active.exists()
+
+    tunnel_module._withdraw_ssh_host(worker_host(), instance_id=instance_id)
+    assert not active.exists()
 
 
 def test_publish_prunes_an_older_tunnels_block_for_the_same_alias(
@@ -318,14 +315,12 @@ def test_publish_prunes_an_older_tunnels_block_for_the_same_alias(
 ) -> None:
     monkeypatch.setattr(tunnel_module, "check_host_resolution", lambda _host: None)
     stale = write_active_host_config(worker_host(user="bob"), instance_id="old")
-    backend = create_tunnel_backend(alias="gpu")
-    listener = backend.listen(lambda _c: None)
-    try:
-        tunnel_module._publish_ssh_host(
-            worker_host(), instance_id=backend.instance_id, in_profiles_config=True
-        )
-    finally:
-        listener.close()
+
+    tunnel_module._publish_ssh_host(
+        worker_host(),
+        instance_id=running_tunnel("gpu").instance_id,
+        in_profiles_config=True,
+    )
 
     assert not stale.exists()
 

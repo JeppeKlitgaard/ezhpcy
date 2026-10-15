@@ -1,25 +1,15 @@
 import io
-import os
 import socket
 import threading
-import time
-from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
-from ezhpcy import ipc
-from ezhpcy.ipc import create_tunnel_backend, load_tunnel_backend
-from ezhpcy.ipc.common import IPCError
-from ezhpcy.tunnel._legacy_server import TunnelServer, relay_proxy_stdio
-
-
-class ClientBackend:
-    def __init__(self, connection: socket.socket) -> None:
-        self.connection = connection
-
-    def connect(self, *, timeout: float) -> socket.socket:
-        return self.connection
+from ezhpcy.ipc import IPCError
+from ezhpcy.ipc._legacy_server import create_tunnel_backend
+from ezhpcy.ipc.client import connect, relay_proxy_stdio
+from ezhpcy.ipc.descriptor import TunnelDescriptor
+from ezhpcy.tunnel._legacy_server import TunnelServer
 
 
 class EchoTransport:
@@ -88,31 +78,6 @@ class BannerTransport(EchoTransport):
         return tunnel_channel
 
 
-class ClosingBannerTransport(EchoTransport):
-    def open_channel(self, _kind, *, dest_addr, src_addr):
-        tunnel_channel, worker = socket.socketpair()
-
-        def send_banner_and_close() -> None:
-            worker.sendall(b"SSH-2.0-test-worker\r\n")
-            worker.close()
-
-        threading.Thread(target=send_banner_and_close, daemon=True).start()
-        return tunnel_channel
-
-
-class FilenoOnlyStdin:
-    def __init__(self, descriptor: int) -> None:
-        self.descriptor = descriptor
-        self.buffered_read_called = False
-
-    def fileno(self) -> int:
-        return self.descriptor
-
-    def read(self, _size: int) -> bytes:
-        self.buffered_read_called = True
-        raise AssertionError("ProxyCommand stdin must use the raw descriptor")
-
-
 def run_proxy(tunnel: TunnelServer, payload: bytes) -> bytes:
     client, server = socket.socketpair()
     tunnel_thread = threading.Thread(
@@ -121,8 +86,10 @@ def run_proxy(tunnel: TunnelServer, payload: bytes) -> bytes:
     )
     tunnel_thread.start()
     output = io.BytesIO()
-    relay_proxy_stdio(ClientBackend(client), io.BytesIO(payload), output)
+    with client:
+        relay_proxy_stdio(client, io.BytesIO(payload), output)
     tunnel_thread.join(timeout=1)
+    server.close()
     assert not tunnel_thread.is_alive()
     return output.getvalue()
 
@@ -163,35 +130,6 @@ def test_two_simultaneous_proxies_get_independent_channels() -> None:
     ]
 
 
-def test_proxy_does_not_leave_a_buffered_stdin_reader_at_shutdown() -> None:
-    tunnel = TunnelServer(
-        ClosingBannerTransport(), ("worker.internal", 3333), MagicMock()
-    )
-    client, server = socket.socketpair()
-    tunnel_thread = threading.Thread(
-        target=tunnel._serve_client,
-        args=(server,),
-    )
-    tunnel_thread.start()
-    read_descriptor, write_descriptor = os.pipe()
-    stdin = FilenoOnlyStdin(read_descriptor)
-    output = io.BytesIO()
-    try:
-        relay_proxy_stdio(ClientBackend(client), stdin, output)
-        assert output.getvalue() == b"SSH-2.0-test-worker\r\n"
-        assert not stdin.buffered_read_called
-    finally:
-        os.close(write_descriptor)
-        deadline = time.monotonic() + 1
-        while any(
-            thread.name == "ezhpcy-proxy-stdin" for thread in threading.enumerate()
-        ):
-            assert time.monotonic() < deadline
-            time.sleep(0.01)
-        os.close(read_descriptor)
-        tunnel_thread.join(timeout=1)
-
-
 def test_authentication_transport_loss_is_actionable_and_opens_no_channel() -> None:
     transport = EchoTransport(active=False)
     tunnel = TunnelServer(transport, ("worker.internal", 3333), MagicMock())
@@ -202,9 +140,10 @@ def test_authentication_transport_loss_is_actionable_and_opens_no_channel() -> N
     )
     thread.start()
 
-    with pytest.raises(IPCError, match="restart the tunnel"):
-        relay_proxy_stdio(ClientBackend(client), io.BytesIO(), io.BytesIO())
+    with client, pytest.raises(IPCError, match="restart the tunnel"):
+        relay_proxy_stdio(client, io.BytesIO(), io.BytesIO())
     thread.join(timeout=1)
+    server.close()
     assert transport.destinations == []
 
 
@@ -219,9 +158,10 @@ def test_worker_channel_open_failure_is_actionable() -> None:
     )
     thread.start()
 
-    with pytest.raises(IPCError, match="worker channel could not be opened"):
-        relay_proxy_stdio(ClientBackend(client), io.BytesIO(), io.BytesIO())
+    with client, pytest.raises(IPCError, match="worker channel could not be opened"):
+        relay_proxy_stdio(client, io.BytesIO(), io.BytesIO())
     thread.join(timeout=1)
+    server.close()
 
 
 def test_proxy_sends_client_bytes_before_worker_sends_any_bytes() -> None:
@@ -234,22 +174,15 @@ def test_proxy_sends_client_bytes_before_worker_sends_any_bytes() -> None:
     )
 
 
-def test_loopback_tunnel_relays_server_banner_while_waiting_for_client(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(ipc.config.local_file, "runtime_dir", tmp_path)
+def test_loopback_tunnel_relays_server_banner_while_waiting_for_client() -> None:
     server_backend = create_tunnel_backend(alias="test", authkey=b"a" * 32)
     tunnel = TunnelServer(BannerTransport(), ("worker.internal", 3333), server_backend)
     tunnel_thread = threading.Thread(target=tunnel.serve_forever, daemon=True)
     tunnel_thread.start()
     output = io.BytesIO()
 
-    relay_proxy_stdio(
-        load_tunnel_backend("test"),
-        io.BytesIO(b"SSH-2.0-test-client\r\n"),
-        output,
-    )
+    with connect(TunnelDescriptor.load("test")) as stream:
+        relay_proxy_stdio(stream, io.BytesIO(b"SSH-2.0-test-client\r\n"), output)
     tunnel.close()
     tunnel_thread.join(timeout=1)
 

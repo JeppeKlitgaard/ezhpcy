@@ -1,51 +1,29 @@
 import base64
 import json
 import os
-import socket
-import threading
-import time
 from pathlib import Path
 
 import pytest
 
-from ezhpcy import ipc
-from ezhpcy.ipc import (
-    AuthenticatedIPCBackend,
-    create_tunnel_backend,
-    load_tunnel_backend,
-    protocol,
-    runtime,
-)
-from ezhpcy.ipc.common import (
-    IPCAddress,
-    IPCAuthenticationError,
-    IPCError,
-    TunnelUnavailableError,
-)
+from ezhpcy.ipc import IPCError, descriptor as descriptor_module
+from ezhpcy.ipc.descriptor import TunnelDescriptor, descriptor_path
 from ezhpcy.types import ResolvedConfig
 
 AUTHKEY = b"a" * 32
-BIND_ADDRESS = IPCAddress("127.0.0.1", 0, allow_zero_port=True)
 
 
-def test_descriptor_path_is_keyed_by_alias(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.setattr(ipc.config.local_file, "runtime_dir", tmp_path)
-
-    assert ipc.descriptor_path("gpu") == tmp_path / "descriptors" / "gpu.json"
+def test_descriptor_path_is_keyed_by_alias(isolated_runtime_dir: Path) -> None:
+    assert descriptor_path("gpu") == isolated_runtime_dir / "descriptors" / "gpu.json"
 
 
 @pytest.mark.parametrize(
     "alias", ["", "../escape", "a/b", "a\b", "has space", "-leading", "wild*", "a,b"]
 )
 def test_descriptor_path_rejects_aliases_that_are_not_safe_file_names(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, alias: str
+    alias: str,
 ) -> None:
-    monkeypatch.setattr(ipc.config.local_file, "runtime_dir", tmp_path)
-
     with pytest.raises(ValueError, match="invalid host alias"):
-        ipc.descriptor_path(alias)
+        descriptor_path(alias)
 
 
 def test_anonymous_alias_digest_is_order_independent() -> None:
@@ -125,470 +103,178 @@ def test_anonymous_alias_digest_includes_job_configuration(
     )
 
 
-def test_backend_publishes_and_loads_by_alias(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.setattr(ipc.config.local_file, "runtime_dir", tmp_path)
-    backend = create_tunnel_backend(alias="ezhpcy-0123456789ab", authkey=AUTHKEY)
-    listener = backend.listen(lambda _connection: None)
-    descriptor = ipc.descriptor_path("ezhpcy-0123456789ab")
-    try:
-        loaded = load_tunnel_backend("ezhpcy-0123456789ab")
-
-        assert descriptor.is_file()
-        assert loaded.address == listener.address
-        assert loaded.authkey == AUTHKEY
-        assert loaded.instance_id == backend.instance_id
-    finally:
-        listener.close()
-
-    assert not descriptor.exists()
-
-
-def start_server(backend, handler, error_handler=None):
-    server = backend.listen(handler, error_handler)
-    thread = threading.Thread(target=server.serve_forever)
-    thread.start()
-    return server, thread
-
-
-def test_worker_stream_rejection_is_bounded_and_actionable() -> None:
-    client, server = socket.socketpair()
-    thread = threading.Thread(
-        target=protocol.reject_worker_stream,
-        args=(server, "worker failed: " + "x" * 2000),
+@pytest.mark.parametrize("debug", [False, True])
+def test_descriptor_is_published_and_loaded_by_alias(debug: bool) -> None:
+    descriptor = TunnelDescriptor(
+        "ezhpcy-0123456789ab", port=4321, authkey=AUTHKEY, debug=debug
     )
-    thread.start()
+    descriptor.publish()
 
-    with pytest.raises(IPCError, match="worker failed") as raised:
-        protocol.wait_for_worker_stream(client)
-    thread.join(timeout=1)
-    client.close()
-    server.close()
-
-    assert len(str(raised.value).encode()) <= protocol.MAX_ERROR_SIZE
+    assert TunnelDescriptor.load("ezhpcy-0123456789ab") == descriptor
 
 
-def test_wrong_authkey_is_rejected() -> None:
-    server_backend = AuthenticatedIPCBackend(BIND_ADDRESS, AUTHKEY)
-    errors: list[Exception] = []
-    rejected = threading.Event()
+def test_descriptor_file_format_is_stable() -> None:
+    """Old and new tunnels and proxies all read this format."""
+    descriptor = TunnelDescriptor("test", port=4321, authkey=AUTHKEY)
+    descriptor.publish()
 
-    def report(error: Exception) -> None:
-        errors.append(error)
-        rejected.set()
-
-    server, thread = start_server(server_backend, lambda _connection: None, report)
-    wrong_client = AuthenticatedIPCBackend(server.address, b"b" * 32)
-    with pytest.raises(IPCAuthenticationError, match="authentication failed"):
-        wrong_client.connect(timeout=1)
-    assert rejected.wait(timeout=1)
-    server.close()
-    thread.join(timeout=1)
-
-    assert errors and isinstance(errors[0], IPCAuthenticationError)
+    assert json.loads(descriptor.path.read_text(encoding="utf-8")) == {
+        "version": 2,
+        "host": "127.0.0.1",
+        "port": 4321,
+        "authkey": base64.b64encode(AUTHKEY).decode("ascii"),
+        "instance_id": descriptor.instance_id,
+        "debug": False,
+    }
+    assert "authkey" not in repr(descriptor)
 
 
-def test_runtime_descriptor_publishes_capability_and_is_removed(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+def test_descriptor_is_only_removed_by_the_tunnel_that_published_it() -> None:
+    first = TunnelDescriptor("test", port=1111, authkey=b"a" * 32)
+    second = TunnelDescriptor("test", port=2222, authkey=b"b" * 32)
+    first.publish()
+    second.publish()
+
+    first.remove()
+    assert TunnelDescriptor.load("test") == second
+
+    second.remove()
+    assert not second.path.exists()
+
+
+def test_a_failed_publish_leaves_no_temporary_file(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(ipc.config.local_file, "runtime_dir", tmp_path)
-    descriptor = ipc.descriptor_path("test")
-    server = create_tunnel_backend(
-        alias="test",
-        authkey=AUTHKEY,
-    )
-    received: list[bytes] = []
+    def fail(*_args: object, **_kwargs: object) -> None:
+        raise OSError("disk full")
 
-    def serve(connection) -> None:
-        received.append(connection.recv(4))
-        connection.sendall(b"pong")
+    monkeypatch.setattr(descriptor_module.os, "replace", fail)
 
-    listener, thread = start_server(server, serve)
-    client_backend = load_tunnel_backend("test")
-    payload = json.loads(descriptor.read_text(encoding="utf-8"))
-
-    assert descriptor.is_file()
-    assert client_backend.address == listener.address
-    assert client_backend.address.host == "127.0.0.1"
-    assert client_backend.address.port != 0
-    assert client_backend.authkey == AUTHKEY
-    assert "authkey" not in repr(client_backend)
-    assert payload["version"] == runtime.RUNTIME_DESCRIPTOR_VERSION
-    assert payload["host"] == "127.0.0.1"
-    assert payload["port"] == listener.address.port
-
-    client = client_backend.connect(timeout=1)
-    client.sendall(b"ping")
-    assert client.recv(4) == b"pong"
-    client.close()
-    listener.close()
-    thread.join(timeout=1)
-
-    assert received == [b"ping"]
-    assert not descriptor.exists()
+    with pytest.raises(OSError, match="disk full"):
+        TunnelDescriptor("test", port=4321, authkey=AUTHKEY).publish()
+    assert list(descriptor_path("test").parent.iterdir()) == []
 
 
-def test_debug_reaches_the_proxy_through_the_runtime_descriptor(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.setattr(ipc.config.local_file, "runtime_dir", tmp_path)
-    backend = create_tunnel_backend(alias="test", debug=True)
-    listener = backend.listen(lambda _connection: None)
-    try:
-        assert load_tunnel_backend("test").debug is True
-    finally:
-        listener.close()
+def test_removing_an_absent_descriptor_is_a_no_op() -> None:
+    TunnelDescriptor("test", port=4321, authkey=AUTHKEY).remove()
 
 
-def test_debug_defaults_to_disabled_for_the_proxy(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.setattr(ipc.config.local_file, "runtime_dir", tmp_path)
-    backend = create_tunnel_backend(alias="test")
-    listener = backend.listen(lambda _connection: None)
-    try:
-        assert load_tunnel_backend("test").debug is False
-    finally:
-        listener.close()
+def write_descriptor(content: str) -> Path:
+    path = descriptor_path("test")
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    return path
 
 
-def test_descriptor_from_an_older_version_is_rejected(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """A stale descriptor must fail loudly; restarting the tunnel is trivial."""
-    monkeypatch.setattr(ipc.config.local_file, "runtime_dir", tmp_path)
-    descriptor = ipc.descriptor_path("test")
-    descriptor.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    descriptor.write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "host": "127.0.0.1",
-                "port": 5000,
-                "authkey": base64.b64encode(b"k" * 32).decode("ascii"),
-                "instance_id": "abc123",
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(TunnelUnavailableError, match="restart the tunnel"):
-        load_tunnel_backend("test")
+def valid_payload(**changes: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "version": 2,
+        "host": "127.0.0.1",
+        "port": 4321,
+        "authkey": base64.b64encode(AUTHKEY).decode("ascii"),
+        "instance_id": "abc123",
+        "debug": False,
+    }
+    return {**payload, **changes}
 
 
-def test_descriptor_with_a_non_boolean_debug_field_is_rejected(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.setattr(ipc.config.local_file, "runtime_dir", tmp_path)
-    descriptor = ipc.descriptor_path("test")
-    descriptor.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    descriptor.write_text(
-        json.dumps(
-            {
-                "version": runtime.RUNTIME_DESCRIPTOR_VERSION,
-                "host": "127.0.0.1",
-                "port": 5000,
-                "authkey": base64.b64encode(b"k" * 32).decode("ascii"),
-                "instance_id": "abc123",
-                "debug": "yes",
-            }
-        ),
-        encoding="utf-8",
-    )
+@pytest.mark.parametrize(
+    "content",
+    [
+        "not json",
+        "[]",
+        '"text"',
+        "{}",
+        json.dumps(valid_payload(version=1)),
+        json.dumps(valid_payload(host="0.0.0.0")),
+        json.dumps(valid_payload(port=0)),
+        json.dumps(valid_payload(port="4321")),
+        json.dumps(valid_payload(authkey="not base64!")),
+        json.dumps(valid_payload(authkey=base64.b64encode(b"short").decode())),
+        json.dumps(valid_payload(instance_id=7)),
+        json.dumps(valid_payload(debug="yes")),
+        json.dumps({k: v for k, v in valid_payload().items() if k != "debug"}),
+    ],
+)
+def test_an_unusable_descriptor_asks_to_restart_the_tunnel(content: str) -> None:
+    """A descriptor from another version must fail loudly: restarting is trivial."""
+    write_descriptor(content)
 
-    with pytest.raises(TunnelUnavailableError, match="invalid"):
-        load_tunnel_backend("test")
+    with pytest.raises(IPCError, match="invalid; restart the tunnel"):
+        TunnelDescriptor.load("test")
+
+
+@pytest.mark.parametrize("content", ["not json", "[]", "{}"])
+def test_remove_leaves_an_unusable_descriptor_alone(content: str) -> None:
+    path = write_descriptor(content)
+
+    TunnelDescriptor("test", port=4321, authkey=AUTHKEY).remove()
+
+    assert path.read_text(encoding="utf-8") == content
+
+
+def test_missing_descriptor_says_how_to_start_the_tunnel() -> None:
+    with pytest.raises(
+        IPCError, match="no tunnel is running for `missing`; start `ezhpcy tunnel`"
+    ):
+        TunnelDescriptor.load("missing")
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
-def test_runtime_descriptor_is_owner_only_on_posix(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.setattr(ipc.config.local_file, "runtime_dir", tmp_path)
-    descriptor = ipc.descriptor_path("test")
-    backend = create_tunnel_backend(alias="test")
-    listener = backend.listen(lambda _connection: None)
-    try:
-        assert descriptor.stat().st_mode & 0o077 == 0
-        assert descriptor.parent.stat().st_mode & 0o077 == 0
-    finally:
-        listener.close()
+def test_descriptor_is_owner_only_on_posix() -> None:
+    descriptor = TunnelDescriptor("test", port=4321, authkey=AUTHKEY)
+    descriptor.publish()
+
+    assert descriptor.path.stat().st_mode & 0o077 == 0
+    assert descriptor.path.parent.stat().st_mode & 0o077 == 0
+
+
+# The descriptors live in a directory of their own inside the runtime directory,
+# which `publish` creates or checks.
+def descriptors_directory() -> Path:
+    return descriptor_path("test").parent
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX ownership and symlink semantics")
-def test_runtime_descriptor_rejects_symlinked_directory(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    real_directory = tmp_path / "real-runtime"
+def test_descriptor_rejects_symlinked_directory(tmp_path: Path) -> None:
+    real_directory = tmp_path / "real-descriptors"
     real_directory.mkdir(mode=0o700)
-    linked_directory = tmp_path / "linked-runtime"
-    linked_directory.symlink_to(real_directory, target_is_directory=True)
-    monkeypatch.setattr(ipc.config.local_file, "runtime_dir", linked_directory)
-    backend = create_tunnel_backend(alias="test")
+    descriptors_directory().parent.mkdir(parents=True)
+    descriptors_directory().symlink_to(real_directory, target_is_directory=True)
 
     with pytest.raises(IPCError, match="must not be a symbolic link"):
-        backend.listen(lambda _connection: None)
+        TunnelDescriptor("test", port=4321, authkey=AUTHKEY).publish()
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX file type semantics")
-def test_runtime_descriptor_rejects_non_directory_runtime_path(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    runtime_path = tmp_path / "runtime"
-    runtime_path.touch()
-    monkeypatch.setattr(ipc.config.local_file, "runtime_dir", runtime_path)
-    backend = create_tunnel_backend(alias="test")
+def test_descriptor_rejects_a_file_in_place_of_its_directory() -> None:
+    descriptors_directory().parent.mkdir(parents=True)
+    descriptors_directory().touch()
 
     with pytest.raises(IPCError, match="is not a directory"):
-        backend.listen(lambda _connection: None)
+        TunnelDescriptor("test", port=4321, authkey=AUTHKEY).publish()
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX ownership semantics")
-def test_runtime_descriptor_rejects_directory_owned_by_another_user(
-    tmp_path: Path, monkeypatch
+def test_descriptor_rejects_directory_owned_by_another_user(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    runtime_directory = tmp_path / "runtime"
-    runtime_directory.mkdir(mode=0o700)
+    descriptors_directory().mkdir(mode=0o700, parents=True)
     monkeypatch.setattr(
-        runtime.os, "getuid", lambda: runtime_directory.stat().st_uid + 1
+        descriptor_module.os,
+        "getuid",
+        lambda: descriptors_directory().stat().st_uid + 1,
     )
-    monkeypatch.setattr(ipc.config.local_file, "runtime_dir", runtime_directory)
-    backend = create_tunnel_backend(alias="test")
 
     with pytest.raises(IPCError, match="not owned by the current user"):
-        backend.listen(lambda _connection: None)
+        TunnelDescriptor("test", port=4321, authkey=AUTHKEY).publish()
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
-def test_runtime_descriptor_restricts_precreated_directory(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    runtime_directory = tmp_path / "runtime"
-    runtime_directory.mkdir(mode=0o777)
-    runtime_directory.chmod(0o777)
-    monkeypatch.setattr(ipc.config.local_file, "runtime_dir", runtime_directory)
-    backend = create_tunnel_backend(alias="test")
-    listener = backend.listen(lambda _connection: None)
-    try:
-        assert runtime_directory.stat().st_mode & 0o777 == 0o700
-    finally:
-        listener.close()
+def test_descriptor_restricts_precreated_directory() -> None:
+    descriptors_directory().mkdir(parents=True)
+    descriptors_directory().chmod(0o777)
 
+    TunnelDescriptor("test", port=4321, authkey=AUTHKEY).publish()
 
-def test_missing_runtime_descriptor_fails_quickly(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.setattr(ipc.config.local_file, "runtime_dir", tmp_path)
-    with pytest.raises(
-        TunnelUnavailableError, match="no tunnel is running for `missing`"
-    ):
-        load_tunnel_backend("missing")
-
-
-def test_ipc_endpoint_absence_fails_quickly() -> None:
-    with socket.socket() as reserved:
-        reserved.bind(BIND_ADDRESS.as_tuple())
-        address = IPCAddress(*reserved.getsockname())
-    backend = AuthenticatedIPCBackend(address, AUTHKEY)
-    started = time.monotonic()
-    with pytest.raises(TunnelUnavailableError, match="no tunnel is running; start"):
-        backend.connect(timeout=0.05)
-    assert time.monotonic() - started < 1
-
-
-def test_listener_close_cancels_blocked_accept() -> None:
-    backend = AuthenticatedIPCBackend(BIND_ADDRESS, AUTHKEY)
-    server, thread = start_server(backend, lambda _connection: None)
-    server.close()
-    thread.join(timeout=1)
-
-    assert not thread.is_alive()
-
-
-def test_listener_closed_before_serving_returns_immediately() -> None:
-    backend = AuthenticatedIPCBackend(BIND_ADDRESS, AUTHKEY)
-    server = backend.listen(lambda _connection: None)
-    server.close()
-    thread = threading.Thread(target=server.serve_forever)
-    thread.start()
-    thread.join(timeout=1)
-
-    assert not thread.is_alive()
-
-
-def test_stalled_authentication_does_not_block_valid_client() -> None:
-    errors: list[Exception] = []
-    rejected = threading.Event()
-    backend = AuthenticatedIPCBackend(BIND_ADDRESS, AUTHKEY, authentication_timeout=0.1)
-
-    def serve(connection) -> None:
-        assert connection.recv(4) == b"ping"
-        connection.sendall(b"pong")
-
-    def report(error: Exception) -> None:
-        errors.append(error)
-        rejected.set()
-
-    server, thread = start_server(backend, serve, report)
-    with socket.create_connection(server.address.as_tuple()) as _stalled:
-        client = AuthenticatedIPCBackend(server.address, AUTHKEY).connect(timeout=1)
-        client.sendall(b"ping")
-        assert client.recv(4) == b"pong"
-        client.close()
-        assert rejected.wait(timeout=1)
-
-    server.close()
-    thread.join(timeout=1)
-    assert errors and "timed out" in str(errors[0])
-
-
-def test_client_authentication_has_an_overall_deadline() -> None:
-    with socket.socket() as listener:
-        listener.bind(BIND_ADDRESS.as_tuple())
-        listener.listen()
-        address = IPCAddress(*listener.getsockname())
-        release = threading.Event()
-
-        def stall() -> None:
-            connection, _address = listener.accept()
-            with connection:
-                release.wait(timeout=1)
-
-        thread = threading.Thread(target=stall)
-        thread.start()
-        backend = AuthenticatedIPCBackend(address, AUTHKEY)
-        started = time.monotonic()
-        with pytest.raises(IPCAuthenticationError, match="authentication failed"):
-            backend.connect(timeout=0.05)
-        elapsed = time.monotonic() - started
-        release.set()
-        thread.join(timeout=1)
-
-    assert elapsed < 1
-    assert not thread.is_alive()
-
-
-def test_client_rejects_invalid_server_proof() -> None:
-    with socket.socket() as listener:
-        listener.bind(BIND_ADDRESS.as_tuple())
-        listener.listen()
-        address = IPCAddress(*listener.getsockname())
-
-        def impersonate_tunnel() -> None:
-            connection, _address = listener.accept()
-            with connection:
-                connection.sendall(
-                    protocol.AUTH_MAGIC + b"s" * protocol.AUTH_NONCE_SIZE
-                )
-                response_size = protocol.AUTH_NONCE_SIZE + protocol.AUTH_DIGEST_SIZE
-                response = bytearray()
-                while len(response) < response_size:
-                    response.extend(connection.recv(response_size - len(response)))
-                connection.sendall(b"x" * protocol.AUTH_DIGEST_SIZE)
-
-        thread = threading.Thread(target=impersonate_tunnel)
-        thread.start()
-        backend = AuthenticatedIPCBackend(address, AUTHKEY)
-        with pytest.raises(IPCAuthenticationError, match="authentication failed"):
-            backend.connect(timeout=1)
-        thread.join(timeout=1)
-
-    assert not thread.is_alive()
-
-
-def test_server_close_interrupts_stalled_authentication() -> None:
-    backend = AuthenticatedIPCBackend(BIND_ADDRESS, AUTHKEY, authentication_timeout=10)
-    server, thread = start_server(backend, lambda _connection: None)
-    with socket.create_connection(server.address.as_tuple()) as stalled:
-        greeting_size = len(protocol.AUTH_MAGIC) + protocol.AUTH_NONCE_SIZE
-        greeting = bytearray()
-        while len(greeting) < greeting_size:
-            greeting.extend(stalled.recv(greeting_size - len(greeting)))
-
-        started = time.monotonic()
-        server.close()
-        elapsed = time.monotonic() - started
-        thread.join(timeout=1)
-        stalled.settimeout(1)
-        assert stalled.recv(1) == b""
-
-    assert elapsed < 1
-    assert not thread.is_alive()
-
-
-def test_unexpected_client_handler_error_is_reported() -> None:
-    errors: list[Exception] = []
-    reported = threading.Event()
-
-    def fail(_connection) -> None:
-        raise RuntimeError("handler failed")
-
-    def report(error: Exception) -> None:
-        errors.append(error)
-        reported.set()
-
-    backend = AuthenticatedIPCBackend(BIND_ADDRESS, AUTHKEY)
-    server, thread = start_server(backend, fail, report)
-    client = AuthenticatedIPCBackend(server.address, AUTHKEY).connect(timeout=1)
-    assert reported.wait(timeout=1)
-    client.close()
-    server.close()
-    thread.join(timeout=1)
-
-    assert errors and isinstance(errors[0], RuntimeError)
-    assert not thread.is_alive()
-
-
-def test_runtime_descriptor_rejects_non_loopback_address(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.setattr(ipc.config.local_file, "runtime_dir", tmp_path)
-    descriptor = ipc.descriptor_path("test")
-    descriptor.parent.mkdir(parents=True)
-    descriptor.write_text(
-        json.dumps(
-            {
-                "version": runtime.RUNTIME_DESCRIPTOR_VERSION,
-                "host": "0.0.0.0",
-                "port": 12345,
-                "authkey": base64.b64encode(AUTHKEY).decode("ascii"),
-                "instance_id": "test-instance",
-                "debug": False,
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(TunnelUnavailableError, match="runtime information is invalid"):
-        load_tunnel_backend("test")
-
-
-def test_latest_tunnel_descriptor_wins_and_old_close_preserves_it(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.setattr(ipc.config.local_file, "runtime_dir", tmp_path)
-    descriptor = ipc.descriptor_path("test")
-    first = create_tunnel_backend(
-        alias="test",
-        authkey=b"a" * 32,
-    )
-    second = create_tunnel_backend(
-        alias="test",
-        authkey=b"b" * 32,
-    )
-    first_listener = first.listen(lambda _connection: None)
-    second_listener = second.listen(lambda _connection: None)
-    try:
-        current = load_tunnel_backend("test")
-        assert current.address == second_listener.address
-        assert current.authkey == b"b" * 32
-
-        first_listener.close()
-        assert descriptor.is_file()
-        assert load_tunnel_backend("test").instance_id == second.instance_id
-    finally:
-        first_listener.close()
-        second_listener.close()
-
-    assert not descriptor.exists()
+    assert descriptors_directory().stat().st_mode & 0o777 == 0o700

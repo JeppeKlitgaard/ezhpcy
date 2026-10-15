@@ -34,9 +34,8 @@ lazy from ezhpcy.constants import (
     WORKER_HOST_ALIAS,
     WORKER_KNOWN_HOSTS_NAME,
 )
-lazy from ezhpcy.ipc import descriptor_path
-lazy from ezhpcy.ipc.common import IPCError
-lazy from ezhpcy.ipc.runtime import load_runtime_descriptor
+lazy from ezhpcy.ipc import IPCError
+lazy from ezhpcy.ipc.descriptor import TunnelDescriptor
 lazy from ezhpcy.permissions import restrict_to_current_user
 lazy from ezhpcy.utils import local_machine_id
 
@@ -213,9 +212,7 @@ def prune_stale_active_configs() -> None:
     for path in ssh_config_dir().glob(f"{ACTIVE_FILE_PREFIX}*.conf"):
         alias = path.name.removeprefix(ACTIVE_FILE_PREFIX).removesuffix(".conf")
         try:
-            live_instance_id = load_runtime_descriptor(
-                descriptor_path(alias)
-            ).instance_id
+            live_instance_id = TunnelDescriptor.load(alias).instance_id
         except IPCError, ValueError:
             live_instance_id = None
         # A hard-killed tunnel leaves its descriptor behind as well, so this

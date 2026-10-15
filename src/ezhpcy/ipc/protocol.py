@@ -1,5 +1,6 @@
 """
-The tunnel IPC wire protocol, and the proxy's (synchronous) side of it.
+The tunnel IPC wire protocol: the proxy's side (synchronous) and the tunnel's
+(asyncio).
 
 1. The tunnel sends `AUTH_MAGIC` and a random nonce.
 2. The proxy answers with its own nonce and an HMAC of both nonces, keyed with
@@ -10,6 +11,7 @@ The tunnel IPC wire protocol, and the proxy's (synchronous) side of it.
    `READY`, or `ERROR` followed by a 2-byte length and a UTF-8 message.
 """
 
+lazy import asyncio
 lazy import hmac
 lazy import secrets
 lazy import socket
@@ -101,3 +103,31 @@ def wait_for_worker_stream(stream: socket.socket) -> None:
         raise IPCError("tunnel returned an oversized error response")
     message = _receive_exact(stream, size).decode("utf-8", errors="replace")
     raise IPCError(message or "tunnel rejected stream")
+
+
+async def authenticate_server(
+    reader: asyncio.StreamReader, writer: asyncio.StreamWriter, authkey: bytes
+) -> None:
+    """
+    The tunnel's side of the handshake. The caller bounds it with a timeout.
+
+    Raises `IPCError` for a client without the key, and `EOFError` (asyncio's
+    `IncompleteReadError`) or `OSError` for one that goes away.
+    """
+    server_nonce = secrets.token_bytes(AUTH_NONCE_SIZE)
+    writer.write(AUTH_MAGIC + server_nonce)
+    await writer.drain()
+    response = await reader.readexactly(AUTH_NONCE_SIZE + AUTH_DIGEST_SIZE)
+    client_nonce = response[:AUTH_NONCE_SIZE]
+    proof = response[AUTH_NONCE_SIZE:]
+    expected = client_digest(authkey, server_nonce, client_nonce)
+    if not hmac.compare_digest(proof, expected):
+        raise IPCError("client authentication proof is invalid")
+    writer.write(server_digest(authkey, server_nonce, client_nonce))
+    await writer.drain()
+
+
+def rejection(message: str) -> bytes:
+    """The tunnel's status message refusing a stream, with `message` as the reason."""
+    payload = message.encode("utf-8")[:MAX_ERROR_SIZE]
+    return bytes((ERROR,)) + struct.pack("!H", len(payload)) + payload

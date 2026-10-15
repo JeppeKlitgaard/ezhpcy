@@ -169,6 +169,20 @@ class RemoteHost:
         """Run a safely quoted command through the remote Bash login shell."""
         return await self.run(["bash", "-lc", shlex.join(args)], stdin=stdin)
 
+    async def start_login_shell(
+        self, args: list[str]
+    ) -> asyncssh.SSHClientProcess[bytes]:
+        """
+        Start a safely quoted command through the remote Bash login shell, with a
+        pseudo-terminal, so its stdout carries stderr too. Reads and writes bytes.
+        """
+        return await self._conn.create_process(
+            shlex.join(["bash", "-lc", shlex.join(args)]),
+            term_type="vt100",
+            term_size=(80, 24),  # asyncssh default seems to be (0, 0).
+            encoding=None,
+        )
+
     @asynccontextmanager
     async def sftp(self) -> AsyncGenerator[asyncssh.SFTPClient]:
         """Open an SFTP session."""

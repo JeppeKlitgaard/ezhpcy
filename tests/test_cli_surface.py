@@ -688,6 +688,12 @@ def test_connection_only_commands_reject_job_options(
         ),
         pytest.param(
             "tunnel",
+            ["base", "--interactive-submission-command", "a100sh ''"],
+            ["--interactive-submission-command", "must not be empty or contain NUL"],
+            id="wrapper-empty-argument",
+        ),
+        pytest.param(
+            "tunnel",
             [
                 "base",
                 "--interactive-submission-command",

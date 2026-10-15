@@ -32,6 +32,7 @@ lazy from ezhpcy.constants import (
     WINDOWS_CREATION_FLAGS,
     WORKER_CLIENT_KEY_NAME,
     WORKER_HOST_ALIAS,
+    WORKER_KNOWN_HOSTS_NAME,
 )
 lazy from ezhpcy.ipc import descriptor_path
 lazy from ezhpcy.ipc.common import IPCError
@@ -105,7 +106,7 @@ class WorkerHost:
         )
 
     def render(self) -> str:
-        known_hosts = self.ssh_dir / "worker_known_hosts"
+        known_hosts = self.ssh_dir / WORKER_KNOWN_HOSTS_NAME
         return "\n".join(
             (
                 f"Host {self.alias}",

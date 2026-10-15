@@ -3,7 +3,6 @@ lazy import shlex
 lazy from pathlib import PurePosixPath
 
 lazy from ezhpcy._legacy_ssh import SSHClient
-lazy from ezhpcy.config import config
 lazy from ezhpcy.constants import (
     OPENSSH_MATCHSPEC,
     PIXI_INSTALLER_URL,
@@ -11,7 +10,7 @@ lazy from ezhpcy.constants import (
     SSH_DIRECTORY_NAME,
     WORKER_HOST_KEY_NAME,
 )
-lazy from ezhpcy.provision_local import ensure_local_ssh_keys, pin_worker_host_key
+lazy from ezhpcy.provision_local import WorkerCredentials
 lazy from ezhpcy.tunnel.sshd import (
     absolute_sshd_command,
     read_ed25519_public_key,
@@ -87,20 +86,15 @@ def provision_sshd_files(
     connection_id = ssh_connection_id(remote_username, remote_host)
     remote_root = remote_state.package_cache_dir()
     remote_ssh_dir = remote_root / SSH_DIRECTORY_NAME / machine_id / connection_id
-    local_ssh_dir = config.local_file.ssh_dir(
-        machine_id, user=remote_username, host=remote_host
-    )
 
     with ssh.sftp_client() as sftp:
         sftp.mkdir(remote_root, parents=True, exist_ok=True)
 
-        (
-            _client_private_key,
-            client_public_key,
-            host_private_key,
-            host_public_key,
-        ) = ensure_local_ssh_keys(local_ssh_dir)
-        known_hosts = local_ssh_dir / "worker_known_hosts"
+        credentials = WorkerCredentials(machine_id, remote_username, remote_host)
+        credentials.ensure_local_keys()
+        client_public_key = credentials.client_public_key
+        host_private_key = credentials.host_key
+        host_public_key = credentials.host_public_key
 
         sftp.mkdir(remote_ssh_dir, mode=0o700, parents=True, exist_ok=True)
         sftp.chmod(str(remote_ssh_dir), 0o700)
@@ -127,7 +121,7 @@ def provision_sshd_files(
             remote_state=remote_state,
         )
 
-        pin_worker_host_key(host_public_key.read_text(encoding="utf-8"), known_hosts)
+        credentials.pin_host_key()
 
 
 def provision_worker_infrastructure(

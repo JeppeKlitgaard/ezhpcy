@@ -1,3 +1,4 @@
+lazy import asyncio
 lazy from typing import Annotated
 
 lazy from cyclopts import Parameter
@@ -5,14 +6,16 @@ lazy from rich.prompt import Confirm
 
 from ezhpcy.cli._options import ConnectionOptions, OptionalProfileArg
 lazy from ezhpcy import console
-lazy from ezhpcy._legacy_provision_host import provision_worker_infrastructure
 lazy from ezhpcy.cli._resolve import connection_from_cli, resolve_profile_config
-lazy from ezhpcy.cli.utils._legacy_ssh import InteractiveSSHClient
+lazy from ezhpcy.cli.utils.prompt import ask
+lazy from ezhpcy.cli.utils.ssh import connect_or_exit
+lazy from ezhpcy.provision_host import provision_worker_infrastructure
+lazy from ezhpcy.provision_local import WorkerCredentials
 lazy from ezhpcy.utils import local_machine_id
 
 
 # ruff: ignore[B008]  # See the comment above the option dataclasses in _options.py
-def provision_cmd(
+async def provision_cmd(
     profile: OptionalProfileArg = None,
     /,
     *,
@@ -29,29 +32,23 @@ def provision_cmd(
     connection = connection_from_cli(
         connection_options, resolve_profile_config(profile).connection, profile=profile
     )
-    ssh = InteractiveSSHClient(connection, password_prompt=connection.password_prompt)
-    ssh.interactive_connect()
-    remote_state = ssh.get_remote_state()
-    remote_root = remote_state.package_cache_dir()
-
-    user_accepts = yes or Confirm.ask(
-        "This will provision or repair [bold purple]EzHPCy[/bold purple] worker "
-        f"infrastructure under [bold blue]{remote_root}[/bold blue]. Proceed?",
-        console=console,
-        default=True,
+    credentials = WorkerCredentials.for_login(
+        connection, machine_id=await asyncio.to_thread(local_machine_id)
     )
-    if not user_accepts:
-        console.print("[bold yellow]Aborted[/bold yellow]: provisioning cancelled.")
-        raise SystemExit(1)
+    async with await connect_or_exit(connection) as login:
+        remote_state = await login.remote_state()
+        remote_root = remote_state.package_cache_dir()
 
-    remote_username = connection.user
-    assert remote_username is not None
-    remote_host = str(connection.host)
-    provision_worker_infrastructure(
-        ssh,
-        remote_state,
-        remote_username=remote_username,
-        remote_host=remote_host,
-        machine_id=local_machine_id(),
-    )
+        user_accepts = yes or ask(
+            Confirm.ask,
+            "This will provision or repair [bold purple]EzHPCy[/bold purple] worker "
+            f"infrastructure under [bold blue]{remote_root}[/bold blue]. Proceed?",
+            console=console,
+            default=True,
+        )
+        if not user_accepts:
+            console.print("[bold yellow]Aborted[/bold yellow]: provisioning cancelled.")
+            raise SystemExit(1)
+
+        await provision_worker_infrastructure(login, remote_state, credentials)
     console.print("[bold green]Success[/bold green]: remote provisioning completed.")

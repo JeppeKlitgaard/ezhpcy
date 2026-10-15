@@ -8,6 +8,7 @@ lazy from ezhpcy.constants import PACKAGE_NAME
 
 TERMINAL_HANDLER_NAME = "ezhpcy-terminal"
 LOG_FORMAT = "[%(name)s] %(message)s"
+ASYNCSSH_LOGGER_NAME = "asyncssh"
 
 
 def configure_logging(
@@ -20,6 +21,8 @@ def configure_logging(
 
     Repeated calls reuse the same handler, allowing entry points and tests to adjust
     the level without duplicating each emitted record.
+
+    At DEBUG, asyncssh's INFO records go to the same handler.
     """
     logger = logging.getLogger(PACKAGE_NAME)
     logger.setLevel(level)
@@ -62,5 +65,19 @@ def configure_logging(
             datefmt="%Y-%m-%d %H:%M:%S",
         )
     )
+
+    # Redirect asyncssh logs.
+    # asyncssh never logs above INFO, so it is only shown with debug logging, and
+    # only at INFO (connections, authentication, channels): its own debug
+    # records are packet-level detail.
+    asyncssh_logger = logging.getLogger(ASYNCSSH_LOGGER_NAME)
+    for candidate in list(asyncssh_logger.handlers):
+        if candidate.get_name() == TERMINAL_HANDLER_NAME:
+            asyncssh_logger.removeHandler(candidate)
+    if logger.isEnabledFor(logging.DEBUG):
+        asyncssh_logger.setLevel(logging.INFO)
+        asyncssh_logger.addHandler(handler)
+    else:
+        asyncssh_logger.setLevel(logging.NOTSET)
 
     return logger

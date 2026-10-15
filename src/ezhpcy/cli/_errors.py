@@ -8,6 +8,7 @@ from cyclopts.exceptions import (
 )
 lazy from rich.text import Text
 
+lazy from ezhpcy import console
 lazy from ezhpcy.messages import QUOTED_KINDS, parts, plain
 
 # The kinds of message part (see `ezhpcy.messages`) in the style of Cyclopts' own
@@ -32,6 +33,20 @@ def rich_text(message: Template) -> Text:
         else:
             text.append(part, style=_STYLES[kind])
     return text
+
+
+def print_error(message: Template, *, label: str = "Error") -> None:
+    """Print a runtime failure as `Error: message`, the label in bold red."""
+    _print_labelled(label, "bold red", message)
+
+
+def print_warning(message: Template) -> None:
+    """Print `Warning: message`, the label in bold yellow."""
+    _print_labelled("Warning", "bold yellow", message)
+
+
+def _print_labelled(label: str, style: str, message: Template) -> None:
+    console.print(Text(label, style=style) + Text(": ") + rich_text(message))
 
 
 _SENTENCE_ENDINGS = (".", "?", "!")

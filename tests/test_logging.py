@@ -8,6 +8,7 @@ from rich.logging import RichHandler
 
 from ezhpcy.constants import PACKAGE_NAME
 from ezhpcy.logging import (
+    ASYNCSSH_LOGGER_NAME,
     TERMINAL_HANDLER_NAME,
     configure_logging,
 )
@@ -82,3 +83,26 @@ def test_configure_logging_is_idempotent() -> None:
 def test_invalid_log_level_is_rejected() -> None:
     with pytest.raises(ValueError, match="Unknown level"):
         configure_logging("very-chatty")
+
+
+def test_debug_logging_shows_asyncssh_info_records() -> None:
+    stream = io.StringIO()
+    configure_logging("DEBUG", stream=stream)
+
+    asyncssh_logger = logging.getLogger(ASYNCSSH_LOGGER_NAME)
+    asyncssh_logger.info("Opening SSH connection")
+    asyncssh_logger.debug("Sending packet")
+
+    rendered = " ".join(stream.getvalue().split())
+    assert rendered == "INFO [asyncssh] Opening SSH connection"
+
+
+def test_asyncssh_records_are_not_shown_without_debug_logging() -> None:
+    stream = io.StringIO()
+    configure_logging("DEBUG", stream=stream)
+    configure_logging("INFO", stream=stream)
+
+    logging.getLogger(ASYNCSSH_LOGGER_NAME).info("Opening SSH connection")
+
+    assert stream.getvalue() == ""
+    assert logging.getLogger(ASYNCSSH_LOGGER_NAME).handlers == []

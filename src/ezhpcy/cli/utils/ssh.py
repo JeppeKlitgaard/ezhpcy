@@ -13,23 +13,20 @@ to EzHPCy's file, and EzHPCy connects again; ~/.ssh/known_hosts is only read. A
 host known with another key is refused without asking.
 
 The user is never asked anything during authentication itself, so a prompt can
-block the event loop and the server's login
-timeout doesn't run while the user types.
+block the event loop and the server's login timeout doesn't run while the user types.
 """
 
 import logging
-from contextlib import asynccontextmanager
 lazy import asyncio
-lazy from collections.abc import AsyncGenerator, Awaitable
+lazy from collections.abc import Awaitable
 lazy from pathlib import Path
 
 lazy import asyncssh
 lazy from rich.prompt import Confirm, Prompt
-lazy from rich.text import Text
 
 from ezhpcy import ssh
 lazy from ezhpcy import console
-lazy from ezhpcy.cli._errors import rich_text
+lazy from ezhpcy.cli._errors import print_error, print_warning, rich_text
 lazy from ezhpcy.cli.utils.prompt import ask
 lazy from ezhpcy.config import config
 lazy from ezhpcy.types import ConnectionInfo
@@ -52,16 +49,17 @@ _UNKNOWN_HOST_KEY_ALGS = (
 )
 
 
-@asynccontextmanager
 async def connect_interactive(
     conn_info: ConnectionInfo,
     *,
     known_hosts_file: Path | None = None,
     **options: object,
-) -> AsyncGenerator[ssh.RemoteHost]:
+) -> ssh.RemoteHost:
     """
     Connect to the login node, prompting for a password and for an unknown host
-    key as needed, and close the connection on leaving the context.
+    key as needed.
+
+    Use the result with `async with` to close it.
 
     `known_hosts_file` is EzHPCy's own known hosts file (by default
     `config.local_file.login_known_hosts_file`). `options` are passed on to
@@ -72,14 +70,6 @@ async def connect_interactive(
     pressed Ctrl+C at a prompt.
     """
     known_hosts_file = known_hosts_file or config.local_file.login_known_hosts_file
-    remote_host = await _connect(conn_info, known_hosts_file, options)
-    async with remote_host:
-        yield remote_host
-
-
-async def _connect(
-    conn_info: ConnectionInfo, known_hosts_file: Path, options: dict[str, object]
-) -> ssh.RemoteHost:
     host = str(conn_info.host)
     port = options.get("port", _DEFAULT_PORT)
     assert isinstance(port, int)
@@ -114,20 +104,31 @@ async def _connect(
             ):
                 raise
             if password_attempts:
-                console.print(
-                    Text("Error", style="bold red"),
-                    Text(
-                        f"[{password_attempts}/{PASSWORD_ATTEMPTS}]: Invalid "
-                        "password. Try again or press Ctrl+C to abort."
-                    ),
+                print_error(
+                    t"Invalid password. Try again or press Ctrl+C to abort.",
+                    label=f"Error [{password_attempts}/{PASSWORD_ATTEMPTS}]",
                 )
             password_attempts += 1
             password = ask(
                 Prompt.ask,
-                Text(f"Enter password for {conn_info.user}@{host}"),
+                rich_text(t"Enter password for {conn_info.user}@{host}"),
                 password=True,
                 console=console,
             )
+
+
+async def connect_or_exit(conn_info: ConnectionInfo) -> ssh.RemoteHost:
+    """
+    `connect_interactive` for a command: if it can't connect, print
+    `Error: Could not connect to user@host: …` and exit with status 1.
+    """
+    try:
+        return await connect_interactive(conn_info)
+    except (asyncssh.Error, OSError) as error:
+        logger.debug("Could not connect.", exc_info=True)
+        target = f"{conn_info.user}@{conn_info.host}"
+        print_error(t"Could not connect to {target:name}: {error}")
+        raise SystemExit(1) from error
 
 
 class _KnownHosts:
@@ -201,8 +202,8 @@ def _knows(lines: list[str], host: str, port: int) -> bool:
 
 class _InteractiveClient(ssh.SSHClient):
     """
-    Records what `_connect` needs to know after a failed attempt: host keys it
-    couldn't trust, and whether the server offered password or
+    Records what `connect_interactive` needs to know after a failed attempt: host
+    keys it couldn't trust, and whether the server offered password or
     keyboard-interactive authentication.
     """
 
@@ -219,8 +220,8 @@ class _InteractiveClient(ssh.SSHClient):
         self, host: str, addr: str, port: int, key: asyncssh.SSHKey
     ) -> bool:
         # asyncssh asks only about a key it doesn't trust. The answer is needed in
-        # the middle of key exchange, so the key is refused here, and `_connect`
-        # asks the user and reconnects.
+        # the middle of key exchange, so the key is refused here, and
+        # `connect_interactive` asks the user and reconnects.
         files = self._known_hosts.files_knowing(host, port)
         if not files:
             self.unknown_host_key = (host, port, key)
@@ -234,12 +235,12 @@ class _InteractiveClient(ssh.SSHClient):
         return False
 
     # Authentication: only record that the server offered password or
-    # keyboard-interactive authentication, and keep asyncssh's defaults.
-    # asyncssh calls these only for methods the server offers,
-    # and for `password` only once a password given to `connect` has been tried.
-    # Its defaults give no further password, and answer
-    # a single keyboard-interactive password prompt with the password given to
-    # `connect`, once; `_connect` asks for a password and connects again.
+    # keyboard-interactive authentication, and keep asyncssh's defaults. asyncssh
+    # calls these only for methods the server offers, and for `password` only once
+    # a password given to `connect` has been tried. Its defaults give no further
+    # password, and answer a single keyboard-interactive password prompt with the
+    # password given to `connect`, once; `connect_interactive` asks for a password
+    # and connects again.
 
     def password_auth_requested(self) -> str | Awaitable[str | None] | None:
         self.password_offered = True
@@ -258,12 +259,9 @@ async def _accept_host_key(
     An accepted key is appended to `known_hosts_file`; if that fails, the key is
     only trusted for this connection.
     """
-    console.print(
-        Text("Warning", style="bold yellow")
-        + rich_text(t": The host key for {host:name} is not in any known hosts file.")
-    )
-    console.print(Text(f"Key type: {key.get_algorithm()}"))
-    console.print(Text(f"Key fingerprint: {key.get_fingerprint()}"))
+    print_warning(t"The host key for {host:name} is not in any known hosts file.")
+    console.print(rich_text(t"Key type: {key.get_algorithm()}"))
+    console.print(rich_text(t"Key fingerprint: {key.get_fingerprint()}"))
     accepted = ask(
         Confirm.ask,
         "Do you want to accept this host key?: ",
@@ -296,7 +294,7 @@ async def _accept_host_key(
         key.get_fingerprint(),
         known_hosts_file,
     )
-    console.print(Text(f"Host key for {host} saved to {known_hosts_file}."))
+    console.print(rich_text(t"Host key for {host} saved to {known_hosts_file}."))
     return line
 
 

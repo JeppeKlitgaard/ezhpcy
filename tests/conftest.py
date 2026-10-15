@@ -1,9 +1,11 @@
+import logging
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
 from ezhpcy.config import config
+from ezhpcy.logging import ASYNCSSH_LOGGER_NAME, TERMINAL_HANDLER_NAME
 from tests.support.sshserver import SSHTestServer
 
 
@@ -47,3 +49,24 @@ def without_connection_option_environment(
         "EZHPCY_PASSWORD_KEYRING",
     ):
         monkeypatch.delenv(environment_variable, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def quiet_asyncssh_logger() -> Iterator[None]:
+    """
+    Keep asyncssh's records off EzHPCy's terminal handler, unless a test turns on
+    debug logging itself. With `debug = true` in the workstation's config, the
+    handler would otherwise be attached for the whole run, and the test server's
+    thread, which logs after a test has ended, would write past pytest's capture.
+    """
+    _detach_asyncssh_logger()
+    yield
+    _detach_asyncssh_logger()
+
+
+def _detach_asyncssh_logger() -> None:
+    logger = logging.getLogger(ASYNCSSH_LOGGER_NAME)
+    logger.setLevel(logging.NOTSET)
+    for handler in list(logger.handlers):
+        if handler.get_name() == TERMINAL_HANDLER_NAME:
+            logger.removeHandler(handler)

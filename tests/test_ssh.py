@@ -258,6 +258,28 @@ async def test_run_login_shell_quotes_the_nested_command(ssh_server: SSHTestServ
     assert shlex.split(argv[2]) == command
 
 
+async def test_start_login_shell_runs_under_a_terminal(ssh_server: SSHTestServer):
+    async def shell(invocation: Invocation) -> None:
+        width, height, *_ = invocation.process.get_terminal_size()
+        invocation.stdout.write(f"{invocation.term_type} {width}x{height}\n")
+        invocation.stderr.write("on stderr\n")
+        invocation.stdout.write(f"got {await invocation.stdin.readline()}")
+
+    ssh_server.command("bash -lc", shell)
+    command = ["bsub", "-Is", "-J", "worker name", "$HOME; echo unsafe"]
+
+    async with await _connect(ssh_server) as host:
+        process = await host.start_login_shell(command)
+        process.stdin.write(b"exec worker\n")
+        output = await asyncio.wait_for(process.stdout.read(), WAIT_SECONDS)
+        await process.wait_closed()
+
+    assert output == b"vt100 80x24\non stderr\ngot exec worker\n"
+    assert process.exit_status == 0
+    [argv] = ssh_server.commands_run
+    assert argv == ["bash", "-lc", shlex.join(command)]
+
+
 async def test_remote_state_maps_the_xdg_directories(ssh_server: SSHTestServer):
     ssh_server.command(
         "bash -lc",

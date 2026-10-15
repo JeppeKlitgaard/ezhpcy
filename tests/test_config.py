@@ -153,6 +153,20 @@ def test_profile_job_intervals_must_be_positive(field: str) -> None:
         )
 
 
+@pytest.mark.parametrize("command", [[], ["a100sh", ""], ["a100sh", "a\0b"]])
+def test_profile_interactive_submission_command_arguments_must_be_usable(
+    command: list[str],
+) -> None:
+    with pytest.raises(ValidationError, match="interactive_submission_command"):
+        config_module.Config.from_mapping(
+            {
+                "profile": {
+                    "base": {"scheduler": {"interactive_submission_command": command}}
+                }
+            }
+        )
+
+
 def test_profile_password_keyring_can_be_enabled() -> None:
     config = config_module.Config.from_mapping(
         {"profile": {"base": {"connection": {"password_keyring": True}}}}

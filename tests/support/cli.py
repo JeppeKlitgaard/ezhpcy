@@ -4,6 +4,7 @@ import io
 import logging
 import sys
 from collections.abc import Mapping, Sequence
+from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from types import SimpleNamespace
@@ -175,18 +176,19 @@ def capture(
             monkeypatch.setattr(cli_ssh, "connect_interactive", connect_interactive)
         case "proxy":
 
-            def load_tunnel_backend(alias: str) -> SimpleNamespace:
+            def load(alias: str) -> SimpleNamespace:
                 captured["alias"] = alias
                 return SimpleNamespace(debug=tunnel_debug)
 
             def relay_proxy_stdio(
-                _backend: object, _stdin: BinaryIO, stdout: BinaryIO
+                _stream: object, _stdin: BinaryIO, stdout: BinaryIO
             ) -> None:
-                logging.getLogger("ezhpcy.tunnel._legacy_server").debug("Relaying.")
+                logging.getLogger("ezhpcy.ipc.client").debug("Relaying.")
                 stdout.write(RELAYED_BYTES)
                 stdout.flush()
 
-            monkeypatch.setattr(proxy, "load_tunnel_backend", load_tunnel_backend)
+            monkeypatch.setattr(proxy, "TunnelDescriptor", SimpleNamespace(load=load))
+            monkeypatch.setattr(proxy, "connect", lambda _descriptor: nullcontext())
             monkeypatch.setattr(proxy, "relay_proxy_stdio", relay_proxy_stdio)
         case "keyring":
 

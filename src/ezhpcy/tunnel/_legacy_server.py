@@ -1,23 +1,18 @@
-"""The tunnel server and ProxyCommand stream relays."""
+"""The tunnel server."""
 
 import logging
 from collections.abc import Callable
 lazy import itertools
-lazy import os
 lazy import socket
 lazy import threading
 lazy import time
-lazy from typing import BinaryIO
 
 lazy import paramiko
 
-lazy from ezhpcy.ipc.common import (
-    IPCBackend,
-)
-lazy from ezhpcy.ipc.protocol import (
+lazy from ezhpcy.ipc._legacy_server import (
+    AuthenticatedIPCBackend,
     ready_worker_stream,
     reject_worker_stream,
-    wait_for_worker_stream,
 )
 
 ErrorHandler = Callable[[Exception], None]
@@ -52,7 +47,7 @@ class TunnelServer:
         self,
         transport: paramiko.Transport,
         destination: tuple[str, int],
-        backend: IPCBackend,
+        backend: AuthenticatedIPCBackend,
         *,
         error_handler: ErrorHandler | None = None,
     ) -> None:
@@ -164,71 +159,3 @@ class TunnelServer:
 
     def close(self) -> None:
         self._server.close()
-
-
-def relay_proxy_stdio(
-    backend: IPCBackend,
-    stdin: BinaryIO,
-    stdout: BinaryIO,
-    *,
-    connect_timeout: float = 2.0,
-) -> None:
-    """Connect to the tunnel and reserve stdout exclusively for SSH bytes."""
-    started = time.monotonic()
-    logger.debug(
-        "Proxy relay connecting to tunnel: timeout_seconds=%g", connect_timeout
-    )
-    stream = backend.connect(timeout=connect_timeout)
-    sent = 0
-    received = 0
-    try:
-        wait_for_worker_stream(stream)
-        logger.debug("Proxy relay ready; worker stream accepted by the tunnel")
-
-        try:
-            stdin_fd = stdin.fileno()
-        except AttributeError, OSError, ValueError:
-
-            def read_stdin(size: int) -> bytes:
-                return stdin.read(size)
-        else:
-            # ProxyCommand stdin is an OpenSSH pipe. Reading its raw descriptor
-            # avoids leaving a daemon thread holding BufferedReader's lock when
-            # the worker closes its side of the session first.
-            def read_stdin(size: int) -> bytes:
-                return os.read(stdin_fd, size)
-
-        def send_stdin() -> None:
-            nonlocal sent
-            try:
-                while data := read_stdin(64 * 1024):
-                    stream.sendall(data)
-                    sent += len(data)
-                logger.debug("Proxy relay reached stdin EOF: bytes_sent=%d", sent)
-                _shutdown_write(stream)
-            except (OSError, ValueError) as error:
-                # The client half is gone; the main loop reports the outcome.
-                logger.debug(
-                    "Proxy relay stdin reader stopped: bytes_sent=%d error=%r",
-                    sent,
-                    error,
-                )
-
-        sender = threading.Thread(
-            target=send_stdin, daemon=True, name="ezhpcy-proxy-stdin"
-        )
-        sender.start()
-        while data := stream.recv(64 * 1024):
-            stdout.write(data)
-            stdout.flush()
-            received += len(data)
-        logger.debug("Proxy relay reached tunnel EOF: bytes_received=%d", received)
-    finally:
-        logger.debug(
-            "Proxy relay finished: duration_seconds=%.3f bytes_sent=%d "
-            "bytes_received=%d",
-            time.monotonic() - started,
-            sent,
-            received,
-        )
-        stream.close()

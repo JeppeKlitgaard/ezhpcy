@@ -27,7 +27,10 @@ lazy import os
 lazy import subprocess
 lazy import uuid
 
+lazy from rich.text import Text
+
 from ezhpcy.config import PROFILE_NAME_PATTERN, Config, config
+lazy from ezhpcy.console import console, error_console
 lazy from ezhpcy.constants import (
     WINDOWS_CREATION_FLAGS,
     WORKER_CLIENT_KEY_NAME,
@@ -36,7 +39,7 @@ lazy from ezhpcy.constants import (
 )
 lazy from ezhpcy.ipc import IPCError
 lazy from ezhpcy.ipc.descriptor import TunnelDescriptor
-lazy from ezhpcy.permissions import restrict_to_current_user
+lazy from ezhpcy.permissions import FilePermissionError, restrict_to_current_user
 lazy from ezhpcy.utils import local_machine_id
 
 logger = logging.getLogger(__name__)
@@ -72,6 +75,15 @@ def include_directive() -> str:
     directory = ssh_config_dir().expanduser().resolve().as_posix()
     return (
         f'# Load EzHPCy static and dynamic SSH profiles\nInclude "{directory}/*.conf"'
+    )
+
+
+def echo_include_directive(*, err: bool = False) -> None:
+    """Print the Include lines followed by a blank line, ready to copy verbatim."""
+    # Unindented and unwrapped, even for long paths; the colour marks what to
+    # copy and is dropped when output is not a terminal.
+    (error_console if err else console).print(
+        Text(include_directive() + "\n", style="bold cyan"), soft_wrap=True
     )
 
 
@@ -205,6 +217,48 @@ def remove_active_host_config(alias: str, *, instance_id: str) -> None:
     path = _active_path(alias)
     if _active_instance_id(path) == instance_id:
         path.unlink(missing_ok=True)
+
+
+def publish_host(
+    host: WorkerHost, *, instance_id: str, in_profiles_config: bool
+) -> None:
+    """
+    Expose a running tunnel's Host block and check that OpenSSH resolves it.
+    Problems are warnings: the tunnel works without the block, through another
+    alias or a hand-written one.
+    """
+    try:
+        # Pruning also drops an older tunnel's block for this alias, which
+        # would otherwise shadow the identical one in profiles.conf.
+        prune_stale_active_configs()
+        if not in_profiles_config:
+            write_active_host_config(host, instance_id=instance_id)
+    except (OSError, FilePermissionError) as error:
+        logger.warning(
+            "Could not write the SSH configuration for %s: %s", host.alias, error
+        )
+        return
+    problem = check_host_resolution(host)
+    if problem is not None:
+        logger.warning(
+            "`ssh %s` will not reach this tunnel: %s. If ~/.ssh/config does not "
+            "include EzHPCy's SSH profiles yet, copy the two highlighted lines "
+            "below to its top, before any Host or Match block:",
+            host.alias,
+            problem,
+        )
+        error_console.print()
+        echo_include_directive(err=True)
+
+
+def withdraw_host(host: WorkerHost, *, instance_id: str) -> None:
+    """Remove the Host block `publish_host` wrote, if it is still this tunnel's."""
+    try:
+        remove_active_host_config(host.alias, instance_id=instance_id)
+    except OSError as error:
+        logger.warning(
+            "Could not remove the SSH configuration for %s: %s", host.alias, error
+        )
 
 
 def prune_stale_active_configs() -> None:

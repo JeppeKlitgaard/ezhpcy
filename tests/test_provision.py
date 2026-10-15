@@ -1,16 +1,14 @@
 """`provision` and `prune` end to end, against the in-process SSH server."""
 
 import asyncio
-import json
 import socket
-from pathlib import Path, PurePosixPath
+from pathlib import PurePosixPath
 
 import asyncssh
 import pytest
 from rich.prompt import Confirm
 
 from ezhpcy import ssh
-from ezhpcy.cli.utils import ssh as cli_ssh
 from ezhpcy.config import config
 from ezhpcy.constants import (
     EZHPCY_VERSION,
@@ -22,56 +20,17 @@ from ezhpcy.constants import (
 )
 from ezhpcy.provision_host import ProvisioningError, validate_worker_infrastructure
 from ezhpcy.provision_local import WorkerCredentials
-from ezhpcy.types import ConnectionInfo, RemoteState
+from ezhpcy.types import ConnectionInfo
 from tests.support.cli import invoke
+from tests.support.login import CACHE, MACHINE_ID, REMOTE_STATE, STATE
 from tests.support.sshserver import SSHTestServer, reply
 
 _LOGIN = ["--host", "login.example.com", "--user", "alice"]
-_MACHINE_ID = "machine-id"
-_CACHE = PurePosixPath("/home/alice/.cache")
-_STATE = PurePosixPath("/home/alice/.local/state")
-_PACKAGE_CACHE = _CACHE / "ezhpcy" / EZHPCY_VERSION
+_PACKAGE_CACHE = CACHE / "ezhpcy" / EZHPCY_VERSION
 _PIXI_HOME = _PACKAGE_CACHE / "pixi" / PIXI_VERSION
 # Named after the configured login host, not the test server's address.
-_REMOTE_SSH_DIR = _PACKAGE_CACHE / "ssh" / _MACHINE_ID / "alice@login.example.com"
-_REMOTE_STATE = RemoteState(cache_dir=_CACHE, state_dir=_STATE)
-_CREDENTIALS = WorkerCredentials(_MACHINE_ID, "alice", "login.example.com")
-
-
-@pytest.fixture
-def login(
-    ssh_server: SSHTestServer, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> SSHTestServer:
-    """
-    Send the commands' login connection to the test server, whose host key is
-    trusted, and give it a fake for `remote_state`'s command.
-    """
-    home = tmp_path / "home"
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("USERPROFILE", str(home))
-    monkeypatch.setattr("ezhpcy.utils.machineid.hashed_id", lambda _: _MACHINE_ID)
-    known_hosts = config.local_file.login_known_hosts_file
-    known_hosts.parent.mkdir(parents=True, exist_ok=True)
-    known_hosts.write_text(ssh_server.known_hosts_line, encoding="utf-8")
-
-    connect_interactive = cli_ssh.connect_interactive
-
-    async def connect_to_server(conn_info: ConnectionInfo) -> ssh.RemoteHost:
-        # `ConnectionInfo.host` accepts domain names only.
-        conn_info = conn_info.model_copy(update={"host": ssh_server.host})
-        return await connect_interactive(
-            conn_info,
-            port=ssh_server.port,
-            client_keys=[ssh_server.client_key],
-            agent_path=None,
-        )
-
-    monkeypatch.setattr(cli_ssh, "connect_interactive", connect_to_server)
-    ssh_server.command(
-        "bash -lc",
-        reply(stdout=json.dumps({"cache_dir": str(_CACHE), "state_dir": str(_STATE)})),
-    )
-    return ssh_server
+_REMOTE_SSH_DIR = _PACKAGE_CACHE / "ssh" / MACHINE_ID / "alice@login.example.com"
+_CREDENTIALS = WorkerCredentials(MACHINE_ID, "alice", "login.example.com")
 
 
 def _commands(server: SSHTestServer, name: str) -> list[list[str]]:
@@ -111,10 +70,10 @@ def test_provision_installs_pixi_openssh_and_the_worker_keys(
     assert cache_openssh[-1] == "-V"
 
     for local, remote in (
-        (_CREDENTIALS.host_key, _CREDENTIALS.remote_host_key(_REMOTE_STATE)),
+        (_CREDENTIALS.host_key, _CREDENTIALS.remote_host_key(REMOTE_STATE)),
         (
             _CREDENTIALS.host_public_key,
-            _CREDENTIALS.remote_host_public_key(_REMOTE_STATE),
+            _CREDENTIALS.remote_host_public_key(REMOTE_STATE),
         ),
     ):
         assert login.local_path(remote).read_bytes() == local.read_bytes()
@@ -241,9 +200,9 @@ def test_prune_removes_other_versions_only(login: SSHTestServer) -> None:
     _make_remote_dirs(
         login,
         _PACKAGE_CACHE,
-        _CACHE / "ezhpcy" / "0.0.9",
-        _CACHE / "ezhpcy" / "keep me",
-        _STATE / "ezhpcy" / "0.0.9",
+        CACHE / "ezhpcy" / "0.0.9",
+        CACHE / "ezhpcy" / "keep me",
+        STATE / "ezhpcy" / "0.0.9",
         _PIXI_HOME,
         _PACKAGE_CACHE / "pixi" / "0.72.0",
         pixi_cache / PIXI_VERSION,
@@ -258,8 +217,8 @@ def test_prune_removes_other_versions_only(login: SSHTestServer) -> None:
             "rm",
             "-rf",
             "--",
-            f"{_CACHE}/ezhpcy/0.0.9",
-            f"{_STATE}/ezhpcy/0.0.9",
+            f"{CACHE}/ezhpcy/0.0.9",
+            f"{STATE}/ezhpcy/0.0.9",
         ],
         [
             "rm",
@@ -287,7 +246,7 @@ def test_prune_all_removes_the_package_cache_and_state(login: SSHTestServer) -> 
 
     assert result.exit_code == 0, result
     assert _commands(login, "rm") == [
-        ["rm", "-rf", "--", f"{_CACHE}/ezhpcy", f"{_STATE}/ezhpcy"]
+        ["rm", "-rf", "--", f"{CACHE}/ezhpcy", f"{STATE}/ezhpcy"]
     ]
     assert "Success: all managed remote data removed." in result.stdout
 
@@ -304,7 +263,7 @@ async def _validate(server: SSHTestServer) -> None:
         agent_path=None,
         known_hosts=server.known_hosts,
     ) as login:
-        await validate_worker_infrastructure(login, _REMOTE_STATE, _CREDENTIALS)
+        await validate_worker_infrastructure(login, REMOTE_STATE, _CREDENTIALS)
 
 
 async def test_validate_worker_infrastructure_accepts_a_provisioned_host(

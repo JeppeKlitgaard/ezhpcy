@@ -7,7 +7,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from ezhpcy.cli import tunnel as tunnel_module
 from ezhpcy.config import Config
 from ezhpcy.ipc.descriptor import TunnelDescriptor
 from ezhpcy.tunnel import ssh_config
@@ -292,31 +291,31 @@ def test_hanging_ssh_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_publish_writes_an_active_config_only_when_profiles_conf_lacks_it(
     isolated_runtime_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(tunnel_module, "check_host_resolution", lambda _host: None)
+    monkeypatch.setattr(ssh_config, "check_host_resolution", lambda _host: None)
     active = config_dir(isolated_runtime_dir) / "active-gpu.conf"
     instance_id = running_tunnel("gpu").instance_id
 
-    tunnel_module._publish_ssh_host(
+    ssh_config.publish_host(
         worker_host(), instance_id=instance_id, in_profiles_config=True
     )
     assert not active.exists()
 
-    tunnel_module._publish_ssh_host(
+    ssh_config.publish_host(
         worker_host(), instance_id=instance_id, in_profiles_config=False
     )
     assert active.exists()
 
-    tunnel_module._withdraw_ssh_host(worker_host(), instance_id=instance_id)
+    ssh_config.withdraw_host(worker_host(), instance_id=instance_id)
     assert not active.exists()
 
 
 def test_publish_prunes_an_older_tunnels_block_for_the_same_alias(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(tunnel_module, "check_host_resolution", lambda _host: None)
+    monkeypatch.setattr(ssh_config, "check_host_resolution", lambda _host: None)
     stale = write_active_host_config(worker_host(user="bob"), instance_id="old")
 
-    tunnel_module._publish_ssh_host(
+    ssh_config.publish_host(
         worker_host(),
         instance_id=running_tunnel("gpu").instance_id,
         in_profiles_config=True,
@@ -328,17 +327,15 @@ def test_publish_prunes_an_older_tunnels_block_for_the_same_alias(
 def test_publish_explains_how_to_include_the_configuration(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr(
-        tunnel_module, "check_host_resolution", lambda _host: "not ours"
-    )
+    monkeypatch.setattr(ssh_config, "check_host_resolution", lambda _host: "not ours")
     warnings: list[str] = []
     monkeypatch.setattr(
-        tunnel_module.logger,
+        ssh_config.logger,
         "warning",
         lambda message, *args: warnings.append(message % args),
     )
 
-    tunnel_module._publish_ssh_host(
+    ssh_config.publish_host(
         worker_host(), instance_id="instance", in_profiles_config=False
     )
 
@@ -353,15 +350,15 @@ def test_publish_failure_is_a_warning_not_an_error(
     def fail(*_args: object, **_kwargs: object) -> None:
         raise OSError("read-only file system")
 
-    monkeypatch.setattr(tunnel_module, "write_active_host_config", fail)
+    monkeypatch.setattr(ssh_config, "write_active_host_config", fail)
     warnings: list[str] = []
     monkeypatch.setattr(
-        tunnel_module.logger,
+        ssh_config.logger,
         "warning",
         lambda message, *args: warnings.append(message % args),
     )
 
-    tunnel_module._publish_ssh_host(
+    ssh_config.publish_host(
         worker_host(), instance_id="instance", in_profiles_config=False
     )
 

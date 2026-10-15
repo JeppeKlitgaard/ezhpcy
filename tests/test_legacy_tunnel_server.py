@@ -11,7 +11,7 @@ import pytest
 from ezhpcy import ipc
 from ezhpcy.ipc import create_tunnel_backend, load_tunnel_backend
 from ezhpcy.ipc.common import IPCError
-from ezhpcy.tunnel.server import TunnelServer, relay_proxy_stdio
+from ezhpcy.tunnel._legacy_server import TunnelServer, relay_proxy_stdio
 
 
 class ClientBackend:

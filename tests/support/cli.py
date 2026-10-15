@@ -182,7 +182,7 @@ def capture(
             def relay_proxy_stdio(
                 _backend: object, _stdin: BinaryIO, stdout: BinaryIO
             ) -> None:
-                logging.getLogger("ezhpcy.tunnel.server").debug("Relaying.")
+                logging.getLogger("ezhpcy.tunnel._legacy_server").debug("Relaying.")
                 stdout.write(RELAYED_BYTES)
                 stdout.flush()
 

@@ -56,7 +56,7 @@ lazy from ezhpcy.scheduler._legacy.base import (
 lazy from ezhpcy.scheduler._legacy.lsf import LSFScheduler
 lazy from ezhpcy.scheduler._legacy.pbs import PBSScheduler
 lazy from ezhpcy.scheduler.types import SchedulerType
-lazy from ezhpcy.tunnel.server import TunnelServer
+lazy from ezhpcy.tunnel._legacy_server import TunnelServer
 lazy from ezhpcy.tunnel.ssh_config import (
     WorkerHost,
     check_host_resolution,

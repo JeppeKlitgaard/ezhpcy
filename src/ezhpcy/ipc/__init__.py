@@ -26,13 +26,13 @@ from ezhpcy.ipc.protocol import (
     authenticate_client,
 )
 lazy from ezhpcy.config import PROFILE_NAME_PATTERN, config
+lazy from ezhpcy.ipc._legacy_server import AuthenticatedIPCServer
 lazy from ezhpcy.ipc.runtime import (
     load_runtime_descriptor,
     publish_runtime_descriptor,
     remove_runtime_descriptor,
     tunnel_not_running,
 )
-lazy from ezhpcy.ipc.server import AuthenticatedIPCServer
 
 _DEFAULT_BIND_ADDRESS = IPCAddress(LOOPBACK_HOST, 0, allow_zero_port=True)
 

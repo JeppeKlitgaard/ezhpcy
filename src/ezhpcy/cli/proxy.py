@@ -6,7 +6,7 @@ lazy from ezhpcy.console import error_console
 lazy from ezhpcy.ipc import load_tunnel_backend
 lazy from ezhpcy.ipc.common import IPCError
 lazy from ezhpcy.logging import configure_logging
-lazy from ezhpcy.tunnel.server import relay_proxy_stdio
+lazy from ezhpcy.tunnel._legacy_server import relay_proxy_stdio
 
 
 def proxy_cmd(alias: AliasArg, /) -> None:

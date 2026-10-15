@@ -7,7 +7,7 @@ lazy from collections.abc import Callable, Sequence
 lazy from pathlib import PurePosixPath
 lazy from typing import Any
 
-from ezhpcy.scheduler.base import (
+from ezhpcy.scheduler._legacy.base import (
     InteractiveJob,
     JobInfo,
     JobNotFoundError,

@@ -5,7 +5,7 @@ from pathlib import PurePosixPath
 
 import pytest
 
-from ezhpcy.scheduler.base import (
+from ezhpcy.scheduler._legacy.base import (
     InteractiveJob,
     JobNotFoundError,
     JobSpec,
@@ -13,8 +13,8 @@ from ezhpcy.scheduler.base import (
     SchedulerCommandError,
     SchedulerOutputError,
 )
-from ezhpcy.scheduler.lsf import LSFScheduler
-from ezhpcy.scheduler.pbs import PBSScheduler
+from ezhpcy.scheduler._legacy.lsf import LSFScheduler
+from ezhpcy.scheduler._legacy.pbs import PBSScheduler
 
 _MEBIBYTE = 1024**2
 _COMMAND = "/home/user/bin/worker"

@@ -19,7 +19,7 @@ import pytest
 
 from ezhpcy.cli import tunnel as tunnel_module
 from ezhpcy.constants import EZHPCY_VERSION
-from ezhpcy.scheduler.base import (
+from ezhpcy.scheduler._legacy.base import (
     InteractiveJob,
     JobInfo,
     JobSpec,

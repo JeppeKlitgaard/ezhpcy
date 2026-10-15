@@ -8,7 +8,7 @@ lazy from pathlib import PurePosixPath
 import paramiko
 lazy from paramiko.channel import ChannelFile, ChannelStderrFile
 
-lazy from ezhpcy.scheduler.base import RemoteProcess
+lazy from ezhpcy.scheduler._legacy.base import RemoteProcess
 lazy from ezhpcy.types import ConnectionInfo, RemoteState
 
 logger = logging.getLogger(__name__)

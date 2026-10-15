@@ -98,6 +98,8 @@ def test_proxy_does_not_import_other_commands_or_their_dependencies() -> None:
         "ezhpcy._legacy_ssh",
         "ezhpcy.scheduler.lsf",
         "ezhpcy.scheduler.pbs",
+        "ezhpcy.scheduler._legacy.lsf",
+        "ezhpcy.scheduler._legacy.pbs",
         "asyncssh",
         "paramiko",
         "keyring",

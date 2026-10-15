@@ -89,6 +89,9 @@ class Invocation:
 # Returns the exit status, `None` for 0. A fake may also end the process itself,
 # e.g. with `process.exit_with_signal`; then the return value is ignored.
 type Handler = Callable[[Invocation], Awaitable[int | None] | int | None]
+type StreamHandler = Callable[
+    [asyncio.StreamReader, asyncio.StreamWriter], Awaitable[None]
+]
 
 
 def reply(*, stdout: str = "", stderr: str = "", exit_status: int = 0) -> Handler:
@@ -112,7 +115,8 @@ class SSHTestServer:
       `commands_run` records the words of every command started, in order.
     - SFTP: rooted in a local directory (`local_path` maps a remote path into it),
       with relative paths starting at `home`.
-    - `direct-tcpip`: only to ports allowed with `allow_forwarding`.
+    - `direct-tcpip`: only to ports allowed with `allow_forwarding`, such as those
+      of the stand-ins `listen` starts.
     - Connection loss: `blackhole` and `drop`.
 
     Use it as a context manager (or `start` and `stop`). Stopping raises the first
@@ -134,6 +138,7 @@ class SSHTestServer:
         self.errors: list[Exception] = []
         self._commands: dict[tuple[str, ...], Handler] = {}
         self._forwardable: set[tuple[str, int]] = set()
+        self._listeners: list[asyncio.Server] = []
         self._connections: set[asyncssh.SSHServerConnection] = set()
         self._links: set[tuple[asyncio.StreamWriter, asyncio.StreamWriter]] = set()
         self._blackholed = False
@@ -158,6 +163,18 @@ class SSHTestServer:
     def allow_forwarding(self, port: int, host: str = _HOST) -> None:
         """Let clients open `direct-tcpip` channels to `host:port`."""
         self._forwardable.add((host, port))
+
+    def listen(self, handler: StreamHandler) -> int:
+        """
+        Serve TCP connections to a port on 127.0.0.1 with `handler`, on the server's
+        thread, as a stand-in for something only the login node can reach (such as
+        the worker's sshd). Forwarding to it is allowed. Returns the port.
+        """
+        listener = self._run(asyncio.start_server(handler, _HOST, 0))
+        self._listeners.append(listener)
+        port = listener.sockets[0].getsockname()[1]
+        self.allow_forwarding(port)
+        return port
 
     def local_path(self, remote_path: str | PurePosixPath) -> Path:
         """Where a remote path lives under `sftp_root`."""
@@ -259,6 +276,9 @@ class SSHTestServer:
     async def _stop(self) -> None:
         self._relay.close()
         self._acceptor.close()
+        for listener in self._listeners:
+            listener.close()
+            listener.close_clients()
         self._abort_links()
         for connection in self._connections:
             connection.abort()
@@ -269,6 +289,8 @@ class SSHTestServer:
         await asyncio.gather(*tasks, return_exceptions=True)
         await self._relay.wait_closed()
         await self._acceptor.wait_closed()
+        for listener in self._listeners:
+            await listener.wait_closed()
         await self._loop.shutdown_default_executor()
 
     # Commands

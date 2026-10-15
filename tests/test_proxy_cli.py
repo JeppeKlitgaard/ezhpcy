@@ -85,6 +85,8 @@ def test_proxy_does_not_import_other_commands_or_their_dependencies() -> None:
     assert "invalid host alias" in result.stderr
     unwanted = {
         "ezhpcy.cli.tunnel",
+        "ezhpcy.tunnel.session",
+        "ezhpcy.tunnel.worker",
         "ezhpcy.tunnel.server",
         "ezhpcy.tunnel._legacy_server",
         "ezhpcy.ipc._legacy_server",

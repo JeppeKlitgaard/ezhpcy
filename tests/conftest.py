@@ -6,6 +6,7 @@ import pytest
 
 from ezhpcy.config import config
 from ezhpcy.logging import ASYNCSSH_LOGGER_NAME, TERMINAL_HANDLER_NAME
+from tests.support.login import route_login
 from tests.support.sshserver import SSHTestServer
 
 
@@ -14,6 +15,15 @@ def ssh_server(tmp_path: Path) -> Iterator[SSHTestServer]:
     """An in-process SSH server whose remote files live in `tmp_path / "remote"`."""
     with SSHTestServer(tmp_path / "remote") as server:
         yield server
+
+
+@pytest.fixture
+def login(
+    ssh_server: SSHTestServer, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> SSHTestServer:
+    """`ssh_server`, which commands connect to as their login node."""
+    route_login(ssh_server, monkeypatch, tmp_path / "home")
+    return ssh_server
 
 
 @pytest.fixture(autouse=True)

@@ -152,8 +152,8 @@ def capture(
 
     The dict stays empty if the command never got there, e.g. after a usage error.
 
-    - `tunnel`: the keyword arguments of `_run_tunnel` (`resolved`, `ssh_host`, ...).
-      The command then exits normally.
+    - `tunnel`: the keyword arguments of `TunnelSession` (`resolved`, `ssh_host`,
+      ...). The command then exits normally, without running the session.
     - `provision`, `prune`: the `connection` given to `connect_interactive`, and
       `remote_operation` (name, args, kwargs) for the first operation after
       `remote_state`, at which the command stops with an exception.
@@ -164,9 +164,15 @@ def capture(
     captured: dict[str, object] = {}
     match command:
         case "tunnel":
-            monkeypatch.setattr(
-                tunnel, "_run_tunnel", lambda **kwargs: captured.update(kwargs)
-            )
+
+            class Session:
+                def __init__(self, **kwargs: object) -> None:
+                    captured.update(kwargs)
+
+                async def run(self) -> None:
+                    pass
+
+            monkeypatch.setattr(tunnel, "TunnelSession", Session)
         case "provision" | "prune":
 
             async def connect_interactive(connection: ConnectionInfo) -> _FakeLogin:

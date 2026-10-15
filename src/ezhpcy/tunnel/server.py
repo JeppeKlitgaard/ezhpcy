@@ -85,10 +85,6 @@ class TunnelServer:
         self._server.abort_clients()
         await self._server.wait_closed()
 
-    @property
-    def _transport_active(self) -> bool:
-        return not self.host.closed.done()
-
     async def _serve_client(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
@@ -102,17 +98,15 @@ class TunnelServer:
         connection_id = next(self._connection_ids)
         started = time.monotonic()
         logger.debug(
-            "Tunnel client accepted: connection=%d destination=%s:%d "
-            "transport_active=%s",
+            "Tunnel client accepted: connection=%d destination=%s:%d",
             connection_id,
             *self.destination,
-            self._transport_active,
         )
         worker_writer = None
         try:
             if not await self._authenticate(reader, writer):
                 return
-            if not self._transport_active:
+            if self.host.closed.done():
                 writer.write(rejection(TRANSPORT_LOST))
                 await writer.drain()
                 return
@@ -138,11 +132,9 @@ class TunnelServer:
             writer.close()
             self._clients.discard(task)
             logger.debug(
-                "Tunnel client closed: connection=%d duration_seconds=%.3f "
-                "transport_active=%s",
+                "Tunnel client closed: connection=%d duration_seconds=%.3f",
                 connection_id,
                 time.monotonic() - started,
-                self._transport_active,
             )
 
     async def _authenticate(
@@ -180,10 +172,9 @@ class TunnelServer:
             # An unexpected mid-session drop
             logger.warning(
                 "Worker channel relay failed: connection=%d duration_seconds=%.3f "
-                "transport_active=%s error=%r",
+                "error=%r",
                 connection_id,
                 time.monotonic() - started,
-                self._transport_active,
                 failure.exceptions[0],
             )
         else:

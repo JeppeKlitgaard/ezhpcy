@@ -1,257 +1,174 @@
 """
 Characterization of how `ezhpcy tunnel` shuts down in each failure scenario.
 
-These pin today's behaviour, quirks included, so that a restructuring of the
-tunnel code can be checked against the same table.
+Phase 0 pinned these outcomes on the threaded tunnel. Phase 7 ported the table to
+`TunnelSession`, against the in-process SSH server and a scheduler fake, with
+these deliberate differences (see FINDINGS.md, "Phase 7"):
+
+- Shutdown reasons are gone. The table checks the one `Stopping tunnel: <why>`
+  line each way of stopping logs instead.
+- A failure after the tunnel was ready reads `Tunnel stopped: …`, not `Could not
+  start tunnel: …`.
+- When the login connection is lost while waiting for the job, the user sees that
+  loss rather than the failed scheduler query that noticed it first.
+- Of two failures close together, the first one wins: a job-monitor error that
+  comes before a lost connection is the one reported.
+- A PBS job that the scheduler no longer lists has ended, so it isn't cancelled.
 """
 
-import logging
+import functools
 import re
-import threading
-from collections.abc import Callable, Iterator
+import signal
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from pathlib import PurePosixPath
 from typing import Literal
-from unittest.mock import patch
 
-import paramiko
 import pytest
 
-from ezhpcy.cli import tunnel as tunnel_module
-from ezhpcy.constants import EZHPCY_VERSION
-from ezhpcy.scheduler._legacy.base import (
-    InteractiveJob,
-    JobInfo,
-    JobSpec,
-    JobState,
-    SchedulerError,
-)
-from ezhpcy.types import ProfileConfig
+from ezhpcy.scheduler.base import JobInfo, JobSpec, JobState, SchedulerError
+from ezhpcy.ssh import RemoteHost
+from ezhpcy.tunnel import session, worker
 from tests.support.cli import invoke
-from tests.test_tunnel import (
-    StubChannel,
-    StubScheduler,
-    StubSSH,
-    StubTransport,
-    StubTunnelServer,
+from tests.support.sshserver import SSHTestServer
+from tests.support.tunnel import (
+    BANNER,
+    FAST_TIMINGS,
+    JOB_ID,
+    RUNNING,
+    FakeScheduler,
+    banner,
+    configure_tunnel,
+    serve_interactive_job,
     snapshot,
+    tunnel_log,
+    unused_port,
+    use_scheduler,
+    write_worker_record,
 )
 
-_WORKER_PORT = 54321
-_TOKEN = "LEASETOKEN"
-_CONTROL_DIR = PurePosixPath(
-    f"/home/alice/.local/state/ezhpcy/{EZHPCY_VERSION}/worker_control/{_TOKEN}"
-)
-_WAIT_SECONDS = 5
-
-_FAST_TIMINGS = {
-    "queue_timeout_seconds": 5,
-    "worker_startup_timeout_seconds": 5,
-    "job_poll_interval_seconds": 0.01,
-    "job_monitor_interval_seconds": 0.01,
-    "worker_heartbeat_interval_seconds": 0.01,
-    "worker_heartbeat_timeout_seconds": 1,
-}
-
-type Inspection = JobInfo | BaseException | Callable[["Rig"], JobInfo]
+PENDING = snapshot(JobState.PENDING, "PEND")
 
 
 class Rig:
-    """The fakes of one scenario, and the events its steps coordinate with."""
+    """The fakes of one scenario, and the flag its steps set."""
 
-    def __init__(self, scenario: Scenario) -> None:
+    def __init__(self, scenario: Scenario, server: SSHTestServer) -> None:
         self.scenario = scenario
-        self.transport = (
-            _RefusingTransport() if scenario.endpoint_refuses else StubTransport()
-        )
-        if scenario.banner is not None:
-            self.transport.channel = StubChannel(scenario.banner)
-        self.ssh = StubSSH(self.transport)
-        self.scheduler = _RigScheduler(self, scenario.inspections)
-        self.tunnel: _RigTunnel | None = None
-        self.heartbeats_fail = threading.Event()
-        self.monitor_may_fail = threading.Event()
+        self.server = server
+        self.heartbeats_fail = scenario.heartbeats == "fail_from_start"
         self.published: list[str] = []
         self.withdrawn: list[str] = []
-        if scenario.heartbeats == "fail_from_start":
-            self.heartbeats_fail.set()
-        if scenario.worker_record is not None:
-            self.ssh.files[_CONTROL_DIR / scenario.worker_record.name] = (
-                f"v1 {_TOKEN} {scenario.worker_record.name} "
-                f"{scenario.worker_record.detail}"
-            ).strip()
-
-    def lose_connection(self, reason: str) -> None:
-        handler = self.ssh.connection_lost_handler
-        assert handler is not None
-        handler(paramiko.SSHException(reason))
-
-    def make_tunnel(self, *args, **kwargs) -> _RigTunnel:
-        self.tunnel = _RigTunnel(self, *args, **kwargs)
-        return self.tunnel
-
-
-class _RefusingTransport(StubTransport):
-    """A transport on which the worker endpoint never accepts a connection."""
-
-    def open_channel(self, _kind: str, **_kwargs):
-        raise paramiko.SSHException("connection refused")
-
-
-class _RigScheduler(StubScheduler):
-    """Replays `inspections` in order and repeats the last one."""
-
-    def __init__(self, rig: Rig, inspections: list[Inspection]) -> None:
-        super().__init__([])
-        self._rig = rig
-        self._inspections = list(inspections)
-
-    def submit_interactive(
-        self, spec: JobSpec, *, startup_timeout: float
-    ) -> InteractiveJob:
-        # The shared stub pins the startup timeout, which scenarios vary.
-        return super().submit_interactive(spec, startup_timeout=10)
-
-    def inspect(self, _job_id: str) -> JobInfo:
-        entry = (
-            self._inspections.pop(0)
-            if len(self._inspections) > 1
-            else self._inspections[0]
+        self.worker_port = (
+            unused_port()
+            if scenario.endpoint_refuses
+            else server.listen(banner(scenario.banner))
         )
-        if isinstance(entry, BaseException):
-            raise entry
-        if callable(entry):
-            return entry(self._rig)
-        return entry
+
+    def scheduler(self, host: RemoteHost) -> FakeScheduler:
+        inspections = [
+            functools.partial(entry, self) if callable(entry) else entry
+            for entry in self.scenario.inspections
+        ]
+        return FakeScheduler(host, inspections, submitted=self.start_worker)
+
+    def start_worker(self, _spec: JobSpec) -> None:
+        record = self.scenario.worker_record
+        if record == "ready":
+            write_worker_record(self.server, "ready", str(self.worker_port))
+        else:
+            write_worker_record(self.server, "failed", *record.split())
 
 
-class _RigTunnel(StubTunnelServer):
-    def __init__(self, rig: Rig, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
-        self.rig = rig
-        self.closed_event = threading.Event()
-
-    def serve_forever(self) -> None:
-        self.rig.scenario.serve(self.rig, self)
-
-    def close(self) -> None:
-        super().close()
-        self.closed_event.set()
-
-    def wait_until_closed(self) -> None:
-        assert self.closed_event.wait(_WAIT_SECONDS), "the tunnel was never closed"
+type Step = Callable[[Rig], JobInfo]
 
 
-def return_at_once(_rig: Rig, _tunnel: _RigTunnel) -> None:
-    pass
+def interrupt_while(info: JobInfo) -> Step:
+    """Press Ctrl+C, then report `info`."""
+
+    def step(_rig: Rig) -> JobInfo:
+        signal.raise_signal(signal.SIGINT)
+        return info
+
+    return step
 
 
-def block_until_closed(_rig: Rig, tunnel: _RigTunnel) -> None:
-    tunnel.wait_until_closed()
+def lose_connection_while(info: JobInfo) -> Step:
+    def step(rig: Rig) -> JobInfo:
+        rig.server.drop()
+        return info
+
+    return step
 
 
-def interrupt(_rig: Rig, _tunnel: _RigTunnel) -> None:
-    raise KeyboardInterrupt
-
-
-def lose_connection_then_return(rig: Rig, _tunnel: _RigTunnel) -> None:
-    rig.lose_connection("session stopped answering")
-
-
-def fail_heartbeats_and_block(rig: Rig, tunnel: _RigTunnel) -> None:
-    rig.heartbeats_fail.set()
-    tunnel.wait_until_closed()
-
-
-def fail_monitor_then_lose_connection(rig: Rig, tunnel: _RigTunnel) -> None:
-    # The monitor's error closes the tunnel before the connection is reported
-    # lost; both are recorded.
-    rig.monitor_may_fail.set()
-    tunnel.wait_until_closed()
-    rig.lose_connection("session stopped answering")
-
-
-def lose_connection_then_fail_inspection(rig: Rig) -> JobInfo:
-    rig.lose_connection("session stopped answering")
-    raise paramiko.SSHException("socket is closed")
-
-
-def fail_once_allowed(rig: Rig) -> JobInfo:
-    if rig.monitor_may_fail.is_set():
-        raise SchedulerError("bjobs failed")
+def fail_heartbeats(rig: Rig) -> JobInfo:
+    rig.heartbeats_fail = True
     return RUNNING
 
 
-@dataclass(frozen=True)
-class WorkerRecord:
-    name: Literal["ready", "failed"]
-    detail: str
-
-
-RUNNING = snapshot(JobState.RUNNING, "RUN", "node42")
-_READY = WorkerRecord("ready", str(_WORKER_PORT))
+def fail_then_lose_connection(rig: Rig) -> JobInfo:
+    # The client can't see the connection go before the error is handled: nothing
+    # awaits in between.
+    rig.server.drop()
+    raise SchedulerError("bjobs failed")
 
 
 @dataclass(frozen=True)
 class Scenario:
     id: str
-    # What the scheduler reports on each poll; the last entry repeats.
-    inspections: list[Inspection]
-    expected_reason: str
+    # What the scheduler reports on each poll; the last entry repeats. The first
+    # poll that reports RUNNING ends the wait for the job; the job monitor's polls
+    # come after it.
+    inspections: list[JobInfo | Exception | Step]
     exit_code: int
-    # A substring of the error logged for the user; None if none is logged.
+    # Matches the start of the error the command reports (a regular expression);
+    # None if it reports none.
     message: str | None
     cancelled: bool
     withdrawn: bool
-    serve: Callable[[Rig, _RigTunnel], None] = return_at_once
-    worker_record: WorkerRecord | None = _READY
-    heartbeats: Literal["ok", "fail_from_start", "fail_when_serving"] = "ok"
+    # Why the tunnel stopped, in its `Stopping tunnel: <why>` line, if it didn't
+    # fail; a failure's `why` is its error.
+    why: str | None = None
+    # "ready", or the reason in the worker's `failed` record.
+    worker_record: str = "ready"
+    heartbeats: Literal["ok", "fail_from_start"] = "ok"
     endpoint_refuses: bool = False
-    banner: bytes | None = None
+    banner: bytes = BANNER
     timings: dict[str, float] = field(default_factory=dict)
-    info: str = ""
 
 
 SCENARIOS = [
     Scenario(
         id="ctrl_c_while_serving",
-        inspections=[RUNNING],
-        serve=interrupt,
-        expected_reason="user_interrupt",
+        inspections=[RUNNING, interrupt_while(RUNNING)],
         exit_code=0,
         message=None,
+        why="Ctrl+C",
         cancelled=True,
         withdrawn=True,
     ),
     Scenario(
         id="login_connection_lost_while_serving",
-        inspections=[RUNNING],
-        serve=lose_connection_then_return,
-        expected_reason="login_connection_lost",
+        inspections=[RUNNING, lose_connection_while(RUNNING)],
         exit_code=1,
-        message="login-node SSH connection lost: session stopped answering",
+        message="Tunnel stopped: login-node SSH connection lost: ",
         cancelled=True,
         withdrawn=True,
     ),
     Scenario(
-        # The handler's own error is dropped here: the failed inspection raises
-        # first, so the user sees the raw paramiko error.
+        # Phase 0: the failed scheduler query raised first, so the user saw its
+        # error instead.
         id="login_connection_lost_while_waiting_for_the_job",
-        inspections=[lose_connection_then_fail_inspection],
-        expected_reason="login_connection_lost",
+        inspections=[lose_connection_while(PENDING), PENDING],
         exit_code=1,
-        message="socket is closed",
+        message="Could not start tunnel: login-node SSH connection lost: ",
         cancelled=True,
         withdrawn=False,
     ),
     Scenario(
         id="heartbeat_write_fails_while_serving",
-        inspections=[RUNNING],
-        serve=fail_heartbeats_and_block,
-        heartbeats="fail_when_serving",
-        expected_reason="heartbeat_send_failed",
+        inspections=[RUNNING, fail_heartbeats],
         exit_code=1,
-        message="worker heartbeat write failed for job 42",
+        message="Tunnel stopped: worker heartbeat write failed for job 42",
         cancelled=True,
         withdrawn=True,
     ),
@@ -260,59 +177,64 @@ SCENARIOS = [
         inspections=[RUNNING],
         heartbeats="fail_from_start",
         endpoint_refuses=True,
-        expected_reason="heartbeat_send_failed",
         exit_code=1,
-        message="worker heartbeat write failed for job 42",
+        message="Could not start tunnel: worker heartbeat write failed for job 42",
         cancelled=True,
         withdrawn=False,
     ),
     Scenario(
         id="job_monitor_sees_a_terminal_state",
         inspections=[RUNNING, snapshot(JobState.SUCCEEDED, "DONE")],
-        serve=block_until_closed,
-        expected_reason="worker_finished",
         exit_code=0,
         message=None,
+        why="worker job 42 ended in scheduler state DONE",
+        cancelled=False,
+        withdrawn=True,
+    ),
+    Scenario(
+        # New in Phase 7: PBS no longer lists the job (FINDINGS.md, "Phase 5").
+        id="job_monitor_sees_that_pbs_dropped_the_job",
+        inspections=[RUNNING, snapshot(JobState.ENDED, "")],
+        exit_code=0,
+        message=None,
+        why="worker job 42 ended",
         cancelled=False,
         withdrawn=True,
     ),
     Scenario(
         id="job_monitor_gets_a_scheduler_error",
         inspections=[RUNNING, SchedulerError("bjobs failed")],
-        serve=block_until_closed,
-        expected_reason="job_monitor_error",
         exit_code=1,
-        message="could not monitor worker job 42: bjobs failed",
+        message="Tunnel stopped: could not monitor worker job 42: bjobs failed",
         cancelled=True,
         withdrawn=True,
     ),
     Scenario(
         id="job_monitor_sees_unknown",
         inspections=[RUNNING, snapshot(JobState.UNKNOWN, "ZOMBI")],
-        serve=block_until_closed,
-        expected_reason="job_monitor_error",
         exit_code=1,
-        message="worker job 42 entered unknown scheduler state ZOMBI",
+        message="Tunnel stopped: worker job 42 entered unknown scheduler state ZOMBI",
         cancelled=True,
         withdrawn=True,
     ),
     Scenario(
         id="job_never_starts",
-        inspections=[snapshot(JobState.PENDING, "PEND")],
+        inspections=[PENDING],
         timings={"queue_timeout_seconds": 0.1},
-        expected_reason="starting_worker",
         exit_code=1,
-        message="worker job 42 did not start within 0.1 seconds",
+        message="Could not start tunnel: worker job 42 did not start within 0.1 seconds",
         cancelled=True,
         withdrawn=False,
     ),
     Scenario(
         id="worker_writes_a_failed_record",
         inspections=[RUNNING],
-        worker_record=WorkerRecord("failed", "port 54321 is in use"),
-        expected_reason="starting_worker",
+        worker_record="port 54321 is in use",
         exit_code=1,
-        message="worker SSH daemon failed to start: port 54321 is in use",
+        message=(
+            "Could not start tunnel: worker SSH daemon failed to start: "
+            "port 54321 is in use"
+        ),
         cancelled=True,
         withdrawn=False,
     ),
@@ -321,151 +243,87 @@ SCENARIOS = [
         inspections=[RUNNING],
         banner=b"not an ssh server\n",
         timings={"worker_startup_timeout_seconds": 0.2},
-        expected_reason="starting_worker",
         exit_code=1,
-        message="did not become ready within 0.2 seconds",
+        message=(
+            r"Could not start tunnel: worker SSH endpoint 127\.0\.0\.1:\d+ did not "
+            r"become ready within 0\.2 seconds"
+        ),
         cancelled=True,
         withdrawn=False,
     ),
     Scenario(
         id="ctrl_c_during_startup",
-        inspections=[KeyboardInterrupt()],
-        expected_reason="starting_worker",
+        inspections=[interrupt_while(PENDING), PENDING],
         exit_code=0,
         message=None,
+        why="Ctrl+C",
         cancelled=True,
         withdrawn=False,
     ),
     Scenario(
-        # The monitor's error closes the tunnel, then the connection is lost.
-        # Today the connection error wins; the monitor's reaches only the log
-        # and the reason stays "login_connection_lost".
-        id="connection_lost_and_monitor_error_together",
-        inspections=[RUNNING, fail_once_allowed],
-        serve=fail_monitor_then_lose_connection,
-        expected_reason="login_connection_lost",
+        # Phase 0: the connection error won and the monitor's reached only the
+        # log. Now the first failure wins.
+        id="monitor_error_then_connection_lost",
+        inspections=[RUNNING, fail_then_lose_connection],
         exit_code=1,
-        message="login-node SSH connection lost: session stopped answering",
+        message="Tunnel stopped: could not monitor worker job 42: bjobs failed",
         cancelled=True,
         withdrawn=True,
     ),
 ]
 
 
-class _Records(logging.Handler):
-    def __init__(self) -> None:
-        super().__init__(logging.DEBUG)
-        self.records: list[logging.LogRecord] = []
-
-    def emit(self, record: logging.LogRecord) -> None:
-        self.records.append(record)
-
-
-@pytest.fixture
-def tunnel_log() -> Iterator[_Records]:
-    """Collect the tunnel module's log records, which `ezhpcy` does not propagate."""
-    logger = logging.getLogger(tunnel_module.__name__)
-    handler = _Records()
-    previous_level = logger.level
-    logger.addHandler(handler)
-    logger.setLevel(logging.DEBUG)
-    try:
-        yield handler
-    finally:
-        logger.removeHandler(handler)
-        logger.setLevel(previous_level)
-
-
 @pytest.mark.parametrize("scenario", SCENARIOS, ids=lambda scenario: scenario.id)
 def test_tunnel_shutdown(
-    scenario: Scenario,
-    monkeypatch: pytest.MonkeyPatch,
-    tunnel_log: _Records,
+    scenario: Scenario, login: SSHTestServer, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    rig = Rig(scenario)
+    rig = Rig(scenario, login)
+    configure_tunnel(monkeypatch, login, timings=FAST_TIMINGS | scenario.timings)
+    serve_interactive_job(login)
+    schedulers = use_scheduler(monkeypatch, rig.scheduler)
     monkeypatch.setattr(
-        tunnel_module.config,
-        "profile",
-        {
-            "base": ProfileConfig.model_validate(
-                {
-                    "connection": {"host": "login.example.com", "user": "alice"},
-                    "scheduler": {"type": "LSF", "submission_mode": "interactive"},
-                    "timings": {**_FAST_TIMINGS, **scenario.timings},
-                }
-            )
-        },
-    )
-    monkeypatch.setattr(tunnel_module.config, "auto_provision", True)
-    monkeypatch.setattr(tunnel_module, "profile_hosts", list)
-    monkeypatch.setattr(tunnel_module, "write_profiles_config", lambda _hosts: None)
-    monkeypatch.setattr(
-        tunnel_module, "_select_worker_ports", lambda _n: (_WORKER_PORT,)
-    )
-    monkeypatch.setattr(
-        tunnel_module,
-        "_publish_ssh_host",
+        session,
+        "publish_host",
         lambda host, **_kwargs: rig.published.append(host.alias),
     )
     monkeypatch.setattr(
-        tunnel_module,
-        "_withdraw_ssh_host",
+        session,
+        "withdraw_host",
         lambda host, **_kwargs: rig.withdrawn.append(host.alias),
     )
 
-    real_publish_lease = tunnel_module.WorkerControl.publish_lease
+    publish_lease = worker.WorkerControl.publish_lease
     lease_calls = 0
 
-    def publish_lease(control: tunnel_module.WorkerControl) -> int:
+    async def failing_publish_lease(control: worker.WorkerControl) -> int:
         nonlocal lease_calls
         lease_calls += 1
-        # The first lease is written before submission; later ones come from the
-        # heartbeat thread.
-        if lease_calls > 1 and rig.heartbeats_fail.is_set():
+        # The first lease is written before submission; later ones are heartbeats.
+        if lease_calls > 1 and rig.heartbeats_fail:
             raise OSError("sftp write failed")
-        return real_publish_lease(control)
+        return await publish_lease(control)
 
-    with (
-        patch("ezhpcy.cli.tunnel.InteractiveSSHClient", return_value=rig.ssh),
-        patch("ezhpcy.cli.tunnel.local_machine_id", return_value="machine-id"),
-        patch("ezhpcy.cli.tunnel.secrets.token_hex", return_value=_TOKEN),
-        patch("ezhpcy.cli.tunnel.LSFScheduler", return_value=rig.scheduler),
-        patch("ezhpcy.cli.tunnel.provision_worker_infrastructure"),
-        patch(
-            "ezhpcy.cli.tunnel.read_ed25519_public_key",
-            return_value=("ssh-ed25519", "WORKERKEY"),
-        ),
-        patch(
-            "ezhpcy.cli.tunnel.create_tunnel_backend",
-            return_value=type("Backend", (), {"instance_id": "instance-id"})(),
-        ),
-        patch("ezhpcy.cli.tunnel.TunnelServer", side_effect=rig.make_tunnel),
-        patch.object(tunnel_module.WorkerControl, "publish_lease", publish_lease),
-    ):
-        result = invoke(["tunnel", "base"])
+    monkeypatch.setattr(worker.WorkerControl, "publish_lease", failing_publish_lease)
 
-    cleanup = [
-        record.getMessage()
-        for record in tunnel_log.records
-        if record.getMessage().startswith("Tunnel cleanup:")
-    ]
-    assert len(cleanup) == 1, (cleanup, result)
-    assert re.search(r"reason=(\S+)", cleanup[0]).group(1) == scenario.expected_reason  # type: ignore[union-attr]
+    with tunnel_log() as log:
+        result = invoke(["tunnel", "base", "--worker-port", str(rig.worker_port)])
 
     assert result.exit_code == scenario.exit_code, result
     assert result.exception is None, result
-    errors = [
-        record.getMessage()
-        for record in tunnel_log.records
-        if record.levelno >= logging.ERROR and "Could not start tunnel" in record.msg
-    ]
+    errors = log.command_errors()
+    [stopping] = log.starting("Stopping tunnel: ")
+    why = stopping.removeprefix("Stopping tunnel: ")
     if scenario.message is None:
         assert errors == []
+        assert why == scenario.why
     else:
-        assert len(errors) == 1, errors
-        assert scenario.message in errors[0]
+        [error] = errors
+        assert re.match(scenario.message, error), error
+        # Logged when the tunnel decided to stop, and again as the command exits.
+        assert error.endswith(f": {why}")
 
-    assert rig.scheduler.cancelled == (["42"] if scenario.cancelled else [])
+    [scheduler] = schedulers
+    assert scheduler.cancelled == ([JOB_ID] if scenario.cancelled else [])
     assert rig.withdrawn == (["base"] if scenario.withdrawn else [])
     # A block is only withdrawn if it was published, and never left behind.
     assert rig.published == rig.withdrawn

@@ -8,11 +8,11 @@ lazy from rich.text import Text
 
 from ezhpcy.config import Config, ProfilePasswordSourceError, config
 lazy from ezhpcy.cli._errors import rich_text, sentence
-lazy from ezhpcy.console import console, error_console
+lazy from ezhpcy.console import console
 lazy from ezhpcy.permissions import FilePermissionError
 lazy from ezhpcy.tunnel.ssh_config import (
     check_host_resolution,
-    include_directive,
+    echo_include_directive,
     profile_hosts,
     write_profiles_config,
 )
@@ -21,15 +21,6 @@ _INCLUDE_HINT = (
     "If ~/.ssh/config does not include EzHPCy's SSH profiles yet, copy the two "
     "highlighted lines below to its top, before any Host or Match block:"
 )
-
-
-def echo_include_directive(*, err: bool = False) -> None:
-    """Print the Include lines followed by a blank line, ready to copy verbatim."""
-    # Unindented and unwrapped, even for long paths; the colour marks what to
-    # copy and is dropped when output is not a terminal.
-    (error_console if err else console).print(
-        Text(include_directive() + "\n", style="bold cyan"), soft_wrap=True
-    )
 
 
 class Status(StrEnum):

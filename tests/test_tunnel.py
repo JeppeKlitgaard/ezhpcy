@@ -1,421 +1,18 @@
-import logging
-import re
-import threading
-from collections.abc import Callable
-from contextlib import contextmanager
-from datetime import timedelta
-from pathlib import Path, PurePosixPath
-from types import SimpleNamespace
-from unittest.mock import ANY, call, patch
+"""The `tunnel` command's options and checks, before the session starts."""
 
-import paramiko
+import re
+from datetime import timedelta
+from pathlib import Path
+from unittest.mock import ANY, patch
+
 import pytest
 from pydantic import ValidationError
 
 from ezhpcy.cli import tunnel as tunnel_module
-from ezhpcy.cli.tunnel import (
-    TunnelError,
-    WorkerControl,
-    _run_tunnel,
-    _select_worker_ports,
-    _send_worker_lease_heartbeats,
-    _wait_for_running_job,
-    _wait_for_selected_worker_port,
-    _wait_for_worker_endpoint,
-    _worker_client_alive,
-    _worker_sshd_command,
-)
-from ezhpcy.constants import EZHPCY_VERSION, OPENSSH_MATCHSPEC, PIXI_VERSION
-from ezhpcy.scheduler._legacy.base import InteractiveJob, JobInfo, JobSpec, JobState
 from ezhpcy.scheduler.types import SchedulerType
 from ezhpcy.tunnel.ssh_config import WorkerHost
-from ezhpcy.tunnel.sshd import retrying_sshd_script, sshd_config_arguments
-from ezhpcy.types import (
-    ConnectionInfo,
-    LSFConfig,
-    PBSConfig,
-    ProfileConfig,
-    RemoteState,
-    ResolvedConfig,
-    ResourcesConfig,
-    SchedulerConfig,
-    SubmissionMode,
-    TimingsConfig,
-)
-from tests.support.cli import invoke
-
-_MEBIBYTE = 1024**2
-
-
-# Short timeouts, so a broken stub fails a test quickly instead of hanging it.
-_TIMINGS = TimingsConfig(queue_timeout_seconds=10, worker_startup_timeout_seconds=10)
-
-
-def lsf_profile(
-    *,
-    submission_mode: SubmissionMode = SubmissionMode.INTERACTIVE,
-    resources: ResourcesConfig | None = None,
-) -> ResolvedConfig:
-    return ResolvedConfig(
-        connection=ConnectionInfo(host="login.example.com", user="alice"),
-        scheduler=SchedulerConfig(
-            type=SchedulerType.LSF, submission_mode=submission_mode
-        ),
-        resources=resources or ResourcesConfig(),
-        timings=_TIMINGS,
-        lsf=LSFConfig(
-            resource_reserve_per_task=True,
-            application_profile="qrsh",
-            submission_environment={"LSF_QRSH": "true"},
-            export_environment=["TERM", "LSF_QRSH"],
-        ),
-    )
-
-
-def pbs_profile() -> ResolvedConfig:
-    return ResolvedConfig(
-        connection=ConnectionInfo(host="login.example.com", user="alice"),
-        scheduler=SchedulerConfig(
-            type=SchedulerType.PBS, submission_mode=SubmissionMode.INTERACTIVE
-        ),
-        resources=ResourcesConfig(queue="workq"),
-        timings=_TIMINGS,
-        pbs=PBSConfig(command_directory=PurePosixPath("/opt/pbspro/bin")),
-    )
-
-
-_BACKEND = SimpleNamespace(instance_id="instance-id")
-
-
-def worker_host(alias: str = "gpu") -> WorkerHost:
-    return WorkerHost(alias=alias, user="alice", ssh_dir=Path("ssh"))
-
-
-@pytest.fixture(autouse=True)
-def ssh_host_publication(
-    monkeypatch: pytest.MonkeyPatch,
-) -> list[tuple[str, str, str, bool | None]]:
-    """Record Host publication instead of writing files and running `ssh -G`."""
-    calls: list[tuple[str, str, str, bool | None]] = []
-
-    def publish(host: WorkerHost, *, instance_id: str, in_profiles_config: bool):
-        calls.append(("publish", host.alias, instance_id, in_profiles_config))
-
-    def withdraw(host: WorkerHost, *, instance_id: str):
-        calls.append(("withdraw", host.alias, instance_id, None))
-
-    monkeypatch.setattr(tunnel_module, "_publish_ssh_host", publish)
-    monkeypatch.setattr(tunnel_module, "_withdraw_ssh_host", withdraw)
-    return calls
-
-
-def test_worker_sshd_command_retries_ports_through_pixi() -> None:
-    remote_state = RemoteState(
-        cache_dir=PurePosixPath("/home/alice/.cache"),
-        state_dir=PurePosixPath("/home/alice/.local/state"),
-    )
-    command = _worker_sshd_command(
-        remote_state,
-        ports=(54321, 54322),
-        heartbeat_token="LEASETOKEN",
-        heartbeat_timeout_seconds=90,
-        heartbeat_debug=True,
-        control_dir=PurePosixPath("/home/alice/.cache/ezhpcy/control/test"),
-        read_script_from_stdin=False,
-        sshd_arguments=sshd_config_arguments(
-            host_key=PurePosixPath("/remote/ssh_host_ed25519_key"),
-            remote_username="alice",
-            authorized_key=("ssh-ed25519", "WORKERKEY"),
-        ),
-    )
-
-    assert command[:6] == (
-        "env",
-        f"PIXI_HOME=/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/pixi/{PIXI_VERSION}",
-        (
-            f"PIXI_CACHE_DIR=/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/pixi_cache/"
-            f"{PIXI_VERSION}"
-        ),
-        f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/pixi/{PIXI_VERSION}/bin/pixi",
-        "exec",
-        f"--spec={OPENSSH_MATCHSPEC}",
-    )
-    assert command[6:10] == (
-        "bash",
-        "-c",
-        retrying_sshd_script(),
-        "sshd",
-    )
-    assert command[6] == "bash"
-    assert command[10:16] == (
-        "54321:54322",
-        "LEASETOKEN",
-        "90",
-        "1",
-        f"/home/alice/.local/state/ezhpcy/{EZHPCY_VERSION}/logs/worker",
-        "/home/alice/.cache/ezhpcy/control/test",
-    )
-    worker_script = retrying_sshd_script()
-    assert "command -v sshd" in worker_script
-    assert 'ports="$1"' in worker_script
-    assert "shift 6" in worker_script
-    assert 'port="${ports%%:*}"' in worker_script
-    assert '"$sshd_path" -D -e -p "$port" "$@"' in worker_script
-    assert 'publish_state ready "$port"' in worker_script
-    assert command.count("bash") == 1
-    assert command.count("-c") == 1
-    assert "PidFile=none" in command
-    assert "HostKey=/remote/ssh_host_ed25519_key" in command
-    assert "AuthorizedKeysCommand=/bin/echo ssh-ed25519 WORKERKEY" in command
-
-
-@pytest.mark.parametrize(
-    ("interval", "timeout", "expected"),
-    [
-        (30, 90, (30, 3)),
-        (20, 60, (20, 3)),
-        (30, 100, (30, 3)),
-        (0.5, 5, (1, 5)),
-        (30, 20, (30, 1)),
-    ],
-)
-def test_worker_client_alive_gives_up_within_the_heartbeat_timeout(
-    interval: float, timeout: float, expected: tuple[int, int]
-) -> None:
-    assert _worker_client_alive(interval, timeout) == expected
-
-
-class StubScheduler:
-    scheduler_type = SchedulerType.LSF
-
-    def __init__(self, snapshots: list[JobInfo]) -> None:
-        self.snapshots = snapshots
-        self.submitted: list[JobSpec] = []
-        self.submitted_scripts: list[str] = []
-        self.cancelled: list[str] = []
-        self.command_starts = 0
-
-    def submit(self, spec: JobSpec) -> str:
-        self.submitted.append(spec)
-        return "42"
-
-    def submit_script(self, spec: JobSpec, script: str) -> str:
-        self.submitted.append(spec)
-        self.submitted_scripts.append(script)
-        return "42"
-
-    def submit_interactive(
-        self, spec: JobSpec, *, startup_timeout: float
-    ) -> InteractiveJob:
-        assert startup_timeout == 10
-        self.submitted.append(spec)
-        self.process = StubProcess()
-        job = InteractiveJob(
-            "42",
-            self.process,
-            "Job <42> is submitted",
-            ("bsub", "-Is", "-q", "hpcint", "echo", "hello world"),
-            command_starter=lambda: setattr(
-                self, "command_starts", self.command_starts + 1
-            ),
-        )
-        return job
-
-    def inspect(self, _job_id: str) -> JobInfo:
-        if len(self.snapshots) > 1:
-            return self.snapshots.pop(0)
-        return self.snapshots[0]
-
-    def cancel(self, job_id: str) -> None:
-        self.cancelled.append(job_id)
-
-
-class StubChannel:
-    def __init__(self, banner: bytes) -> None:
-        self.banner = banner
-        self.timeout: float | None = None
-        self.closed = False
-
-    def settimeout(self, timeout: float) -> None:
-        self.timeout = timeout
-
-    def recv(self, _size: int) -> bytes:
-        banner, self.banner = self.banner, b""
-        return banner
-
-    def close(self) -> None:
-        self.closed = True
-
-
-class StubProcess:
-    def __init__(self) -> None:
-        self.closed = False
-        self.sent: list[bytes] = []
-
-    def recv_ready(self) -> bool:
-        return False
-
-    def recv(self, _size: int) -> bytes:
-        return b""
-
-    def recv_stderr_ready(self) -> bool:
-        return False
-
-    def recv_stderr(self, _size: int) -> bytes:
-        return b""
-
-    def exit_status_ready(self) -> bool:
-        return False
-
-    def recv_exit_status(self) -> int:
-        raise AssertionError("process is still running")
-
-    def send(self, data: bytes | str) -> int:
-        encoded = data.encode() if isinstance(data, str) else data
-        self.sent.append(encoded)
-        return len(encoded)
-
-    def close(self) -> None:
-        self.closed = True
-
-
-class OutputProcess(StubProcess):
-    def __init__(self, chunks: list[bytes]) -> None:
-        super().__init__()
-        self.chunks = chunks
-
-    def recv_ready(self) -> bool:
-        return bool(self.chunks)
-
-    def recv(self, _size: int) -> bytes:
-        return self.chunks.pop(0)
-
-    def exit_status_ready(self) -> bool:
-        return not self.chunks
-
-
-class StubTransport:
-    def __init__(self) -> None:
-        self.channel = StubChannel(b"SSH-2.0-OpenSSH_10.4\r\n")
-        self.attempts = 0
-
-    def is_active(self) -> bool:
-        return True
-
-    def get_exception(self):
-        return None
-
-    def open_channel(self, _kind: str, **kwargs) -> StubChannel:
-        assert kwargs["dest_addr"] == ("node42", 54321)
-        assert kwargs["src_addr"] == ("ezhpcy-readiness", 0)
-        self.attempts += 1
-        if self.attempts == 1:
-            raise paramiko.SSHException("connection refused")
-        return self.channel
-
-
-class StubSSH:
-    def __init__(self, transport: StubTransport) -> None:
-        self.transport = transport
-        self.connection_lost_handler: Callable[[Exception], None] | None = None
-        self.commands: list[list[str]] = []
-        self.directories: list[PurePosixPath] = []
-        self.files: dict[PurePosixPath, str] = {}
-        self.chmods: list[tuple[PurePosixPath, int]] = []
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_args) -> None:
-        pass
-
-    def interactive_connect(self) -> None:
-        pass
-
-    def set_connection_lost_handler(self, handler) -> None:
-        self.connection_lost_handler = handler
-
-    def get_transport(self) -> StubTransport:
-        return self.transport
-
-    def get_remote_state(self) -> RemoteState:
-        return RemoteState(
-            cache_dir=PurePosixPath("/home/alice/.cache"),
-            state_dir=PurePosixPath("/home/alice/.local/state"),
-        )
-
-    @contextmanager
-    def sftp_client(self):
-        ssh = self
-
-        class StubSFTP:
-            def mkdir(self, path, **_kwargs) -> None:
-                ssh.directories.append(PurePosixPath(path))
-
-            def write_text(self, path, content) -> int:
-                ssh.files[PurePosixPath(path)] = content
-                return len(content)
-
-            def read_text(self, path) -> str:
-                try:
-                    return ssh.files[PurePosixPath(path)]
-                except KeyError as error:
-                    raise FileNotFoundError(path) from error
-
-            def chmod(self, path, mode) -> None:
-                ssh.chmods.append((PurePosixPath(path), mode))
-
-            def posix_rename(self, source, destination) -> None:
-                ssh.files[PurePosixPath(destination)] = ssh.files.pop(
-                    PurePosixPath(source)
-                )
-
-            def remove(self, path) -> None:
-                try:
-                    del ssh.files[PurePosixPath(path)]
-                except KeyError as error:
-                    raise FileNotFoundError(path) from error
-
-            def rmdir(self, _path) -> None:
-                pass
-
-        yield StubSFTP()
-
-    def run(self, args: list[str]) -> str:
-        self.commands.append(args)
-        return ""
-
-    def run_login_shell(self, args: list[str]) -> str:
-        self.commands.append(["bash", "-lc", *args])
-        return ""
-
-    def run_login_shell_with_input(self, args: list[str], stdin: str) -> str:
-        self.commands.append(["bash", "-lc", *args, stdin])
-        return ""
-
-    def start_login_shell(self, _args: list[str]) -> StubProcess:
-        return StubProcess()
-
-
-class StubTunnelServer:
-    def __init__(self, _transport, destination, _backend, **_kwargs) -> None:
-        self.destination = destination
-        self.closed = False
-
-    def serve_forever(self) -> None:
-        pass
-
-    def close(self) -> None:
-        self.closed = True
-
-
-def snapshot(state: JobState, raw_state: str, host: str | None = None) -> JobInfo:
-    return JobInfo(
-        job_id="42",
-        state=state,
-        raw_state=raw_state,
-        execution_hosts=(host,) if host is not None else (),
-    )
+from ezhpcy.types import ConnectionInfo, ProfileConfig, ResourcesConfig
+from tests.support.cli import capture, invoke
 
 
 @pytest.mark.parametrize(
@@ -443,513 +40,10 @@ def test_parse_memory_rejects_invalid_sizes(value: str) -> None:
         ResourcesConfig(memory=value)
 
 
-def test_wait_for_running_job_reports_transitions_and_returns_host() -> None:
-    scheduler = StubScheduler(
-        [
-            snapshot(JobState.PENDING, "PEND"),
-            snapshot(JobState.RUNNING, "RUN", "node42"),
-        ]
-    )
-    transitions: list[JobState] = []
-
-    with patch("ezhpcy.cli.tunnel.time.sleep"):
-        info = _wait_for_running_job(
-            scheduler,  # type: ignore[arg-type]
-            "42",
-            timeout_seconds=10,
-            poll_interval=2.5,
-            state_handler=lambda item: transitions.append(item.state),
-        )
-
-    assert info.primary_host == "node42"
-    assert transitions == [JobState.PENDING, JobState.RUNNING]
-
-
-def test_wait_for_running_job_fails_when_job_exits() -> None:
-    scheduler = StubScheduler([snapshot(JobState.FAILED, "EXIT")])
-
-    with pytest.raises(TunnelError, match="scheduler state EXIT"):
-        _wait_for_running_job(
-            scheduler,  # type: ignore[arg-type]
-            "42",
-            timeout_seconds=10,
-            poll_interval=2.5,
-        )
-
-
-def test_select_worker_ports_returns_unique_dynamic_ports() -> None:
-    with patch(
-        "ezhpcy.cli.tunnel.secrets.randbelow",
-        side_effect=[0, 0, 1, 2, 3, 4],
-    ):
-        ports = _select_worker_ports(5)
-
-    assert ports == (49152, 49153, 49154, 49155, 49156)
-
-
-def test_worker_control_reports_ready_port_and_bounds_leases() -> None:
-    ssh = StubSSH(StubTransport())
-    with ssh.sftp_client() as sftp:
-        control = WorkerControl(
-            sftp,
-            PurePosixPath("/control/run"),
-            "LEASETOKEN",
-            ports=(54321, 54322),
-        )
-        control.create()
-        for _ in range(4):
-            control.publish_lease()
-        ssh.files[control.directory / "ready"] = "v1 LEASETOKEN ready 54322\n"
-
-        assert _wait_for_selected_worker_port(control, timeout_seconds=1) == 54322
-        assert sorted(
-            path.name for path in ssh.files if path.name.startswith("lease.")
-        ) == [
-            "lease.00000000000000000003",
-            "lease.00000000000000000004",
-        ]
-
-
-def test_worker_control_rejects_invalid_ready_port() -> None:
-    ssh = StubSSH(StubTransport())
-    with ssh.sftp_client() as sftp:
-        control = WorkerControl(
-            sftp,
-            PurePosixPath("/control/run"),
-            "LEASETOKEN",
-            ports=(54321,),
-        )
-        control.create()
-        ssh.files[control.directory / "ready"] = "v1 LEASETOKEN ready 54322\n"
-
-        with pytest.raises(TunnelError, match="unexpected SSH port"):
-            _wait_for_selected_worker_port(control, timeout_seconds=1)
-
-
-def test_worker_heartbeat_sender_logs_sequence_without_token() -> None:
-    stop_requested = threading.Event()
-
-    class OneHeartbeatControl:
-        def publish_lease(self) -> int:
-            stop_requested.set()
-            return 1
-
-    errors: list[TunnelError] = []
-
-    with patch("ezhpcy.cli.tunnel.logger") as logger:
-        _send_worker_lease_heartbeats(
-            OneHeartbeatControl(),  # type: ignore[arg-type]
-            StubTransport(),  # type: ignore[arg-type]
-            job_id="42",
-            interval_seconds=30,
-            stop_requested=stop_requested,
-            failed=threading.Event(),
-            errors=errors,
-            failure_handler=lambda: None,
-        )
-
-    assert not errors
-    rendered_calls = repr(logger.method_calls)
-    assert "sequence=%d" in rendered_calls
-    assert "SECRET-LEASE-TOKEN" not in rendered_calls
-
-
-def test_worker_heartbeat_sender_reports_filesystem_failure() -> None:
-    class FailedHeartbeatControl:
-        def publish_lease(self) -> int:
-            raise OSError("channel closed")
-
-    failed = threading.Event()
-    errors: list[TunnelError] = []
-    failure_handled = threading.Event()
-
-    _send_worker_lease_heartbeats(
-        FailedHeartbeatControl(),  # type: ignore[arg-type]
-        StubTransport(),  # type: ignore[arg-type]
-        job_id="42",
-        interval_seconds=30,
-        stop_requested=threading.Event(),
-        failed=failed,
-        errors=errors,
-        failure_handler=failure_handled.set,
-    )
-
-    assert failed.is_set()
-    assert failure_handled.is_set()
-    assert len(errors) == 1
-    assert "sequence 0" in str(errors[0])
-    assert "SECRET-LEASE-TOKEN" not in str(errors[0])
-
-
-def test_worker_endpoint_waits_for_an_ssh_banner() -> None:
-    transport = StubTransport()
-    transport_logger = logging.getLogger("paramiko.transport")
-    previous_level = transport_logger.level
-    transport_logger.setLevel(logging.WARNING)
-
-    try:
-        with patch("ezhpcy.cli.tunnel.time.sleep"):
-            _wait_for_worker_endpoint(
-                transport,  # type: ignore[arg-type]
-                ("node42", 54321),
-                timeout_seconds=10,
-                poll_interval=2.5,
-            )
-
-        assert transport.attempts == 2
-        assert transport.channel.closed
-        assert transport_logger.level == logging.WARNING
-    finally:
-        transport_logger.setLevel(previous_level)
-
-
-def test_tunnel_submits_worker_starts_server_and_cancels(
-    ssh_host_publication: list[tuple[str, str, str, bool | None]],
-) -> None:
-    transport = StubTransport()
-    ssh = StubSSH(transport)
-    scheduler = StubScheduler([snapshot(JobState.RUNNING, "RUN", "node42")])
-    tunnels: list[StubTunnelServer] = []
-    configuration = lsf_profile(
-        resources=ResourcesConfig(
-            queue="normal",
-            cores=32,
-            gpus=2,
-            exclusive=True,
-            time_limit="1:30",
-            memory="2048MiB",
-        )
-    )
-
-    def make_tunnel(*args, **kwargs) -> StubTunnelServer:
-        tunnel = StubTunnelServer(*args, **kwargs)
-        tunnels.append(tunnel)
-        return tunnel
-
-    with (
-        patch(
-            "ezhpcy.cli.tunnel.InteractiveSSHClient",
-            return_value=ssh,
-        ),
-        patch("ezhpcy.cli.tunnel.local_machine_id", return_value="machine-id"),
-        patch("ezhpcy.cli.tunnel.secrets.token_hex", return_value="LEASETOKEN"),
-        patch(
-            "ezhpcy.cli.tunnel.LSFScheduler",
-            return_value=scheduler,
-        ) as scheduler_constructor,
-        patch(
-            "ezhpcy.cli.tunnel.provision_worker_infrastructure",
-            return_value=None,
-        ),
-        patch(
-            "ezhpcy.cli.tunnel.read_ed25519_public_key",
-            return_value=("ssh-ed25519", "WORKERKEY"),
-        ),
-        patch(
-            "ezhpcy.cli.tunnel._wait_for_selected_worker_port",
-            return_value=54322,
-        ),
-        patch("ezhpcy.cli.tunnel._wait_for_worker_endpoint"),
-        patch(
-            "ezhpcy.cli.tunnel.create_tunnel_backend", return_value=_BACKEND
-        ) as create_backend,
-        patch("ezhpcy.cli.tunnel.TunnelServer", side_effect=make_tunnel),
-        patch("ezhpcy.cli.tunnel.logger") as logger,
-    ):
-        logger.isEnabledFor.return_value = False
-        _run_tunnel(
-            profile_name=None,
-            resolved=configuration,
-            ssh_host=worker_host(),
-            ssh_host_in_profiles_config=False,
-            worker_ports=(54321, 54322),
-            auto_provision=True,
-        )
-
-    assert len(scheduler.submitted) == 1
-    create_backend.assert_called_once_with(alias="gpu", debug=False)
-    spec = scheduler.submitted[0]
-    assert tuple(spec.command) == _worker_sshd_command(
-        ssh.get_remote_state(),
-        ports=(54321, 54322),
-        heartbeat_token="LEASETOKEN",
-        heartbeat_timeout_seconds=90,
-        heartbeat_debug=False,
-        control_dir=PurePosixPath(
-            f"/home/alice/.local/state/ezhpcy/{EZHPCY_VERSION}/worker_control/LEASETOKEN"
-        ),
-        read_script_from_stdin=False,
-        sshd_arguments=sshd_config_arguments(
-            host_key=PurePosixPath(
-                f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/ssh/machine-id/"
-                "alice@login.example.com/ssh_host_ed25519_key"
-            ),
-            remote_username="alice",
-            authorized_key=("ssh-ed25519", "WORKERKEY"),
-            client_alive=(30, 3),
-        ),
-    )
-    assert "AuthorizedKeysCommand=/bin/echo ssh-ed25519 WORKERKEY" in spec.command
-    assert "ClientAliveInterval=30" in spec.command
-    assert "ClientAliveCountMax=3" in spec.command
-    assert spec.queue == "normal"
-    assert spec.memory_bytes == 2048 * _MEBIBYTE
-    assert spec.cores == 32
-    assert spec.gpus == 2
-    assert spec.exclusive
-    assert scheduler_constructor.call_args.kwargs["resource_reserve_per_task"]
-    assert ssh.directories[:2] == [
-        PurePosixPath(f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/worker_cwd"),
-        PurePosixPath(f"/home/alice/.local/state/ezhpcy/{EZHPCY_VERSION}/logs/worker"),
-    ]
-    assert (
-        PurePosixPath(
-            f"/home/alice/.local/state/ezhpcy/{EZHPCY_VERSION}/worker_control"
-        ),
-        0o700,
-    ) in ssh.chmods
-    assert spec.working_directory == PurePosixPath(
-        f"/home/alice/.cache/ezhpcy/{EZHPCY_VERSION}/worker_cwd"
-    )
-    assert spec.stdout_path == PurePosixPath(
-        f"/home/alice/.local/state/ezhpcy/{EZHPCY_VERSION}/logs/worker/worker-LEASETOKEN.out"
-    )
-    assert spec.stderr_path == PurePosixPath(
-        f"/home/alice/.local/state/ezhpcy/{EZHPCY_VERSION}/logs/worker/worker-LEASETOKEN.err"
-    )
-    assert tunnels[0].destination == ("node42", 54322)
-    assert tunnels[0].closed
-    # The Host block is published once the tunnel is up and withdrawn on exit.
-    assert ssh_host_publication == [
-        ("publish", "gpu", "instance-id", False),
-        ("withdraw", "gpu", "instance-id", None),
-    ]
-    assert scheduler.cancelled == ["42"]
-    assert scheduler.process.closed
-    assert scheduler.command_starts == 1
-    assert ssh.commands == []
-    logger.debug.assert_any_call(
-        "Submission command: %s", "bsub -Is -q hpcint echo 'hello world'"
-    )
-    logger.info.assert_any_call("Submitted worker job %s.", "42")
-    logger.info.assert_any_call(
-        "Tunnel ready for %s via worker %s:%d (press Ctrl+C to stop).",
-        "gpu",
-        "node42",
-        54322,
-    )
-
-
-def test_tunnel_cancels_job_when_worker_startup_fails() -> None:
-    transport = StubTransport()
-    ssh = StubSSH(transport)
-    scheduler = StubScheduler([snapshot(JobState.RUNNING, "RUN", "node42")])
-
-    with (
-        patch(
-            "ezhpcy.cli.tunnel.InteractiveSSHClient",
-            return_value=ssh,
-        ),
-        patch("ezhpcy.cli.tunnel.local_machine_id", return_value="machine-id"),
-        patch(
-            "ezhpcy.cli.tunnel.LSFScheduler",
-            return_value=scheduler,
-        ),
-        patch(
-            "ezhpcy.cli.tunnel.provision_worker_infrastructure",
-            return_value=None,
-        ),
-        patch(
-            "ezhpcy.cli.tunnel.read_ed25519_public_key",
-            return_value=("ssh-ed25519", "WORKERKEY"),
-        ),
-        patch(
-            "ezhpcy.cli.tunnel._wait_for_selected_worker_port",
-            return_value=54321,
-        ),
-        patch(
-            "ezhpcy.cli.tunnel._wait_for_worker_endpoint",
-            side_effect=TunnelError("worker did not listen"),
-        ),
-        pytest.raises(TunnelError, match="did not listen"),
-    ):
-        _run_tunnel(
-            profile_name="base",
-            resolved=lsf_profile(
-                resources=ResourcesConfig(cores=4, time_limit="1:00", memory="1024MiB")
-            ),
-            ssh_host=worker_host(),
-            ssh_host_in_profiles_config=False,
-            worker_ports=(54321,),
-            auto_provision=True,
-        )
-
-    assert scheduler.cancelled == ["42"]
-    assert scheduler.process.closed
-
-
-def test_tunnel_stops_when_the_login_connection_is_lost() -> None:
-    transport = StubTransport()
-    ssh = StubSSH(transport)
-    scheduler = StubScheduler([snapshot(JobState.RUNNING, "RUN", "node42")])
-    tunnels: list[StubTunnelServer] = []
-
-    class LosingTunnelServer(StubTunnelServer):
-        def serve_forever(self) -> None:
-            assert ssh.connection_lost_handler is not None
-            ssh.connection_lost_handler(
-                paramiko.SSHException("session stopped answering")
-            )
-
-    def make_tunnel(*args, **kwargs) -> StubTunnelServer:
-        tunnel = LosingTunnelServer(*args, **kwargs)
-        tunnels.append(tunnel)
-        return tunnel
-
-    with (
-        patch("ezhpcy.cli.tunnel.InteractiveSSHClient", return_value=ssh),
-        patch("ezhpcy.cli.tunnel.local_machine_id", return_value="machine-id"),
-        patch("ezhpcy.cli.tunnel.LSFScheduler", return_value=scheduler),
-        patch(
-            "ezhpcy.cli.tunnel.provision_worker_infrastructure",
-            return_value=None,
-        ),
-        patch(
-            "ezhpcy.cli.tunnel.read_ed25519_public_key",
-            return_value=("ssh-ed25519", "WORKERKEY"),
-        ),
-        patch(
-            "ezhpcy.cli.tunnel._wait_for_selected_worker_port",
-            return_value=54321,
-        ),
-        patch("ezhpcy.cli.tunnel._wait_for_worker_endpoint"),
-        patch("ezhpcy.cli.tunnel.create_tunnel_backend", return_value=_BACKEND),
-        patch("ezhpcy.cli.tunnel.TunnelServer", side_effect=make_tunnel),
-        pytest.raises(TunnelError, match="login-node SSH connection lost"),
-    ):
-        _run_tunnel(
-            profile_name="base",
-            resolved=lsf_profile(
-                resources=ResourcesConfig(cores=4, time_limit="1:00", memory="1024MiB")
-            ),
-            ssh_host=worker_host(),
-            ssh_host_in_profiles_config=False,
-            worker_ports=(54321,),
-            auto_provision=True,
-        )
-
-    assert tunnels[0].closed
-    assert scheduler.cancelled == ["42"]
-
-
-def test_tunnel_uses_explicit_pbs_and_linuxsh_defaults() -> None:
-    transport = StubTransport()
-    ssh = StubSSH(transport)
-    scheduler = StubScheduler([snapshot(JobState.RUNNING, "R", "node42")])
-
-    with (
-        patch("ezhpcy.cli.tunnel.InteractiveSSHClient", return_value=ssh),
-        patch("ezhpcy.cli.tunnel.local_machine_id", return_value="machine-id"),
-        patch(
-            "ezhpcy.cli.tunnel.PBSScheduler", return_value=scheduler
-        ) as scheduler_constructor,
-        patch(
-            "ezhpcy.cli.tunnel.provision_worker_infrastructure",
-            return_value=None,
-        ),
-        patch(
-            "ezhpcy.cli.tunnel.read_ed25519_public_key",
-            return_value=("ssh-ed25519", "WORKERKEY"),
-        ),
-        patch(
-            "ezhpcy.cli.tunnel._wait_for_selected_worker_port",
-            return_value=54321,
-        ),
-        patch("ezhpcy.cli.tunnel._wait_for_worker_endpoint"),
-        patch("ezhpcy.cli.tunnel.create_tunnel_backend", return_value=_BACKEND),
-        patch("ezhpcy.cli.tunnel.TunnelServer", StubTunnelServer),
-        patch("ezhpcy.cli.tunnel.logger") as logger,
-    ):
-        _run_tunnel(
-            profile_name="pbs",
-            resolved=pbs_profile(),
-            ssh_host=worker_host(),
-            ssh_host_in_profiles_config=False,
-            worker_ports=(54321,),
-            auto_provision=True,
-        )
-
-    assert scheduler.submitted[0].cores == 1
-    assert scheduler.submitted[0].gpus == 0
-    assert not scheduler.submitted[0].exclusive
-    assert scheduler_constructor.call_args.kwargs["command_directory"] == PurePosixPath(
-        "/opt/pbspro/bin"
-    )
-    assert scheduler.submitted[0].queue == "workq"
-    assert scheduler.submitted[0].memory_bytes is None
-    assert scheduler.command_starts == 1
-    assert call("Using profile %r with %s scheduler.", "pbs", "PBS") in (
-        logger.info.call_args_list
-    )
-    assert any(
-        log_call.args[0].startswith("Worker logs:")
-        for log_call in logger.info.call_args_list
-    )
-
-
-def test_tunnel_submits_batch_job_without_interactive_shell() -> None:
-    transport = StubTransport()
-    ssh = StubSSH(transport)
-    scheduler = StubScheduler([snapshot(JobState.RUNNING, "RUN", "node42")])
-
-    with (
-        patch("ezhpcy.cli.tunnel.InteractiveSSHClient", return_value=ssh),
-        patch("ezhpcy.cli.tunnel.local_machine_id", return_value="machine-id"),
-        patch("ezhpcy.cli.tunnel.secrets.token_hex", return_value="LEASETOKEN"),
-        patch("ezhpcy.cli.tunnel.LSFScheduler", return_value=scheduler),
-        patch("ezhpcy.cli.tunnel.provision_worker_infrastructure"),
-        patch(
-            "ezhpcy.cli.tunnel.read_ed25519_public_key",
-            return_value=("ssh-ed25519", "WORKERKEY"),
-        ),
-        patch("ezhpcy.cli.tunnel._wait_for_selected_worker_port", return_value=54321),
-        patch("ezhpcy.cli.tunnel._wait_for_worker_endpoint"),
-        patch("ezhpcy.cli.tunnel.create_tunnel_backend", return_value=_BACKEND),
-        patch("ezhpcy.cli.tunnel.TunnelServer", StubTunnelServer),
-    ):
-        _run_tunnel(
-            profile_name="batch",
-            resolved=lsf_profile(
-                submission_mode=SubmissionMode.BATCH,
-                resources=ResourcesConfig(
-                    queue="gpul40s", cores=8, gpus=1, time_limit="1:00"
-                ),
-            ),
-            ssh_host=worker_host(),
-            ssh_host_in_profiles_config=False,
-            worker_ports=(54321,),
-            auto_provision=True,
-        )
-
-    assert len(scheduler.submitted) == 1
-    assert scheduler.submitted_scripts[0].startswith("#!/usr/bin/env bash\nexec ")
-    assert (
-        "AuthorizedKeysCommand=/bin/echo ssh-ed25519 WORKERKEY"
-        in (scheduler.submitted_scripts[0])
-    )
-    assert scheduler.command_starts == 0
-    assert scheduler.cancelled == ["42"]
-
-
 def test_tunnel_command_accepts_anonymous_cli_configuration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    captured: dict[str, object] = {}
-    monkeypatch.setattr(
-        tunnel_module,
-        "_run_tunnel",
-        lambda **kwargs: captured.update(kwargs),
-    )
+    captured = capture(monkeypatch, "tunnel")
 
     result = invoke(_ANONYMOUS_TUNNEL_ARGS)
 
@@ -999,15 +93,10 @@ def test_tunnel_command_resolves_profile_and_applies_cli_overrides(
             ),
         },
     )
-    captured: dict[str, object] = {}
     monkeypatch.setattr(
         tunnel_module, "_ensure_local_worker_credentials", lambda _connection: None
     )
-    monkeypatch.setattr(
-        tunnel_module,
-        "_run_tunnel",
-        lambda **kwargs: captured.update(kwargs),
-    )
+    captured = capture(monkeypatch, "tunnel")
 
     result = invoke(
         [
@@ -1069,12 +158,7 @@ def test_tunnel_command_allows_wrapper_with_implicit_resource_defaults(
             )
         },
     )
-    captured: dict[str, object] = {}
-    monkeypatch.setattr(
-        tunnel_module,
-        "_run_tunnel",
-        lambda **kwargs: captured.update(kwargs),
-    )
+    captured = capture(monkeypatch, "tunnel")
 
     result = invoke(["tunnel", "base"])
 
@@ -1114,7 +198,7 @@ def test_tunnel_command_logs_inherited_submission_options_ignored_by_wrapper(
             ),
         },
     )
-    monkeypatch.setattr(tunnel_module, "_run_tunnel", lambda **_kwargs: None)
+    capture(monkeypatch, "tunnel")
 
     with patch("ezhpcy.cli.tunnel.logger") as logger:
         result = invoke(["tunnel", "wrapper"])
@@ -1185,14 +269,6 @@ def _alias_profiles() -> dict[str, ProfileConfig]:
     }
 
 
-def _capture_run_tunnel(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
-    captured: dict[str, object] = {}
-    monkeypatch.setattr(
-        tunnel_module, "_run_tunnel", lambda **kwargs: captured.update(kwargs)
-    )
-    return captured
-
-
 _ANONYMOUS_TUNNEL_ARGS = [
     "tunnel",
     "--host",
@@ -1210,7 +286,7 @@ def test_profile_tunnel_alias_defaults_to_its_profiles_conf_block(
     monkeypatch: pytest.MonkeyPatch, isolated_runtime_dir: Path
 ) -> None:
     monkeypatch.setattr(tunnel_module.config, "profile", _alias_profiles())
-    captured = _capture_run_tunnel(monkeypatch)
+    captured = capture(monkeypatch, "tunnel")
 
     result = invoke(["tunnel", "gpu"])
 
@@ -1235,7 +311,7 @@ def test_profile_tunnel_that_differs_from_profiles_conf_needs_its_own_block(
     monkeypatch: pytest.MonkeyPatch, arguments: list[str], alias: str, user: str
 ) -> None:
     monkeypatch.setattr(tunnel_module.config, "profile", _alias_profiles())
-    captured = _capture_run_tunnel(monkeypatch)
+    captured = capture(monkeypatch, "tunnel")
 
     result = invoke(["tunnel", "gpu", *arguments])
 
@@ -1250,7 +326,7 @@ def test_tunnel_falls_back_to_its_own_block_when_profiles_conf_cannot_be_written
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(tunnel_module.config, "profile", _alias_profiles())
-    captured = _capture_run_tunnel(monkeypatch)
+    captured = capture(monkeypatch, "tunnel")
 
     def fail(_hosts: object) -> None:
         raise OSError("disk full")
@@ -1270,7 +346,7 @@ def test_tunnel_falls_back_to_its_own_block_when_profiles_conf_cannot_be_written
 def test_anonymous_tunnel_alias_is_stable_for_identical_options(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    captured = _capture_run_tunnel(monkeypatch)
+    captured = capture(monkeypatch, "tunnel")
 
     def alias_for(*extra: str) -> str:
         result = invoke([*_ANONYMOUS_TUNNEL_ARGS, *extra])
@@ -1290,7 +366,7 @@ def test_anonymous_tunnel_alias_is_stable_for_identical_options(
 def test_anonymous_tunnel_accepts_an_explicit_alias(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    captured = _capture_run_tunnel(monkeypatch)
+    captured = capture(monkeypatch, "tunnel")
 
     result = invoke([*_ANONYMOUS_TUNNEL_ARGS, "--alias", "scratch"])
 
@@ -1313,7 +389,7 @@ def test_tunnel_rejects_unusable_aliases(
     monkeypatch: pytest.MonkeyPatch, arguments: list[str], message: str
 ) -> None:
     monkeypatch.setattr(tunnel_module.config, "profile", _alias_profiles())
-    captured = _capture_run_tunnel(monkeypatch)
+    captured = capture(monkeypatch, "tunnel")
 
     result = invoke(arguments)
 

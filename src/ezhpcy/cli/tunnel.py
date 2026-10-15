@@ -44,7 +44,7 @@ lazy from ezhpcy.ipc import create_tunnel_backend
 lazy from ezhpcy.ipc.common import IPCError
 lazy from ezhpcy.permissions import FilePermissionError
 lazy from ezhpcy.provision_local import WorkerCredentials
-lazy from ezhpcy.scheduler.base import (
+lazy from ezhpcy.scheduler._legacy.base import (
     InteractiveJob,
     JobInfo,
     JobSpec,
@@ -53,8 +53,8 @@ lazy from ezhpcy.scheduler.base import (
     SchedulerError,
     UnsupportedSchedulerError,
 )
-lazy from ezhpcy.scheduler.lsf import LSFScheduler
-lazy from ezhpcy.scheduler.pbs import PBSScheduler
+lazy from ezhpcy.scheduler._legacy.lsf import LSFScheduler
+lazy from ezhpcy.scheduler._legacy.pbs import PBSScheduler
 lazy from ezhpcy.scheduler.types import SchedulerType
 lazy from ezhpcy.tunnel.server import TunnelServer
 lazy from ezhpcy.tunnel.ssh_config import (

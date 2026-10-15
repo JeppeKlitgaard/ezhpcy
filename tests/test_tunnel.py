@@ -26,7 +26,7 @@ from ezhpcy.cli.tunnel import (
     _worker_sshd_command,
 )
 from ezhpcy.constants import EZHPCY_VERSION, OPENSSH_MATCHSPEC, PIXI_VERSION
-from ezhpcy.scheduler.base import InteractiveJob, JobInfo, JobSpec, JobState
+from ezhpcy.scheduler._legacy.base import InteractiveJob, JobInfo, JobSpec, JobState
 from ezhpcy.scheduler.types import SchedulerType
 from ezhpcy.tunnel.ssh_config import WorkerHost
 from ezhpcy.tunnel.sshd import retrying_sshd_script, sshd_config_arguments

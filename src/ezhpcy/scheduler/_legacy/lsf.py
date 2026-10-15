@@ -4,7 +4,7 @@ lazy import shlex
 lazy import time
 lazy from collections.abc import Callable, Mapping, Sequence
 
-from ezhpcy.scheduler.base import (
+from ezhpcy.scheduler._legacy.base import (
     InteractiveJob,
     JobInfo,
     JobNotFoundError,

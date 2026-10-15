@@ -961,7 +961,7 @@ def _run_tunnel(
                         worker_port,
                     )
                     logger.info(
-                        "Connect with `ssh %s` or select `%s` in VS Code Remote-SSH.",
+                        "Connect with `ssh %s` or select `%s` in your editor's remote development interface.",
                         ssh_host.alias,
                         ssh_host.alias,
                     )

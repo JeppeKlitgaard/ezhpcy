@@ -5,12 +5,17 @@ sockets, through the in-process SSH server to a stand-in worker.
 
 import asyncio
 import contextlib
+import dataclasses
 import io
 import logging
 import socket
+import subprocess
+import sys
+import textwrap
 from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -27,6 +32,8 @@ from tests.support.sshserver import SSHTestServer
 
 # How long a test waits for something that should happen at once.
 WAIT_SECONDS = 5
+# How long a fresh interpreter running `ezhpcy proxy` may take.
+PROCESS_SECONDS = 30
 BANNER = b"SSH-2.0-worker\r\n"
 
 type WorkerHandler = Callable[
@@ -83,6 +90,31 @@ def run_proxy(descriptor: TunnelDescriptor, stdin: bytes) -> bytes:
         stream.settimeout(WAIT_SECONDS)
         relay_proxy_stdio(stream, io.BytesIO(stdin), stdout)
     return stdout.getvalue()
+
+
+def run_proxy_command(
+    runtime_dir: Path, stdin: bytes
+) -> subprocess.CompletedProcess[bytes]:
+    """Run `ezhpcy proxy test` as OpenSSH does: a fresh process on pipes."""
+    # The runtime directory isn't read from the environment, so set it in-process.
+    code = textwrap.dedent(
+        """
+        import sys
+        from pathlib import Path
+        from ezhpcy.cli import main
+        from ezhpcy.config import config
+
+        config.local_file.runtime_dir = Path(sys.argv[1])
+        main(["proxy", "test"])
+        """
+    )
+    return subprocess.run(
+        [sys.executable, "-c", code, str(runtime_dir)],
+        input=stdin,
+        capture_output=True,
+        timeout=PROCESS_SECONDS,
+        check=False,
+    )
 
 
 def open_stream(descriptor: TunnelDescriptor) -> socket.socket:
@@ -156,6 +188,25 @@ async def test_proxy_reaches_the_worker_through_the_tunnel(
     assert second == BANNER + b"worker:again"
     assert "bytes_to_worker=5 bytes_to_proxy=" in relayed
     assert messages(tunnel_log, logging.ERROR) == []
+
+
+async def test_the_proxy_command_relays_through_the_tunnel(
+    ssh_server: SSHTestServer, isolated_runtime_dir: Path
+) -> None:
+    async with (
+        worker(ssh_server, banner_then_echo) as port,
+        tunnel(ssh_server, port) as (_server, descriptor),
+    ):
+        # As the tunnel's --debug publishes it, so the proxy logs too.
+        await asyncio.to_thread(dataclasses.replace(descriptor, debug=True).publish)
+        result = await asyncio.to_thread(
+            run_proxy_command, isolated_runtime_dir, b"SSH-2.0-client\r\n"
+        )
+
+    assert result.returncode == 0, result.stderr
+    # The debug log goes to stderr; stdout carries only the worker's bytes.
+    assert result.stdout == BANNER + b"worker:SSH-2.0-client\r\n"
+    assert b"Proxy relay ready" in result.stderr
 
 
 async def test_the_worker_sees_the_proxys_end_of_file_before_it_answers(

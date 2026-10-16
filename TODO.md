@@ -3,9 +3,9 @@
 ## Iteration: refactor(forward): use forwarding instead of proxy
 
 - [ ] Share one atomic private-file write between `tunnel/ssh_config.py::_write_private` and `ipc/descriptor.py::TunnelDescriptor.publish` (e.g. in `permissions.py`). Both write a temporary file and rename it; `_write_private` also restricts the Windows ACL (`icacls`) and writes `\n` line endings, `publish` writes through the audited directory's `dir_fd` on POSIX
-- [ ] Store `ResourcesConfig.time_limit` as a `timedelta` instead of an `H:MM` string. Today the validator parses it only to reject bad input, and `time_limit_delta` parses it again on every access. Needs a serializer that writes `H:MM` back, since the value is dumped (e.g. into `ResolvedConfig.descriptor_digest`)
 - [ ] Ensure that no blocking code runs in the tunnel server loop
   - Some may run briefly during startup of tunnel
+- [ ] Bump version
 
 ## Iteration: Polish
 

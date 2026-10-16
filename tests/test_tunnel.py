@@ -41,6 +41,61 @@ def test_parse_memory_rejects_invalid_sizes(value: str) -> None:
         ResourcesConfig(memory=value)
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (None, None),
+        ("1:00", timedelta(hours=1)),
+        ("0:05", timedelta(minutes=5)),
+        ("1:5", timedelta(hours=1, minutes=5)),
+        (" 01:30 ", timedelta(hours=1, minutes=30)),
+        ("100:00", timedelta(hours=100)),
+    ],
+)
+def test_parse_time_limit(value: str | None, expected: timedelta | None) -> None:
+    assert ResourcesConfig(time_limit=value).time_limit == expected
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        ("soon", "time_limit must use H:MM format"),
+        ("1:000", "time_limit must use H:MM format"),
+        ("90", "time_limit must use H:MM format"),
+        ("1:60", "time_limit minutes must be less than 60"),
+        ("0:00", "time_limit must be positive"),
+        (timedelta(0), "time_limit must be positive"),
+        (timedelta(seconds=90), "time_limit must be a whole number of minutes"),
+        # Not seconds, as a bare `timedelta` field would read it.
+        (60, "Input should be a valid timedelta"),
+    ],
+)
+def test_parse_time_limit_rejects_invalid_limits(value: object, message: str) -> None:
+    with pytest.raises(ValidationError, match=message):
+        ResourcesConfig.model_validate({"time_limit": value})
+
+
+@pytest.mark.parametrize(
+    ("value", "dumped"),
+    [
+        # As written, so their anonymous aliases stay the same.
+        ("1:00", "1:00"),
+        ("0:30", "0:30"),
+        ("100:05", "100:05"),
+        # Written differently; each now shares the alias of the form above.
+        ("01:00", "1:00"),
+        ("1:5", "1:05"),
+        (" 1:00 ", "1:00"),
+    ],
+)
+def test_time_limit_is_dumped_as_h_mm(value: str, dumped: str) -> None:
+    resources = ResourcesConfig(time_limit=value)
+
+    assert resources.model_dump(mode="json")["time_limit"] == dumped
+    # Profile inheritance and the CLI options re-validate Python dumps.
+    assert ResourcesConfig.model_validate(resources.model_dump()) == resources
+
+
 def test_tunnel_command_accepts_anonymous_cli_configuration(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -121,7 +176,7 @@ def test_tunnel_command_resolves_profile_and_applies_cli_overrides(
     assert resolved.resources.gpus == 1
     assert resolved.resources.exclusive is False
     assert resolved.resources.memory_bytes == 64_000_000_000
-    assert resolved.resources.time_limit_delta == timedelta(hours=1)
+    assert resolved.resources.time_limit == timedelta(hours=1)
     assert resolved.connection == ConnectionInfo(
         host="login.example.com",
         user="alice",

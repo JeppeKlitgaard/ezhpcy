@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 lazy import asyncio
 lazy import shlex
 lazy from collections.abc import AsyncGenerator
+lazy from pathlib import PurePosixPath
 lazy from types import TracebackType
 lazy from typing import Self
 
@@ -59,6 +60,15 @@ async def connect(
         str(conn_info.host), client_factory=lambda: client, **(defaults | options)
     )
     return RemoteHost(conn, conn_info, client.closed)
+
+
+async def ensure_directory(sftp: asyncssh.SFTPClient, path: PurePosixPath) -> None:
+    """
+    Create a directory and its parents, unless it exists already. That costs one
+    round trip, where `SFTPClient.makedirs` tries every component from `/`.
+    """
+    if not await sftp.isdir(path):
+        await sftp.makedirs(path, exist_ok=True)
 
 
 def _command_failed(result: asyncssh.SSHCompletedProcess) -> asyncssh.ProcessError:

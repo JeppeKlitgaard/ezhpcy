@@ -6,6 +6,7 @@ lazy from pathlib import PurePosixPath
 
 lazy import asyncssh
 
+lazy from ezhpcy.ssh import ensure_directory
 lazy from ezhpcy.worker import WorkerError
 
 logger = logging.getLogger(__name__)
@@ -39,9 +40,9 @@ class WorkerControl:
     async def create(self) -> None:
         """Create the directory, in a parent that only the user can enter."""
         root = self.directory.parent
-        await self._sftp.makedirs(root, exist_ok=True)
+        await ensure_directory(self._sftp, root)
         await self._sftp.chmod(root, 0o700)
-        await self._sftp.makedirs(
+        await self._sftp.mkdir(
             self.directory, attrs=asyncssh.SFTPAttrs(permissions=0o700)
         )
 

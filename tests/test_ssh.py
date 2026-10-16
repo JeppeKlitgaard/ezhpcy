@@ -326,6 +326,40 @@ async def test_sftp_opens_an_sftp_session(ssh_server: SSHTestServer):
     assert ssh_server.local_path("ready").read_text(encoding="utf-8") == "12345\n"
 
 
+async def test_ensure_directory_creates_missing_parents(ssh_server: SSHTestServer):
+    async with await _connect(ssh_server) as host, host.sftp() as sftp:
+        await ssh.ensure_directory(sftp, PurePosixPath(".cache/ezhpcy/logs"))
+
+    assert ssh_server.local_path(".cache/ezhpcy/logs").is_dir()
+
+
+async def test_ensure_directory_leaves_an_existing_one_alone(
+    ssh_server: SSHTestServer, monkeypatch: pytest.MonkeyPatch
+):
+    ssh_server.local_path(".cache/ezhpcy").mkdir(parents=True)
+    makedirs_calls: list[object] = []
+
+    async def makedirs(_sftp: object, path: object, **_options: object) -> None:
+        makedirs_calls.append(path)
+
+    monkeypatch.setattr(asyncssh.SFTPClient, "makedirs", makedirs)
+
+    async with await _connect(ssh_server) as host, host.sftp() as sftp:
+        await ssh.ensure_directory(sftp, PurePosixPath(".cache/ezhpcy"))
+
+    # `makedirs` would try every component from `/`.
+    assert makedirs_calls == []
+
+
+async def test_ensure_directory_refuses_a_file(ssh_server: SSHTestServer):
+    ssh_server.local_path(".cache").mkdir(parents=True)
+    ssh_server.local_path(".cache/ezhpcy").write_text("", encoding="utf-8")
+
+    async with await _connect(ssh_server) as host, host.sftp() as sftp:
+        with pytest.raises(asyncssh.SFTPError, match="not a directory"):
+            await ssh.ensure_directory(sftp, PurePosixPath(".cache/ezhpcy"))
+
+
 # Forwarding
 
 

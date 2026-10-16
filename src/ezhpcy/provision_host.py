@@ -8,7 +8,7 @@ lazy import asyncssh
 
 lazy from ezhpcy.constants import OPENSSH_MATCHSPEC, PIXI_INSTALLER_URL, PIXI_VERSION
 lazy from ezhpcy.provision_local import WorkerCredentials
-lazy from ezhpcy.ssh import RemoteHost
+lazy from ezhpcy.ssh import RemoteHost, ensure_directory
 lazy from ezhpcy.types import RemoteState
 lazy from ezhpcy.worker.sshd import (
     absolute_sshd_command,
@@ -81,7 +81,7 @@ async def provision_sshd_files(
     remote_host_key = credentials.remote_host_key(remote_state)
     remote_host_public_key = credentials.remote_host_public_key(remote_state)
     async with login.sftp() as sftp:
-        await sftp.makedirs(remote_dir, exist_ok=True)
+        await ensure_directory(sftp, remote_dir)
         # Restrict the directory before the private key goes in.
         await sftp.chmod(remote_dir, 0o700)
 

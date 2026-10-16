@@ -443,10 +443,22 @@ async def test_lsf_submission_builds_portable_job_spec():
             "/home/user/worker.out",
             "-e",
             "/home/user/worker.err",
-            _COMMAND,
-            "34321",
         ]
     ]
+    assert host.stdin == [f"#!/usr/bin/env bash\nexec {_COMMAND} 34321\n"]
+
+
+async def test_lsf_submission_keeps_the_command_quoted():
+    host = FakeHost("Job <31415> is submitted to queue <normal>.\n")
+    spec = JobSpec(command=("bash", "-c", "echo \"$1\"\necho 'done'", "two words"))
+
+    await _lsf(host).submit(spec)
+
+    [script] = host.stdin
+    assert script is not None
+    shebang, _, body = script.partition("\n")
+    assert shebang == "#!/usr/bin/env bash"
+    assert shlex.split(body) == ["exec", *spec.command]
 
 
 async def test_lsf_submission_without_a_job_id_is_an_error():
@@ -454,35 +466,6 @@ async def test_lsf_submission_without_a_job_id_is_an_error():
 
     with pytest.raises(SchedulerError, match="Request aborted by esub"):
         await _lsf(host).submit(JobSpec(command=("true",)))
-
-
-async def test_lsf_script_submission_streams_job_body_to_bsub():
-    host = FakeHost("Job <31415> is submitted to queue <normal>.\n")
-    spec = JobSpec(
-        command=("bash", "-s", "--", "54321"),
-        name="ezhpcy-worker",
-        cores=4,
-        queue="normal",
-    )
-
-    assert (
-        await _lsf(host).submit_script(spec, "#!/usr/bin/env bash\necho worker\n")
-        == "31415"
-    )
-    assert host.commands == [
-        [
-            "bsub",
-            "-n",
-            "4",
-            "-R",
-            "span[hosts=1]",
-            "-J",
-            "ezhpcy-worker",
-            "-q",
-            "normal",
-        ]
-    ]
-    assert host.stdin == ["#!/usr/bin/env bash\necho worker\n"]
 
 
 async def test_lsf_interactive_submission_uses_site_profile():
@@ -697,13 +680,6 @@ async def test_pbs_submission_without_a_job_id_is_an_error():
     with pytest.raises(SchedulerError, match="queue is disabled"):
         await _pbs(FakeHost("qsub: queue is disabled\n")).submit(
             JobSpec(command=("true",))
-        )
-
-
-async def test_pbs_does_not_support_script_submission():
-    with pytest.raises(SchedulerError, match="PBS does not support job script"):
-        await _pbs(FakeHost()).submit_script(
-            JobSpec(command=("true",)), "echo worker\n"
         )
 
 
@@ -999,9 +975,15 @@ def _login_shell(server: SSHTestServer, **fakes: Handler) -> None:
 
 
 async def test_lsf_on_the_login_node(ssh_server: SSHTestServer):
+    scripts: list[str] = []
+
+    async def bsub(invocation: Invocation) -> None:
+        scripts.append(await invocation.stdin.read())
+        invocation.stdout.write("Job <7> is submitted to queue <normal>.\n")
+
     _login_shell(
         ssh_server,
-        bsub=reply(stdout="Job <7> is submitted to queue <normal>.\n"),
+        bsub=bsub,
         bjobs=reply(stdout="7|RUN|node1|-\n"),
         bkill=reply(stdout="Job <7> is being terminated\n"),
     )
@@ -1014,28 +996,11 @@ async def test_lsf_on_the_login_node(ssh_server: SSHTestServer):
 
     assert info.state is JobState.RUNNING
     assert info.host == "node1"
+    assert scripts == [f"#!/usr/bin/env bash\nexec {_COMMAND} 'two words'\n"]
     commands = [shlex.split(argv[2]) for argv in ssh_server.commands_run]
-    assert commands[0][-2:] == [_COMMAND, "two words"]
+    assert commands[0][0] == "bsub"
     assert commands[1][0] == "bjobs"
     assert commands[2] == ["bkill", "7"]
-
-
-async def test_lsf_script_submission_on_the_login_node(ssh_server: SSHTestServer):
-    scripts: list[str] = []
-
-    async def bsub(invocation: Invocation) -> None:
-        scripts.append(await invocation.stdin.read())
-        invocation.stdout.write("Job <8> is submitted to queue <normal>.\n")
-
-    _login_shell(ssh_server, bsub=bsub)
-
-    async with await _connect(ssh_server) as host:
-        job_id = await _lsf(host).submit_script(
-            JobSpec(command=("bash", "-s")), "#!/bin/bash\necho worker\n"
-        )
-
-    assert job_id == "8"
-    assert scripts == ["#!/bin/bash\necho worker\n"]
 
 
 async def test_lsf_command_failure_on_the_login_node_carries_stderr(

@@ -128,17 +128,9 @@ class Scheduler(ABC):
             else None
         )
 
-    async def submit(self, spec: JobSpec) -> str:
-        """Submit a job and return its scheduler-assigned identifier."""
-        output = await self._run(self._submit_command(spec), "submit a job")
-        return self._parse_job_id(output)
-
     @abstractmethod
-    async def submit_script(self, spec: JobSpec, script: str) -> str:
-        """
-        Submit a job that runs `script`, sent to the scheduler's standard input,
-        and return its identifier.
-        """
+    async def submit(self, spec: JobSpec) -> str:
+        """Submit a batch job and return its scheduler-assigned identifier."""
 
     async def submit_interactive(
         self, spec: JobSpec, *, startup_timeout: float
@@ -184,19 +176,11 @@ class Scheduler(ABC):
     # Adapter hooks
 
     @abstractmethod
-    def _submit_command(self, spec: JobSpec) -> list[str]:
-        """The command that submits a batch job running `spec.command`."""
-
-    @abstractmethod
     def _interactive_command(self, spec: JobSpec) -> list[str]:
         """The command that submits an interactive job and opens its shell."""
 
     @abstractmethod
     def _cancel_command(self, job_id: str) -> list[str]: ...
-
-    @abstractmethod
-    def _parse_job_id(self, output: str) -> str:
-        """The job ID in a batch submission's output."""
 
     # Shared by adapters
 

@@ -42,7 +42,6 @@ lazy from ezhpcy.scheduler.base import (
     Scheduler,
     SchedulerError,
 )
-lazy from ezhpcy.scheduler.types import SchedulerType
 lazy from ezhpcy.ssh import RemoteHost, ensure_directory
 lazy from ezhpcy.tunnel import TunnelError
 lazy from ezhpcy.tunnel.server import TunnelServer
@@ -55,11 +54,7 @@ lazy from ezhpcy.worker.control import (
     WorkerStatus,
     WorkerStopped,
 )
-lazy from ezhpcy.worker.job import (
-    WORKER_SCRIPT,
-    batch_script,
-    sshd_command,
-)
+lazy from ezhpcy.worker.job import sshd_command
 lazy from ezhpcy.worker.sshd import (
     client_alive,
     sshd_config_arguments,
@@ -250,11 +245,6 @@ class TunnelSession:
         )
         await control.publish_lease()
 
-        # An LSF batch job reads the worker's script from `bsub`'s stdin.
-        stream_script = (
-            resolved.scheduler.type is SchedulerType.LSF
-            and resolved.scheduler.submission_mode is SubmissionMode.BATCH
-        )
         logs_dir = remote_state.worker_logs_dir()
         spec = JobSpec(
             command=sshd_command(
@@ -264,7 +254,6 @@ class TunnelSession:
                 heartbeat_timeout_seconds=timings.worker_heartbeat_timeout_seconds,
                 heartbeat_debug=logger.isEnabledFor(logging.DEBUG),
                 control_dir=control.directory,
-                read_script_from_stdin=stream_script,
                 sshd_arguments=sshd_config_arguments(
                     host_key=credentials.remote_host_key(remote_state),
                     remote_username=credentials.login_user,
@@ -311,13 +300,8 @@ class TunnelSession:
             )
             cancel_on_cleanup(job_id)
         else:
-            submission = (
-                scheduler.submit_script(spec, batch_script(spec.command, WORKER_SCRIPT))
-                if stream_script
-                else scheduler.submit(spec)
-            )
             job_id = await self._finish(
-                "submit the worker job", submission, then=cancel_on_cleanup
+                "submit the worker job", scheduler.submit(spec), then=cancel_on_cleanup
             )
         logger.info("Submitted worker job %s.", job_id)
         logger.info(

@@ -19,12 +19,7 @@ from ezhpcy.worker.control import (
     WorkerStatus,
     WorkerStopped,
 )
-from ezhpcy.worker.job import (
-    WORKER_SCRIPT,
-    batch_script,
-    select_ports,
-    sshd_command,
-)
+from ezhpcy.worker.job import WORKER_SCRIPT, select_ports, sshd_command
 from ezhpcy.worker.sshd import client_alive, sshd_config_arguments
 from tests.support.sshserver import SSHTestServer
 
@@ -43,7 +38,6 @@ def test_sshd_command_retries_ports_through_pixi() -> None:
         heartbeat_timeout_seconds=90,
         heartbeat_debug=True,
         control_dir=PurePosixPath("/home/alice/.cache/ezhpcy/control/test"),
-        read_script_from_stdin=False,
         sshd_arguments=sshd_config_arguments(
             host_key=PurePosixPath("/remote/ssh_host_ed25519_key"),
             remote_username="alice",
@@ -100,22 +94,6 @@ def test_client_alive_gives_up_within_the_heartbeat_timeout(
     interval: float, timeout: int, expected: tuple[int, int]
 ) -> None:
     assert client_alive(interval, timeout) == expected
-
-
-def test_batch_script_feeds_the_worker_script_to_the_command() -> None:
-    script = batch_script(("bash", "-s", "--", "two words"), "echo worker\n")
-
-    assert script == (
-        "#!/usr/bin/env bash\n"
-        "exec bash -s -- 'two words' <<'EZHPCY_WORKER_SCRIPT'\n"
-        "echo worker\n"
-        "EZHPCY_WORKER_SCRIPT\n"
-    )
-
-
-def test_batch_script_rejects_a_script_containing_its_delimiter() -> None:
-    with pytest.raises(ValueError, match="delimiter"):
-        batch_script(("bash",), "echo\nEZHPCY_WORKER_SCRIPT\necho\n")
 
 
 def test_select_ports_returns_unique_dynamic_ports() -> None:

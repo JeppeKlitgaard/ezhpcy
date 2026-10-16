@@ -1,5 +1,6 @@
 import re
 lazy import math
+lazy import shlex
 lazy from collections.abc import Sequence
 
 from ezhpcy.scheduler.base import JobInfo, JobSpec, JobState, Scheduler, SchedulerError
@@ -46,12 +47,12 @@ class LSFScheduler(Scheduler):
         )
         self._lsf = lsf
 
-    async def submit_script(self, spec: JobSpec, script: str) -> str:
-        """Submit an LSF job script through ``bsub`` standard input."""
+    async def submit(self, spec: JobSpec) -> str:
+        # As a script on `bsub`'s stdin: given the command as arguments, `bsub`
+        # joins them with spaces, losing their quoting.
+        script = f"#!/usr/bin/env bash\nexec {shlex.join(spec.command)}\n"
         output = await self._run(
-            self._bsub_command(spec, interactive=False),
-            "submit a job script",
-            stdin=script,
+            self._bsub_command(spec, interactive=False), "submit a job", stdin=script
         )
         return self._parse_job_id(output)
 
@@ -81,9 +82,6 @@ class LSFScheduler(Scheduler):
             ),
             exit_code=exit_code,
         )
-
-    def _submit_command(self, spec: JobSpec) -> list[str]:
-        return [*self._bsub_command(spec, interactive=False), *spec.command]
 
     def _interactive_command(self, spec: JobSpec) -> list[str]:
         command = [*self._bsub_command(spec, interactive=True), "/bin/sh"]

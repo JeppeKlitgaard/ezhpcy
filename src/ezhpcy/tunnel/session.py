@@ -193,10 +193,12 @@ class TunnelSession:
         remote_state = await host.remote_state()
         credentials = self._ssh_host.credentials
         if self._auto_provision:
-            await provision_worker_infrastructure(host, remote_state, credentials)
+            authorized_key = await provision_worker_infrastructure(
+                host, remote_state, credentials
+            )
         else:
             await validate_worker_infrastructure(host, remote_state, credentials)
-        authorized_key = await asyncio.to_thread(credentials.authorized_key)
+            authorized_key = await asyncio.to_thread(credentials.authorized_key)
         scheduler = create_scheduler(resolved, host)
         if self._profile_name is None:
             logger.info(

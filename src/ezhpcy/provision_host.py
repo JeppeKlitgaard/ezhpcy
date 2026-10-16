@@ -73,8 +73,11 @@ async def provision_openssh(login: RemoteHost, remote_state: RemoteState) -> Non
 
 async def provision_sshd_files(
     login: RemoteHost, remote_state: RemoteState, credentials: WorkerCredentials
-) -> None:
-    """Provision worker SSH keys and validate the resulting sshd configuration."""
+) -> tuple[str, str]:
+    """
+    Provision worker SSH keys and validate the resulting sshd configuration.
+    Return the client key for the worker's sshd to authorize.
+    """
     authorized_key = await asyncio.to_thread(_prepare_local_keys, credentials)
 
     remote_dir = credentials.remote_dir(remote_state)
@@ -104,6 +107,7 @@ async def provision_sshd_files(
         ],
         remote_state=remote_state,
     )
+    return authorized_key
 
 
 def _prepare_local_keys(credentials: WorkerCredentials) -> tuple[str, str]:
@@ -119,11 +123,14 @@ def _prepare_local_keys(credentials: WorkerCredentials) -> tuple[str, str]:
 
 async def provision_worker_infrastructure(
     login: RemoteHost, remote_state: RemoteState, credentials: WorkerCredentials
-) -> None:
-    """Idempotently provision everything needed by a compute worker."""
+) -> tuple[str, str]:
+    """
+    Idempotently provision everything needed by a compute worker. Return the
+    client key for the worker's sshd to authorize.
+    """
     await provision_pixi(login, remote_state)
     await provision_openssh(login, remote_state)
-    await provision_sshd_files(login, remote_state, credentials)
+    return await provision_sshd_files(login, remote_state, credentials)
 
 
 async def validate_worker_infrastructure(

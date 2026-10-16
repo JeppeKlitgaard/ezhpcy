@@ -175,7 +175,7 @@ def retrying_sshd_command(
     ports: tuple[int, ...],
     *,
     heartbeat_token: str,
-    heartbeat_timeout_seconds: float,
+    heartbeat_timeout_seconds: int,
     heartbeat_debug: bool,
     heartbeat_log_dir: PurePosixPath,
     control_dir: PurePosixPath,

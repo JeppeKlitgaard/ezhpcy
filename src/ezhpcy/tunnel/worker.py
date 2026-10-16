@@ -49,7 +49,7 @@ def select_worker_ports(count: int) -> tuple[int, ...]:
 
 
 def worker_client_alive(
-    heartbeat_interval_seconds: float, heartbeat_timeout_seconds: float
+    heartbeat_interval_seconds: float, heartbeat_timeout_seconds: int
 ) -> tuple[int, int]:
     """
     Bound how long the worker serves an SSH client that stopped answering.
@@ -59,7 +59,7 @@ def worker_client_alive(
     heartbeat cadence and give up within the heartbeat timeout.
     """
     interval_seconds = max(1, math.ceil(heartbeat_interval_seconds))
-    count_max = max(1, math.floor(heartbeat_timeout_seconds / interval_seconds))
+    count_max = max(1, heartbeat_timeout_seconds // interval_seconds)
     return interval_seconds, count_max
 
 
@@ -68,7 +68,7 @@ def worker_sshd_command(
     *,
     ports: tuple[int, ...],
     heartbeat_token: str,
-    heartbeat_timeout_seconds: float,
+    heartbeat_timeout_seconds: int,
     heartbeat_debug: bool,
     control_dir: PurePosixPath,
     read_script_from_stdin: bool,
@@ -86,7 +86,7 @@ def worker_sshd_command(
             sshd_arguments,
             ports,
             heartbeat_token=heartbeat_token,
-            heartbeat_timeout_seconds=math.ceil(heartbeat_timeout_seconds),
+            heartbeat_timeout_seconds=heartbeat_timeout_seconds,
             heartbeat_debug=heartbeat_debug,
             heartbeat_log_dir=remote_state.worker_logs_dir(),
             control_dir=control_dir,

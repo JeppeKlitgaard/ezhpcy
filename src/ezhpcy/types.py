@@ -129,7 +129,7 @@ class TimingsConfig(_SubConfig):
     job_poll_interval_seconds: float = Field(default=2.5, gt=0)
     job_monitor_interval_seconds: float = Field(default=60, gt=0)
     worker_heartbeat_interval_seconds: float = Field(default=30, gt=0)
-    worker_heartbeat_timeout_seconds: float = Field(default=90, gt=0)
+    worker_heartbeat_timeout_seconds: int = Field(default=90, gt=0)
 
 
 class LSFConfig(_SubConfig):

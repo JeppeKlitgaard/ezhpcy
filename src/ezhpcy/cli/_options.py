@@ -259,7 +259,7 @@ WorkerHeartbeatIntervalOpt = Annotated[
     ),
 ]
 WorkerHeartbeatTimeoutOpt = Annotated[
-    float | None,
+    int | None,
     Parameter(
         name="--worker-heartbeat-timeout",
         validator=validators.Number(gte=1),

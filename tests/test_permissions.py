@@ -1,3 +1,4 @@
+import ctypes
 import subprocess
 import sys
 from collections.abc import Iterator
@@ -14,6 +15,7 @@ from ezhpcy.permissions import (
 )
 
 _WHOAMI = ["whoami", "/user", "/fo", "csv", "/nh"]
+_DACL_SECURITY_INFORMATION = 0x00000004
 
 requires_windows = pytest.mark.skipif(sys.platform != "win32", reason="Windows ACLs")
 
@@ -38,6 +40,30 @@ def windows_dacl(path: Path) -> str:
     return saved.read_text(encoding="utf-16-le").splitlines()[1]
 
 
+def windows_sddl(sddl: str) -> str:
+    """
+    Return a DACL in SDDL as Windows renders it, which abbreviates some SIDs,
+    e.g. the built-in Administrator account (RID 500) that CI runs as to LA.
+    """
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32")
+    descriptor = ctypes.c_void_p()
+    rendered = ctypes.c_wchar_p()
+    assert advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        sddl, 1, ctypes.byref(descriptor), None
+    ), ctypes.WinError(ctypes.get_last_error())
+    try:
+        assert advapi32.ConvertSecurityDescriptorToStringSecurityDescriptorW(
+            descriptor, 1, _DACL_SECURITY_INFORMATION, ctypes.byref(rendered), None
+        ), ctypes.WinError(ctypes.get_last_error())
+        try:
+            return rendered.value or ""
+        finally:
+            kernel32.LocalFree(rendered)
+    finally:
+        kernel32.LocalFree(descriptor)
+
+
 @requires_windows
 def test_windows_dacl_replaces_explicit_entries_with_the_current_user(
     tmp_path: Path, uncached_sid: None
@@ -53,7 +79,9 @@ def test_windows_dacl_replaces_explicit_entries_with_the_current_user(
 
     restrict_to_current_user(path)
 
-    assert windows_dacl(path) == f"D:P(A;;FA;;;{windows_current_user_sid()})"
+    assert windows_dacl(path) == windows_sddl(
+        f"D:P(A;;FA;;;{windows_current_user_sid()})"
+    )
 
 
 @requires_windows

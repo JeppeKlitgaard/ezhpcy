@@ -20,5 +20,3 @@ def create_scheduler(resolved: ResolvedConfig, host: RemoteHost) -> Scheduler:
             return PBSScheduler(
                 host, resolved.pbs, interactive_submission_command=command
             )
-        case None:
-            raise ValueError("scheduler.type must be set")

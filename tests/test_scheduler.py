@@ -24,7 +24,8 @@ from ezhpcy.types import (
     LSFConfig,
     PBSConfig,
     ResolvedConfig,
-    SchedulerConfig,
+    ResolvedSchedulerConfig,
+    SubmissionMode,
 )
 from tests.support.sshserver import Handler, Invocation, SSHTestServer, reply
 
@@ -906,7 +907,9 @@ async def test_create_scheduler_configures_lsf_from_the_profile():
     host = FakeHost(process=FakeProcess(b"Job <1> is submitted to queue <q>.\n"))
     scheduler = create_scheduler(
         _resolved(
-            scheduler=SchedulerConfig(type=SchedulerType.LSF),
+            scheduler=ResolvedSchedulerConfig(
+                type=SchedulerType.LSF, submission_mode=SubmissionMode.INTERACTIVE
+            ),
             lsf=LSFConfig(application_profile="qrsh"),
         ),
         host,
@@ -924,8 +927,10 @@ async def test_create_scheduler_configures_pbs_from_the_profile():
     host = FakeHost(process=FakeProcess(b"qsub: waiting for job 1.server to start\n"))
     scheduler = create_scheduler(
         _resolved(
-            scheduler=SchedulerConfig(
-                type=SchedulerType.PBS, interactive_submission_command=["linuxsh"]
+            scheduler=ResolvedSchedulerConfig(
+                type=SchedulerType.PBS,
+                submission_mode=SubmissionMode.INTERACTIVE,
+                interactive_submission_command=["linuxsh"],
             ),
             pbs=PBSConfig(command_directory=PurePosixPath("/opt/pbspro/bin")),
         ),
@@ -940,11 +945,6 @@ async def test_create_scheduler_configures_pbs_from_the_profile():
     assert isinstance(scheduler, PBSScheduler)
     assert host.started == [["linuxsh"]]
     assert host.commands == [["/opt/pbspro/bin/qdel", "1.server"]]
-
-
-def test_create_scheduler_needs_a_scheduler_type():
-    with pytest.raises(ValueError, match=r"scheduler\.type"):
-        create_scheduler(_resolved(), FakeHost())
 
 
 # Against the in-process SSH server

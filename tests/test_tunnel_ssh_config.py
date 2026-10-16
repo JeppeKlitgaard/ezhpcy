@@ -384,6 +384,29 @@ requires_openssh = pytest.mark.skipif(
 )
 
 
+def windows_acl_report() -> str:
+    """Describe the owners and ACLs OpenSSH saw, to diagnose a rejected Include."""
+    if os.name != "nt":
+        return ""
+    directory = ssh_config.ssh_config_dir()
+    commands = [
+        ["whoami", "/user", "/groups"],
+        ["icacls", str(directory)],
+        *(["icacls", str(path)] for path in sorted(directory.iterdir())),
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-Command",
+            f"Get-ChildItem -Force '{directory}' | Get-Acl | Format-List Path, Owner",
+        ],
+    ]
+    outputs = (
+        subprocess.run(command, capture_output=True, check=False, text=True).stdout
+        for command in commands
+    )
+    return "\n" + "\n".join(outputs)
+
+
 def resolve_with_openssh(tmp_path: Path, alias: str) -> dict[str, str]:
     """Resolve an alias through the real OpenSSH client and only our Include."""
     main_config = tmp_path / "ssh_config"
@@ -395,7 +418,7 @@ def resolve_with_openssh(tmp_path: Path, alias: str) -> dict[str, str]:
         text=True,
         timeout=10,
     )
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 0, result.stderr + windows_acl_report()
     resolved: dict[str, str] = {}
     for line in result.stdout.splitlines():
         key, _, value = line.partition(" ")

@@ -29,7 +29,18 @@ lazy from ezhpcy.utils import ssh_connection_id
 _DIRS = PlatformDirs(PACKAGE_NAME, appauthor=False)
 # Profile names double as OpenSSH Host aliases, so they exclude whitespace and the
 # pattern characters `*`, `?`, `!` and `,`.
-PROFILE_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+_ALIAS_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+
+
+def validate_alias(alias: str) -> str:
+    """Check a profile name or OpenSSH Host alias is safe as both and as a file name."""
+    if _ALIAS_PATTERN.fullmatch(alias) is None:
+        raise ValueError(
+            f"invalid host alias {alias!r}: profile names and host aliases may "
+            "contain only letters, digits, '.', '_', and '-', and must start "
+            "with a letter or digit"
+        )
+    return alias
 
 
 class ProfilePasswordSourceError(ValueError):
@@ -96,18 +107,8 @@ class _ConfigValues(BaseModel):
 
     @model_validator(mode="after")
     def validate_profiles(self) -> Self:
-        invalid_names = [
-            name
-            for name in self.profile
-            if PROFILE_NAME_PATTERN.fullmatch(name) is None
-        ]
-        if invalid_names:
-            raise ValueError(
-                "profile names may contain only letters, digits, '.', '_', and '-': "
-                + ", ".join(repr(name) for name in invalid_names)
-            )
-
         for name in self.profile:
+            validate_alias(name)
             self.resolve_profile(name, validate_password_source=False)
         return self
 

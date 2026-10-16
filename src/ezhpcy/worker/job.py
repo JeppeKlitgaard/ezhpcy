@@ -1,7 +1,6 @@
 """The worker job's command, which runs sshd under the lease watchdog."""
 
 lazy import secrets
-lazy import shlex
 lazy from pathlib import PurePosixPath
 
 from ezhpcy.worker.sshd import RESOLVE_SSHD
@@ -10,7 +9,6 @@ lazy from ezhpcy.types import RemoteState
 
 _FIRST_DYNAMIC_PORT = 49152
 _LAST_DYNAMIC_PORT = 65535
-_SCRIPT_DELIMITER = "EZHPCY_WORKER_SCRIPT"
 
 _HEARTBEAT_MARKER = "ezhpcy-heartbeat"
 
@@ -189,28 +187,21 @@ def sshd_command(
     heartbeat_timeout_seconds: int,
     heartbeat_debug: bool,
     control_dir: PurePosixPath,
-    read_script_from_stdin: bool,
     sshd_arguments: list[str],
 ) -> tuple[str, ...]:
     """
     The worker job's command: `WORKER_SCRIPT` in the cached Pixi environment,
     which runs foreground sshd, retrying immediate startup failures by port.
-
-    LSF batch submission sets `read_script_from_stdin` so Bash reads the script
-    from `bsub`'s standard input (see `batch_script`). Other jobs run it with
-    `bash -c`.
     """
     if not ports:
         raise ValueError("at least one worker SSH port is required")
-    script_command = (
-        ("bash", "-s", "--")
-        if read_script_from_stdin
-        else ("bash", "-c", WORKER_SCRIPT, "sshd")
-    )
     return remote_state.pixi_command(
         "exec",
         f"--spec={OPENSSH_MATCHSPEC}",
-        *script_command,
+        "bash",
+        "-c",
+        WORKER_SCRIPT,
+        "sshd",
         ":".join(str(port) for port in ports),
         heartbeat_token,
         str(heartbeat_timeout_seconds),
@@ -218,16 +209,4 @@ def sshd_command(
         str(remote_state.worker_logs_dir()),
         str(control_dir),
         *sshd_arguments,
-    )
-
-
-def batch_script(command: tuple[str, ...], script: str) -> str:
-    """Wrap the worker shell program in a batch script fed to LSF over stdin."""
-    if f"\n{_SCRIPT_DELIMITER}\n" in script:
-        raise ValueError("worker script conflicts with its here-document delimiter")
-    return (
-        "#!/usr/bin/env bash\n"
-        f"exec {shlex.join(command)} <<'{_SCRIPT_DELIMITER}'\n"
-        f"{script.rstrip()}\n"
-        f"{_SCRIPT_DELIMITER}\n"
     )

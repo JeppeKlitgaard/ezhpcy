@@ -43,11 +43,9 @@ class PBSScheduler(Scheduler):
         self._qstat = _executable(pbs.command_directory, "qstat")
         self._qdel = _executable(pbs.command_directory, "qdel")
 
-    async def submit_script(self, spec: JobSpec, script: str) -> str:
-        raise SchedulerError(
-            "PBS does not support job script submission; use batch or interactive "
-            "submission"
-        )
+    async def submit(self, spec: JobSpec) -> str:
+        output = await self._run(self._submit_command(spec), "submit a job")
+        return self._parse_job_id(output)
 
     async def inspect(self, job_id: str) -> JobInfo:
         try:

@@ -196,7 +196,7 @@ def test_an_lsf_batch_tunnel_sends_the_worker_script_to_bsub(
     assert result.exit_code == 0, result
     [script] = scripts
     assert script.startswith("#!/usr/bin/env bash\nexec env PIXI_HOME=")
-    assert "bash -s --" in script
+    assert " bash -c " in script
     assert "AuthorizedKeysCommand=/bin/echo ssh-ed25519 " in script
     assert log.starting("Tunnel ready for base via worker 127.0.0.1:")
 

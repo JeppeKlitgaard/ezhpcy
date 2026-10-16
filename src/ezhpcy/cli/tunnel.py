@@ -232,7 +232,7 @@ async def tunnel_cmd(
     # work up to there (reading the keyring, writing files) may block it.
     session: TunnelSession | None = None
     profile_config = resolve_profile_config(profile)
-    connection = connection_from_cli(
+    conn_info = connection_from_cli(
         connection_options, profile_config.connection, profile=profile
     )
     scheduler = with_cli_options(profile_config.scheduler, scheduler_options)
@@ -254,7 +254,7 @@ async def tunnel_cmd(
                 )
         resolved = ResolvedConfig(
             description=profile_config.description,
-            connection=connection,
+            connection=conn_info,
             scheduler=ResolvedSchedulerConfig.model_validate(scheduler.model_dump()),
             resources=resources,
             timings=timings,
@@ -279,7 +279,7 @@ async def tunnel_cmd(
             auto_provision = config.auto_provision
         if not auto_provision:
             _ensure_local_worker_credentials(
-                WorkerCredentials.for_login(connection, machine_id=local_machine_id())
+                WorkerCredentials.for_login(conn_info, machine_id=local_machine_id())
             )
         worker_ports = (
             (worker_port,)

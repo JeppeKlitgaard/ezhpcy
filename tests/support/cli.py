@@ -154,7 +154,7 @@ def capture(
 
     - `tunnel`: the keyword arguments of `TunnelSession` (`resolved`, `ssh_host`,
       ...). The command then exits normally, without running the session.
-    - `provision`, `prune`: the `connection` given to `connect_interactive`, and
+    - `provision`, `prune`: the `conn_info` given to `connect_interactive`, and
       `remote_operation` (name, args, kwargs) for the first operation after
       `remote_state`, at which the command stops with an exception.
     - `proxy`: the tunnel `alias` it looked up. The relay writes `RELAYED_BYTES` to
@@ -175,8 +175,8 @@ def capture(
             monkeypatch.setattr(tunnel, "TunnelSession", Session)
         case "provision" | "prune":
 
-            async def connect_interactive(connection: ConnectionInfo) -> _FakeLogin:
-                captured["connection"] = connection
+            async def connect_interactive(conn_info: ConnectionInfo) -> _FakeLogin:
+                captured["conn_info"] = conn_info
                 return _FakeLogin(captured)
 
             monkeypatch.setattr(cli_ssh, "connect_interactive", connect_interactive)

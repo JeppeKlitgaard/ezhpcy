@@ -110,7 +110,7 @@ def test_provision_with_yes_starts_provisioning_without_asking(
 
     result = invoke(["provision", "base", "--yes"])
 
-    assert captured["connection"].user == "alice", result
+    assert captured["conn_info"].user == "alice", result
     assert "remote_operation" in captured
     assert "Proceed?" not in result.stderr
 
@@ -264,8 +264,8 @@ def test_connection_options_reach_the_login_connection(
         ["provision", "base", *_filled(arguments, password_sources)], env=env
     )
 
-    assert "connection" in captured, result
-    assert getattr(captured["connection"], field) == expected
+    assert "conn_info" in captured, result
+    assert getattr(captured["conn_info"], field) == expected
 
 
 @_PIPED_PASSWORD_PROMPT
@@ -302,13 +302,13 @@ def test_connection_options_reach_each_command_and_resolve_the_profile_once(
 
     result = invoke([command, "base", "--user", "bob"])
 
-    connection = (
+    conn_info = (
         captured["resolved"].connection
         if command == "tunnel"
-        else captured.get("connection")
+        else captured.get("conn_info")
     )
-    assert connection is not None, result
-    assert connection.user == "bob"
+    assert conn_info is not None, result
+    assert conn_info.user == "bob"
     assert resolved_profiles == ["base"]
 
 

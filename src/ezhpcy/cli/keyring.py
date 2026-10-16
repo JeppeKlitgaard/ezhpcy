@@ -11,9 +11,9 @@ lazy from ezhpcy.console import console, error_console
 # ruff: ignore[B008]  # See the comment above the option dataclasses in _options.py
 def set_cmd(*, connection_options: ConnectionOptions = ConnectionOptions()) -> None:
     """Store the login-node password in the system keyring."""
-    connection = direct_connection_from_cli(connection_options)
-    account = f"{connection.user}@{connection.host}"
-    password = connection.password
+    conn_info = direct_connection_from_cli(connection_options)
+    account = f"{conn_info.user}@{conn_info.host}"
+    password = conn_info.password
     if password is None:
         password = Prompt.ask(
             rich_text(t"Enter password for {account}"),

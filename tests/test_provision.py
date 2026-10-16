@@ -219,11 +219,6 @@ def test_prune_removes_other_versions_only(login: SSHTestServer) -> None:
             "--",
             f"{CACHE}/ezhpcy/0.0.9",
             f"{STATE}/ezhpcy/0.0.9",
-        ],
-        [
-            "rm",
-            "-rf",
-            "--",
             f"{_PACKAGE_CACHE}/pixi/0.72.0",
             f"{pixi_cache}/0.72.0",
         ],

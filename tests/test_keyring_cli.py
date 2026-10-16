@@ -81,5 +81,5 @@ def test_keyring_set_reports_backend_errors(monkeypatch: pytest.MonkeyPatch) -> 
     )
 
     assert result.exit_code == 1
-    assert "backend unavailable" in result.stdout
-    assert "secret" not in result.stdout
+    assert "backend unavailable" in result.stderr
+    assert "secret" not in result.stdout + result.stderr

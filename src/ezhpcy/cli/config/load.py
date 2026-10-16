@@ -12,11 +12,11 @@ lazy from pydantic import ValidationError
 lazy from rich.prompt import Confirm, Prompt
 lazy from rich.text import Text
 
-lazy from ezhpcy import console
 lazy from ezhpcy.cli._errors import CliUsageError
 lazy from ezhpcy.cli._options import UserOpt
 lazy from ezhpcy.cli._output import print_aborted, print_success, print_warning
 lazy from ezhpcy.config import Config, config
+lazy from ezhpcy.console import error_console
 
 PRESET_DIRECTORY = "static/config/presets"
 PRESET_SUFFIX = ".toml.j2"
@@ -103,7 +103,7 @@ def load_cmd(
         ) from error
 
     if user is None:
-        user = Prompt.ask("Username", console=console)
+        user = Prompt.ask("Username", console=error_console)
     try:
         rendered = _render_preset(template_text, preset=preset_name, user=user)
         Config.from_mapping(tomllib.loads(rendered))
@@ -130,7 +130,7 @@ def load_cmd(
             config_file=config_file,
             preset=preset_name,
         )
-        console.print(
+        error_console.print(
             diff or Text("(no changes)\n", style="dim"),
             end="",
             soft_wrap=True,
@@ -138,7 +138,7 @@ def load_cmd(
 
         if not yes and not Confirm.ask(
             "Overwrite the existing configuration?",
-            console=console,
+            console=error_console,
             default=False,
         ):
             print_aborted(t"Configuration unchanged.")

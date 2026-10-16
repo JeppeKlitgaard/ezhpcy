@@ -25,10 +25,10 @@ lazy import asyncssh
 lazy from rich.prompt import Confirm, Prompt
 
 from ezhpcy import ssh
-lazy from ezhpcy import console
 lazy from ezhpcy.cli._output import print_error, print_warning, rich_text
 lazy from ezhpcy.cli.utils.prompt import ask
 lazy from ezhpcy.config import config
+lazy from ezhpcy.console import error_console
 lazy from ezhpcy.types import ConnectionInfo
 
 logger = logging.getLogger(__name__)
@@ -113,7 +113,7 @@ async def connect_interactive(
                 Prompt.ask,
                 rich_text(t"Enter password for {conn_info.user}@{host}"),
                 password=True,
-                console=console,
+                console=error_console,
             )
 
 
@@ -260,12 +260,12 @@ async def _accept_host_key(
     only trusted for this connection.
     """
     print_warning(t"The host key for {host:name} is not in any known hosts file.")
-    console.print(rich_text(t"Key type: {key.get_algorithm()}"))
-    console.print(rich_text(t"Key fingerprint: {key.get_fingerprint()}"))
+    error_console.print(rich_text(t"Key type: {key.get_algorithm()}"))
+    error_console.print(rich_text(t"Key fingerprint: {key.get_fingerprint()}"))
     accepted = ask(
         Confirm.ask,
         "Do you want to accept this host key?: ",
-        console=console,
+        console=error_console,
         default=False,
         case_sensitive=False,
     )
@@ -294,7 +294,9 @@ async def _accept_host_key(
         key.get_fingerprint(),
         known_hosts_file,
     )
-    console.print(rich_text(t"Host key for {host} saved to {known_hosts_file:path}."))
+    error_console.print(
+        rich_text(t"Host key for {host} saved to {known_hosts_file:path}.")
+    )
     return line
 
 

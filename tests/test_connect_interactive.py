@@ -176,7 +176,7 @@ async def test_a_wrong_password_can_be_retried(
 
     assert _password_attempts(ssh_server) == [False, True]
     assert "Error [1/3]: Invalid password. Try again or press Ctrl+C to abort." in (
-        capsys.readouterr().out
+        capsys.readouterr().err
     )
 
 
@@ -196,7 +196,7 @@ async def test_three_wrong_passwords_fail(
 
     assert len(prompts.asked) == 3
     assert _password_attempts(ssh_server) == [False, False, False]
-    output = capsys.readouterr().out
+    output = capsys.readouterr().err
     assert "Error [1/3]" in output
     assert "Error [2/3]" in output
     assert "[3/3]" not in output
@@ -344,7 +344,7 @@ async def test_an_accepted_host_key_is_saved_to_ezhpcys_file(
     async with await _connect(ssh_server, known_hosts_file):
         pass
 
-    output = capsys.readouterr().out
+    output = capsys.readouterr().err
     assert "The host key for 127.0.0.1 is not in any known hosts file." in output
     assert "Key type: ssh-ed25519" in output
     assert f"Key fingerprint: {ssh_server.host_key.get_fingerprint()}" in output

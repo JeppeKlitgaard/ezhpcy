@@ -1,6 +1,6 @@
 [project]
 name = "ezhpcy"
-version = "0.1.0"
+version = "0.2.0"
 requires-python = ">=3.15"
 dependencies = [
     # Pydantic
@@ -37,7 +37,7 @@ format = [
     "ruff>=0.16.10", # keep in sync with .pre-commit-config.yaml
 ]
 pre-commit = [
-    "prek>=0.4.9",
+    "prek>=0.5.5", # keep in sync with .github/workflows/pre-commit.yaml
     { include-group = "typecheck" }, # For pyrefly that uses pyrefly from deps
 ]
 test = [

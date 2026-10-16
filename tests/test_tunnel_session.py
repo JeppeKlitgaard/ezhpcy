@@ -27,6 +27,7 @@ from tests.support.cli import invoke
 from tests.support.sshserver import Invocation, SSHTestServer, reply
 from tests.support.tunnel import (
     BANNER,
+    FAST_TIMINGS,
     JOB_ID,
     RUNNING,
     FakeScheduler,
@@ -228,6 +229,50 @@ def test_keepalive_loss_while_serving_stops_the_tunnel(
     [scheduler] = schedulers
     # The fake doesn't need the connection; a real `bkill` would fail.
     assert scheduler.cancelled == [JOB_ID]
+
+
+def test_the_worker_startup_timeout_covers_both_waits(
+    login: SSHTestServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    timeout_seconds = 1.0
+    worker_port = login.listen(banner(b"not an ssh server\n"))
+    configure_tunnel(
+        monkeypatch,
+        login,
+        timings=FAST_TIMINGS | {"worker_startup_timeout_seconds": timeout_seconds},
+    )
+    serve_interactive_job(login)
+
+    def start_worker_late(_spec: object) -> None:
+        # Most of the budget goes on waiting for `ready`, which leaves too
+        # little for the banner, which never comes anyway.
+        threading.Timer(
+            0.7 * timeout_seconds,
+            write_worker_record,
+            (login, "ready", str(worker_port)),
+        ).start()
+
+    use_scheduler(
+        monkeypatch,
+        lambda host: FakeScheduler(host, [RUNNING], submitted=start_worker_late),
+    )
+
+    with tunnel_log() as log:
+        result = invoke(["tunnel", "base", "--worker-port", str(worker_port)])
+
+    assert result.exit_code == 1, result
+    [error] = log.command_errors()
+    assert "did not become ready within 1 seconds" in error
+    [allocated] = [
+        record for record in log.records if record.getMessage().startswith("Worker job")
+    ]
+    [stopping] = [
+        record
+        for record in log.records
+        if record.getMessage().startswith("Stopping tunnel: ")
+    ]
+    # Two budgets would take 1.7 seconds.
+    assert stopping.created - allocated.created < 1.4 * timeout_seconds
 
 
 @pytest.mark.parametrize(

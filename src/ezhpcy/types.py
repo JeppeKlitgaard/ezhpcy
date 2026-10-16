@@ -263,8 +263,9 @@ class ResolvedConfig(BaseModel):
     }
 
     # These are only listed as a reminder that they are included in the digest.
-    # A test checks every field is either here or excluded above, so a new field
-    # forces a deliberate decision to include it!
+    # tests/human_reviewed/test_descriptor_digest.py checks every field is either
+    # here or excluded above, so a new field forces a deliberate decision to
+    # include it!
     _DIGEST_INCLUDE_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
         "connection": frozenset({"host", "user"}),
         "scheduler": frozenset(

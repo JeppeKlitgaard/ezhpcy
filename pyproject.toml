@@ -112,5 +112,7 @@ project-includes = [
 
 # Build system
 [build-system]
+# Keep the lower bound in sync with the setup-uv `version` in .github/workflows/
+# (pre-commit.yaml, tests.yml, publish.yml x2)
 requires = ["uv_build>=0.13.1,<0.14"]
 build-backend = "uv_build"

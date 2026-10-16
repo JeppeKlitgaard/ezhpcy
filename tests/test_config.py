@@ -273,11 +273,7 @@ def test_tables_are_not_read_from_the_environment(
 
 def test_config_singleton_applies_its_log_level() -> None:
     assert isinstance(config_module.config, config_module.Config)
-    # A workstation config with `debug = true` overrides the log level.
-    expected_level = (
-        logging.DEBUG if config_module.config.debug else config_module.config.log_level
-    )
-    assert logging.getLogger("ezhpcy").level == expected_level
+    assert logging.getLogger("ezhpcy").level == config_module.config.log_level
 
 
 def test_nested_profile_inheritance_resolves_all_ancestor_values() -> None:

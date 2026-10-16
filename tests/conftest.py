@@ -1,10 +1,22 @@
 import logging
+import os
+import tempfile
 from collections.abc import Iterator
 from pathlib import Path
 
+# `ezhpcy.config` loads the workstation's settings when it's first imported, which
+# is below. Drop every `EZHPCY_*` variable (e.g. from `just`'s dotenv-load) and point
+# EZHPCY_CONFIG_FILE at a file that doesn't exist, so the suite, and the `ezhpcy`
+# processes tests start, run on default settings.
+for variable in [name for name in os.environ if name.upper().startswith("EZHPCY_")]:
+    del os.environ[variable]
+os.environ["EZHPCY_CONFIG_FILE"] = str(
+    Path(tempfile.gettempdir()) / f"ezhpcy-tests-{os.getpid()}" / "ezhpcy.toml"
+)
+
 import pytest
 
-from ezhpcy.config import config
+from ezhpcy.config import LocalFileConfig, config
 from ezhpcy.logging import ASYNCSSH_LOGGER_NAME, TERMINAL_HANDLER_NAME
 from tests.support.login import route_login
 from tests.support.sshserver import SSHTestServer
@@ -27,47 +39,34 @@ def login(
 
 
 @pytest.fixture(autouse=True)
-def isolated_runtime_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
-    """Keep tunnel descriptors and generated SSH configuration out of the real
-    runtime directory, which the user's ~/.ssh/config may Include."""
-    runtime_dir = tmp_path / "runtime"
-    monkeypatch.setattr(config.local_file, "runtime_dir", runtime_dir)
-    return runtime_dir
+def isolated_local_files(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> LocalFileConfig:
+    """Keep every file EzHPCy reads or writes in `tmp_path`: the configuration file,
+    worker keys, accepted login-node host keys, and the tunnel descriptors and
+    generated SSH configuration that the user's ~/.ssh/config may Include."""
+    local_file = LocalFileConfig(
+        cache_dir=tmp_path / "cache",
+        config_dir=tmp_path / "config",
+        data_dir=tmp_path / "data",
+        runtime_dir=tmp_path / "runtime",
+        config_file=tmp_path / "config" / "ezhpcy.toml",
+    )
+    monkeypatch.setattr(config, "local_file", local_file)
+    return local_file
 
 
-@pytest.fixture(autouse=True)
-def isolated_config_dir(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
-    """Keep worker keys and accepted login-node host keys out of the real
-    configuration directory."""
-    config_dir = tmp_path / "config"
-    monkeypatch.setattr(config.local_file, "config_dir", config_dir)
-    return config_dir
-
-
-@pytest.fixture(autouse=True)
-def without_connection_option_environment(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Keep dotenv-loaded CLI defaults from leaking into individual tests."""
-    for environment_variable in (
-        "EZHPCY_HOST",
-        "EZHPCY_USER",
-        "EZHPCY_PROFILE",
-        "EZHPCY_PASSWORD",
-        "EZHPCY_PASSWORD_FILE",
-        "EZHPCY_PASSWORD_FD",
-        "EZHPCY_PASSWORD_KEYRING",
-    ):
-        monkeypatch.delenv(environment_variable, raising=False)
+@pytest.fixture
+def isolated_runtime_dir(isolated_local_files: LocalFileConfig) -> Path:
+    return isolated_local_files.runtime_dir
 
 
 @pytest.fixture(autouse=True)
 def quiet_asyncssh_logger() -> Iterator[None]:
     """
-    Keep asyncssh's records off EzHPCy's terminal handler, unless a test turns on
-    debug logging itself. With `debug = true` in the workstation's config, the
-    handler would otherwise be attached for the whole run, and the test server's
-    thread, which logs after a test has ended, would write past pytest's capture.
+    Detach asyncssh's records from EzHPCy's terminal handler after a test that
+    turns on debug logging, because the test server's thread logs after the test
+    has ended and would write past pytest's capture.
     """
     _detach_asyncssh_logger()
     yield

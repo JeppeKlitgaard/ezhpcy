@@ -12,7 +12,13 @@ from ezhpcy import ssh
 from ezhpcy.constants import EZHPCY_VERSION, OPENSSH_MATCHSPEC, PIXI_VERSION
 from ezhpcy.types import ConnectionInfo, RemoteState
 from ezhpcy.worker import WorkerError
-from ezhpcy.worker.control import WorkerControl
+from ezhpcy.worker.control import (
+    WorkerControl,
+    WorkerFailed,
+    WorkerReady,
+    WorkerStatus,
+    WorkerStopped,
+)
 from ezhpcy.worker.job import (
     WORKER_SCRIPT,
     batch_script,
@@ -72,6 +78,7 @@ def test_sshd_command_retries_ports_through_pixi() -> None:
     assert 'port="${ports%%:*}"' in worker_script
     assert '"$sshd_path" -D -e -p "$port" "$@"' in worker_script
     assert 'publish_state ready "$port"' in worker_script
+    assert 'mv -f "$temporary" "$control_dir/status"' in worker_script
     assert command.count("bash") == 1
     assert command.count("-c") == 1
     assert "PidFile=none" in command
@@ -139,9 +146,13 @@ async def control(
         yield WorkerControl(sftp, _CONTROL_DIR, "LEASETOKEN", ports=ports)
 
 
-def write_record(server: SSHTestServer, name: str, content: str) -> None:
-    """As the worker does."""
+def write_file(server: SSHTestServer, name: str, content: str) -> None:
     server.local_path(_CONTROL_DIR / name).write_text(content, encoding="utf-8")
+
+
+def write_status(server: SSHTestServer, record: str) -> None:
+    """As the worker does, in Latin-1, so a test can write bytes that aren't UTF-8."""
+    server.local_path(_CONTROL_DIR / "status").write_bytes(record.encode("latin-1"))
 
 
 def leases(server: SSHTestServer) -> dict[str, str]:
@@ -167,78 +178,56 @@ async def test_worker_control_keeps_the_latest_two_leases(
     }
 
 
-async def test_worker_control_reads_the_ready_port(ssh_server: SSHTestServer) -> None:
+async def test_worker_control_reads_no_status_until_the_worker_writes_one(
+    ssh_server: SSHTestServer,
+) -> None:
+    async with control(ssh_server) as worker_control:
+        await worker_control.create()
+
+        assert await worker_control.read_status() is None
+
+
+@pytest.mark.parametrize(
+    ("record", "status"),
+    [
+        ("LEASETOKEN ready 54322\n", WorkerReady(54322)),
+        ("LEASETOKEN failed no_ports\n", WorkerFailed("no_ports")),
+        ("LEASETOKEN failed\n", WorkerFailed("worker startup failed")),
+        ("LEASETOKEN stopped 75\n", WorkerStopped(75)),
+    ],
+)
+async def test_worker_control_reads_the_status(
+    ssh_server: SSHTestServer, record: str, status: WorkerStatus
+) -> None:
     async with control(ssh_server, ports=(54321, 54322)) as worker_control:
         await worker_control.create()
-        before = await worker_control.read_ready_port()
-        await asyncio.to_thread(
-            write_record, ssh_server, "ready", "v1 LEASETOKEN ready 54322\n"
-        )
-        after = await worker_control.read_ready_port()
+        await asyncio.to_thread(write_status, ssh_server, record)
 
-    assert (before, after) == (None, 54322)
+        assert await worker_control.read_status() == status
 
 
 @pytest.mark.parametrize(
     ("record", "message"),
     [
-        ("v1 LEASETOKEN ready 54322", "unexpected SSH port 54322"),
-        ("v1 LEASETOKEN ready port", "non-numeric SSH port"),
-        ("v1 OTHERTOKEN ready 54321", "invalid ready record"),
-        ("v1 LEASETOKEN ready", "invalid ready record"),
+        ("LEASETOKEN ready 54322", "unexpected SSH port 54322"),
+        ("LEASETOKEN ready port", "non-numeric SSH port"),
+        ("LEASETOKEN ready", "invalid status record"),
+        ("LEASETOKEN stopped", "invalid status record"),
+        ("LEASETOKEN stopped -", "invalid status record"),
+        ("LEASETOKEN paused", "invalid status record"),
+        ("OTHERTOKEN ready 54321", "invalid status record"),
+        # Bytes that aren't UTF-8.
+        ("LEASETOKEN\xff ready 54321", "invalid status record"),
     ],
 )
-async def test_worker_control_rejects_an_unusable_ready_record(
+async def test_worker_control_rejects_an_unusable_status(
     ssh_server: SSHTestServer, record: str, message: str
 ) -> None:
     async with control(ssh_server) as worker_control:
         await worker_control.create()
-        await asyncio.to_thread(write_record, ssh_server, "ready", record)
+        await asyncio.to_thread(write_status, ssh_server, record)
         with pytest.raises(WorkerError, match=message):
-            await worker_control.read_ready_port()
-
-
-@pytest.mark.parametrize(
-    ("record", "failure"),
-    [
-        (None, None),
-        ("v1 LEASETOKEN failed no_ports\n", "no_ports"),
-        ("v1 LEASETOKEN failed\n", "worker startup failed"),
-        ("v1 OTHERTOKEN failed no_ports\n", "worker wrote an invalid failure record"),
-    ],
-)
-async def test_worker_control_reads_the_failure(
-    ssh_server: SSHTestServer, record: str | None, failure: str | None
-) -> None:
-    async with control(ssh_server) as worker_control:
-        await worker_control.create()
-        if record is not None:
-            await asyncio.to_thread(write_record, ssh_server, "failed", record)
-
-        assert await worker_control.read_failure() == failure
-
-
-@pytest.mark.parametrize(
-    ("name", "message"),
-    [
-        ("ready", "invalid ready record"),
-        ("failed", "invalid failure record"),
-    ],
-)
-async def test_worker_control_reads_a_record_that_is_not_utf8_as_invalid(
-    ssh_server: SSHTestServer, name: str, message: str
-) -> None:
-    async with control(ssh_server) as worker_control:
-        await worker_control.create()
-        await asyncio.to_thread(
-            ssh_server.local_path(_CONTROL_DIR / name).write_bytes,
-            f"v1 LEASETOKEN\xff {name} 54321\n".encode("latin-1"),
-        )
-        if name == "ready":
-            with pytest.raises(WorkerError, match=message):
-                await worker_control.read_ready_port()
-        else:
-            assert message in str(await worker_control.read_failure())
+            await worker_control.read_status()
 
 
 async def test_worker_control_close_removes_the_directory(
@@ -247,14 +236,11 @@ async def test_worker_control_close_removes_the_directory(
     async with control(ssh_server) as worker_control:
         await worker_control.create()
         await worker_control.publish_lease()
-        for name in ("ready", "stopped"):
-            await asyncio.to_thread(
-                write_record, ssh_server, name, f"v1 LEASETOKEN {name} 0\n"
-            )
+        await asyncio.to_thread(write_status, ssh_server, "LEASETOKEN stopped 0\n")
         # Left by heartbeats cancelled mid-write: a temporary lease, and a lease
         # renamed but not yet tracked.
         for name in (".lease.00000000000000000002.tmp", "lease.00000000000000000002"):
-            await asyncio.to_thread(write_record, ssh_server, name, "LEASETOKEN 2\n")
+            await asyncio.to_thread(write_file, ssh_server, name, "LEASETOKEN 2\n")
         await worker_control.close()
 
     assert not ssh_server.local_path(_CONTROL_DIR).exists()

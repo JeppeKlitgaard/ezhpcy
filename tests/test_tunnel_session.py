@@ -40,7 +40,7 @@ from tests.support.tunnel import (
     snapshot,
     tunnel_log,
     use_scheduler,
-    write_worker_record,
+    write_worker_status,
 )
 
 # How long a test waits for something that should happen at once.
@@ -90,7 +90,7 @@ def test_a_tunnel_relays_proxies_to_the_worker(
         invocation.stdout.write(f"Job <{JOB_ID}> is submitted to queue <normal>.\n")
         worker_commands.append(await invocation.stdin.readline())
         # The worker's sshd listens, and says so.
-        write_worker_record(login, "ready", str(worker_port))
+        write_worker_status(login, "ready", str(worker_port))
         running.set()
         invocation.stdout.write("<<Starting on 127.0.0.1>>\n")
         while await invocation.stdin.readline():
@@ -180,7 +180,7 @@ def test_an_lsf_batch_tunnel_sends_the_worker_script_to_bsub(
     async def bsub(invocation: Invocation) -> None:
         assert invocation.term_type is None
         scripts.append(await invocation.stdin.read())
-        write_worker_record(login, "ready", str(worker_port))
+        write_worker_status(login, "ready", str(worker_port))
         running.set()
         invocation.stdout.write(f"Job <{JOB_ID}> is submitted to queue <normal>.\n")
 
@@ -224,7 +224,7 @@ def test_keepalive_loss_while_serving_stops_the_tunnel(
         lambda host: FakeScheduler(
             host,
             [RUNNING, unplug, RUNNING],
-            submitted=lambda _spec: write_worker_record(
+            submitted=lambda _spec: write_worker_status(
                 login, "ready", str(worker_port)
             ),
         ),
@@ -250,6 +250,8 @@ def test_the_worker_startup_timeout_covers_both_waits(
     login: SSHTestServer, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     timeout_seconds = 1.0
+    # So that the worker's status is seen as soon as it is written.
+    monkeypatch.setattr(session, "_STATUS_POLL_SECONDS", 0.01)
     worker_port = login.listen(banner(b"not an ssh server\n"))
     configure_tunnel(
         monkeypatch,
@@ -263,7 +265,7 @@ def test_the_worker_startup_timeout_covers_both_waits(
         # little for the banner, which never comes anyway.
         threading.Timer(
             0.7 * timeout_seconds,
-            write_worker_record,
+            write_worker_status,
             (login, "ready", str(worker_port)),
         ).start()
 
@@ -328,7 +330,7 @@ def test_a_second_interrupt_quits_without_cleaning_up(
         lambda host: FakeScheduler(
             host,
             [RUNNING, press, RUNNING],
-            submitted=lambda _spec: write_worker_record(
+            submitted=lambda _spec: write_worker_status(
                 login, "ready", str(worker_port)
             ),
             cancelling=press_again,
@@ -364,7 +366,7 @@ def test_a_cleanup_step_that_hangs_is_given_up_on(
         lambda host: FakeScheduler(
             host,
             [RUNNING, snapshot(JobState.UNKNOWN, "UNKWN")],
-            submitted=lambda _spec: write_worker_record(
+            submitted=lambda _spec: write_worker_status(
                 login, "ready", str(worker_port)
             ),
             cancelling=hang,
@@ -480,7 +482,7 @@ def test_ctrl_c_during_a_step_still_cleans_up_after_it(
         lambda host: FakeScheduler(
             host,
             [RUNNING],
-            submitted=lambda _spec: write_worker_record(
+            submitted=lambda _spec: write_worker_status(
                 login, "ready", str(worker_port)
             ),
         ),

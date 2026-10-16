@@ -44,7 +44,7 @@ from tests.support.tunnel import (
     tunnel_log,
     unused_port,
     use_scheduler,
-    write_worker_record,
+    write_worker_status,
 )
 
 PENDING = snapshot(JobState.PENDING, "PEND")
@@ -73,13 +73,11 @@ class Rig:
         return FakeScheduler(host, inspections, submitted=self.start_worker)
 
     def start_worker(self, _spec: JobSpec) -> None:
-        record = self.scenario.worker_record
-        if record is None:
-            return
-        if record == "ready":
-            write_worker_record(self.server, "ready", str(self.worker_port))
-        else:
-            write_worker_record(self.server, "failed", *record.split())
+        status = self.scenario.worker_status
+        if status == "ready":
+            write_worker_status(self.server, "ready", str(self.worker_port))
+        elif status is not None:
+            write_worker_status(self.server, *status.split())
 
 
 type Step = Callable[[Rig], JobInfo]
@@ -108,6 +106,11 @@ def fail_heartbeats(rig: Rig) -> JobInfo:
     return RUNNING
 
 
+def stop_sshd(rig: Rig) -> JobInfo:
+    write_worker_status(rig.server, "stopped", "255")
+    return RUNNING
+
+
 def fail_then_lose_connection(rig: Rig) -> JobInfo:
     # The client can't see the connection go before the error is handled: nothing
     # awaits in between.
@@ -131,8 +134,9 @@ class Scenario:
     # Why the tunnel stopped, in its `Stopping tunnel: <why>` line, if it didn't
     # fail; a failure's `why` is its error.
     why: str | None = None
-    # "ready", the reason in the worker's `failed` record, or None for no record.
-    worker_record: str | None = "ready"
+    # The status the worker writes once submitted: "ready" (with the worker's
+    # port), another state and its fields, or None for none.
+    worker_status: str | None = "ready"
     heartbeats: Literal["ok", "fail_from_start"] = "ok"
     endpoint_refuses: bool = False
     banner: bytes = BANNER
@@ -230,9 +234,9 @@ SCENARIOS = [
         withdrawn=False,
     ),
     Scenario(
-        id="worker_writes_a_failed_record",
+        id="worker_writes_a_failed_status",
         inspections=[RUNNING],
-        worker_record="port 54321 is in use",
+        worker_status="failed port 54321 is in use",
         exit_code=1,
         message=(
             "Could not start tunnel: worker SSH daemon failed to start: "
@@ -243,9 +247,9 @@ SCENARIOS = [
     ),
     Scenario(
         # New: the tunnel waited out the startup timeout, then cancelled the job.
-        id="worker_exits_before_writing_a_record",
+        id="worker_exits_before_writing_a_status",
         inspections=[RUNNING, snapshot(JobState.FAILED, "EXIT")],
-        worker_record=None,
+        worker_status=None,
         exit_code=1,
         message="Could not start tunnel: worker job 42 ended in scheduler state EXIT",
         cancelled=False,
@@ -259,6 +263,16 @@ SCENARIOS = [
         exit_code=1,
         message="Could not start tunnel: worker job 42 ended in scheduler state EXIT",
         cancelled=False,
+        withdrawn=False,
+    ),
+    Scenario(
+        # New: sshd exits after `ready`; the worker's `stopped` status says so.
+        id="worker_sshd_stops_during_the_endpoint_wait",
+        inspections=[RUNNING, stop_sshd, RUNNING],
+        endpoint_refuses=True,
+        exit_code=1,
+        message="Could not start tunnel: worker SSH daemon exited with status 255",
+        cancelled=True,
         withdrawn=False,
     ),
     Scenario(

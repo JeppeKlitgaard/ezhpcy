@@ -1,1 +1,36 @@
-- [ ] Deploy should check if editable install and make sdist on-the-fly if it is
+- [ ] Documentation
+- [ ] Need to be able to set password method outside of profile to have default for anonymous jobs. This also acts a fallback for all profiles
+- [x] Refactor config with subconfigs that we can also make hooks for, so clever!
+- [x] Refactor provision into local_provision, host_provision
+- [x] Doctor CLI command
+  - [x] Check config
+  - [x] Check ssh-config
+- [ ] Upgrade dependencies
+- [x] Upgrade pixi
+- [x] Upgrade OpenSSH server
+- [x] Upgrade to Python 3.15
+  - [x] Check dependencies
+  - [x] Lazy import
+- [x] Switch to Cyclopts over Typer
+- [x] Switch over to asyncssh over Paramiko
+- [x] ezhpcy doctor and list profile should not sort
+- [x] Revert table-like structure in .toml for resources, e.g.
+- [x] Tests read the real workstation config (`ezhpcy.config` loads it at import), e.g. `debug = true` attaches the debug log handlers for the whole test run. Isolate the config file and environment in tests
+- [x] Move the remaining Rich markup f-strings to t-strings (`rich_text`, `print_error`, `print_warning` in `cli/_errors.py`): the `Error`/`Aborted`/`Success` lines and confirmation prompts in `provision`, `prune`, `keyring set` and `config edit`. Needs a style for `Aborted`/`Success` labels
+- [x] Revisit whether `print_error`/`print_warning` (`cli/_output.py`) and the other `Error:` lines should go to stderr instead of stdout
+- [ ] Ensure that no blocking code runs in the tunnel server loop
+  - Some may run briefly during startup of tunnel
+- [ ] Share one atomic private-file write between `tunnel/ssh_config.py::_write_private` and `ipc/descriptor.py::TunnelDescriptor.publish` (e.g. in `permissions.py`). Both write a temporary file and rename it; `_write_private` also restricts the Windows ACL (`icacls`) and writes `\n` line endings, `publish` writes through the audited directory's `dir_fd` on POSIX
+- [x] Pyrefly?
+- [ ] Resillience to dropped connection?
+- [ ] Investigate whether we can scrap ProxyCommand in favour of ProxyJump
+- [x] Check whether key permission handling can be handed off to asyncssh, maybe it has nice utils
+- [x] Can we get rid of explicit cryptography dependency and just use it through asyncssh?
+- [ ] Consider `uvloop`/`winloop` and/or `aiofastnet`
+- [ ] Store `ResourcesConfig.time_limit` as a `timedelta` instead of an `H:MM` string. Today the validator parses it only to reject bad input, and `time_limit_delta` parses it again on every access. Needs a serializer that writes `H:MM` back, since the value is dumped (e.g. into `ResolvedConfig.descriptor_digest`)
+- [ ] Finish asyncssh refactor
+- [ ] Refactor to use port forwarding over proxy
+- [ ] Do another LLM thorough code review
+- [ ] Clean up unused scripts
+- [ ] Should read_ed25519_public_key use asyncssh wrapper instead?
+- [ ] Ability to disable debug with --no-debug flag

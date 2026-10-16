@@ -44,6 +44,44 @@ def test_ctrl_c_interrupts_the_prompt_under_asyncio():
     assert reached_the_end == []
 
 
+@pytest.mark.parametrize(
+    "interrupt",
+    [
+        pytest.param(signal.SIGINT, id="SIGINT"),
+        # Ctrl+Break, on Windows only.
+        pytest.param(
+            getattr(signal, "SIGBREAK", None),
+            marks=pytest.mark.skipif(
+                not hasattr(signal, "SIGBREAK"), reason="Windows only"
+            ),
+            id="SIGBREAK",
+        ),
+    ],
+)
+def test_an_interrupt_at_the_prompt_bypasses_the_commands_handler(
+    interrupt: signal.Signals,
+):
+    """Like `tunnel`'s, which would only act once the prompt returned."""
+    handled = []
+
+    def handler(signum: int, _frame: object) -> None:
+        handled.append(signum)
+
+    def prompt() -> str:
+        signal.raise_signal(interrupt)
+        return "answer"
+
+    previous = signal.signal(interrupt, handler)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            ask(prompt)
+        assert signal.getsignal(interrupt) is handler
+    finally:
+        signal.signal(interrupt, previous)
+
+    assert handled == []
+
+
 @pytest.mark.parametrize("fails", [False, True])
 def test_the_previous_ctrl_c_handler_is_restored(fails: bool):
     previous = signal.getsignal(signal.SIGINT)

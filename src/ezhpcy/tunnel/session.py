@@ -237,10 +237,11 @@ class TunnelSession:
             token,
             ports=self._worker_ports,
         )
-        await control.create()
+        # Registered first: `close` also copes with a directory never created.
         stack.push_async_callback(
             self._cleanup, "remove the worker control directory", control.close
         )
+        await self._finish("create the worker control directory", control.create())
         await control.publish_lease()
 
         # An LSF batch job reads the worker's script from `bsub`'s stdin.
@@ -281,8 +282,16 @@ class TunnelSession:
         )
 
         # Submit the job, and wait for its sshd.
+        def cancel_on_cleanup(job_id: str) -> None:
+            stack.push_async_callback(
+                self._cleanup,
+                f"cancel worker job {job_id}",
+                functools.partial(self._cancel_job, scheduler, job_id),
+            )
+
         interactive_job: InteractiveJob | None = None
         if resolved.scheduler.submission_mode is SubmissionMode.INTERACTIVE:
+            # Safe to cancel: the scheduler then closes the job.
             interactive_job = await scheduler.submit_interactive(
                 spec, startup_timeout=timings.worker_startup_timeout_seconds
             )
@@ -294,17 +303,18 @@ class TunnelSession:
                 name="interactive job output",
                 stop=interactive_job.close,
             )
-        elif stream_script:
-            job_id = await scheduler.submit_script(
-                spec, worker_job_script(spec.command, retrying_sshd_script())
-            )
+            cancel_on_cleanup(job_id)
         else:
-            job_id = await scheduler.submit(spec)
-        stack.push_async_callback(
-            self._cleanup,
-            f"cancel worker job {job_id}",
-            functools.partial(self._cancel_job, scheduler, job_id),
-        )
+            submission = (
+                scheduler.submit_script(
+                    spec, worker_job_script(spec.command, retrying_sshd_script())
+                )
+                if stream_script
+                else scheduler.submit(spec)
+            )
+            job_id = await self._finish(
+                "submit the worker job", submission, then=cancel_on_cleanup
+            )
         logger.info("Submitted worker job %s.", job_id)
         logger.info(
             "Worker heartbeat enabled for job %s: interval=%g seconds, "
@@ -348,17 +358,15 @@ class TunnelSession:
             authkey=server.authkey,
             debug=logger.isEnabledFor(logging.DEBUG),
         )
-        await asyncio.to_thread(descriptor.publish)
+        # Each removal is registered before its file is written: it removes only
+        # this tunnel's file, if there is one.
         stack.push_async_callback(
             self._cleanup,
             "remove the tunnel descriptor",
             lambda: asyncio.to_thread(descriptor.remove),
         )
-        await asyncio.to_thread(
-            publish_host,
-            self._ssh_host,
-            instance_id=descriptor.instance_id,
-            in_profiles_config=self._ssh_host_in_profiles_config,
+        await self._finish(
+            "publish the tunnel descriptor", asyncio.to_thread(descriptor.publish)
         )
         # Withdrawn before the descriptor is removed, so that a Host block never
         # outlives the tunnel it points at.
@@ -367,6 +375,15 @@ class TunnelSession:
             "remove the SSH configuration",
             lambda: asyncio.to_thread(
                 withdraw_host, self._ssh_host, instance_id=descriptor.instance_id
+            ),
+        )
+        await self._finish(
+            "publish the SSH configuration",
+            asyncio.to_thread(
+                publish_host,
+                self._ssh_host,
+                instance_id=descriptor.instance_id,
+                in_profiles_config=self._ssh_host_in_profiles_config,
             ),
         )
         self._start_task(
@@ -583,6 +600,45 @@ class TunnelSession:
                 )
 
     # Cleanup
+
+    async def _finish[T](
+        self,
+        description: str,
+        step: Awaitable[T],
+        *,
+        then: Callable[[T], object] | None = None,
+    ) -> T:
+        """
+        Await `step`, then call `then` with its result, e.g. to register a cleanup
+        step for what `step` acquired.
+
+        Cancelled midway, a step may still take effect (a job queued by a `bsub`
+        whose output never arrived, a file written by a thread), with nothing to
+        undo it. So if the tunnel stops meanwhile, `step` still finishes first,
+        within the cleanup timeout, and `then` is called; only then does the stop
+        proceed.
+        """
+        task = asyncio.ensure_future(step)
+        try:
+            result = await asyncio.shield(task)
+        except asyncio.CancelledError:
+            logger.debug("Waiting to %s before stopping.", description)
+            done, _ = await asyncio.wait([task], timeout=_CLEANUP_SECONDS)
+            if not done:
+                task.cancel()
+                logger.warning(
+                    "Gave up waiting to %s after %g seconds; it may have left "
+                    "something behind.",
+                    description,
+                    _CLEANUP_SECONDS,
+                )
+            # A step that failed acquired nothing, and the tunnel stops anyway.
+            elif task.exception() is None and then is not None:
+                then(task.result())
+            raise
+        if then is not None:
+            then(result)
+        return result
 
     async def _cancel_job(self, scheduler: Scheduler, job_id: str) -> None:
         """Cancel the job, unless the scheduler said it had ended."""

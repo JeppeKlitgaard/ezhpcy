@@ -190,22 +190,19 @@ class WorkerControl:
         return " ".join(fields[3:]) or "worker startup failed"
 
     async def close(self) -> None:
-        """Remove the directory and what the tunnel and the worker wrote to it."""
-        for path in (
-            *self._leases,
-            self.directory / "ready",
-            self.directory / "failed",
-            self.directory / "stopped",
-        ):
-            with contextlib.suppress(asyncssh.SFTPError):
-                await self._sftp.remove(path)
-        with contextlib.suppress(asyncssh.SFTPError):
-            await self._sftp.rmdir(self.directory)
+        """
+        Remove the directory and everything in it. It is this run's alone, and may
+        hold more than the tunnel tracks: the worker's records, and a lease that
+        was being written when the heartbeats were cancelled.
+        """
+        await self._sftp.rmtree(self.directory, ignore_errors=True)
 
     async def _read_record(self, name: str) -> list[str] | None:
         """The fields of one of the worker's files, or None if it doesn't exist."""
         try:
-            async with self._sftp.open(self.directory / name) as file:
+            # Bytes that aren't UTF-8 are replaced rather than raise, so a garbled
+            # record reads as an invalid one.
+            async with self._sftp.open(self.directory / name, errors="replace") as file:
                 text = await file.read()
         except asyncssh.SFTPNoSuchFile:
             return None

@@ -139,6 +139,7 @@ class FakeScheduler:
       raised, and a callable is called for the snapshot.
     - `submitted` is called with the job's spec once it is submitted, e.g. to write
       the worker's `ready` record.
+    - `submit` (batch) then awaits `submitting` before it returns the job's ID.
     - `cancel` records the job and then calls `cancelling`.
     """
 
@@ -148,11 +149,13 @@ class FakeScheduler:
         inspections: list[Inspection],
         *,
         submitted: Callable[[JobSpec], None] = lambda _spec: None,
+        submitting: Callable[[], Awaitable[None]] | None = None,
         cancelling: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self._host = host
         self._inspections = list(inspections)
         self._submitted = submitted
+        self._submitting = submitting
         self._cancelling = cancelling
         self.cancelled: list[str] = []
 
@@ -170,6 +173,8 @@ class FakeScheduler:
 
     async def submit(self, spec: JobSpec) -> str:
         self._submitted(spec)
+        if self._submitting is not None:
+            await self._submitting()
         return JOB_ID
 
     async def inspect(self, _job_id: str) -> JobInfo:

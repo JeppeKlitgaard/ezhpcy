@@ -139,6 +139,20 @@ def test_tunnel_command_resolves_profile_and_applies_cli_overrides(
     assert len(set(worker_ports)) == 6
 
 
+def test_tunnel_command_limits_worker_port_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """More retries than dynamic ports would make port selection loop forever."""
+    captured = capture(monkeypatch, "tunnel")
+
+    result = invoke([*_ANONYMOUS_TUNNEL_ARGS, "--worker-port-retries", "101"])
+
+    assert result.exit_code == 2
+    assert "--worker-port-retries" in result.stderr
+    assert "Must be <= 100" in result.stderr
+    assert captured == {}
+
+
 def test_tunnel_command_allows_wrapper_with_implicit_resource_defaults(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

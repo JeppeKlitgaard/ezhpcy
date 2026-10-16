@@ -52,6 +52,20 @@ def test_worker_credentials_stay_where_earlier_versions_put_them() -> None:
     )
 
 
+def test_a_tunnel_needs_the_client_keys_and_the_pinned_host_key() -> None:
+    assert _CREDENTIALS.missing_tunnel_files() == [
+        _CREDENTIALS.client_key,
+        _CREDENTIALS.client_public_key,
+        _CREDENTIALS.known_hosts,
+    ]
+
+    _CREDENTIALS.ensure_local_keys()
+    assert _CREDENTIALS.missing_tunnel_files() == [_CREDENTIALS.known_hosts]
+
+    _CREDENTIALS.pin_host_key()
+    assert _CREDENTIALS.missing_tunnel_files() == []
+
+
 def test_local_worker_keys_are_generated_and_reused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

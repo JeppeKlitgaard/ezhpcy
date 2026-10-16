@@ -65,6 +65,14 @@ class WorkerCredentials:
         """Pins the worker's host key for OpenSSH."""
         return self.local_dir / WORKER_KNOWN_HOSTS_NAME
 
+    def missing_tunnel_files(self) -> list[Path]:
+        """
+        The local files a tunnel needs, as `ezhpcy provision` leaves them, that
+        aren't there: the client key pair, and `known_hosts`.
+        """
+        required = (self.client_key, self.client_public_key, self.known_hosts)
+        return [path for path in required if not path.is_file()]
+
     def remote_dir(self, remote_state: RemoteState) -> PurePosixPath:
         return (
             remote_state.package_cache_dir()

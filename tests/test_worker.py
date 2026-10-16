@@ -10,27 +10,27 @@ import pytest
 
 from ezhpcy import ssh
 from ezhpcy.constants import EZHPCY_VERSION, OPENSSH_MATCHSPEC, PIXI_VERSION
-from ezhpcy.tunnel import TunnelError
-from ezhpcy.tunnel.sshd import retrying_sshd_script, sshd_config_arguments
-from ezhpcy.tunnel.worker import (
-    WorkerControl,
-    select_worker_ports,
-    worker_client_alive,
-    worker_job_script,
-    worker_sshd_command,
-)
 from ezhpcy.types import ConnectionInfo, RemoteState
+from ezhpcy.worker import WorkerError
+from ezhpcy.worker.control import WorkerControl
+from ezhpcy.worker.job import (
+    WORKER_SCRIPT,
+    batch_script,
+    select_ports,
+    sshd_command,
+)
+from ezhpcy.worker.sshd import client_alive, sshd_config_arguments
 from tests.support.sshserver import SSHTestServer
 
 _CONTROL_DIR = PurePosixPath("/home/alice/state/worker_control/LEASETOKEN")
 
 
-def test_worker_sshd_command_retries_ports_through_pixi() -> None:
+def test_sshd_command_retries_ports_through_pixi() -> None:
     remote_state = RemoteState(
         cache_dir=PurePosixPath("/home/alice/.cache"),
         state_dir=PurePosixPath("/home/alice/.local/state"),
     )
-    command = worker_sshd_command(
+    command = sshd_command(
         remote_state,
         ports=(54321, 54322),
         heartbeat_token="LEASETOKEN",
@@ -56,7 +56,7 @@ def test_worker_sshd_command_retries_ports_through_pixi() -> None:
         "exec",
         f"--spec={OPENSSH_MATCHSPEC}",
     )
-    assert command[6:10] == ("bash", "-c", retrying_sshd_script(), "sshd")
+    assert command[6:10] == ("bash", "-c", WORKER_SCRIPT, "sshd")
     assert command[10:16] == (
         "54321:54322",
         "LEASETOKEN",
@@ -65,7 +65,7 @@ def test_worker_sshd_command_retries_ports_through_pixi() -> None:
         f"/home/alice/.local/state/ezhpcy/{EZHPCY_VERSION}/logs/worker",
         "/home/alice/.cache/ezhpcy/control/test",
     )
-    worker_script = retrying_sshd_script()
+    worker_script = WORKER_SCRIPT
     assert "command -v sshd" in worker_script
     assert 'ports="$1"' in worker_script
     assert "shift 6" in worker_script
@@ -89,14 +89,14 @@ def test_worker_sshd_command_retries_ports_through_pixi() -> None:
         (30, 20, (30, 1)),
     ],
 )
-def test_worker_client_alive_gives_up_within_the_heartbeat_timeout(
+def test_client_alive_gives_up_within_the_heartbeat_timeout(
     interval: float, timeout: int, expected: tuple[int, int]
 ) -> None:
-    assert worker_client_alive(interval, timeout) == expected
+    assert client_alive(interval, timeout) == expected
 
 
-def test_worker_job_script_feeds_the_worker_script_to_the_command() -> None:
-    script = worker_job_script(("bash", "-s", "--", "two words"), "echo worker\n")
+def test_batch_script_feeds_the_worker_script_to_the_command() -> None:
+    script = batch_script(("bash", "-s", "--", "two words"), "echo worker\n")
 
     assert script == (
         "#!/usr/bin/env bash\n"
@@ -106,16 +106,14 @@ def test_worker_job_script_feeds_the_worker_script_to_the_command() -> None:
     )
 
 
-def test_worker_job_script_rejects_a_script_containing_its_delimiter() -> None:
+def test_batch_script_rejects_a_script_containing_its_delimiter() -> None:
     with pytest.raises(ValueError, match="delimiter"):
-        worker_job_script(("bash",), "echo\nEZHPCY_WORKER_SCRIPT\necho\n")
+        batch_script(("bash",), "echo\nEZHPCY_WORKER_SCRIPT\necho\n")
 
 
-def test_select_worker_ports_returns_unique_dynamic_ports() -> None:
-    with patch(
-        "ezhpcy.tunnel.worker.secrets.randbelow", side_effect=[0, 0, 1, 2, 3, 4]
-    ):
-        ports = select_worker_ports(5)
+def test_select_ports_returns_unique_dynamic_ports() -> None:
+    with patch("ezhpcy.worker.job.secrets.randbelow", side_effect=[0, 0, 1, 2, 3, 4]):
+        ports = select_ports(5)
 
     assert ports == (49152, 49153, 49154, 49155, 49156)
 
@@ -196,7 +194,7 @@ async def test_worker_control_rejects_an_unusable_ready_record(
     async with control(ssh_server) as worker_control:
         await worker_control.create()
         await asyncio.to_thread(write_record, ssh_server, "ready", record)
-        with pytest.raises(TunnelError, match=message):
+        with pytest.raises(WorkerError, match=message):
             await worker_control.read_ready_port()
 
 
@@ -237,7 +235,7 @@ async def test_worker_control_reads_a_record_that_is_not_utf8_as_invalid(
             f"v1 LEASETOKEN\xff {name} 54321\n".encode("latin-1"),
         )
         if name == "ready":
-            with pytest.raises(TunnelError, match=message):
+            with pytest.raises(WorkerError, match=message):
                 await worker_control.read_ready_port()
         else:
             assert message in str(await worker_control.read_failure())

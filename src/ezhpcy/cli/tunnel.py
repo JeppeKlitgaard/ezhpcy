@@ -42,7 +42,6 @@ lazy from ezhpcy.tunnel.ssh_config import (
     profile_hosts,
     write_profiles_config,
 )
-lazy from ezhpcy.tunnel.worker import select_worker_ports
 lazy from ezhpcy.types import (
     ResolvedConfig,
     ResolvedProfileConfig,
@@ -50,9 +49,10 @@ lazy from ezhpcy.types import (
     SchedulerConfig,
     SubmissionMode,
 )
+lazy from ezhpcy.worker.job import select_ports
 
 _DEFAULT_WORKER_PORT_RETRIES = 5
-# Far fewer than the 16384 dynamic ports `select_worker_ports` draws from.
+# Far fewer than the 16384 dynamic ports `select_ports` draws from.
 _MAX_WORKER_PORT_RETRIES = 100
 logger = logging.getLogger(__name__)
 
@@ -281,7 +281,7 @@ async def tunnel_cmd(
         worker_ports = (
             (worker_port,)
             if worker_port is not None
-            else select_worker_ports(worker_port_retries + 1)
+            else select_ports(worker_port_retries + 1)
         )
         session = TunnelSession(
             resolved=resolved,

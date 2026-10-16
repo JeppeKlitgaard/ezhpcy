@@ -21,7 +21,8 @@ from ezhpcy.cli.utils import ssh as cli_ssh
 from ezhpcy.ipc.client import connect, relay_proxy_stdio
 from ezhpcy.ipc.descriptor import TunnelDescriptor, descriptor_path
 from ezhpcy.scheduler.base import JobState
-from ezhpcy.tunnel import session, ssh_config, worker
+from ezhpcy.tunnel import session, ssh_config
+from ezhpcy.worker.control import WorkerControl
 from tests.support.cli import invoke
 from tests.support.sshserver import Invocation, SSHTestServer, reply
 from tests.support.tunnel import (
@@ -364,14 +365,14 @@ def _stop_from_thread() -> None:
 def _stop_after_creating_the_control_directory(
     monkeypatch: pytest.MonkeyPatch, _published: list[str]
 ) -> None:
-    create = worker.WorkerControl.create
+    create = WorkerControl.create
 
-    async def create_then_stop(control: worker.WorkerControl) -> None:
+    async def create_then_stop(control: WorkerControl) -> None:
         await create(control)
         signal.raise_signal(signal.SIGINT)
         await asyncio.sleep(STOP_SECONDS)
 
-    monkeypatch.setattr(worker.WorkerControl, "create", create_then_stop)
+    monkeypatch.setattr(WorkerControl, "create", create_then_stop)
 
 
 def _stop_before_publishing_the_descriptor(

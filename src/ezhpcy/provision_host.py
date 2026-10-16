@@ -9,12 +9,12 @@ lazy import asyncssh
 lazy from ezhpcy.constants import OPENSSH_MATCHSPEC, PIXI_INSTALLER_URL, PIXI_VERSION
 lazy from ezhpcy.provision_local import WorkerCredentials
 lazy from ezhpcy.ssh import RemoteHost
-lazy from ezhpcy.tunnel.sshd import (
+lazy from ezhpcy.types import RemoteState
+lazy from ezhpcy.worker.sshd import (
     absolute_sshd_command,
     read_ed25519_public_key,
     sshd_config_arguments,
 )
-lazy from ezhpcy.types import RemoteState
 
 _VERSION_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+!-]*$")
 

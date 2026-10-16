@@ -32,7 +32,6 @@ lazy from ezhpcy.provision_host import (
     provision_worker_infrastructure,
     validate_worker_infrastructure,
 )
-lazy from ezhpcy.provision_local import WorkerCredentials
 lazy from ezhpcy.scheduler import create_scheduler
 lazy from ezhpcy.scheduler.base import (
     InteractiveJob,
@@ -59,7 +58,6 @@ lazy from ezhpcy.tunnel.worker import (
     worker_sshd_command,
 )
 lazy from ezhpcy.types import ConnectionInfo, ResolvedConfig, SubmissionMode
-lazy from ezhpcy.utils import local_machine_id
 
 logger = logging.getLogger(__name__)
 
@@ -189,9 +187,7 @@ class TunnelSession:
         self._start_task(stack, self._watch_connection(host), name="connection watcher")
 
         remote_state = await host.remote_state()
-        credentials = WorkerCredentials.for_login(
-            resolved.connection, machine_id=await asyncio.to_thread(local_machine_id)
-        )
+        credentials = self._ssh_host.credentials
         if self._auto_provision:
             await provision_worker_infrastructure(host, remote_state, credentials)
         else:

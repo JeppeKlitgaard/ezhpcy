@@ -31,15 +31,11 @@ lazy from rich.text import Text
 
 from ezhpcy.config import Config, config, validate_alias
 lazy from ezhpcy.console import console, error_console
-lazy from ezhpcy.constants import (
-    WINDOWS_CREATION_FLAGS,
-    WORKER_CLIENT_KEY_NAME,
-    WORKER_HOST_ALIAS,
-    WORKER_KNOWN_HOSTS_NAME,
-)
+lazy from ezhpcy.constants import WINDOWS_CREATION_FLAGS, WORKER_HOST_ALIAS
 lazy from ezhpcy.ipc import IPCError
 lazy from ezhpcy.ipc.descriptor import TunnelDescriptor
 lazy from ezhpcy.permissions import FilePermissionError, restrict_to_current_user
+lazy from ezhpcy.provision_local import WorkerCredentials
 lazy from ezhpcy.utils import local_machine_id
 
 logger = logging.getLogger(__name__)
@@ -83,8 +79,7 @@ class WorkerHost:
     """One OpenSSH Host alias that reaches a worker through a tunnel."""
 
     alias: str
-    user: str
-    ssh_dir: Path
+    credentials: WorkerCredentials
     python_executable: Path = Path(sys.executable)
 
     def __post_init__(self) -> None:
@@ -94,12 +89,15 @@ class WorkerHost:
 
     @classmethod
     def for_endpoint(cls, alias: str, *, user: str, host: str) -> WorkerHost:
-        ssh_dir = config.local_file.ssh_dir(local_machine_id(), user=user, host=host)
-        return cls(alias=alias, user=user, ssh_dir=ssh_dir)
+        return cls(alias, WorkerCredentials(local_machine_id(), user, host))
+
+    @property
+    def user(self) -> str:
+        return self.credentials.login_user
 
     @property
     def identity_file(self) -> Path:
-        return self.ssh_dir / WORKER_CLIENT_KEY_NAME
+        return self.credentials.client_key
 
     @property
     def proxy_command(self) -> str:
@@ -108,7 +106,6 @@ class WorkerHost:
         )
 
     def render(self) -> str:
-        known_hosts = self.ssh_dir / WORKER_KNOWN_HOSTS_NAME
         return "\n".join(
             (
                 f"Host {self.alias}",
@@ -116,7 +113,7 @@ class WorkerHost:
                 f"    User {self.user}",
                 f"    IdentityFile {_config_path(self.identity_file)}",
                 "    IdentitiesOnly yes",
-                f"    UserKnownHostsFile {_config_path(known_hosts)}",
+                f"    UserKnownHostsFile {_config_path(self.credentials.known_hosts)}",
                 f"    HostKeyAlias {WORKER_HOST_ALIAS}",
                 "    StrictHostKeyChecking yes",
                 f"    ProxyCommand {self.proxy_command}",

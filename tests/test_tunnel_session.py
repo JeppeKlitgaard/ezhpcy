@@ -10,6 +10,8 @@ import io
 import logging
 import signal
 import threading
+import time
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -19,7 +21,7 @@ from ezhpcy.cli.utils import ssh as cli_ssh
 from ezhpcy.ipc.client import connect, relay_proxy_stdio
 from ezhpcy.ipc.descriptor import TunnelDescriptor, descriptor_path
 from ezhpcy.scheduler.base import JobState
-from ezhpcy.tunnel import session, ssh_config
+from ezhpcy.tunnel import session, ssh_config, worker
 from tests.support.cli import invoke
 from tests.support.sshserver import Invocation, SSHTestServer, reply
 from tests.support.tunnel import (
@@ -41,6 +43,8 @@ from tests.support.tunnel import (
 
 # How long a test waits for something that should happen at once.
 WAIT_SECONDS = 5
+# How long a step takes to finish after Ctrl+C, so that the stop arrives meanwhile.
+STOP_SECONDS = 0.1
 
 
 def run_proxy(alias: str, stdin: bytes) -> bytes:
@@ -314,6 +318,130 @@ def test_a_cleanup_step_that_hangs_is_given_up_on(
     assert log.starting("Could not cancel worker job 42: no answer within 0.2 seconds.")
     # Cleanup carried on after the job.
     assert control_dirs(login) == []
+
+
+@pytest.mark.parametrize("hangs", [False, True], ids=["finishes", "hangs"])
+def test_ctrl_c_during_batch_submission_lets_it_finish(
+    login: SSHTestServer, monkeypatch: pytest.MonkeyPatch, hangs: bool
+) -> None:
+    """Cancelled midway, `qsub` could queue the job without returning its ID."""
+    monkeypatch.setattr(session, "_CLEANUP_SECONDS", 0.2)
+
+    async def press() -> None:
+        signal.raise_signal(signal.SIGINT)
+        await (asyncio.Event().wait() if hangs else asyncio.sleep(STOP_SECONDS))
+
+    configure_tunnel(
+        monkeypatch, login, scheduler={"type": "PBS", "submission_mode": "batch"}
+    )
+    schedulers = use_scheduler(
+        monkeypatch, lambda host: FakeScheduler(host, [RUNNING], submitting=press)
+    )
+
+    with tunnel_log() as log:
+        result = invoke(["tunnel", "base"])
+
+    assert result.exit_code == 0, result
+    assert "Stopping tunnel: Ctrl+C" in log.messages()
+    [scheduler] = schedulers
+    if hangs:
+        # Given up on, with a warning.
+        assert scheduler.cancelled == []
+        assert log.starting(
+            "Gave up waiting to submit the worker job after 0.2 seconds"
+        )
+    else:
+        assert scheduler.cancelled == [JOB_ID]
+    assert control_dirs(login) == []
+
+
+def _stop_from_thread() -> None:
+    """Press Ctrl+C from a step run in a thread, and give the stop time to arrive."""
+    signal.raise_signal(signal.SIGINT)
+    time.sleep(STOP_SECONDS)
+
+
+def _stop_after_creating_the_control_directory(
+    monkeypatch: pytest.MonkeyPatch, _published: list[str]
+) -> None:
+    create = worker.WorkerControl.create
+
+    async def create_then_stop(control: worker.WorkerControl) -> None:
+        await create(control)
+        signal.raise_signal(signal.SIGINT)
+        await asyncio.sleep(STOP_SECONDS)
+
+    monkeypatch.setattr(worker.WorkerControl, "create", create_then_stop)
+
+
+def _stop_before_publishing_the_descriptor(
+    monkeypatch: pytest.MonkeyPatch, _published: list[str]
+) -> None:
+    publish = TunnelDescriptor.publish
+
+    def stop_then_publish(descriptor: TunnelDescriptor) -> None:
+        _stop_from_thread()
+        publish(descriptor)
+
+    monkeypatch.setattr(TunnelDescriptor, "publish", stop_then_publish)
+
+
+def _stop_before_publishing_the_host_block(
+    monkeypatch: pytest.MonkeyPatch, published: list[str]
+) -> None:
+    def stop_then_publish(host: ssh_config.WorkerHost, **_kwargs: object) -> None:
+        _stop_from_thread()
+        published.append(host.alias)
+
+    monkeypatch.setattr(session, "publish_host", stop_then_publish)
+
+
+@pytest.mark.parametrize(
+    "stop_during_step",
+    [
+        _stop_after_creating_the_control_directory,
+        _stop_before_publishing_the_descriptor,
+        _stop_before_publishing_the_host_block,
+    ],
+    ids=["control-directory", "descriptor", "host-block"],
+)
+def test_ctrl_c_during_a_step_still_cleans_up_after_it(
+    login: SSHTestServer,
+    monkeypatch: pytest.MonkeyPatch,
+    stop_during_step: Callable[[pytest.MonkeyPatch, list[str]], None],
+) -> None:
+    """Cancelled midway, the step would still take effect, with no cleanup for it."""
+    worker_port = login.listen(banner(BANNER))
+    configure_tunnel(monkeypatch, login)
+    serve_interactive_job(login)
+    use_scheduler(
+        monkeypatch,
+        lambda host: FakeScheduler(
+            host,
+            [RUNNING],
+            submitted=lambda _spec: write_worker_record(
+                login, "ready", str(worker_port)
+            ),
+        ),
+    )
+    published: list[str] = []
+    withdrawn: list[str] = []
+    monkeypatch.setattr(
+        session, "publish_host", lambda host, **_kwargs: published.append(host.alias)
+    )
+    monkeypatch.setattr(
+        session, "withdraw_host", lambda host, **_kwargs: withdrawn.append(host.alias)
+    )
+    stop_during_step(monkeypatch, published)
+
+    with tunnel_log() as log:
+        result = invoke(["tunnel", "base", "--worker-port", str(worker_port)])
+
+    assert result.exit_code == 0, result
+    assert "Stopping tunnel: Ctrl+C" in log.messages()
+    assert control_dirs(login) == []
+    assert not descriptor_path("base").exists()
+    assert published == withdrawn
 
 
 def test_ctrl_c_at_a_prompt_exits_130(

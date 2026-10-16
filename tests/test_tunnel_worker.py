@@ -221,6 +221,29 @@ async def test_worker_control_reads_the_failure(
         assert await worker_control.read_failure() == failure
 
 
+@pytest.mark.parametrize(
+    ("name", "message"),
+    [
+        ("ready", "invalid ready record"),
+        ("failed", "invalid failure record"),
+    ],
+)
+async def test_worker_control_reads_a_record_that_is_not_utf8_as_invalid(
+    ssh_server: SSHTestServer, name: str, message: str
+) -> None:
+    async with control(ssh_server) as worker_control:
+        await worker_control.create()
+        await asyncio.to_thread(
+            ssh_server.local_path(_CONTROL_DIR / name).write_bytes,
+            f"v1 LEASETOKEN\xff {name} 54321\n".encode("latin-1"),
+        )
+        if name == "ready":
+            with pytest.raises(TunnelError, match=message):
+                await worker_control.read_ready_port()
+        else:
+            assert message in str(await worker_control.read_failure())
+
+
 async def test_worker_control_close_removes_the_directory(
     ssh_server: SSHTestServer,
 ) -> None:
@@ -231,6 +254,10 @@ async def test_worker_control_close_removes_the_directory(
             await asyncio.to_thread(
                 write_record, ssh_server, name, f"v1 LEASETOKEN {name} 0\n"
             )
+        # Left by heartbeats cancelled mid-write: a temporary lease, and a lease
+        # renamed but not yet tracked.
+        for name in (".lease.00000000000000000002.tmp", "lease.00000000000000000002"):
+            await asyncio.to_thread(write_record, ssh_server, name, "LEASETOKEN 2\n")
         await worker_control.close()
 
     assert not ssh_server.local_path(_CONTROL_DIR).exists()

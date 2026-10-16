@@ -52,6 +52,8 @@ lazy from ezhpcy.types import (
 lazy from ezhpcy.utils import local_machine_id
 
 _DEFAULT_WORKER_PORT_RETRIES = 5
+# Far fewer than the 16384 dynamic ports `select_worker_ports` draws from.
+_MAX_WORKER_PORT_RETRIES = 100
 logger = logging.getLogger(__name__)
 
 
@@ -205,7 +207,7 @@ async def tunnel_cmd(
         int,
         Parameter(
             name="--worker-port-retries",
-            validator=validators.Number(gte=0),
+            validator=validators.Number(gte=0, lte=_MAX_WORKER_PORT_RETRIES),
             help=(
                 "Alternate random worker SSH ports to try after a bind failure; "
                 "ignored with --worker-port."

@@ -127,6 +127,40 @@ def test_local_worker_host_keys_differ_between_login_endpoints() -> None:
     assert login1.host_public_key.read_bytes() != login2.host_public_key.read_bytes()
 
 
+def test_authorized_key_is_the_client_public_key_without_its_comment() -> None:
+    _CREDENTIALS.ensure_local_keys()
+
+    authorized_key = _CREDENTIALS.authorized_key()
+
+    public_fields = _CREDENTIALS.client_public_key.read_text(encoding="ascii").split()
+    assert authorized_key == (public_fields[0], public_fields[1])
+
+
+@pytest.mark.parametrize(
+    ("content", "message"),
+    [
+        (None, "Could not read worker public key"),
+        ("ssh-ed25519 !!!\n", "Could not read worker public key"),
+        (
+            asyncssh.generate_private_key("ssh-rsa")
+            .export_public_key("openssh")
+            .decode(),
+            "is not ssh-ed25519",
+        ),
+    ],
+    ids=["missing", "malformed", "rsa"],
+)
+def test_authorized_key_rejects_an_unusable_client_public_key(
+    content: str | None, message: str
+) -> None:
+    if content is not None:
+        _CREDENTIALS.local_dir.mkdir(parents=True)
+        _CREDENTIALS.client_public_key.write_text(content, encoding="ascii")
+
+    with pytest.raises(RuntimeError, match=message):
+        _CREDENTIALS.authorized_key()
+
+
 def test_pinning_the_host_key_preserves_unrelated_entries() -> None:
     _CREDENTIALS.local_dir.mkdir(parents=True)
     _CREDENTIALS.host_public_key.write_text(

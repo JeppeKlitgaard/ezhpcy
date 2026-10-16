@@ -1,7 +1,7 @@
 """Configure the worker's sshd, and run it from the Pixi environment."""
 
 lazy import math
-lazy from pathlib import Path, PurePosixPath
+lazy from pathlib import PurePosixPath
 
 # Sets `sshd_path` to the Pixi environment's sshd, which sshd requires to be
 # absolute so that it can re-execute itself.
@@ -32,26 +32,6 @@ def client_alive(
     interval_seconds = max(1, math.ceil(heartbeat_interval_seconds))
     count_max = max(1, heartbeat_timeout_seconds // interval_seconds)
     return interval_seconds, count_max
-
-
-def read_ed25519_public_key(path: Path) -> tuple[str, str]:
-    """Read the two fields needed to authorize a generated worker key."""
-    try:
-        fields = path.read_text(encoding="ascii").split()
-    except (OSError, UnicodeError) as error:
-        raise RuntimeError(
-            f"Could not read worker public key at {path}: {error}"
-        ) from error
-    if len(fields) < 2 or fields[0] != "ssh-ed25519":
-        raise RuntimeError(f"The worker public key at {path} is malformed.")
-    key_type, key_blob = fields[:2]
-    if not key_blob or any(
-        character
-        not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/="
-        for character in key_blob
-    ):
-        raise RuntimeError(f"The worker public key at {path} is malformed.")
-    return key_type, key_blob
 
 
 def _sshd_config_settings(

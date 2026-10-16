@@ -1,6 +1,7 @@
 """The worker's SSH credentials on this machine, and where they go on the login node."""
 
 from dataclasses import dataclass
+lazy import base64
 lazy import os
 lazy from pathlib import Path, PurePosixPath
 lazy from typing import Self
@@ -85,6 +86,25 @@ class WorkerCredentials:
         )
         _ensure_key_pair(
             self.host_key, self.host_public_key, comment="ezhpcy worker host"
+        )
+
+    def authorized_key(self) -> tuple[str, str]:
+        """The client key's type and base64 blob, for the worker's sshd to authorize."""
+        try:
+            key = asyncssh.read_public_key(self.client_public_key)
+        except (OSError, asyncssh.KeyImportError) as error:
+            raise RuntimeError(
+                f"Could not read worker public key at {self.client_public_key}: {error}"
+            ) from error
+        if key.algorithm != b"ssh-ed25519":
+            raise RuntimeError(
+                f"The worker public key at {self.client_public_key} is not ssh-ed25519."
+            )
+        # Base64 output can't hold characters that sshd's AuthorizedKeysCommand
+        # would interpret.
+        return (
+            key.algorithm.decode("ascii"),
+            base64.b64encode(key.public_data).decode("ascii"),
         )
 
     def pin_host_key(self) -> None:

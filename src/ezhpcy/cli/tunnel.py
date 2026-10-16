@@ -50,7 +50,6 @@ lazy from ezhpcy.types import (
     SchedulerConfig,
     SubmissionMode,
 )
-lazy from ezhpcy.utils import local_machine_id
 
 _DEFAULT_WORKER_PORT_RETRIES = 5
 # Far fewer than the 16384 dynamic ports `select_worker_ports` draws from.
@@ -278,9 +277,7 @@ async def tunnel_cmd(
         if auto_provision is None:
             auto_provision = config.auto_provision
         if not auto_provision:
-            _ensure_local_worker_credentials(
-                WorkerCredentials.for_login(conn_info, machine_id=local_machine_id())
-            )
+            _ensure_local_worker_credentials(ssh_host.credentials)
         worker_ports = (
             (worker_port,)
             if worker_port is not None

@@ -7,8 +7,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from ezhpcy.config import Config
+from ezhpcy.config import Config, LocalFileConfig
 from ezhpcy.ipc.descriptor import TunnelDescriptor
+from ezhpcy.provision_local import WorkerCredentials
 from ezhpcy.tunnel import ssh_config
 from ezhpcy.tunnel.ssh_config import (
     WorkerHost,
@@ -30,11 +31,22 @@ def config_dir(runtime_dir: Path) -> Path:
     return runtime_dir / "ssh-config"
 
 
-def test_render_contains_complete_strict_proxy_configuration(tmp_path: Path) -> None:
-    ssh_dir = tmp_path / "config with spaces" / "ssh"
+def test_render_contains_complete_strict_proxy_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+    isolated_local_files: LocalFileConfig,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        isolated_local_files, "config_dir", tmp_path / "config with spaces"
+    )
+    ssh_dir = (
+        tmp_path / "config with spaces" / "ssh" / "machine" / "alice@login.example.com"
+    )
     python = tmp_path / "runtime with spaces" / "python.exe"
     host = WorkerHost(
-        alias="gpu", user="alice", ssh_dir=ssh_dir, python_executable=python
+        "gpu",
+        WorkerCredentials("machine", "alice", "login.example.com"),
+        python_executable=python,
     )
 
     assert host.render() == (

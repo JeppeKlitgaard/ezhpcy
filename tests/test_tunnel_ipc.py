@@ -10,6 +10,7 @@ from ezhpcy.ipc.descriptor import TunnelDescriptor, descriptor_path
 from ezhpcy.types import ResolvedConfig
 
 AUTHKEY = b"a" * 32
+SCHEDULER = {"type": "LSF", "submission_mode": "batch"}
 
 
 def test_descriptor_path_is_keyed_by_alias(isolated_runtime_dir: Path) -> None:
@@ -30,12 +31,14 @@ def test_anonymous_alias_digest_is_order_independent() -> None:
     first = ResolvedConfig.model_validate(
         {
             "connection": {"user": "alice", "host": "login.example.com"},
+            "scheduler": SCHEDULER,
             "lsf": {"submission_environment": {"A": "first", "Z": "last"}},
         }
     )
     second = ResolvedConfig.model_validate(
         {
             "connection": {"host": "login.example.com", "user": "alice"},
+            "scheduler": SCHEDULER,
             "lsf": {"submission_environment": {"Z": "last", "A": "first"}},
         }
     )
@@ -45,7 +48,10 @@ def test_anonymous_alias_digest_is_order_independent() -> None:
 
 def test_anonymous_alias_digest_excludes_password_sources() -> None:
     without_password = ResolvedConfig.model_validate(
-        {"connection": {"user": "alice", "host": "login.example.com"}}
+        {
+            "connection": {"user": "alice", "host": "login.example.com"},
+            "scheduler": SCHEDULER,
+        }
     )
     password = ResolvedConfig.model_validate(
         {
@@ -54,7 +60,8 @@ def test_anonymous_alias_digest_excludes_password_sources() -> None:
                 "host": "login.example.com",
                 "password": "secret",
                 "password_prompt": False,
-            }
+            },
+            "scheduler": SCHEDULER,
         }
     )
 
@@ -63,10 +70,13 @@ def test_anonymous_alias_digest_excludes_password_sources() -> None:
 
 def test_anonymous_alias_digest_excludes_timings() -> None:
     connection = {"user": "alice", "host": "login.example.com"}
-    default = ResolvedConfig.model_validate({"connection": connection})
+    default = ResolvedConfig.model_validate(
+        {"connection": connection, "scheduler": SCHEDULER}
+    )
     changed = ResolvedConfig.model_validate(
         {
             "connection": {**connection, "ssh_keepalive_interval_seconds": 75},
+            "scheduler": SCHEDULER,
             "timings": {"queue_timeout_seconds": 60},
         }
     )
@@ -81,6 +91,8 @@ def test_anonymous_alias_digest_excludes_timings() -> None:
         ("connection", "host", "other.example.com"),
         ("resources", "queue", "cpu"),
         ("resources", "cores", 16),
+        ("scheduler", "type", "PBS"),
+        ("scheduler", "submission_mode", "interactive"),
         ("scheduler", "interactive_submission_command", ["/site/bin/interactive"]),
         ("pbs", "command_directory", "/opt/pbspro/bin"),
     ],
@@ -90,6 +102,7 @@ def test_anonymous_alias_digest_includes_job_configuration(
 ) -> None:
     base_values: dict[str, dict[str, object]] = {
         "connection": {"user": "alice", "host": "login.example.com"},
+        "scheduler": SCHEDULER,
         "resources": {"queue": "gpu", "cores": 8},
     }
     changed_values = {

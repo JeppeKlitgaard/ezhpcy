@@ -389,4 +389,25 @@ def test_invalid_profile_graphs_are_rejected(
 )
 def test_resolved_config_requires_host_and_user(connection: dict[str, object]) -> None:
     with pytest.raises(ValidationError):
-        ResolvedConfig.model_validate({"connection": connection})
+        ResolvedConfig.model_validate(
+            {
+                "connection": connection,
+                "scheduler": {"type": "LSF", "submission_mode": "batch"},
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "scheduler",
+    [{}, {"type": "LSF"}, {"submission_mode": "batch"}],
+)
+def test_resolved_config_requires_scheduler_type_and_submission_mode(
+    scheduler: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError):
+        ResolvedConfig.model_validate(
+            {
+                "connection": {"host": "login.example.com", "user": "alice"},
+                "scheduler": scheduler,
+            }
+        )

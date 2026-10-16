@@ -65,11 +65,9 @@ class ConnectionConfig(_SubConfig):
     ssh_keepalive_interval_seconds: int = Field(default=30, gt=0)
 
 
-class SchedulerConfig(_SubConfig):
-    """Which scheduler allocates the worker, and how the job is submitted."""
+class _SchedulerSettings(_SubConfig):
+    """The scheduler settings a profile may leave out even for a tunnel."""
 
-    type: SchedulerType | None = None
-    submission_mode: SubmissionMode | None = None
     interactive_submission_command: list[str] | None = Field(default=None, min_length=1)
 
     @field_validator("interactive_submission_command")
@@ -82,6 +80,20 @@ class SchedulerConfig(_SubConfig):
         ):
             raise ValueError("arguments must not be empty or contain NUL")
         return value
+
+
+class SchedulerConfig(_SchedulerSettings):
+    """Which scheduler allocates the worker, and how the job is submitted."""
+
+    type: SchedulerType | None = None
+    submission_mode: SubmissionMode | None = None
+
+
+class ResolvedSchedulerConfig(_SchedulerSettings):
+    """A scheduler config with the settings a tunnel needs set."""
+
+    type: SchedulerType
+    submission_mode: SubmissionMode
 
 
 class ResourcesConfig(_SubConfig):
@@ -224,7 +236,7 @@ class ResolvedConfig(BaseModel):
 
     description: str | None = None
     connection: ConnectionInfo
-    scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
+    scheduler: ResolvedSchedulerConfig
     resources: ResourcesConfig = Field(default_factory=ResourcesConfig)
     timings: TimingsConfig = Field(default_factory=TimingsConfig)
     lsf: LSFConfig = Field(default_factory=LSFConfig)

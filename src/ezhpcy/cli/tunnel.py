@@ -46,6 +46,7 @@ lazy from ezhpcy.tunnel.worker import select_worker_ports
 lazy from ezhpcy.types import (
     ResolvedConfig,
     ResolvedProfileConfig,
+    ResolvedSchedulerConfig,
     SchedulerConfig,
     SubmissionMode,
 )
@@ -238,15 +239,6 @@ async def tunnel_cmd(
     resources = with_cli_options(profile_config.resources, resource_options)
     timings = with_cli_options(profile_config.timings, timing_options)
     try:
-        resolved = ResolvedConfig(
-            description=profile_config.description,
-            connection=connection,
-            scheduler=scheduler,
-            resources=resources,
-            timings=timings,
-            lsf=profile_config.lsf,
-            pbs=profile_config.pbs,
-        )
         for name, cli_param in (
             ("type", "--scheduler"),
             ("submission_mode", "--submission-mode"),
@@ -260,6 +252,15 @@ async def tunnel_cmd(
                     ),
                     hint=LIST_PROFILES_HINT if profile is None else t"",
                 )
+        resolved = ResolvedConfig(
+            description=profile_config.description,
+            connection=connection,
+            scheduler=ResolvedSchedulerConfig.model_validate(scheduler.model_dump()),
+            resources=resources,
+            timings=timings,
+            lsf=profile_config.lsf,
+            pbs=profile_config.pbs,
+        )
         _check_interactive_submission_command(
             scheduler,
             scheduler_options=scheduler_options,

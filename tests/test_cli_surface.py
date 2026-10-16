@@ -113,7 +113,7 @@ def test_provision_with_yes_starts_provisioning_without_asking(
 
     assert captured["connection"].user == "alice", result
     assert "remote_operation" in captured
-    assert "Proceed?" not in result.stdout
+    assert "Proceed?" not in result.stderr
 
 
 def test_provision_asks_first_and_can_be_cancelled(
@@ -124,8 +124,8 @@ def test_provision_asks_first_and_can_be_cancelled(
     result = invoke(["provision", "base"], stdin="n\n")
 
     assert result.exit_code == 1, result
-    assert "Proceed?" in result.stdout
-    assert "Aborted: Provisioning cancelled." in result.stdout
+    assert "Proceed?" in result.stderr
+    assert "Aborted: Provisioning cancelled." in result.stderr
     assert "remote_operation" not in captured
 
 
@@ -154,7 +154,7 @@ def test_prune_all_with_yes_removes_every_managed_file_without_asking(
     result = invoke(["prune", "base", *arguments])
 
     assert _removes_cache_root(captured), result
-    assert "Proceed?" not in result.stdout
+    assert "Proceed?" not in result.stderr
 
 
 def test_prune_all_asks_first_and_defaults_to_no(
@@ -165,8 +165,8 @@ def test_prune_all_asks_first_and_defaults_to_no(
     result = invoke(["prune", "base", "--all"], stdin="\n")
 
     assert result.exit_code == 1, result
-    assert "Proceed?" in result.stdout
-    assert "Aborted: Prune cancelled." in result.stdout
+    assert "Proceed?" in result.stderr
+    assert "Aborted: Prune cancelled." in result.stderr
     assert not _removes_cache_root(captured)
 
 

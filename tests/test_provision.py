@@ -144,7 +144,7 @@ def test_a_rejected_login_is_one_error_line(login: SSHTestServer) -> None:
 
     assert result.exit_code == 1, result
     assert result.exception is None
-    assert result.stdout == (
+    assert result.stderr == (
         "Error: Could not connect to alice@login.example.com: Permission denied for user "
         "alice on host 127.0.0.1\n"
     )
@@ -156,7 +156,7 @@ def test_a_rejected_host_key_is_one_error_line(login: SSHTestServer) -> None:
     result = invoke(["prune", *_LOGIN], stdin="n\n")
 
     assert result.exit_code == 1, result
-    assert result.stdout.endswith(
+    assert result.stderr.endswith(
         "Error: Could not connect to alice@login.example.com: Host key for 127.0.0.1 "
         "rejected by user.\n"
     )
@@ -173,10 +173,10 @@ def test_a_refused_connection_is_one_error_line(
     result = invoke(["prune", *_LOGIN])
 
     assert result.exit_code == 1, result
-    assert result.stdout.startswith(
+    assert result.stderr.startswith(
         "Error: Could not connect to alice@login.example.com: "
     )
-    assert result.stdout.count("\n") == 1
+    assert result.stderr.count("\n") == 1
 
 
 # prune

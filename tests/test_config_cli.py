@@ -181,7 +181,7 @@ def test_config_edit_reports_editor_failure(
     result = invoke(["config", "edit", "vi"])
 
     assert result.exit_code == 1
-    assert "Error: Editor exited with status 3." in result.stdout
+    assert "Error: Editor exited with status 3." in result.stderr
 
 
 def test_config_edit_reports_missing_editor(
@@ -273,11 +273,12 @@ def test_config_load_existing_file_defaults_to_no(
     result = invoke(["config", "load", "dtu", "--user", "alice"], stdin="\n")
 
     assert result.exit_code == 1
-    assert "Warning" in result.stdout
-    assert '-connection.host = "old.example.com"' in result.stdout
-    assert '+connection.host = "login.hpc.dtu.dk"' in result.stdout
-    assert "[y/n] (n)" in result.stdout
-    assert "Aborted: Configuration unchanged." in result.stdout
+    assert "Warning" in result.stderr
+    assert '-connection.host = "old.example.com"' in result.stderr
+    assert '+connection.host = "login.hpc.dtu.dk"' in result.stderr
+    assert "[y/n] (n)" in result.stderr
+    assert "Aborted: Configuration unchanged." in result.stderr
+    assert result.stdout == ""
     assert config_file.read_text(encoding="utf-8") == (
         '[profile.old]\nconnection.host = "old.example.com"\n'
     )
@@ -296,7 +297,7 @@ def test_config_load_yes_overwrites_existing_file(
     result = invoke(["config", "load", "DTU", "--user", "alice", "--yes"])
 
     assert result.exit_code == 0, result
-    assert "Warning" in result.stdout
+    assert "Warning" in result.stderr
     assert "Overwrite the existing configuration?" not in result.stdout
     assert "Overwrite the existing configuration?" not in result.stderr
     assert 'host = "login.hpc.dtu.dk"' in config_file.read_text(encoding="utf-8")

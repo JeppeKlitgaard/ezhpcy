@@ -138,7 +138,7 @@ class PBSConfig(_SubConfig):
 class ConnectionInfo(BaseModel):
     """A login-node connection with its password source resolved."""
 
-    user: str | None = None
+    user: str = Field(min_length=1)
     password: str | None = None
     host: DomainStr
     password_prompt: bool = True
@@ -261,13 +261,6 @@ class ResolvedConfig(BaseModel):
         ),
         "pbs": frozenset({"command_directory"}),
     }
-
-    @field_validator("connection")
-    @classmethod
-    def validate_user(cls, value: ConnectionInfo) -> ConnectionInfo:
-        if not value.user:
-            raise ValueError("user must be set")
-        return value
 
     def descriptor_digest(self) -> str:
         """Return the identity for an anonymous descriptor."""

@@ -636,6 +636,18 @@ def test_connection_only_commands_reject_job_options(
         ),
         pytest.param(
             "tunnel",
+            ["--host", "login.example.com", "--user", "", "--scheduler", "LSF"],
+            ['Invalid value "" for --user', "at least 1 character"],
+            id="empty-user",
+        ),
+        pytest.param(
+            "keyring",
+            ["set", "--host", "login.example.com", "--user", ""],
+            ['Invalid value "" for --user', "at least 1 character"],
+            id="keyring-empty-user",
+        ),
+        pytest.param(
+            "tunnel",
             ["base", "--password", "secret", "--password-keyring"],
             ["mutually exclusive", "--password", "--password-keyring"],
             id="conflicting-password-sources",

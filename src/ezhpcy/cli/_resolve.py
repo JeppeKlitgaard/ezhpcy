@@ -179,15 +179,17 @@ def direct_connection_from_cli(options: ConnectionOptions) -> ConnectionInfo:
         raise CliUsageError(t"{'user':name} must be set via {'--user':name}.")
     if options.host is None:
         raise CliUsageError(t"{'host':name} must be set via {'--host':name}.")
-    return ConnectionInfo(
+    password = resolve_password(
+        password=options.password,
+        password_file=options.password_file,
+        password_fd=options.password_fd,
+        password_keyring=options.password_keyring,
         user=options.user,
         host=options.host,
-        password=resolve_password(
-            password=options.password,
-            password_file=options.password_file,
-            password_fd=options.password_fd,
-            password_keyring=options.password_keyring,
-            user=options.user,
-            host=options.host,
-        ),
     )
+    try:
+        return ConnectionInfo(user=options.user, host=options.host, password=password)
+    except ValidationError as error:
+        raise _validation_usage_error(
+            error, {"user": "--user", "host": "--host"}
+        ) from error

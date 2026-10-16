@@ -74,6 +74,8 @@ class Rig:
 
     def start_worker(self, _spec: JobSpec) -> None:
         record = self.scenario.worker_record
+        if record is None:
+            return
         if record == "ready":
             write_worker_record(self.server, "ready", str(self.worker_port))
         else:
@@ -129,8 +131,8 @@ class Scenario:
     # Why the tunnel stopped, in its `Stopping tunnel: <why>` line, if it didn't
     # fail; a failure's `why` is its error.
     why: str | None = None
-    # "ready", or the reason in the worker's `failed` record.
-    worker_record: str = "ready"
+    # "ready", the reason in the worker's `failed` record, or None for no record.
+    worker_record: str | None = "ready"
     heartbeats: Literal["ok", "fail_from_start"] = "ok"
     endpoint_refuses: bool = False
     banner: bytes = BANNER
@@ -237,6 +239,26 @@ SCENARIOS = [
             "port 54321 is in use"
         ),
         cancelled=True,
+        withdrawn=False,
+    ),
+    Scenario(
+        # New: the tunnel waited out the startup timeout, then cancelled the job.
+        id="worker_exits_before_writing_a_record",
+        inspections=[RUNNING, snapshot(JobState.FAILED, "EXIT")],
+        worker_record=None,
+        exit_code=1,
+        message="Could not start tunnel: worker job 42 ended in scheduler state EXIT",
+        cancelled=False,
+        withdrawn=False,
+    ),
+    Scenario(
+        # New: likewise.
+        id="worker_job_ends_during_the_endpoint_wait",
+        inspections=[RUNNING, snapshot(JobState.FAILED, "EXIT")],
+        endpoint_refuses=True,
+        exit_code=1,
+        message="Could not start tunnel: worker job 42 ended in scheduler state EXIT",
+        cancelled=False,
         withdrawn=False,
     ),
     Scenario(

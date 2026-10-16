@@ -331,7 +331,9 @@ class TunnelSession:
         deadline = (
             asyncio.get_running_loop().time() + timings.worker_startup_timeout_seconds
         )
-        worker_port = await self._wait_for_ready_port(control, deadline)
+        worker_port = await self._wait_for_ready_port(
+            control, scheduler, job_id, deadline
+        )
         # Stopped between leases: cancelling one half written would leave its
         # temporary file in the control directory.
         stopping = asyncio.Event()
@@ -343,7 +345,7 @@ class TunnelSession:
         )
         destination = (worker_host, worker_port)
         logger.info("Waiting for worker SSH endpoint %s:%d.", *destination)
-        await self._wait_for_worker_endpoint(destination, deadline)
+        await self._wait_for_worker_endpoint(destination, scheduler, job_id, deadline)
 
         # Serve, and tell OpenSSH how to reach the tunnel.
         server = await self._enter(
@@ -416,14 +418,8 @@ class TunnelSession:
                         )
                     if info.state is JobState.RUNNING and info.host is not None:
                         return info.host
-                    if info.state.is_terminal:
-                        self._job_finished = True
-                        raise TunnelError(f"worker job {job_id} ended{_ending(info)}")
-                    if info.state is JobState.UNKNOWN:
-                        raise TunnelError(
-                            f"worker job {job_id} entered unknown scheduler state "
-                            f"{info.raw_state}"
-                        )
+                    if ended := self._job_ended(job_id, info):
+                        raise TunnelError(ended)
                     await asyncio.sleep(timings.job_poll_interval_seconds)
         except TimeoutError:
             raise TunnelError(
@@ -431,22 +427,52 @@ class TunnelSession:
                 f"{timings.queue_timeout_seconds:g} seconds"
             ) from None
 
+    def _job_ended(self, job_id: str, info: JobInfo) -> str | None:
+        """
+        If the scheduler says the job has ended, note that it needn't be cancelled,
+        and return how it ended, to stop the tunnel with. Raises for a state the
+        tunnel can't act on.
+        """
+        if info.state is JobState.UNKNOWN:
+            raise TunnelError(
+                f"worker job {job_id} entered unknown scheduler state {info.raw_state}"
+            )
+        if not info.state.is_terminal:
+            return None
+        self._job_finished = True
+        return f"worker job {job_id} ended{_ending(info)}"
+
+    async def _check_job_lives(self, scheduler: Scheduler, job_id: str) -> None:
+        """
+        Raise if the job has ended while the tunnel starts: the worker died, or
+        exited before it could say why.
+        """
+        if ended := self._job_ended(job_id, await scheduler.inspect(job_id)):
+            raise TunnelError(ended)
+
     async def _wait_for_ready_port(
-        self, control: WorkerControl, deadline: float
+        self, control: WorkerControl, scheduler: Scheduler, job_id: str, deadline: float
     ) -> int:
         """
         Wait until `deadline` (loop time) for the worker to say which port its sshd
-        listens on.
+        listens on, checking every job poll interval that the job still runs.
         """
+        loop = asyncio.get_running_loop()
+        poll_interval = self._resolved.timings.job_poll_interval_seconds
+        next_job_check = loop.time() + poll_interval
         try:
             async with asyncio.timeout_at(deadline):
                 while True:
+                    # The worker's records first: they say more than its job's end.
                     if (port := await control.read_ready_port()) is not None:
                         return port
                     if failure := await control.read_failure():
                         raise TunnelError(
                             f"worker SSH daemon failed to start: {failure}"
                         )
+                    if loop.time() >= next_job_check:
+                        await self._check_job_lives(scheduler, job_id)
+                        next_job_check = loop.time() + poll_interval
                     await asyncio.sleep(_READY_POLL_SECONDS)
         except TimeoutError:
             timeout = self._resolved.timings.worker_startup_timeout_seconds
@@ -456,11 +482,16 @@ class TunnelSession:
             ) from None
 
     async def _wait_for_worker_endpoint(
-        self, destination: tuple[str, int], deadline: float
+        self,
+        destination: tuple[str, int],
+        scheduler: Scheduler,
+        job_id: str,
+        deadline: float,
     ) -> None:
         """
         Wait until `deadline` (loop time) for the worker's sshd to send its banner
-        through the login connection.
+        through the login connection, checking after each failed attempt that the
+        job still runs.
         """
         timeout = self._resolved.timings.worker_startup_timeout_seconds
         poll_interval = self._resolved.timings.job_poll_interval_seconds
@@ -493,6 +524,7 @@ class TunnelSession:
                             *destination,
                             banner,
                         )
+                    await self._check_job_lives(scheduler, job_id)
                     await asyncio.sleep(poll_interval)
         except TimeoutError:
             detail = f": {last_error}" if last_error is not None else ""
@@ -615,15 +647,9 @@ class TunnelSession:
                 info.host,
                 info.exit_code,
             )
-            if info.state.is_terminal:
-                self._job_finished = True
-                self._stop(None, f"worker job {job_id} ended{_ending(info)}")
+            if ended := self._job_ended(job_id, info):
+                self._stop(None, ended)
                 return
-            if info.state is JobState.UNKNOWN:
-                raise TunnelError(
-                    f"worker job {job_id} entered unknown scheduler state "
-                    f"{info.raw_state}"
-                )
 
     # Cleanup
 

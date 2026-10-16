@@ -1,4 +1,5 @@
 import subprocess
+import sys
 from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,10 +15,11 @@ from ezhpcy.permissions import (
 
 _WHOAMI = ["whoami", "/user", "/fo", "csv", "/nh"]
 
+requires_windows = pytest.mark.skipif(sys.platform != "win32", reason="Windows ACLs")
+
 
 @pytest.fixture
-def windows(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    monkeypatch.setattr("ezhpcy.permissions.os.name", "nt")
+def uncached_sid() -> Iterator[None]:
     windows_current_user_sid.cache_clear()
     yield
     windows_current_user_sid.cache_clear()
@@ -27,48 +29,63 @@ def whoami_output(sid: str) -> SimpleNamespace:
     return SimpleNamespace(stdout=f'"MACHINE\alice","{sid}"\n')
 
 
-def test_windows_acl_grants_only_the_current_user(
-    tmp_path: Path, windows: None
+def windows_dacl(path: Path) -> str:
+    """Return a file's DACL in SDDL, as `icacls /save` writes it."""
+    saved = path.with_name(f"{path.name}.acl")
+    subprocess.run(
+        ["icacls", str(path), "/save", str(saved)], check=True, capture_output=True
+    )
+    return saved.read_text(encoding="utf-16-le").splitlines()[1]
+
+
+@requires_windows
+def test_windows_dacl_replaces_explicit_entries_with_the_current_user(
+    tmp_path: Path, uncached_sid: None
 ) -> None:
-    path = tmp_path / "worker_client_ed25519"
+    directory = tmp_path / "private"
+    directory.mkdir(mode=0o700)
+    path = directory / "a.conf"
+    path.touch()
+    # An elevated GitHub runner leaves the directory's SYSTEM, Administrators and
+    # OWNER RIGHTS entries on the file as explicit entries; recreate that.
+    subprocess.run(["icacls", str(path), "/inheritance:d"], check=True)
+    assert "(A;;FA;;;OW)" in windows_dacl(path)
+
+    restrict_to_current_user(path)
+
+    assert windows_dacl(path) == f"D:P(A;;FA;;;{windows_current_user_sid()})"
+
+
+@requires_windows
+def test_unsettable_windows_dacl_is_a_permission_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "ezhpcy.permissions.windows_current_user_sid", lambda: "not-a-sid"
+    )
+    path = tmp_path / "a.conf"
     path.touch()
 
-    with patch(
-        "ezhpcy.permissions.subprocess.run",
-        return_value=whoami_output("S-1-5-21-1001"),
-    ) as run:
+    with pytest.raises(FilePermissionError, match="Could not restrict"):
         restrict_to_current_user(path)
 
-    assert [call.args[0] for call in run.call_args_list] == [
-        _WHOAMI,
-        ["icacls", str(path), "/inheritance:r", "/grant:r", "*S-1-5-21-1001:(F)"],
-    ]
 
-
-def test_windows_user_sid_is_looked_up_once(tmp_path: Path, windows: None) -> None:
-    first, second = tmp_path / "a.conf", tmp_path / "b.conf"
-    first.touch()
-    second.touch()
-
+def test_windows_user_sid_is_looked_up_once(uncached_sid: None) -> None:
     with patch(
         "ezhpcy.permissions.subprocess.run",
         return_value=whoami_output("S-1-5-21-1001"),
     ) as run:
-        restrict_to_current_user(first)
-        restrict_to_current_user(second)
+        assert windows_current_user_sid() == "S-1-5-21-1001"
+        assert windows_current_user_sid() == "S-1-5-21-1001"
 
-    commands = [call.args[0] for call in run.call_args_list]
-    assert commands.count(_WHOAMI) == 1
-    assert len(commands) == 3
+    run.assert_called_once()
+    assert run.call_args.args[0] == _WHOAMI
 
 
 @pytest.mark.parametrize("stdout", ["", '"MACHINE\alice","not-a-sid"\n'])
 def test_unusable_whoami_output_is_a_permission_error(
-    tmp_path: Path, windows: None, stdout: str
+    uncached_sid: None, stdout: str
 ) -> None:
-    path = tmp_path / "a.conf"
-    path.touch()
-
     with (
         patch(
             "ezhpcy.permissions.subprocess.run",
@@ -76,37 +93,21 @@ def test_unusable_whoami_output_is_a_permission_error(
         ),
         pytest.raises(FilePermissionError),
     ):
-        restrict_to_current_user(path)
+        windows_current_user_sid()
 
 
-def test_icacls_failure_is_a_permission_error(tmp_path: Path, windows: None) -> None:
-    path = tmp_path / "a.conf"
-    path.touch()
-
-    def run(command: list[str], **_kwargs: object) -> SimpleNamespace:
-        if command[0] == "icacls":
-            raise subprocess.CalledProcessError(5, command)
-        return whoami_output("S-1-5-21-1001")
-
-    with (
-        patch("ezhpcy.permissions.subprocess.run", side_effect=run),
-        pytest.raises(FilePermissionError, match="Could not restrict"),
-    ):
-        restrict_to_current_user(path)
-
-
-def test_posix_permissions_need_no_helper_commands(
+def test_posix_permissions_need_no_windows_acl(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("ezhpcy.permissions.os.name", "posix")
+    monkeypatch.setattr("ezhpcy.permissions.sys.platform", "linux")
     path = tmp_path / "a.conf"
     path.touch()
 
     with (
         patch.object(Path, "chmod", autospec=True) as chmod,
-        patch("ezhpcy.permissions.subprocess.run") as run,
+        patch("ezhpcy.permissions.windows_current_user_sid") as user_sid,
     ):
         restrict_to_current_user(path)
 
     chmod.assert_called_once_with(path, 0o600)
-    run.assert_not_called()
+    user_sid.assert_not_called()

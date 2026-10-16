@@ -1,18 +1,12 @@
 """
 Generated OpenSSH configuration that users pull in with a single Include.
 
-Everything lives in one runtime directory matched by one glob:
-
-- ``profiles.conf`` holds a Host block per configured profile. It is rewritten
-  from the configuration whenever a tunnel starts, so profile hosts stay known
-  to OpenSSH (and VS Code) between tunnels.
-- ``active-<alias>.conf`` holds the Host block of one running tunnel whose block
-  is not already in ``profiles.conf``: a tunnel without a profile, one with a
-  custom ``--alias``, or a profile tunnel whose ``--user``/``--host`` override
-  changes the block. The tunnel writes it once its descriptor is published and
-  removes it on exit. These files sort before ``profiles.conf``, and OpenSSH
-  keeps the first value it obtains, so an overriding block wins over the
-  profile block with the same alias.
+Everything lives in one runtime directory matched by one glob. Each running
+tunnel writes ``active-<alias>.conf``, a Host block that points OpenSSH straight
+at the tunnel's forwarded loopback port, once it serves, and removes it on exit.
+There is no block while no tunnel runs. A tunnel killed before it could remove
+its block leaves it behind, with its alias lock (`ezhpcy.tunnel.lock`) free, so
+the next tunnel start, or `ezhpcy doctor`, removes it.
 
 OpenSSH refuses to load any included file that others may write, and that
 failure breaks every host rather than just ours, so files are written with an
@@ -20,30 +14,36 @@ explicit owner-only ACL and moved into place atomically.
 """
 
 import logging
-import sys
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 lazy import os
 lazy import subprocess
 lazy import uuid
+lazy from collections.abc import Generator, Iterable
 
 lazy from rich.text import Text
 
-from ezhpcy.config import Config, config, validate_alias
+from ezhpcy.config import config, validate_alias
 lazy from ezhpcy.console import console, error_console
-lazy from ezhpcy.constants import WINDOWS_CREATION_FLAGS, WORKER_HOST_ALIAS
-lazy from ezhpcy.ipc import IPCError
-lazy from ezhpcy.ipc.descriptor import TunnelDescriptor
+lazy from ezhpcy.constants import (
+    LOOPBACK_HOST,
+    WINDOWS_CREATION_FLAGS,
+    WORKER_HOST_ALIAS,
+)
 lazy from ezhpcy.permissions import FilePermissionError, restrict_to_current_user
 lazy from ezhpcy.provision_local import WorkerCredentials
+lazy from ezhpcy.tunnel.lock import alias_locked
 lazy from ezhpcy.utils import local_machine_id
 
 logger = logging.getLogger(__name__)
 
 SSH_CONFIG_DIRECTORY_NAME = "ssh-config"
-PROFILES_FILE_NAME = "profiles.conf"
 ACTIVE_FILE_PREFIX = "active-"
-_INSTANCE_MARKER = "# ezhpcy-instance: "
+# Sorts after every `active-*.conf`, so a running tunnel's block comes first.
+_PROBE_FILE_NAME = "doctor-probe.conf"
+# Where `probe_hosts`' blocks point; `.invalid` never resolves.
+PROBE_HOST_NAME = "ezhpcy-doctor-probe.invalid"
 _SSH_RESOLVE_TIMEOUT_SECONDS = 10
 
 
@@ -80,7 +80,6 @@ class WorkerHost:
 
     alias: str
     credentials: WorkerCredentials
-    python_executable: Path = Path(sys.executable)
 
     def __post_init__(self) -> None:
         validate_alias(self.alias)
@@ -99,50 +98,24 @@ class WorkerHost:
     def identity_file(self) -> Path:
         return self.credentials.client_key
 
-    @property
-    def proxy_command(self) -> str:
-        return (
-            f"{_config_path(self.python_executable)} -m ezhpcy.cli proxy {self.alias}"
-        )
-
-    def render(self) -> str:
+    def render(self, port: int) -> str:
+        """The Host block that reaches the worker through the tunnel's `port`."""
         return "\n".join(
             (
                 f"Host {self.alias}",
-                f"    HostName {self.alias}",
+                f"    HostName {LOOPBACK_HOST}",
+                f"    Port {port}",
                 f"    User {self.user}",
                 f"    IdentityFile {_config_path(self.identity_file)}",
                 "    IdentitiesOnly yes",
                 f"    UserKnownHostsFile {_config_path(self.credentials.known_hosts)}",
                 f"    HostKeyAlias {WORKER_HOST_ALIAS}",
                 "    StrictHostKeyChecking yes",
-                f"    ProxyCommand {self.proxy_command}",
+                # Keeps out a ProxyJump or ProxyCommand from the user's `Host *`.
+                "    ProxyCommand none",
                 "",
             )
         )
-
-
-def profile_hosts(source: Config = config) -> list[WorkerHost]:
-    """Return a Host for every profile that defines both a user and a host."""
-    hosts = []
-    for name in source.profile:
-        connection = source.resolve_profile(
-            name, validate_password_source=False
-        ).connection
-        if connection.user is None or connection.host is None:
-            logger.debug(
-                "Not generating an SSH host for profile %r: no user/host.", name
-            )
-            continue
-        try:
-            hosts.append(
-                WorkerHost.for_endpoint(
-                    name, user=connection.user, host=str(connection.host)
-                )
-            )
-        except ValueError as error:
-            logger.warning("Not generating an SSH host for profile %r: %s", name, error)
-    return hosts
 
 
 def _write_private(path: Path, content: str) -> None:
@@ -165,68 +138,32 @@ def _write_private(path: Path, content: str) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def write_profiles_config(hosts: list[WorkerHost] | None = None) -> Path:
-    """Regenerate the Host blocks for all configured profiles."""
-    if hosts is None:
-        hosts = profile_hosts()
-    path = ssh_config_dir() / PROFILES_FILE_NAME
-    header = (
-        "# Generated by ezhpcy from its profiles; manual changes are overwritten.\n"
-        "# Running tunnels write active-*.conf files, which take precedence.\n\n"
-    )
-    _write_private(path, header + "\n".join(host.render() for host in hosts))
-    return path
-
-
 def _active_path(alias: str) -> Path:
     return ssh_config_dir() / f"{ACTIVE_FILE_PREFIX}{validate_alias(alias)}.conf"
 
 
-def _active_instance_id(path: Path) -> str | None:
-    try:
-        with path.open(encoding="utf-8") as file:
-            first_line = file.readline().rstrip("\n")
-    except OSError, UnicodeDecodeError:
-        return None
-    if not first_line.startswith(_INSTANCE_MARKER):
-        return None
-    return first_line.removeprefix(_INSTANCE_MARKER)
-
-
-def write_active_host_config(host: WorkerHost, *, instance_id: str) -> Path:
-    """Publish the Host block of a running tunnel, tagged with its instance."""
+def write_active_host_config(host: WorkerHost, port: int) -> Path:
+    """Write the Host block of a tunnel serving on `port`."""
     path = _active_path(host.alias)
-    _write_private(path, f"{_INSTANCE_MARKER}{instance_id}\n{host.render()}")
+    _write_private(path, host.render(port))
     return path
 
 
-def remove_active_host_config(alias: str, *, instance_id: str) -> None:
-    """Remove a tunnel's Host block unless a newer tunnel has replaced it."""
-    path = _active_path(alias)
-    if _active_instance_id(path) == instance_id:
-        path.unlink(missing_ok=True)
-
-
-def publish_host(
-    host: WorkerHost, *, instance_id: str, in_profiles_config: bool
-) -> None:
+def publish_host(host: WorkerHost, port: int) -> None:
     """
     Expose a running tunnel's Host block and check that OpenSSH resolves it.
-    Problems are warnings: the tunnel works without the block, through another
-    alias or a hand-written one.
+    Problems are warnings: the tunnel works without the block, through a
+    hand-written one.
     """
     try:
-        # Pruning also drops an older tunnel's block for this alias, which
-        # would otherwise shadow the identical one in profiles.conf.
         prune_stale_active_configs()
-        if not in_profiles_config:
-            write_active_host_config(host, instance_id=instance_id)
+        write_active_host_config(host, port)
     except (OSError, FilePermissionError) as error:
         logger.warning(
             "Could not write the SSH configuration for %s: %s", host.alias, error
         )
         return
-    problem = check_host_resolution(host)
+    problem = check_host_resolution(host, port)
     if problem is not None:
         logger.warning(
             "`ssh %s` will not reach this tunnel: %s. If ~/.ssh/config does not "
@@ -239,42 +176,64 @@ def publish_host(
         echo_include_directive(err=True)
 
 
-def withdraw_host(host: WorkerHost, *, instance_id: str) -> None:
-    """Remove the Host block `publish_host` wrote, if it is still this tunnel's."""
+def withdraw_host(host: WorkerHost) -> None:
+    """Remove the Host block `publish_host` wrote; the alias lock makes it ours."""
     try:
-        remove_active_host_config(host.alias, instance_id=instance_id)
+        _active_path(host.alias).unlink(missing_ok=True)
     except OSError as error:
         logger.warning(
             "Could not remove the SSH configuration for %s: %s", host.alias, error
         )
 
 
-def prune_stale_active_configs() -> None:
-    """Remove Host blocks left behind by tunnels that are no longer running."""
-    for path in ssh_config_dir().glob(f"{ACTIVE_FILE_PREFIX}*.conf"):
+def prune_stale_active_configs() -> list[Path]:
+    """Remove the Host blocks of tunnels that no longer run; return those removed."""
+    removed = []
+    for path in sorted(ssh_config_dir().glob(f"{ACTIVE_FILE_PREFIX}*.conf")):
         alias = path.name.removeprefix(ACTIVE_FILE_PREFIX).removesuffix(".conf")
         try:
-            live_instance_id = TunnelDescriptor.load(alias).instance_id
-        except IPCError, ValueError:
-            live_instance_id = None
-        # A hard-killed tunnel leaves its descriptor behind as well, so this
-        # only catches the cases where the descriptor was removed or replaced.
-        if live_instance_id is None or _active_instance_id(path) != live_instance_id:
+            live = alias_locked(alias)
+        # Not a name a tunnel writes, so no tunnel's.
+        except ValueError:
+            live = False
+        if not live:
             logger.debug("Removing stale SSH host configuration %s.", path)
             path.unlink(missing_ok=True)
+            removed.append(path)
+    return removed
 
 
-def check_host_resolution(host: WorkerHost) -> str | None:
+@contextmanager
+def probe_hosts(aliases: Iterable[str]) -> Generator[None]:
     """
-    Ask OpenSSH how it resolves an alias and describe any mismatch.
+    For the block, give each alias a Host block whose HostName is
+    `PROBE_HOST_NAME`, after every running tunnel's. An alias that `ssh -G`
+    then resolves elsewhere is shadowed by other configuration, or the Include
+    line is missing or misplaced.
+    """
+    path = ssh_config_dir() / _PROBE_FILE_NAME
+    blocks = "".join(
+        f"Host {validate_alias(alias)}\n    HostName {PROBE_HOST_NAME}\n"
+        for alias in aliases
+    )
+    _write_private(
+        path, f"# Written by `ezhpcy doctor` while it checks, then removed.\n{blocks}"
+    )
+    try:
+        yield
+    finally:
+        path.unlink(missing_ok=True)
 
-    This catches a missing Include, an Include placed after a Host block (which
-    scopes it to that block), an earlier hand-written block for the same alias,
-    and included files with permissions OpenSSH refuses.
+
+def resolve_alias(alias: str) -> dict[str, list[str]] | str | None:
+    """
+    Ask OpenSSH how it resolves `alias` (`ssh -G`): its options, lower-case,
+    with every value in order; or the problem running it; or `None` when `ssh`
+    is not on PATH.
     """
     try:
         result = subprocess.run(
-            ["ssh", "-G", host.alias],
+            ["ssh", "-G", alias],
             capture_output=True,
             check=False,
             text=True,
@@ -282,22 +241,42 @@ def check_host_resolution(host: WorkerHost) -> str | None:
             creationflags=WINDOWS_CREATION_FLAGS,
         )
     except FileNotFoundError:
-        logger.debug("Skipping SSH configuration check: `ssh` is not on PATH.")
         return None
     except (OSError, subprocess.TimeoutExpired) as error:
-        return f"could not run `ssh -G {host.alias}`: {error}"
+        return f"could not run `ssh -G {alias}`: {error}"
 
     if result.returncode != 0:
         detail = " ".join(result.stderr.split())
-        return detail or f"`ssh -G {host.alias}` exited with {result.returncode}"
+        return detail or f"`ssh -G {alias}` exited with {result.returncode}"
 
     ssh_options: dict[str, list[str]] = {}
     for line in result.stdout.splitlines():
         key, _, value = line.partition(" ")
         ssh_options.setdefault(key.lower(), []).append(value)
+    return ssh_options
 
-    if ssh_options.get("proxycommand") != [host.proxy_command]:
+
+def check_host_resolution(host: WorkerHost, port: int) -> str | None:
+    """
+    Ask OpenSSH how it resolves a tunnel's alias and describe any mismatch.
+
+    This catches a missing Include, an Include placed after a Host block (which
+    scopes it to that block), an earlier hand-written block for the same alias,
+    and included files with permissions OpenSSH refuses.
+    """
+    ssh_options = resolve_alias(host.alias)
+    if ssh_options is None:
+        logger.debug("Skipping SSH configuration check: `ssh` is not on PATH.")
+        return None
+    if isinstance(ssh_options, str):
+        return ssh_options
+
+    endpoint = ssh_options.get("hostname"), ssh_options.get("port")
+    if endpoint != ([LOOPBACK_HOST], [str(port)]):
         return "OpenSSH does not resolve it to the ezhpcy-generated configuration"
+    # `ssh -G` prints no `proxycommand` for `ProxyCommand none`.
+    if ssh_options.get("proxycommand", ["none"]) != ["none"]:
+        return f"OpenSSH resolves a ProxyCommand: {ssh_options['proxycommand'][0]}"
     if ssh_options.get("user") != [host.user]:
         return f"OpenSSH resolves a different user: {ssh_options.get('user')}"
     identity_files = ssh_options.get("identityfile", [])

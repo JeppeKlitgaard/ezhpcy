@@ -16,7 +16,6 @@ from pathlib import Path
 
 import pytest
 
-from ezhpcy.cli import tunnel as tunnel_cli
 from ezhpcy.config import config
 from ezhpcy.constants import EZHPCY_VERSION
 from ezhpcy.scheduler.base import InteractiveJob, JobInfo, JobSpec, JobState
@@ -58,9 +57,6 @@ def configure_tunnel(
         config, "profile", {"base": ProfileConfig.model_validate(settings | profile)}
     )
     monkeypatch.setattr(config, "auto_provision", True)
-    # Writing profiles.conf restricts its permissions, which is slow on Windows.
-    monkeypatch.setattr(tunnel_cli, "profile_hosts", list)
-    monkeypatch.setattr(tunnel_cli, "write_profiles_config", lambda _hosts: None)
     # Provisioning: the Pixi install and the two `pixi exec` runs of sshd.
     server.command("bash -c", reply())
     server.command("env", reply())

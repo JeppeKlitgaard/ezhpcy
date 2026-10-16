@@ -6,22 +6,24 @@ the worker played by the tests. How each failure shuts the tunnel down is in
 
 import asyncio
 import functools
-import io
 import logging
 import signal
+import socket
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Generator
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 
 from ezhpcy.cli import tunnel as tunnel_cli
 from ezhpcy.cli.utils import ssh as cli_ssh
-from ezhpcy.ipc.client import connect, relay_proxy_stdio
-from ezhpcy.ipc.descriptor import TunnelDescriptor, descriptor_path
+from ezhpcy.constants import LOOPBACK_HOST
 from ezhpcy.scheduler.base import JobState
-from ezhpcy.tunnel import session, ssh_config
+from ezhpcy.ssh import RemoteHost
+from ezhpcy.tunnel import lock, session, ssh_config
+from ezhpcy.tunnel.lock import alias_lock, alias_locked
 from ezhpcy.worker.control import WorkerControl
 from tests.support.cli import invoke
 from tests.support.sshserver import Invocation, SSHTestServer, reply
@@ -49,13 +51,26 @@ WAIT_SECONDS = 5
 STOP_SECONDS = 0.1
 
 
-def run_proxy(alias: str, stdin: bytes) -> bytes:
-    """Run `ezhpcy proxy`'s relay with `stdin`; return what it wrote to stdout."""
-    stdout = io.BytesIO()
-    with connect(TunnelDescriptor.load(alias), timeout=WAIT_SECONDS) as stream:
-        stream.settimeout(WAIT_SECONDS)
-        relay_proxy_stdio(stream, io.BytesIO(stdin), stdout)
-    return stdout.getvalue()
+def block_port(active_config: Path) -> int:
+    """The port a tunnel's Host block points OpenSSH at."""
+    [port] = [
+        line.split()[1]
+        for line in active_config.read_text(encoding="utf-8").splitlines()
+        if line.split()[:1] == ["Port"]
+    ]
+    return int(port)
+
+
+def connect_through(port: int, data: bytes) -> bytes:
+    """As `ssh` does: connect to the tunnel's port, send `data` and EOF, and
+    return everything that comes back."""
+    received = b""
+    with socket.create_connection((LOOPBACK_HOST, port), WAIT_SECONDS) as stream:
+        stream.sendall(data)
+        stream.shutdown(socket.SHUT_WR)
+        while chunk := stream.recv(64 * 1024):
+            received += chunk
+    return received
 
 
 def bjobs(running: threading.Event, done: threading.Event):
@@ -74,7 +89,7 @@ def bjobs(running: threading.Event, done: threading.Event):
     return handler
 
 
-def test_a_tunnel_relays_proxies_to_the_worker(
+def test_a_tunnel_forwards_its_port_to_the_worker(
     login: SSHTestServer,
     monkeypatch: pytest.MonkeyPatch,
     isolated_runtime_dir: Path,
@@ -100,16 +115,24 @@ def test_a_tunnel_relays_proxies_to_the_worker(
     configure_tunnel(
         monkeypatch, login, resources={"queue": "normal", "cores": 4, "memory": "2GiB"}
     )
-    monkeypatch.setattr(ssh_config, "check_host_resolution", lambda _host: None)
+    monkeypatch.setattr(ssh_config, "check_host_resolution", lambda _host, _port: None)
     active_config = isolated_runtime_dir / "ssh-config" / "active-scratch.conf"
+    # Left by a tunnel that was killed.
+    stale_config = ssh_config.write_active_host_config(
+        ssh_config.WorkerHost.for_endpoint(
+            "gone", user="alice", host="login.example.com"
+        ),
+        2222,
+    )
     published: list[bool] = []
     outputs: list[bytes] = []
 
-    def publish_then_connect(*args: object, **kwargs: object) -> None:
-        ssh_config.publish_host(*args, **kwargs)  # type: ignore[arg-type]
-        published.append(active_config.exists())
-        # As OpenSSH runs `ezhpcy proxy scratch`, twice.
-        outputs.extend(run_proxy("scratch", data) for data in (b"hello", b"again"))
+    def publish_then_connect(host: ssh_config.WorkerHost, port: int) -> None:
+        ssh_config.publish_host(host, port)
+        published.extend([active_config.exists(), stale_config.exists()])
+        assert block_port(active_config) == port
+        # As `ssh scratch` does, twice.
+        outputs.extend(connect_through(port, data) for data in (b"hello", b"again"))
         # Then the job ends.
         done.set()
 
@@ -148,12 +171,112 @@ def test_a_tunnel_relays_proxies_to_the_worker(
         for argv in login.commands_run
     )
 
-    # The Host block was there while serving, and everything is cleaned up.
-    assert published == [True]
+    assert len(log.starting("Tunnel client accepted: client=127.0.0.1:")) == 2
+
+    # The Host block was there while serving, the stale one was pruned, and
+    # everything is cleaned up.
+    assert published == [True, False]
     assert not active_config.exists()
-    assert not descriptor_path("scratch").exists()
+    assert not alias_locked("scratch")
     assert control_dirs(login) == []
     assert signal.getsignal(signal.SIGINT) is previous_handler
+
+
+def test_a_second_tunnel_for_a_served_alias_is_refused_before_connecting(
+    login: SSHTestServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    configure_tunnel(monkeypatch, login)
+
+    with alias_lock("base"), tunnel_log() as log:
+        result = invoke(["tunnel", "base"])
+
+    assert result.exit_code == 1, result
+    assert log.command_errors() == [
+        "Could not start tunnel: a tunnel is already running for `base`"
+    ]
+    # Before any password prompt.
+    assert login.auth_attempts == []
+
+
+def test_shutdown_withdraws_the_block_before_closing_the_port(
+    login: SSHTestServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """And releases the alias lock last."""
+    worker_port = login.listen(banner(BANNER))
+    events: list[str] = []
+
+    @contextmanager
+    def recording_lock(alias: str) -> Generator[None]:
+        with lock.alias_lock(alias):
+            events.append("take the lock")
+            yield
+        events.append("release the lock")
+
+    connect = cli_ssh.connect_interactive
+
+    async def recording_connect(*args: object, **kwargs: object) -> RemoteHost:
+        events.append("connect")
+        return await connect(*args, **kwargs)  # type: ignore[arg-type]
+
+    forward = RemoteHost.forward_local_port
+
+    async def recording_forward(host: RemoteHost, *args: object, **kwargs: object):
+        listener = await forward(host, *args, **kwargs)  # type: ignore[arg-type]
+        close = listener.close
+
+        def recording_close() -> None:
+            events.append("close the forwarded port")
+            close()
+
+        listener.close = recording_close
+        return listener
+
+    close_login = RemoteHost.close
+
+    async def recording_close_login(host: RemoteHost) -> None:
+        events.append("close the login connection")
+        await close_login(host)
+
+    def press() -> object:
+        signal.raise_signal(signal.SIGINT)
+        return RUNNING
+
+    configure_tunnel(monkeypatch, login)
+    serve_interactive_job(login)
+    use_scheduler(
+        monkeypatch,
+        lambda host: FakeScheduler(
+            host,
+            [RUNNING, press, RUNNING],
+            submitted=lambda _spec: write_worker_status(
+                login, "ready", str(worker_port)
+            ),
+        ),
+    )
+    monkeypatch.setattr(session, "alias_lock", recording_lock)
+    monkeypatch.setattr(cli_ssh, "connect_interactive", recording_connect)
+    monkeypatch.setattr(RemoteHost, "forward_local_port", recording_forward)
+    monkeypatch.setattr(RemoteHost, "close", recording_close_login)
+    monkeypatch.setattr(
+        session, "publish_host", lambda _host, _port: events.append("publish")
+    )
+    monkeypatch.setattr(
+        session, "withdraw_host", lambda _host: events.append("withdraw")
+    )
+
+    result = invoke(["tunnel", "base", "--worker-port", str(worker_port)])
+
+    assert result.exit_code == 0, result
+    assert events == [
+        "take the lock",
+        "connect",
+        "publish",
+        "withdraw",
+        "close the forwarded port",
+        "close the login connection",
+        "release the lock",
+    ]
+    assert not alias_locked("base")
 
 
 async def test_interactive_output_keeps_characters_split_across_reads(
@@ -383,6 +506,44 @@ def test_a_cleanup_step_that_hangs_is_given_up_on(
     assert control_dirs(login) == []
 
 
+def test_a_lock_release_that_hangs_is_given_up_on(
+    login: SSHTestServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    worker_port = login.listen(banner(BANNER))
+    monkeypatch.setattr(session, "_LOCK_RELEASE_SECONDS", 0.1)
+
+    @contextmanager
+    def slow_lock(alias: str) -> Generator[None]:
+        with lock.alias_lock(alias):
+            try:
+                yield
+            finally:
+                time.sleep(0.5)
+
+    configure_tunnel(monkeypatch, login)
+    serve_interactive_job(login)
+    use_scheduler(
+        monkeypatch,
+        lambda host: FakeScheduler(
+            host,
+            [RUNNING, snapshot(JobState.SUCCEEDED, "DONE")],
+            submitted=lambda _spec: write_worker_status(
+                login, "ready", str(worker_port)
+            ),
+        ),
+    )
+    monkeypatch.setattr(session, "alias_lock", slow_lock)
+    monkeypatch.setattr(session, "publish_host", lambda _host, _port: None)
+
+    with tunnel_log() as log:
+        result = invoke(["tunnel", "base", "--worker-port", str(worker_port)])
+
+    assert result.exit_code == 0, result
+    assert log.starting(
+        "Could not release the alias lock: no answer within 0.1 seconds."
+    )
+
+
 @pytest.mark.parametrize("hangs", [False, True], ids=["finishes", "hangs"])
 def test_ctrl_c_during_batch_submission_lets_it_finish(
     login: SSHTestServer, monkeypatch: pytest.MonkeyPatch, hangs: bool
@@ -437,22 +598,10 @@ def _stop_after_creating_the_control_directory(
     monkeypatch.setattr(WorkerControl, "create", create_then_stop)
 
 
-def _stop_before_publishing_the_descriptor(
-    monkeypatch: pytest.MonkeyPatch, _published: list[str]
-) -> None:
-    publish = TunnelDescriptor.publish
-
-    def stop_then_publish(descriptor: TunnelDescriptor) -> None:
-        _stop_from_thread()
-        publish(descriptor)
-
-    monkeypatch.setattr(TunnelDescriptor, "publish", stop_then_publish)
-
-
 def _stop_before_publishing_the_host_block(
     monkeypatch: pytest.MonkeyPatch, published: list[str]
 ) -> None:
-    def stop_then_publish(host: ssh_config.WorkerHost, **_kwargs: object) -> None:
+    def stop_then_publish(host: ssh_config.WorkerHost, _port: int) -> None:
         _stop_from_thread()
         published.append(host.alias)
 
@@ -463,10 +612,9 @@ def _stop_before_publishing_the_host_block(
     "stop_during_step",
     [
         _stop_after_creating_the_control_directory,
-        _stop_before_publishing_the_descriptor,
         _stop_before_publishing_the_host_block,
     ],
-    ids=["control-directory", "descriptor", "host-block"],
+    ids=["control-directory", "host-block"],
 )
 def test_ctrl_c_during_a_step_still_cleans_up_after_it(
     login: SSHTestServer,
@@ -490,10 +638,10 @@ def test_ctrl_c_during_a_step_still_cleans_up_after_it(
     published: list[str] = []
     withdrawn: list[str] = []
     monkeypatch.setattr(
-        session, "publish_host", lambda host, **_kwargs: published.append(host.alias)
+        session, "publish_host", lambda host, _port: published.append(host.alias)
     )
     monkeypatch.setattr(
-        session, "withdraw_host", lambda host, **_kwargs: withdrawn.append(host.alias)
+        session, "withdraw_host", lambda host: withdrawn.append(host.alias)
     )
     stop_during_step(monkeypatch, published)
 
@@ -503,8 +651,8 @@ def test_ctrl_c_during_a_step_still_cleans_up_after_it(
     assert result.exit_code == 0, result
     assert "Stopping tunnel: Ctrl+C" in log.messages()
     assert control_dirs(login) == []
-    assert not descriptor_path("base").exists()
     assert published == withdrawn
+    assert not alias_locked("base")
 
 
 def test_ctrl_c_at_a_prompt_exits_130(

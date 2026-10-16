@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from ezhpcy import types as types_module
 from ezhpcy.ipc import IPCError, descriptor as descriptor_module
 from ezhpcy.ipc.descriptor import TunnelDescriptor, descriptor_path
 from ezhpcy.types import ResolvedConfig
@@ -82,6 +83,31 @@ def test_anonymous_alias_digest_excludes_timings() -> None:
     )
 
     assert default.descriptor_digest() == changed.descriptor_digest()
+
+
+def test_anonymous_alias_digest_is_stable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A change to the digest renames every anonymous tunnel, so make it on purpose.
+
+    Pinned from before `time_limit` became a `timedelta`.
+    """
+    monkeypatch.setattr(types_module, "local_machine_id", lambda: "test-machine")
+    resolved = ResolvedConfig.model_validate(
+        {
+            "connection": {"user": "alice", "host": "login.example.com"},
+            "scheduler": SCHEDULER,
+            "resources": {
+                "queue": "gpu",
+                "cores": 8,
+                "gpus": 1,
+                "time_limit": "4:30",
+                "memory": "32GB",
+            },
+        }
+    )
+
+    assert resolved.descriptor_digest() == (
+        "9a8261e14d47a7b754e2d99f08e637a816f77cbc8a9e177c10804875f6f6e18a"
+    )
 
 
 @pytest.mark.parametrize(

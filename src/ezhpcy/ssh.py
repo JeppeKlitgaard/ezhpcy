@@ -8,13 +8,14 @@ import logging
 from contextlib import asynccontextmanager
 lazy import asyncio
 lazy import shlex
-lazy from collections.abc import AsyncGenerator
+lazy from collections.abc import AsyncGenerator, Callable
 lazy from pathlib import PurePosixPath
 lazy from types import TracebackType
 lazy from typing import Self
 
 import asyncssh
 
+lazy from ezhpcy.constants import LOOPBACK_HOST
 lazy from ezhpcy.types import ConnectionInfo, RemoteState
 
 logger = logging.getLogger(__name__)
@@ -196,6 +197,23 @@ class RemoteHost:
     ) -> tuple[asyncssh.SSHReader[bytes], asyncssh.SSHWriter[bytes]]:
         """Open a TCP connection from the login node (`direct-tcpip`)."""
         return await self._conn.open_connection(host, port)
+
+    async def forward_local_port(
+        self,
+        host: str,
+        port: int,
+        *,
+        accept_handler: Callable[[str, int], bool] | None = None,
+    ) -> asyncssh.SSHListener:
+        """
+        Listen on a free loopback port, and forward each connection to it to
+        `host:port` from the login node, over its own `direct-tcpip` channel.
+        `accept_handler` is called with each client's address; a false return
+        refuses the connection. The port is `listener.get_port()`.
+        """
+        return await self._conn.forward_local_port(
+            LOOPBACK_HOST, 0, host, port, accept_handler=accept_handler
+        )
 
     async def remote_state(self) -> RemoteState:
         """

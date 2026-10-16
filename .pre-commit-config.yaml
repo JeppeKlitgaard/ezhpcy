@@ -26,23 +26,30 @@ repos:
         # Shared test helpers, not test modules
         exclude: ^tests/support/
 
-  # Ruff: linting and formatting
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    # Keep in sync with pyproject.toml
-    rev: v0.16.10
+  # Ruff and Pyrefly run through uv so their versions come from the dependency
+  # groups in pyproject.toml (pinned by uv.lock)
+  - repo: local
     hooks:
-      # Run the linter and fix what is possible
+      # Ruff: run the linter and fix what is possible
       - id: ruff-check
-        args: ["--fix"]
+        name: Ruff (lint)
+        entry: uv run --group format ruff check --force-exclude --fix
+        language: system
+        types_or: [python, pyi, jupyter]
+        require_serial: true
 
-      # Run the formatter and fix code styling
+      # Ruff: run the formatter and fix code styling
       - id: ruff-format
+        name: Ruff (format)
+        entry: uv run --group format ruff format --force-exclude
+        language: system
+        types_or: [python, pyi, jupyter]
+        require_serial: true
 
-  # Pyrefly: static type checking
-  - repo: https://github.com/facebook/pyrefly-pre-commit
-    rev: 1.4.0  # Note: this is the version of the pre-commit hook, NOT the pyrefly version used for type checking
-    hooks:
+      # Pyrefly: static type checking, with imports resolved against the project venv
       - id: pyrefly-check
         name: Pyrefly (type checking)
-        pass_filenames: false  # Recommended to do full repo checks. However, you can change this to `true` to only check changed files
-        language: system  # Use pyrefly from environment
+        entry: uv run --group typecheck pyrefly check
+        language: system
+        types_or: [python, pyi, jupyter]
+        pass_filenames: false  # Full repo check, matching `just check`

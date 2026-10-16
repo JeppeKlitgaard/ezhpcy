@@ -4,7 +4,9 @@ reached through the login connection.
 
 - `session` runs one tunnel from connecting to cleaning up.
 - `server` relays each `ezhpcy proxy` to the worker
-- `ssh_config` writes the Host blocks that point OpenSSH at the proxy.
+- `ssh_config` writes the Host blocks that point OpenSSH at a tunnel's
+  forwarded port.
+- `lock` keeps one running tunnel per alias.
 """
 
 

@@ -11,7 +11,8 @@ lazy from pathlib import Path
 lazy from typing import Self
 
 lazy from ezhpcy.config import config, validate_alias
-lazy from ezhpcy.ipc import LOOPBACK_HOST, IPCError
+lazy from ezhpcy.constants import LOOPBACK_HOST
+lazy from ezhpcy.ipc import IPCError
 
 DESCRIPTOR_VERSION = 2
 _INVALID = "tunnel runtime information is invalid; restart the tunnel"

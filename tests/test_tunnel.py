@@ -3,7 +3,7 @@
 import re
 from datetime import timedelta
 from pathlib import Path
-from unittest.mock import ANY, patch
+from unittest.mock import patch
 
 import pytest
 from pydantic import ValidationError
@@ -39,6 +39,61 @@ def test_parse_memory_normalizes_sizes_to_bytes(
 def test_parse_memory_rejects_invalid_sizes(value: str) -> None:
     with pytest.raises(ValidationError, match="memory"):
         ResourcesConfig(memory=value)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (None, None),
+        ("1:00", timedelta(hours=1)),
+        ("0:05", timedelta(minutes=5)),
+        ("1:5", timedelta(hours=1, minutes=5)),
+        (" 01:30 ", timedelta(hours=1, minutes=30)),
+        ("100:00", timedelta(hours=100)),
+    ],
+)
+def test_parse_time_limit(value: str | None, expected: timedelta | None) -> None:
+    assert ResourcesConfig(time_limit=value).time_limit == expected
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        ("soon", "time_limit must use H:MM format"),
+        ("1:000", "time_limit must use H:MM format"),
+        ("90", "time_limit must use H:MM format"),
+        ("1:60", "time_limit minutes must be less than 60"),
+        ("0:00", "time_limit must be positive"),
+        (timedelta(0), "time_limit must be positive"),
+        (timedelta(seconds=90), "time_limit must be a whole number of minutes"),
+        # Not seconds, as a bare `timedelta` field would read it.
+        (60, "Input should be a valid timedelta"),
+    ],
+)
+def test_parse_time_limit_rejects_invalid_limits(value: object, message: str) -> None:
+    with pytest.raises(ValidationError, match=message):
+        ResourcesConfig.model_validate({"time_limit": value})
+
+
+@pytest.mark.parametrize(
+    ("value", "dumped"),
+    [
+        # As written, so their anonymous aliases stay the same.
+        ("1:00", "1:00"),
+        ("0:30", "0:30"),
+        ("100:05", "100:05"),
+        # Written differently; each now shares the alias of the form above.
+        ("01:00", "1:00"),
+        ("1:5", "1:05"),
+        (" 1:00 ", "1:00"),
+    ],
+)
+def test_time_limit_is_dumped_as_h_mm(value: str, dumped: str) -> None:
+    resources = ResourcesConfig(time_limit=value)
+
+    assert resources.model_dump(mode="json")["time_limit"] == dumped
+    # Profile inheritance and the CLI options re-validate Python dumps.
+    assert ResourcesConfig.model_validate(resources.model_dump()) == resources
 
 
 def test_tunnel_command_accepts_anonymous_cli_configuration(
@@ -121,7 +176,7 @@ def test_tunnel_command_resolves_profile_and_applies_cli_overrides(
     assert resolved.resources.gpus == 1
     assert resolved.resources.exclusive is False
     assert resolved.resources.memory_bytes == 64_000_000_000
-    assert resolved.resources.time_limit_delta == timedelta(hours=1)
+    assert resolved.resources.time_limit == timedelta(hours=1)
     assert resolved.connection == ConnectionInfo(
         host="login.example.com",
         user="alice",
@@ -312,33 +367,20 @@ def test_tunnel_without_auto_provision_needs_the_local_credentials(
     )
 
 
-def test_profile_tunnel_alias_defaults_to_its_profiles_conf_block(
-    monkeypatch: pytest.MonkeyPatch, isolated_runtime_dir: Path
-) -> None:
-    monkeypatch.setattr(tunnel_module.config, "profile", _alias_profiles())
-    captured = capture(monkeypatch, "tunnel")
-
-    result = invoke(["tunnel", "gpu"])
-
-    assert result.exit_code == 0, result
-    ssh_host = captured["ssh_host"]
-    assert isinstance(ssh_host, WorkerHost)
-    assert (ssh_host.alias, ssh_host.user) == ("gpu", "alice")
-    assert captured["ssh_host_in_profiles_config"] is True
-    profiles_conf = isolated_runtime_dir / "ssh-config" / "profiles.conf"
-    assert "Host cpu\n" in profiles_conf.read_text(encoding="utf-8")
-    assert "Host gpu\n" in profiles_conf.read_text(encoding="utf-8")
-
-
 @pytest.mark.parametrize(
     ("arguments", "alias", "user"),
     [
+        ([], "gpu", "alice"),
         (["--user", "bob"], "gpu", "bob"),
         (["--alias", "my-gpu"], "my-gpu", "alice"),
     ],
 )
-def test_profile_tunnel_that_differs_from_profiles_conf_needs_its_own_block(
-    monkeypatch: pytest.MonkeyPatch, arguments: list[str], alias: str, user: str
+def test_profile_tunnel_alias_defaults_to_the_profile_name(
+    monkeypatch: pytest.MonkeyPatch,
+    isolated_runtime_dir: Path,
+    arguments: list[str],
+    alias: str,
+    user: str,
 ) -> None:
     monkeypatch.setattr(tunnel_module.config, "profile", _alias_profiles())
     captured = capture(monkeypatch, "tunnel")
@@ -349,28 +391,8 @@ def test_profile_tunnel_that_differs_from_profiles_conf_needs_its_own_block(
     ssh_host = captured["ssh_host"]
     assert isinstance(ssh_host, WorkerHost)
     assert (ssh_host.alias, ssh_host.user) == (alias, user)
-    assert captured["ssh_host_in_profiles_config"] is False
-
-
-def test_tunnel_falls_back_to_its_own_block_when_profiles_conf_cannot_be_written(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(tunnel_module.config, "profile", _alias_profiles())
-    captured = capture(monkeypatch, "tunnel")
-
-    def fail(_hosts: object) -> None:
-        raise OSError("disk full")
-
-    monkeypatch.setattr(tunnel_module, "write_profiles_config", fail)
-
-    with patch("ezhpcy.cli.tunnel.logger") as logger:
-        result = invoke(["tunnel", "gpu"])
-
-    assert result.exit_code == 0, result
-    assert captured["ssh_host_in_profiles_config"] is False
-    logger.warning.assert_any_call(
-        "Could not write the profile SSH configuration: %s", ANY
-    )
+    # Idle profiles get no Host block.
+    assert not (isolated_runtime_dir / "ssh-config").exists()
 
 
 def test_anonymous_tunnel_alias_is_stable_for_identical_options(
@@ -381,7 +403,6 @@ def test_anonymous_tunnel_alias_is_stable_for_identical_options(
     def alias_for(*extra: str) -> str:
         result = invoke([*_ANONYMOUS_TUNNEL_ARGS, *extra])
         assert result.exit_code == 0, result
-        assert captured["ssh_host_in_profiles_config"] is False
         ssh_host = captured["ssh_host"]
         assert isinstance(ssh_host, WorkerHost)
         return ssh_host.alias

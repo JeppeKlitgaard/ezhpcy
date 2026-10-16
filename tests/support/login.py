@@ -27,7 +27,6 @@ def route_login(
     """
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
-    monkeypatch.setattr("ezhpcy.utils.machineid.hashed_id", lambda _: MACHINE_ID)
     known_hosts = config.local_file.login_known_hosts_file
     known_hosts.parent.mkdir(parents=True, exist_ok=True)
     known_hosts.write_text(server.known_hosts_line, encoding="utf-8")

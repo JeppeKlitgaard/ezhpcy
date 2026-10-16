@@ -2,7 +2,10 @@
 
 import asyncio
 import shlex
+import socket
 import threading
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
@@ -10,10 +13,10 @@ import asyncssh
 import pytest
 
 from ezhpcy import ssh
-from ezhpcy.constants import EZHPCY_VERSION, PIXI_VERSION
+from ezhpcy.constants import EZHPCY_VERSION, LOOPBACK_HOST, PIXI_VERSION
 from ezhpcy.ssh import RemoteHost
 from ezhpcy.types import ConnectionInfo, RemoteState
-from tests.support.sshserver import Invocation, SSHTestServer, reply
+from tests.support.sshserver import Invocation, SSHTestServer, StreamHandler, reply
 
 LARGE_OUTPUT_BYTES = 5_000_000
 # How long a test waits for something that should happen at once.
@@ -382,6 +385,234 @@ async def test_open_tcp_reaches_a_port_from_the_login_node(ssh_server: SSHTestSe
     finally:
         worker.close()
         await worker.wait_closed()
+
+
+async def _echo(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    """Echo until the client's EOF, then close."""
+    while data := await reader.read(64 * 1024):
+        writer.write(data)
+        await writer.drain()
+    writer.close()
+
+
+@asynccontextmanager
+async def _destination(
+    ssh_server: SSHTestServer, handler: StreamHandler, port: int = 0
+) -> AsyncGenerator[int]:
+    """Serve `handler` on a loopback port that the login node may forward to."""
+    server = await asyncio.start_server(handler, LOOPBACK_HOST, port)
+    port = server.sockets[0].getsockname()[1]
+    ssh_server.allow_forwarding(port)
+    try:
+        yield port
+    finally:
+        server.close()
+        server.close_clients()
+        await server.wait_closed()
+
+
+def _closed_port() -> int:
+    """A loopback port that nothing listens on."""
+    with socket.socket() as probe:
+        probe.bind((LOOPBACK_HOST, 0))
+        return probe.getsockname()[1]
+
+
+async def _open(
+    listener: asyncssh.SSHListener,
+) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+    return await asyncio.open_connection(LOOPBACK_HOST, listener.get_port())
+
+
+async def _round_trip(
+    listener: asyncssh.SSHListener, payload: bytes = b"ping\n"
+) -> bytes:
+    """Send `payload` and EOF through `listener`, and return everything sent back."""
+    reader, writer = await _open(listener)
+    writer.write(payload)
+    writer.write_eof()
+    try:
+        return await asyncio.wait_for(reader.read(), WAIT_SECONDS)
+    finally:
+        writer.close()
+
+
+async def _refused(listener: asyncssh.SSHListener) -> bool:
+    """
+    Whether `listener` closes a connection without forwarding it. The client sees
+    EOF, or a reset when the socket was closed before reading what it sent.
+    """
+    try:
+        return await _round_trip(listener) == b""
+    except ConnectionResetError:
+        return True
+
+
+async def test_forward_local_port_listens_on_loopback(ssh_server: SSHTestServer):
+    async with (
+        _destination(ssh_server, _echo) as port,
+        await _connect(ssh_server) as host,
+    ):
+        listener = await host.forward_local_port(LOOPBACK_HOST, port)
+        _reader, writer = await _open(listener)
+        try:
+            assert writer.get_extra_info("peername")[0] == LOOPBACK_HOST
+        finally:
+            writer.close()
+
+    assert listener.get_port() not in {0, port}
+
+
+async def test_forward_local_port_passes_on_the_clients_eof(
+    ssh_server: SSHTestServer,
+):
+    payload = bytes(range(256)) * 4096
+    async with (
+        _destination(ssh_server, _echo) as port,
+        await _connect(ssh_server) as host,
+    ):
+        listener = await host.forward_local_port(LOOPBACK_HOST, port)
+        # The destination only replies in full, and closes, after the client's EOF.
+        assert await _round_trip(listener, payload) == payload
+
+
+async def test_forward_local_port_passes_on_the_destinations_eof(
+    ssh_server: SSHTestServer,
+):
+    received: asyncio.Future[bytes] = asyncio.get_running_loop().create_future()
+
+    async def banner_then_read(
+        reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        writer.write(b"SSH-2.0-worker\r\n")
+        writer.write_eof()
+        received.set_result(await reader.read())
+        writer.close()
+
+    async with (
+        _destination(ssh_server, banner_then_read) as port,
+        await _connect(ssh_server) as host,
+    ):
+        listener = await host.forward_local_port(LOOPBACK_HOST, port)
+        reader, writer = await _open(listener)
+        try:
+            assert await asyncio.wait_for(reader.read(), WAIT_SECONDS) == (
+                b"SSH-2.0-worker\r\n"
+            )
+            # The client can still send after the destination's EOF.
+            writer.write(b"after EOF")
+            writer.write_eof()
+            assert await asyncio.wait_for(received, WAIT_SECONDS) == b"after EOF"
+        finally:
+            writer.close()
+
+
+async def test_forward_local_port_serves_concurrent_connections(
+    ssh_server: SSHTestServer,
+):
+    payloads = [f"connection {index}\n".encode() * 1000 for index in range(50)]
+    async with (
+        _destination(ssh_server, _echo) as port,
+        await _connect(ssh_server) as host,
+    ):
+        listener = await host.forward_local_port(LOOPBACK_HOST, port)
+        replies = await asyncio.gather(
+            *(_round_trip(listener, payload) for payload in payloads)
+        )
+
+    assert replies == payloads
+
+
+async def test_forward_local_port_survives_a_refusing_destination(
+    ssh_server: SSHTestServer,
+):
+    port = _closed_port()
+    ssh_server.allow_forwarding(port)
+    async with await _connect(ssh_server) as host:
+        listener = await host.forward_local_port(LOOPBACK_HOST, port)
+        # The channel can't be opened, so the local connection is closed.
+        assert await _refused(listener)
+
+        async with _destination(ssh_server, _echo, port):
+            assert await _round_trip(listener) == b"ping\n"
+
+
+async def test_forward_local_port_calls_the_accept_handler(
+    ssh_server: SSHTestServer,
+):
+    clients: list[tuple[str, int]] = []
+
+    def accept(client_host: str, client_port: int) -> bool:
+        clients.append((client_host, client_port))
+        return len(clients) == 1
+
+    async with (
+        _destination(ssh_server, _echo) as port,
+        await _connect(ssh_server) as host,
+    ):
+        listener = await host.forward_local_port(
+            LOOPBACK_HOST, port, accept_handler=accept
+        )
+        reader, writer = await _open(listener)
+        client = writer.get_extra_info("sockname")[:2]
+        writer.write(b"ping\n")
+        writer.write_eof()
+        assert await asyncio.wait_for(reader.read(), WAIT_SECONDS) == b"ping\n"
+        writer.close()
+        # Refused by the handler: closed without reaching the destination.
+        assert await _refused(listener)
+
+    assert clients[0] == client
+    assert len(clients) == 2
+
+
+async def test_closing_the_forwarded_port_keeps_open_connections(
+    ssh_server: SSHTestServer,
+):
+    async with (
+        _destination(ssh_server, _echo) as port,
+        await _connect(ssh_server) as host,
+    ):
+        listener = await host.forward_local_port(LOOPBACK_HOST, port)
+        reader, writer = await _open(listener)
+        writer.write(b"before\n")
+        assert await asyncio.wait_for(reader.readline(), WAIT_SECONDS) == b"before\n"
+
+        listener.close()
+
+        with pytest.raises(ConnectionRefusedError):
+            await asyncio.wait_for(_open(listener), WAIT_SECONDS)
+        # asyncssh leaves open connections alone, and `wait_closed` waits for
+        # them, as `asyncio.Server.wait_closed` does.
+        waiting = asyncio.create_task(listener.wait_closed())
+        writer.write(b"after\n")
+        assert await asyncio.wait_for(reader.readline(), WAIT_SECONDS) == b"after\n"
+        assert not waiting.done()
+        writer.close()
+        await asyncio.wait_for(waiting, WAIT_SECONDS)
+
+
+async def test_losing_the_login_connection_closes_the_forwarded_port(
+    ssh_server: SSHTestServer,
+):
+    async with (
+        _destination(ssh_server, _echo) as port,
+        await _connect(ssh_server) as host,
+    ):
+        listener = await host.forward_local_port(LOOPBACK_HOST, port)
+        reader, writer = await _open(listener)
+        writer.write(b"before\n")
+        assert await asyncio.wait_for(reader.readline(), WAIT_SECONDS) == b"before\n"
+
+        ssh_server.drop()
+        await asyncio.wait_for(host.closed, WAIT_SECONDS)
+
+        # Open connections are closed, and so is the listener.
+        assert await asyncio.wait_for(reader.read(), WAIT_SECONDS) == b""
+        writer.close()
+        await asyncio.wait_for(listener.wait_closed(), WAIT_SECONDS)
+        with pytest.raises(ConnectionRefusedError):
+            await asyncio.wait_for(_open(listener), WAIT_SECONDS)
 
 
 # Connection loss

@@ -20,6 +20,7 @@ dependencies = [
     # Utils
     "py-machineid>=1.0.0",
     "platformdirs>=4.9.4",
+    "filelock>=4.2.0",
 ]
 
 [project.scripts]
@@ -34,10 +35,10 @@ dev = [
 ]
 
 format = [
-    "ruff>=0.16.10", # keep in sync with .pre-commit-config.yaml
+    "ruff==0.17.1",
 ]
 pre-commit = [
-    "prek>=0.5.5", # keep in sync with .github/workflows/pre-commit.yaml
+    "prek==0.5.5", # keep in sync with .github/workflows/pre-commit.yaml
     { include-group = "typecheck" }, # For pyrefly that uses pyrefly from deps
 ]
 test = [
@@ -46,7 +47,7 @@ test = [
     "pytest-cov>=7.1.0",
 ]
 typecheck = [
-    "pyrefly>=1.4.0",
+    "pyrefly==1.4.0",
 ]
 
 # Tests
@@ -54,6 +55,9 @@ typecheck = [
 # `async def` tests and fixtures run on asyncio without a marker
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "real_machine_id: read this machine's ID instead of the fixed one tests get",
+]
 
 # Test coverage
 [tool.coverage.run]
@@ -108,5 +112,7 @@ project-includes = [
 
 # Build system
 [build-system]
+# Keep the lower bound in sync with the setup-uv `version` in .github/workflows/
+# (pre-commit.yaml, tests.yml, publish.yml x2)
 requires = ["uv_build>=0.13.1,<0.14"]
 build-backend = "uv_build"

@@ -310,7 +310,7 @@ def test_nested_profile_inheritance_resolves_all_ancestor_values() -> None:
     assert profile.resources.cores == 8
     assert profile.resources.exclusive
     assert int(profile.resources.memory) == 32_000_000_000
-    assert profile.resources.time_limit_delta == timedelta(hours=1)
+    assert profile.resources.time_limit == timedelta(hours=1)
     assert profile.lsf.resource_reserve_per_task
 
 

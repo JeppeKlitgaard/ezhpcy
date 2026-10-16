@@ -22,7 +22,7 @@ from ezhpcy.logging import (
     TERMINAL_HANDLER_NAME,
     configure_logging,
 )
-from tests.support.login import route_login
+from tests.support.login import MACHINE_ID, route_login
 from tests.support.sshserver import SSHTestServer
 
 # As the CLI does, so every test sees the same `ezhpcy` logger: one that has the
@@ -62,6 +62,20 @@ def isolated_local_files(
     )
     monkeypatch.setattr(config, "local_file", local_file)
     return local_file
+
+
+@pytest.fixture(autouse=True)
+def fixed_machine_id(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Give every test the same machine ID, except those marked `real_machine_id`.
+    On macOS `machineid` runs `ioreg` through `subprocess.run`, so a test that
+    fakes `subprocess.run` would otherwise break any code that asks for the ID.
+    """
+    if request.node.get_closest_marker("real_machine_id"):
+        return
+    monkeypatch.setattr("ezhpcy.utils.machineid.hashed_id", lambda _: MACHINE_ID)
 
 
 @pytest.fixture

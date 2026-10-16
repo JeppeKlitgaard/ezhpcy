@@ -9,8 +9,6 @@ prove that they hold the key (`protocol`), so other local users can't use the
 tunnel. The tunnel then relays the proxy's bytes to the worker.
 """
 
-LOOPBACK_HOST = "127.0.0.1"
-
 
 class IPCError(Exception):
     """An actionable tunnel IPC failure."""

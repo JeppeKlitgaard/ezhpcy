@@ -16,7 +16,8 @@ from ezhpcy.ipc.protocol import (
     authenticate_server,
     rejection,
 )
-lazy from ezhpcy.ipc import LOOPBACK_HOST, IPCError
+lazy from ezhpcy.constants import LOOPBACK_HOST
+lazy from ezhpcy.ipc import IPCError
 lazy from ezhpcy.ssh import RemoteHost
 
 logger = logging.getLogger(__name__)

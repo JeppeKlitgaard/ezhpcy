@@ -39,27 +39,27 @@ async def prune_cmd(
         resolve_profile_config(profile).connection,
         profile_name=profile,
     )
+    if not all_data:
+        async with await connect_or_exit(conn_info) as login:
+            await prune_stale_data(login, await login.remote_state())
+        return
+
+    # Asked before connecting (see `ask`).
+    target = f"{conn_info.user}@{conn_info.host}"
+    user_accepts = yes or ask(
+        Confirm.ask,
+        rich_text(
+            t"This will remove {'all':emphasis} EzHPCy-managed infrastructure and "
+            t"data from {target:name}: the {'ezhpcy':path} directories under its "
+            t"{'$XDG_CACHE_HOME':path} and {'$XDG_STATE_HOME':path}. Proceed?"
+        ),
+        console=error_console,
+        default=False,
+    )
+    if not user_accepts:
+        print_aborted(t"Prune cancelled.")
+        raise SystemExit(1)
+
     async with await connect_or_exit(conn_info) as login:
-        remote_state = await login.remote_state()
-
-        if not all_data:
-            await prune_stale_data(login, remote_state)
-            return
-
-        user_accepts = yes or ask(
-            Confirm.ask,
-            rich_text(
-                t"This will remove {'all':emphasis} EzHPCy-managed remote "
-                t"infrastructure and data under "
-                t"{remote_state.package_cache_root():path} and "
-                t"{remote_state.package_state_root():path}. Proceed?"
-            ),
-            console=error_console,
-            default=False,
-        )
-        if not user_accepts:
-            print_aborted(t"Prune cancelled.")
-            raise SystemExit(1)
-
-        await prune_all_remote_data(login, remote_state)
+        await prune_all_remote_data(login, await login.remote_state())
     print_success(t"All managed remote data removed.")

@@ -125,7 +125,8 @@ def test_provision_asks_first_and_can_be_cancelled(
     assert result.exit_code == 1, result
     assert "Proceed?" in result.stderr
     assert "Aborted: Provisioning cancelled." in result.stderr
-    assert "remote_operation" not in captured
+    # Asked before connecting, so the connection can't drop while it waits.
+    assert "conn_info" not in captured
 
 
 def _removes_cache_root(captured: dict[str, object]) -> bool:
@@ -166,7 +167,7 @@ def test_prune_all_asks_first_and_defaults_to_no(
     assert result.exit_code == 1, result
     assert "Proceed?" in result.stderr
     assert "Aborted: Prune cancelled." in result.stderr
-    assert not _removes_cache_root(captured)
+    assert "conn_info" not in captured
 
 
 @pytest.mark.parametrize("arguments", [[], ["--json"]])
@@ -261,7 +262,8 @@ def test_connection_options_reach_the_login_connection(
     )
 
     result = invoke(
-        ["provision", "base", *_filled(arguments, password_sources)], env=env
+        ["provision", "base", "--yes", *_filled(arguments, password_sources)],
+        env=env,
     )
 
     assert "conn_info" in captured, result
@@ -300,7 +302,9 @@ def test_connection_options_reach_each_command_and_resolve_the_profile_once(
 
     monkeypatch.setattr(type(config), "resolve_profile", counting_resolve_profile)
 
-    result = invoke([command, "base", "--user", "bob"])
+    # `provision` asks before connecting.
+    yes = ["--yes"] if command == "provision" else []
+    result = invoke([command, "base", "--user", "bob", *yes])
 
     conn_info = (
         captured["resolved"].connection

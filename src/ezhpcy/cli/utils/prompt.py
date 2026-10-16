@@ -2,8 +2,9 @@
 Interactive prompts from async commands.
 
 A prompt blocks the event loop while it waits, which is harmless where nothing
-else runs on it: while connecting, or before a command starts its background
-work. Call `ask` only there.
+else runs on it: while connecting, or before a command connects or starts its
+background work. Call `ask` only there. Once connected, nothing would answer the
+server's keepalives, which could drop the connection.
 """
 
 lazy import signal

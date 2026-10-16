@@ -4,7 +4,6 @@ from pathlib import Path, PurePosixPath
 
 import asyncssh
 import pytest
-from cryptography.hazmat.primitives.asymmetric import ed25519
 
 from ezhpcy.config import config
 from ezhpcy.constants import WORKER_HOST_ALIAS
@@ -57,14 +56,14 @@ def test_local_worker_keys_are_generated_and_reused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     generated_keys = 0
-    original_generate = ed25519.Ed25519PrivateKey.generate
+    original_generate = asyncssh.generate_private_key
 
-    def count_generated_key() -> ed25519.Ed25519PrivateKey:
+    def count_generated_key(*args: object, **kwargs: object) -> asyncssh.SSHKey:
         nonlocal generated_keys
         generated_keys += 1
-        return original_generate()
+        return original_generate(*args, **kwargs)
 
-    monkeypatch.setattr(ed25519.Ed25519PrivateKey, "generate", count_generated_key)
+    monkeypatch.setattr(asyncssh, "generate_private_key", count_generated_key)
 
     _CREDENTIALS.ensure_local_keys()
     initial_contents = [path.read_bytes() for path in _key_files(_CREDENTIALS)]
@@ -87,7 +86,7 @@ def test_local_worker_keys_are_generated_and_reused(
     ):
         loaded_key = asyncssh.read_private_key(private_key)
         public_fields = public_key.read_text(encoding="ascii").split()
-        assert public_fields[:2] == (
+        assert public_fields == (
             loaded_key.export_public_key("openssh").decode().split()
         )
 

@@ -5,8 +5,7 @@ lazy import os
 lazy from pathlib import Path, PurePosixPath
 lazy from typing import Self
 
-lazy from cryptography.hazmat.primitives import serialization
-lazy from cryptography.hazmat.primitives.asymmetric import ed25519
+lazy import asyncssh
 
 lazy from ezhpcy.config import config
 lazy from ezhpcy.constants import (
@@ -124,20 +123,9 @@ def _ensure_key_pair(private_key: Path, public_key: Path, *, comment: str) -> No
             f"Incomplete SSH key pair at {private_key}; restore or remove it."
         )
     if not private_key.exists():
-        cryptography_key = ed25519.Ed25519PrivateKey.generate()
-        private_key_text = cryptography_key.private_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PrivateFormat.OpenSSH,
-            encryption_algorithm=serialization.NoEncryption(),
-        ).decode("ascii")
-        public_key_text = (
-            cryptography_key.public_key()
-            .public_bytes(
-                encoding=serialization.Encoding.OpenSSH,
-                format=serialization.PublicFormat.OpenSSH,
-            )
-            .decode("ascii")
-        )
+        key = asyncssh.generate_private_key("ssh-ed25519", comment=comment)
+        private_key_text = key.export_private_key("openssh").decode("ascii")
+        public_key_text = key.export_public_key("openssh").decode("ascii")
         # Create with owner-only permissions immediately and refuse a raced-in file;
         # writing first and chmodding afterward briefly exposes private key material.
         private_key_fd = os.open(
@@ -147,9 +135,6 @@ def _ensure_key_pair(private_key: Path, public_key: Path, *, comment: str) -> No
         )
         with os.fdopen(private_key_fd, "w", encoding="ascii", newline="\n") as file:
             file.write(private_key_text)
-        public_key.write_text(
-            f"{public_key_text} {comment}\n",
-            encoding="ascii",
-        )
+        public_key.write_text(public_key_text, encoding="ascii")
     restrict_to_current_user(private_key)
     public_key.chmod(0o644)

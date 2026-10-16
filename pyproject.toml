@@ -10,7 +10,6 @@ dependencies = [
     # Templates
     "jinja2>=3.1.6",
     # SSH
-    "paramiko>=4.0.0",
     "asyncssh>=2.24.1",
     "cryptography>=46.0.5",
     # CLI

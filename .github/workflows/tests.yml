@@ -1,0 +1,40 @@
+name: Tests
+
+on:
+  pull_request:
+    paths-ignore:
+      - 'docs/**'
+  push:
+    branches:
+      - master
+    paths-ignore:
+      - 'docs/**'
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.15"]
+        os: ["ubuntu-latest", "windows-latest", "macos-latest"]
+    name: ${{ matrix.os }}, Python ${{ matrix.python-version }}
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Just
+        uses: extractions/setup-just@v3
+        with:
+          just-version: "1.58.0"
+
+      - name: Setup uv and python
+        uses: astral-sh/setup-uv@v10.3.0
+        with:
+          version: "0.13.1"  # uv version, should match lower bound uv_build in pyproject.toml#build-system
+          python-version: ${{ matrix.python-version }}
+          enable-cache: "auto"
+
+      - name: Run tests
+        run: just test -v

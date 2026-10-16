@@ -28,11 +28,26 @@ ezhpcy = "ezhpcy.cli:main"
 
 [dependency-groups]
 dev = [
+    { include-group = "format" },
+    { include-group = "pre-commit" },
+    { include-group = "test" },
+    { include-group = "typecheck" },
+]
+
+format = [
+    "ruff>=0.16.10", # keep in sync with .pre-commit-config.yaml
+]
+pre-commit = [
     "prek>=0.4.9",
+    { include-group = "typecheck" }, # For pyrefly that uses pyrefly from deps
+]
+test = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
-    "ruff>=0.16.10",         # keep in sync with .pre-commit-config.yaml
+]
+typecheck = [
+    "pyrefly>=1.4.0",
 ]
 
 # Tests
@@ -83,6 +98,13 @@ isort.combine-as-imports = true
 # Standalone scripts
 "scripts/**" = [
     "INP", # no-pep420, scripts are standalone and not part of a package
+]
+
+# Pyrefly - Type checking
+[tool.pyrefly]
+project-includes = [
+    "src/**/*.py*",
+    "src/**/*.ipynb",
 ]
 
 # Build system

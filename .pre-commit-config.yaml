@@ -1,4 +1,5 @@
 repos:
+  # Miscellaneous pre-commits
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:
@@ -25,6 +26,7 @@ repos:
         # Shared test helpers, not test modules
         exclude: ^tests/support/
 
+  # Ruff: linting and formatting
   - repo: https://github.com/astral-sh/ruff-pre-commit
     # Keep in sync with pyproject.toml
     rev: v0.16.10
@@ -35,3 +37,12 @@ repos:
 
       # Run the formatter and fix code styling
       - id: ruff-format
+
+  # Pyrefly: static type checking
+  # - repo: https://github.com/facebook/pyrefly-pre-commit
+  #   rev: 1.4.0  # Note: this is the version of the pre-commit hook, NOT the pyrefly version used for type checking
+  #   hooks:
+  #     - id: pyrefly-check
+  #       name: Pyrefly (type checking)
+  #       pass_filenames: false  # Recommended to do full repo checks. However, you can change this to `true` to only check changed files
+  #       language: system  # Use pyrefly from environment

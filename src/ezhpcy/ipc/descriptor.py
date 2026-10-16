@@ -156,13 +156,16 @@ def _prepare_runtime_directory(directory: Path) -> int | None:
         metadata = directory.lstat()
     except OSError as error:
         raise IPCError("could not inspect the tunnel runtime directory") from error
+    # pyrefly: ignore[unbound-name]  # https://github.com/facebook/pyrefly/issues/795
     if stat.S_ISLNK(metadata.st_mode):
         raise IPCError("tunnel runtime directory must not be a symbolic link")
     if not stat.S_ISDIR(metadata.st_mode):
         raise IPCError("tunnel runtime path is not a directory")
+    # pyrefly: ignore[missing-attribute]  # https://github.com/facebook/pyrefly/issues/795
     if metadata.st_uid != os.getuid():
         raise IPCError("tunnel runtime directory is not owned by the current user")
 
+    # pyrefly: ignore[missing-attribute]  # https://github.com/facebook/pyrefly/issues/795
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     try:
         directory_fd = os.open(directory, flags)
@@ -172,9 +175,11 @@ def _prepare_runtime_directory(directory: Path) -> int | None:
         ) from error
 
     try:
+        # pyrefly: ignore[unbound-name]  # https://github.com/facebook/pyrefly/issues/795
         metadata = os.fstat(directory_fd)
         if not stat.S_ISDIR(metadata.st_mode):
             raise IPCError("tunnel runtime path is not a directory")
+        # pyrefly: ignore[missing-attribute]  # https://github.com/facebook/pyrefly/issues/795
         if metadata.st_uid != os.getuid():
             raise IPCError("tunnel runtime directory is not owned by the current user")
         try:
@@ -186,6 +191,7 @@ def _prepare_runtime_directory(directory: Path) -> int | None:
         if stat.S_IMODE(os.fstat(directory_fd).st_mode) != 0o700:
             raise IPCError("tunnel runtime directory permissions are not private")
     except BaseException:
+        # pyrefly: ignore[unbound-name]  # https://github.com/facebook/pyrefly/issues/795
         os.close(directory_fd)
         raise
     return directory_fd

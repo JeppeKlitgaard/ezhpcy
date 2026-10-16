@@ -1,8 +1,8 @@
 lazy from rich.table import Table
 lazy from rich.text import Text
 
-lazy from ezhpcy import console
 lazy from ezhpcy.config import config
+lazy from ezhpcy.console import console
 
 
 def list_profiles_cmd() -> None:

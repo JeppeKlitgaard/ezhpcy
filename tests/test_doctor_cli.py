@@ -59,7 +59,7 @@ def test_doctor_passes_when_everything_is_set_up(profiles: None) -> None:
     assert result.exit_code == 0, result
     assert "ok    Profile base is valid\n" in result.stdout
     assert "ok    Profile cpu is valid: alice@login.example.com" in result.stdout
-    assert "ok    `ssh cpu` goes through EzHPCy" in result.stdout
+    assert "ok    ssh cpu goes through EzHPCy" in result.stdout
     assert "All checks passed." in result.stdout
 
 
@@ -85,6 +85,7 @@ def test_doctor_warns_without_profiles(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert result.exit_code == 0, result
     assert "warn  No profiles are configured" in result.stdout
+    assert "Add a [profile.NAME] table" in result.stdout
     assert "so the SSH setup cannot be checked" in result.stdout
     assert include_directive().splitlines()[-1] in result.stdout.splitlines()
 
@@ -154,8 +155,8 @@ def test_doctor_fails_when_openssh_resolves_a_host_elsewhere(
     result = invoke(["doctor"])
 
     assert result.exit_code == 1
-    assert "fail  `ssh cpu` bypasses EzHPCy: shadowed by ~/.ssh/config" in result.stdout
-    assert "`ssh gpu`" not in result.stdout
+    assert "fail  ssh cpu bypasses EzHPCy: shadowed by ~/.ssh/config" in result.stdout
+    assert "ssh gpu" not in result.stdout
     lines = result.stdout.splitlines()
     for line in include_directive().splitlines():
         # Flush-left and on one line, so copying it yields a valid directive.

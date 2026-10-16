@@ -15,6 +15,7 @@ lazy from rich.text import Text
 lazy from ezhpcy import console
 lazy from ezhpcy.cli._errors import CliUsageError
 lazy from ezhpcy.cli._options import UserOpt
+lazy from ezhpcy.cli._output import print_aborted, print_success, print_warning
 lazy from ezhpcy.config import Config, config
 
 PRESET_DIRECTORY = "static/config/presets"
@@ -119,13 +120,10 @@ def load_cmd(
             current = config_file.read_text(encoding="utf-8")
         except OSError as error:
             raise CliUsageError(
-                t"Could not read configuration file {config_file}: {error}."
+                t"Could not read configuration file {config_file:path}: {error}."
             ) from error
 
-        console.print(
-            "[bold yellow]Warning[/bold yellow]: loading this preset will "
-            f"overwrite [bold blue]{config_file}[/bold blue]."
-        )
+        print_warning(t"Loading this preset will overwrite {config_file:path}.")
         diff = _diff_text(
             current,
             rendered,
@@ -143,9 +141,7 @@ def load_cmd(
             console=console,
             default=False,
         ):
-            console.print(
-                "[bold yellow]Aborted[/bold yellow]: configuration unchanged."
-            )
+            print_aborted(t"Configuration unchanged.")
             raise SystemExit(1)
 
     try:
@@ -153,10 +149,7 @@ def load_cmd(
         config_file.write_text(rendered, encoding="utf-8")
     except OSError as error:
         raise CliUsageError(
-            t"Could not write configuration file {config_file}: {error}."
+            t"Could not write configuration file {config_file:path}: {error}."
         ) from error
 
-    console.print(
-        f"[bold green]Success[/bold green]: loaded the [bold purple]{preset_name}[/bold purple] "
-        f"preset into [bold blue]{config_file}[/bold blue]."
-    )
+    print_success(t"Loaded the {preset_name:value} preset into {config_file:path}.")

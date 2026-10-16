@@ -125,7 +125,7 @@ def test_provision_asks_first_and_can_be_cancelled(
 
     assert result.exit_code == 1, result
     assert "Proceed?" in result.stdout
-    assert "provisioning cancelled" in result.stdout
+    assert "Aborted: Provisioning cancelled." in result.stdout
     assert "remote_operation" not in captured
 
 
@@ -166,7 +166,7 @@ def test_prune_all_asks_first_and_defaults_to_no(
 
     assert result.exit_code == 1, result
     assert "Proceed?" in result.stdout
-    assert "prune cancelled" in result.stdout
+    assert "Aborted: Prune cancelled." in result.stdout
     assert not _removes_cache_root(captured)
 
 

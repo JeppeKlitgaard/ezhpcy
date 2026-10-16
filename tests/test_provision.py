@@ -49,7 +49,7 @@ def test_provision_installs_pixi_openssh_and_the_worker_keys(
     result = invoke(["provision", *_LOGIN, "--yes"])
 
     assert result.exit_code == 0, result
-    assert "Success: remote provisioning completed." in result.stdout
+    assert "Success: Remote provisioning completed." in result.stdout
     [(_bash, _option, script)] = [
         argv for argv in _commands(login, "bash") if argv[1] == "-c"
     ]
@@ -248,7 +248,7 @@ def test_prune_all_removes_the_package_cache_and_state(login: SSHTestServer) -> 
     assert _commands(login, "rm") == [
         ["rm", "-rf", "--", f"{CACHE}/ezhpcy", f"{STATE}/ezhpcy"]
     ]
-    assert "Success: all managed remote data removed." in result.stdout
+    assert "Success: All managed remote data removed." in result.stdout
 
 
 # validate_worker_infrastructure

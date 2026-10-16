@@ -181,7 +181,7 @@ def test_config_edit_reports_editor_failure(
     result = invoke(["config", "edit", "vi"])
 
     assert result.exit_code == 1
-    assert "editor exited with status 3" in result.stdout
+    assert "Error: Editor exited with status 3." in result.stdout
 
 
 def test_config_edit_reports_missing_editor(
@@ -208,7 +208,7 @@ def test_list_profiles_shows_local_profile_metadata(
         {
             "profile": {
                 "gpu": {
-                    "description": "GPU jobs",
+                    "description": "GPU jobs [a100]",
                     "inherit": "default",
                 },
                 "default": {"description": "General login"},
@@ -223,7 +223,7 @@ def test_list_profiles_shows_local_profile_metadata(
     lines = [" ".join(line.split()) for line in result.stdout.splitlines()]
     assert lines == [
         "Profile Description",
-        "gpu GPU jobs",
+        "gpu GPU jobs [a100]",
         "default General login",
     ]
 
@@ -238,7 +238,7 @@ def test_config_load_creates_dtu_config_case_insensitively(
     result = invoke(["config", "load", preset, "--user", "alice"])
 
     assert result.exit_code == 0, result
-    assert "loaded the DTU preset" in result.stdout
+    assert 'Success: Loaded the "DTU" preset' in result.stdout
     contents = config_file.read_text(encoding="utf-8")
     assert contents.startswith("### DTU HPC configuration for EzHPCy.\n")
     loaded = tomllib.loads(contents)
@@ -277,7 +277,7 @@ def test_config_load_existing_file_defaults_to_no(
     assert '-connection.host = "old.example.com"' in result.stdout
     assert '+connection.host = "login.hpc.dtu.dk"' in result.stdout
     assert "[y/n] (n)" in result.stdout
-    assert "configuration unchanged" in result.stdout
+    assert "Aborted: Configuration unchanged." in result.stdout
     assert config_file.read_text(encoding="utf-8") == (
         '[profile.old]\nconnection.host = "old.example.com"\n'
     )

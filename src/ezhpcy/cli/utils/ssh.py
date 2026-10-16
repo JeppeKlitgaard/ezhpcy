@@ -26,7 +26,7 @@ lazy from rich.prompt import Confirm, Prompt
 
 from ezhpcy import ssh
 lazy from ezhpcy import console
-lazy from ezhpcy.cli._errors import print_error, print_warning, rich_text
+lazy from ezhpcy.cli._output import print_error, print_warning, rich_text
 lazy from ezhpcy.cli.utils.prompt import ask
 lazy from ezhpcy.config import config
 lazy from ezhpcy.types import ConnectionInfo
@@ -294,7 +294,7 @@ async def _accept_host_key(
         key.get_fingerprint(),
         known_hosts_file,
     )
-    console.print(rich_text(t"Host key for {host} saved to {known_hosts_file}."))
+    console.print(rich_text(t"Host key for {host} saved to {known_hosts_file:path}."))
     return line
 
 

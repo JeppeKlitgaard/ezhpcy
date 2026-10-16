@@ -9,6 +9,7 @@ lazy from rich.prompt import Confirm
 
 from ezhpcy.cli._options import ConnectionOptions, OptionalProfileArg
 lazy from ezhpcy import console
+lazy from ezhpcy.cli._output import print_aborted, print_success, rich_text
 lazy from ezhpcy.cli._resolve import connection_from_cli, resolve_profile_config
 lazy from ezhpcy.cli.utils.prompt import ask
 lazy from ezhpcy.cli.utils.ssh import connect_or_exit
@@ -142,16 +143,18 @@ async def prune_cmd(
 
         user_accepts = yes or ask(
             Confirm.ask,
-            "This will remove [bold red]all[/bold red] EzHPCy-managed remote "
-            "infrastructure and data under "
-            f"[bold blue]{remote_state.package_cache_root()}[/bold blue] and "
-            f"[bold blue]{remote_state.package_state_root()}[/bold blue]. Proceed?",
+            rich_text(
+                t"This will remove {'all':emphasis} EzHPCy-managed remote "
+                t"infrastructure and data under "
+                t"{remote_state.package_cache_root():path} and "
+                t"{remote_state.package_state_root():path}. Proceed?"
+            ),
             console=console,
             default=False,
         )
         if not user_accepts:
-            console.print("[bold yellow]Aborted[/bold yellow]: prune cancelled.")
+            print_aborted(t"Prune cancelled.")
             raise SystemExit(1)
 
         await prune_all_remote_data(login, remote_state)
-    console.print("[bold green]Success[/bold green]: all managed remote data removed.")
+    print_success(t"All managed remote data removed.")

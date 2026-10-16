@@ -75,11 +75,7 @@ def worker_sshd_command(
     sshd_arguments: list[str],
 ) -> tuple[str, ...]:
     """The worker job's command: sshd from the cached Pixi environment."""
-    return (
-        "env",
-        f"PIXI_HOME={remote_state.pixi_home()}",
-        f"PIXI_CACHE_DIR={remote_state.pixi_cache_dir()}",
-        str(remote_state.pixi_executable()),
+    return remote_state.pixi_command(
         "exec",
         f"--spec={OPENSSH_MATCHSPEC}",
         *retrying_sshd_command(

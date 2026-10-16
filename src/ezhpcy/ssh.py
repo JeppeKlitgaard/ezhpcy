@@ -149,19 +149,7 @@ class RemoteHost:
 
     async def run_pixi(self, args: list[str], remote_state: RemoteState) -> str:
         """Run the pinned private Pixi with EzHPCy's XDG-resolved cache."""
-        home = remote_state.pixi_home()
-        cache = remote_state.pixi_cache_dir()
-        pixi = remote_state.pixi_executable()
-
-        return await self.run(
-            [
-                "env",
-                f"PIXI_HOME={home}",
-                f"PIXI_CACHE_DIR={cache}",
-                str(pixi),
-                *args,
-            ]
-        )
+        return await self.run(list(remote_state.pixi_command(*args)))
 
     async def run_login_shell(
         self, args: list[str], *, stdin: str | None = None

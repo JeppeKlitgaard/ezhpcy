@@ -1,6 +1,8 @@
 import logging
+import re
 lazy import asyncio
 lazy import shlex
+lazy from pathlib import PurePosixPath
 
 lazy import asyncssh
 
@@ -13,6 +15,8 @@ lazy from ezhpcy.tunnel.sshd import (
     sshd_config_arguments,
 )
 lazy from ezhpcy.types import RemoteState
+
+_VERSION_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+!-]*$")
 
 logger = logging.getLogger(__name__)
 
@@ -145,3 +149,64 @@ async def validate_worker_infrastructure(
             "worker infrastructure is incomplete; run `ezhpcy provision` "
             f"(missing: {', '.join(missing)})"
         )
+
+
+async def prune_stale_data(
+    login: RemoteHost, remote_state: RemoteState
+) -> tuple[PurePosixPath, ...]:
+    """Remove remote EzHPCy and Pixi data other than the current versions'."""
+    current_directories = (
+        remote_state.package_cache_dir(),
+        remote_state.package_state_dir(),
+        remote_state.pixi_home(),
+        remote_state.pixi_cache_dir(),
+    )
+    async with login.sftp() as sftp:
+        stale = [
+            path
+            for current_directory in current_directories
+            for path in await _stale_siblings(sftp, current_directory)
+        ]
+
+    if stale:
+        await login.run(["rm", "-rf", "--", *(str(path) for path in stale)])
+        for path in stale:
+            logger.info("Pruned stale data %s.", path)
+    else:
+        logger.info("Remote EzHPCy data is current.")
+    return tuple(stale)
+
+
+async def _stale_siblings(
+    sftp: asyncssh.SFTPClient, current_directory: PurePosixPath
+) -> list[PurePosixPath]:
+    """Return the other versions' directories next to `current_directory`."""
+    root = current_directory.parent
+    try:
+        names = await sftp.listdir(root)
+    except asyncssh.SFTPNoSuchFile:
+        logger.debug("No remote data exists at %s.", root)
+        return []
+
+    stale: list[PurePosixPath] = []
+    for name in names:
+        if name in {".", "..", current_directory.name}:
+            continue
+        if _VERSION_NAME_PATTERN.fullmatch(name) is None:
+            logger.warning("Retaining unrecognized entry %s/%s.", root, name)
+            continue
+        stale.append(root / name)
+    return stale
+
+
+async def prune_all_remote_data(login: RemoteHost, remote_state: RemoteState) -> None:
+    """Remove the complete EzHPCy-managed remote footprint."""
+    await login.run(
+        [
+            "rm",
+            "-rf",
+            "--",
+            str(remote_state.package_cache_root()),
+            str(remote_state.package_state_root()),
+        ]
+    )

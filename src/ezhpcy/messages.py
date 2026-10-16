@@ -1,8 +1,10 @@
 """User-facing messages as template strings, so the CLI can style their parts.
 
 An interpolation's format spec says what it is: `name` (an option, argument,
-setting or profile), `value` (a value the user gave), `choice` (a valid value) or
-`suggestion` (something to run or write). Without one, it's plain text. Values and
+setting or profile), `value` (a value the user gave), `choice` (a valid value),
+`suggestion` (something to run or write), `path` (a local or remote file or
+directory) or `emphasis` (a word to stress, such as "all" before something
+destructive). Without one, it's plain text. Values and
 choices are shown in double quotes. A list or tuple is several of the same kind,
 separated by commas, and a nested template is rendered in place:
 
@@ -12,7 +14,7 @@ separated by commas, and a nested template is rendered in place:
 lazy from collections.abc import Iterator
 lazy from string.templatelib import Interpolation, Template, convert
 
-KINDS = frozenset({"", "name", "value", "choice", "suggestion"})
+KINDS = frozenset({"", "name", "value", "choice", "suggestion", "path", "emphasis"})
 QUOTED_KINDS = frozenset({"value", "choice"})
 
 

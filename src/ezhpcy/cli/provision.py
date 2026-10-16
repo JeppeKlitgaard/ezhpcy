@@ -6,6 +6,7 @@ lazy from rich.prompt import Confirm
 
 from ezhpcy.cli._options import ConnectionOptions, OptionalProfileArg
 lazy from ezhpcy import console
+lazy from ezhpcy.cli._output import print_aborted, print_success, rich_text
 lazy from ezhpcy.cli._resolve import connection_from_cli, resolve_profile_config
 lazy from ezhpcy.cli.utils.prompt import ask
 lazy from ezhpcy.cli.utils.ssh import connect_or_exit
@@ -41,14 +42,16 @@ async def provision_cmd(
 
         user_accepts = yes or ask(
             Confirm.ask,
-            "This will provision or repair [bold purple]EzHPCy[/bold purple] worker "
-            f"infrastructure under [bold blue]{remote_root}[/bold blue]. Proceed?",
+            rich_text(
+                t"This will provision or repair EzHPCy worker infrastructure under "
+                t"{remote_root:path}. Proceed?"
+            ),
             console=console,
             default=True,
         )
         if not user_accepts:
-            console.print("[bold yellow]Aborted[/bold yellow]: provisioning cancelled.")
+            print_aborted(t"Provisioning cancelled.")
             raise SystemExit(1)
 
         await provision_worker_infrastructure(login, remote_state, credentials)
-    console.print("[bold green]Success[/bold green]: remote provisioning completed.")
+    print_success(t"Remote provisioning completed.")

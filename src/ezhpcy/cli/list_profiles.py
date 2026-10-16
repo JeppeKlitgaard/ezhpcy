@@ -1,4 +1,5 @@
 lazy from rich.table import Table
+lazy from rich.text import Text
 
 lazy from ezhpcy import console
 lazy from ezhpcy.config import config
@@ -15,9 +16,7 @@ def list_profiles_cmd() -> None:
     table.add_column("Description")
 
     for name, profile in config.profile.items():
-        table.add_row(
-            name,
-            profile.description or "",
-        )
+        # Text, so Rich doesn't read a description's `[...]` as markup.
+        table.add_row(Text(name), Text(profile.description or ""))
 
     console.print(table)

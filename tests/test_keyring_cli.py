@@ -1,5 +1,6 @@
 import pytest
 from keyring.errors import KeyringError
+from rich.text import Text
 
 from ezhpcy.cli import keyring as keyring_cli
 from tests.support.cli import invoke
@@ -40,8 +41,8 @@ def test_keyring_set_prompts_for_missing_password(
     calls: list[tuple[str, str, str]] = []
     prompt_calls: list[tuple[str, bool]] = []
 
-    def prompt(prompt: str, *, password: bool, **_kwargs) -> str:
-        prompt_calls.append((prompt, password))
+    def prompt(prompt: Text, *, password: bool, **_kwargs) -> str:
+        prompt_calls.append((str(prompt), password))
         return "prompted-secret"
 
     monkeypatch.setattr(keyring_cli.Prompt, "ask", prompt)

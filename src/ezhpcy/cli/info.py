@@ -1,6 +1,7 @@
 lazy from json import dumps as json_dumps
 
 lazy from rich.table import Table
+lazy from rich.text import Text
 
 lazy from ezhpcy import console
 lazy from ezhpcy.config import config
@@ -73,6 +74,7 @@ def info_cmd(*, json: bool = False) -> None:
             table.add_section()
 
         for row in section:
-            table.add_row(row["key"], row["value"], row["description"])
+            # Text, so Rich doesn't read a `[` or `\` in a path as markup.
+            table.add_row(row["key"], Text(row["value"]), row["description"])
 
     console.print(table)

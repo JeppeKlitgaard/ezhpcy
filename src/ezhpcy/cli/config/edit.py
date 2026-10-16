@@ -8,8 +8,8 @@ lazy from typing import Annotated
 lazy from cyclopts import Parameter
 
 lazy from ezhpcy.cli._errors import CliUsageError
+lazy from ezhpcy.cli._output import print_error
 lazy from ezhpcy.config import config
-lazy from ezhpcy.console import console
 
 IS_WINDOWS = os.name == "nt"
 DEFAULT_EDITOR = "notepad" if IS_WINDOWS else "vi"
@@ -73,7 +73,7 @@ def edit_cmd(
         config_file.touch(exist_ok=True)
     except OSError as error:
         raise CliUsageError(
-            t"Could not create configuration file {config_file}: {error}."
+            t"Could not create configuration file {config_file:path}: {error}."
         ) from error
 
     editor_command = (
@@ -91,12 +91,10 @@ def edit_cmd(
         ) from error
     except OSError as error:
         raise CliUsageError(
-            t"Could not open configuration file {config_file} with "
+            t"Could not open configuration file {config_file:path} with "
             t"{editor_command:value}: {error}."
         ) from error
 
     if result.returncode != 0:
-        console.print(
-            f"[bold red]Error[/bold red]: editor exited with status {result.returncode}."
-        )
+        print_error(t"Editor exited with status {result.returncode}.")
         raise SystemExit(1)

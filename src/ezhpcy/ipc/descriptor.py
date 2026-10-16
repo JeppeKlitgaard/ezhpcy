@@ -10,7 +10,7 @@ lazy import uuid
 lazy from pathlib import Path
 lazy from typing import Self
 
-lazy from ezhpcy.config import PROFILE_NAME_PATTERN, config
+lazy from ezhpcy.config import config, validate_alias
 lazy from ezhpcy.ipc import LOOPBACK_HOST, IPCError
 
 DESCRIPTOR_VERSION = 2
@@ -19,9 +19,9 @@ _INVALID = "tunnel runtime information is invalid; restart the tunnel"
 
 def descriptor_path(alias: str) -> Path:
     """Return where the tunnel serving an SSH host alias publishes its descriptor."""
-    if PROFILE_NAME_PATTERN.fullmatch(alias) is None:
-        raise ValueError(f"invalid host alias {alias!r}")
-    return config.local_file.runtime_dir / "descriptors" / f"{alias}.json"
+    return (
+        config.local_file.runtime_dir / "descriptors" / f"{validate_alias(alias)}.json"
+    )
 
 
 def tunnel_not_running(alias: str) -> IPCError:

@@ -29,7 +29,7 @@ lazy import uuid
 
 lazy from rich.text import Text
 
-from ezhpcy.config import PROFILE_NAME_PATTERN, Config, config
+from ezhpcy.config import Config, config, validate_alias
 lazy from ezhpcy.console import console, error_console
 lazy from ezhpcy.constants import (
     WINDOWS_CREATION_FLAGS,
@@ -55,15 +55,6 @@ def _config_path(path: Path) -> str:
     """Render an absolute path safely in OpenSSH configuration syntax."""
     value = path.expanduser().resolve().as_posix()
     return f'"{value.replace(chr(34), chr(92) + chr(34))}"'
-
-
-def validate_alias(alias: str) -> str:
-    if PROFILE_NAME_PATTERN.fullmatch(alias) is None:
-        raise ValueError(
-            f"host alias {alias!r} may contain only letters, digits, '.', '_', "
-            "and '-', and must start with a letter or digit"
-        )
-    return alias
 
 
 def ssh_config_dir() -> Path:

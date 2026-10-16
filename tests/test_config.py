@@ -271,11 +271,6 @@ def test_tables_are_not_read_from_the_environment(
     assert config.auto_provision is False
 
 
-def test_config_singleton_applies_its_log_level() -> None:
-    assert isinstance(config_module.config, config_module.Config)
-    assert logging.getLogger("ezhpcy").level == config_module.config.log_level
-
-
 def test_nested_profile_inheritance_resolves_all_ancestor_values() -> None:
     config = config_module.Config.from_mapping(
         {

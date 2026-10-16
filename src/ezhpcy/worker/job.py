@@ -15,7 +15,8 @@ _SCRIPT_DELIMITER = "EZHPCY_WORKER_SCRIPT"
 _HEARTBEAT_MARKER = "ezhpcy-heartbeat"
 
 # The worker job's shell program. It tries each port in turn until sshd stays up,
-# publishes `ready` with that port, then stops sshd once the leases stop.
+# publishes its status `ready` with that port, then stops sshd once the leases
+# stop.
 WORKER_SCRIPT = f"""{RESOLVE_SSHD}
 ports="$1"
 heartbeat_token="$2"
@@ -74,13 +75,13 @@ handle_signal() {{
 publish_state() {{
     state_name="$1"
     shift
-    temporary="$control_dir/.$state_name.$$.tmp"
-    printf 'v1 %s %s' "$heartbeat_token" "$state_name" > "$temporary" || return
+    temporary="$control_dir/.status.$$.tmp"
+    printf '%s %s' "$heartbeat_token" "$state_name" > "$temporary" || return
     for field in "$@"; do
         printf ' %s' "$field" >> "$temporary" || return
     done
     printf '\n' >> "$temporary" || return
-    mv -f "$temporary" "$control_dir/$state_name"
+    mv -f "$temporary" "$control_dir/status"
 }}
 
 latest_lease_sequence() {{

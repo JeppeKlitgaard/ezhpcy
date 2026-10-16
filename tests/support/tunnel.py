@@ -2,7 +2,7 @@
 Running `ezhpcy tunnel` against the in-process SSH server (use the `login` fixture).
 
 The worker job is played by the tests: a scheduler fake, or fake scheduler
-commands on the server, write the worker's `ready` record into the run's control
+commands on the server, write the worker's `ready` status into the run's control
 directory, and `SSHTestServer.listen` stands in for the worker's sshd.
 """
 
@@ -82,11 +82,11 @@ def serve_login_shell(server: SSHTestServer, **fakes: Handler) -> None:
     server.command("bash -lc", dispatch)
 
 
-def write_worker_record(server: SSHTestServer, name: str, *fields: str) -> None:
-    """Write a record as the worker does, in the only run's control directory."""
+def write_worker_status(server: SSHTestServer, state: str, *fields: str) -> None:
+    """Write a status as the worker does, in the only run's control directory."""
     [directory] = server.local_path(CONTROL_ROOT).iterdir()
-    content = " ".join(("v1", directory.name, name, *fields))
-    (directory / name).write_text(f"{content}\n", encoding="utf-8")
+    content = " ".join((directory.name, state, *fields))
+    (directory / "status").write_text(f"{content}\n", encoding="utf-8")
 
 
 def control_dirs(server: SSHTestServer) -> list[Path]:
@@ -138,7 +138,7 @@ class FakeScheduler:
     - `inspect` replays `inspections`, the last one repeating. An exception is
       raised, and a callable is called for the snapshot.
     - `submitted` is called with the job's spec once it is submitted, e.g. to write
-      the worker's `ready` record.
+      the worker's `ready` status.
     - `submit` (batch) then awaits `submitting` before it returns the job's ID.
     - `cancel` records the job and then calls `cancelling`.
     """

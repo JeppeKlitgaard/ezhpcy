@@ -1,6 +1,7 @@
 """The tunnel's side of the worker's control directory (see `ezhpcy.worker`)."""
 
 import logging
+from dataclasses import dataclass
 lazy import contextlib
 lazy from pathlib import PurePosixPath
 
@@ -12,6 +13,30 @@ lazy from ezhpcy.worker import WorkerError
 logger = logging.getLogger(__name__)
 
 _LEASE_FILE_RETAIN_COUNT = 2
+
+
+@dataclass(frozen=True, slots=True)
+class WorkerReady:
+    """sshd listens on `port`."""
+
+    port: int
+
+
+@dataclass(frozen=True, slots=True)
+class WorkerFailed:
+    """sshd couldn't start, for `reason`."""
+
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class WorkerStopped:
+    """sshd has exited, and the worker with it, with `exit_status`."""
+
+    exit_status: int
+
+
+type WorkerStatus = WorkerReady | WorkerFailed | WorkerStopped
 
 
 class WorkerControl:
@@ -72,45 +97,42 @@ class WorkerControl:
                 logger.debug("Could not remove stale worker lease %s: %r", stale, error)
         return self._sequence
 
-    async def read_ready_port(self) -> int | None:
-        """The port the worker's sshd listens on, once the worker has said so."""
-        fields = await self._read_record("ready")
-        if fields is None:
-            return None
-        if len(fields) != 4 or fields[:3] != ["v1", self._token, "ready"]:
-            raise WorkerError("worker wrote an invalid ready record")
+    async def read_status(self) -> WorkerStatus | None:
+        """The worker's latest status, or None until it has written one."""
         try:
-            port = int(fields[3])
+            # Bytes that aren't UTF-8 are replaced rather than raise, so a garbled
+            # record reads as an invalid one.
+            async with self._sftp.open(
+                self.directory / "status", errors="replace"
+            ) as file:
+                fields = str(await file.read()).split()
+        except asyncssh.SFTPNoSuchFile:
+            return None
+        if fields[:1] != [self._token]:
+            raise WorkerError("worker wrote an invalid status record")
+        match fields[1:]:
+            case ["ready", port]:
+                return WorkerReady(self._ready_port(port))
+            case ["failed", *reason]:
+                return WorkerFailed(" ".join(reason) or "worker startup failed")
+            case ["stopped", exit_status] if exit_status.isdigit():
+                return WorkerStopped(int(exit_status))
+            case _:
+                raise WorkerError("worker wrote an invalid status record")
+
+    def _ready_port(self, field: str) -> int:
+        try:
+            port = int(field)
         except ValueError as error:
             raise WorkerError("worker reported a non-numeric SSH port") from error
         if port not in self._ports:
             raise WorkerError(f"worker reported unexpected SSH port {port}")
         return port
 
-    async def read_failure(self) -> str | None:
-        """Why the worker couldn't start sshd, if it has said so."""
-        fields = await self._read_record("failed")
-        if fields is None:
-            return None
-        if len(fields) < 3 or fields[:3] != ["v1", self._token, "failed"]:
-            return "worker wrote an invalid failure record"
-        return " ".join(fields[3:]) or "worker startup failed"
-
     async def close(self) -> None:
         """
         Remove the directory and everything in it. It is this run's alone, and may
-        hold more than the tunnel tracks: the worker's records, and a lease that
+        hold more than the tunnel tracks: the worker's status, and a lease that
         was being written when the heartbeats were cancelled.
         """
         await self._sftp.rmtree(self.directory, ignore_errors=True)
-
-    async def _read_record(self, name: str) -> list[str] | None:
-        """The fields of one of the worker's files, or None if it doesn't exist."""
-        try:
-            # Bytes that aren't UTF-8 are replaced rather than raise, so a garbled
-            # record reads as an invalid one.
-            async with self._sftp.open(self.directory / name, errors="replace") as file:
-                text = await file.read()
-        except asyncssh.SFTPNoSuchFile:
-            return None
-        return str(text).split()

@@ -48,7 +48,13 @@ lazy from ezhpcy.tunnel import TunnelError
 lazy from ezhpcy.tunnel.server import TunnelServer
 lazy from ezhpcy.tunnel.ssh_config import WorkerHost, publish_host, withdraw_host
 lazy from ezhpcy.types import ConnectionInfo, ResolvedConfig, SubmissionMode
-lazy from ezhpcy.worker.control import WorkerControl
+lazy from ezhpcy.worker.control import (
+    WorkerControl,
+    WorkerFailed,
+    WorkerReady,
+    WorkerStatus,
+    WorkerStopped,
+)
 lazy from ezhpcy.worker.job import (
     WORKER_SCRIPT,
     batch_script,
@@ -64,7 +70,10 @@ logger = logging.getLogger(__name__)
 _SSH_BANNER_LIMIT = 255
 # How long one attempt to read the worker's SSH banner may take.
 _BANNER_READ_SECONDS = 5.0
-_READY_POLL_SECONDS = 0.1
+# How often to look for the worker's status while it starts. More often buys
+# little: the worker takes seconds to start sshd, and each look is a file open
+# on the cluster's shared filesystem.
+_STATUS_POLL_SECONDS = 1.0
 # How long each cleanup step may take, so that a dead connection can't hang it.
 _CLEANUP_SECONDS = 10.0
 # How long a background task asked to stop may take to end by itself.
@@ -345,7 +354,9 @@ class TunnelSession:
         )
         destination = (worker_host, worker_port)
         logger.info("Waiting for worker SSH endpoint %s:%d.", *destination)
-        await self._wait_for_worker_endpoint(destination, scheduler, job_id, deadline)
+        await self._wait_for_worker_endpoint(
+            destination, control, scheduler, job_id, deadline
+        )
 
         # Serve, and tell OpenSSH how to reach the tunnel.
         server = await self._enter(
@@ -463,17 +474,16 @@ class TunnelSession:
         try:
             async with asyncio.timeout_at(deadline):
                 while True:
-                    # The worker's records first: they say more than its job's end.
-                    if (port := await control.read_ready_port()) is not None:
-                        return port
-                    if failure := await control.read_failure():
-                        raise TunnelError(
-                            f"worker SSH daemon failed to start: {failure}"
-                        )
+                    # The worker's status first: it says more than its job's end.
+                    status = await control.read_status()
+                    if isinstance(status, WorkerReady):
+                        return status.port
+                    if error := _worker_gone(status):
+                        raise error
                     if loop.time() >= next_job_check:
                         await self._check_job_lives(scheduler, job_id)
                         next_job_check = loop.time() + poll_interval
-                    await asyncio.sleep(_READY_POLL_SECONDS)
+                    await asyncio.sleep(_STATUS_POLL_SECONDS)
         except TimeoutError:
             timeout = self._resolved.timings.worker_startup_timeout_seconds
             raise TunnelError(
@@ -484,14 +494,15 @@ class TunnelSession:
     async def _wait_for_worker_endpoint(
         self,
         destination: tuple[str, int],
+        control: WorkerControl,
         scheduler: Scheduler,
         job_id: str,
         deadline: float,
     ) -> None:
         """
         Wait until `deadline` (loop time) for the worker's sshd to send its banner
-        through the login connection, checking after each failed attempt that the
-        job still runs.
+        through the login connection, checking after each failed attempt that sshd
+        and its job still run.
         """
         timeout = self._resolved.timings.worker_startup_timeout_seconds
         poll_interval = self._resolved.timings.job_poll_interval_seconds
@@ -524,6 +535,8 @@ class TunnelSession:
                             *destination,
                             banner,
                         )
+                    if error := _worker_gone(await control.read_status()):
+                        raise error
                     await self._check_job_lives(scheduler, job_id)
                     await asyncio.sleep(poll_interval)
         except TimeoutError:
@@ -761,6 +774,17 @@ async def _stop_task(
     await asyncio.wait([task], timeout=_CLEANUP_SECONDS)
     if not task.done():
         logger.warning("The %s did not stop.", task.get_name())
+
+
+def _worker_gone(status: WorkerStatus | None) -> TunnelError | None:
+    """The error to stop with if `status` says sshd won't serve, else None."""
+    match status:
+        case WorkerFailed(reason):
+            return TunnelError(f"worker SSH daemon failed to start: {reason}")
+        case WorkerStopped(exit_status):
+            return TunnelError(f"worker SSH daemon exited with status {exit_status}")
+        case _:
+            return None
 
 
 def _connection_lost(error: Exception) -> TunnelError:

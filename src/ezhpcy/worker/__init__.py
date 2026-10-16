@@ -14,8 +14,9 @@ shared filesystem, which the tunnel reaches over SFTP:
 - The tunnel renews a lease (`lease.<sequence>`) every heartbeat interval. The
   worker stops sshd once no newer lease has appeared within the heartbeat
   timeout, so a worker never outlives its tunnel by long.
-- The worker writes `ready` with the port sshd listens on, or `failed` with the
-  reason, and `stopped` with its exit status when it ends.
+- The worker writes its status to `status`, replacing it whole each time:
+  `ready` with the port sshd listens on, or `failed` with the reason, and
+  `stopped` with its exit status when it ends.
 
 Every file names the run's token, so one from another run is never taken for
 this run's.

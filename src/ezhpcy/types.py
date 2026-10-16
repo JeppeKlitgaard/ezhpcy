@@ -209,6 +209,16 @@ class RemoteState(BaseModel):
     def pixi_cache_dir(self) -> PurePosixPath:
         return self.package_cache_dir() / "pixi_cache" / PIXI_VERSION
 
+    def pixi_command(self, *args: str) -> tuple[str, ...]:
+        """Run the pinned private Pixi with EzHPCy's XDG-resolved cache."""
+        return (
+            "env",
+            f"PIXI_HOME={self.pixi_home()}",
+            f"PIXI_CACHE_DIR={self.pixi_cache_dir()}",
+            str(self.pixi_executable()),
+            *args,
+        )
+
     def worker_cwd_dir(self) -> PurePosixPath:
         return self.package_cache_dir() / "worker_cwd"
 

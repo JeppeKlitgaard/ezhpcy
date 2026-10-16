@@ -73,11 +73,11 @@ def _validation_usage_error(
     )
 
 
-def resolve_profile_config(profile: str | None) -> ResolvedProfileConfig:
+def resolve_profile_config(profile_name: str | None) -> ResolvedProfileConfig:
     """Resolve the selected profile, or the defaults when none is selected."""
-    if profile is None:
+    if profile_name is None:
         return ResolvedProfileConfig()
-    if profile not in config.profile:
+    if profile_name not in config.profile:
         # Worded like Cyclopts' error for an invalid choice.
         if config.profile:
             message = t"Choose from: {list(config.profile):choice}."
@@ -86,14 +86,14 @@ def resolve_profile_config(profile: str | None) -> ResolvedProfileConfig:
                 t"No profiles are configured; run "
                 t"{'ezhpcy config load <preset>':suggestion} to start from one."
             )
-        raise CliUsageError(message, param_hint="PROFILE", value=profile)
+        raise CliUsageError(message, param_hint="PROFILE", value=profile_name)
     try:
-        return config.resolve_profile(profile)
+        return config.resolve_profile(profile_name)
     except ProfilePasswordSourceError as error:
         raise CliUsageError(sentence(error.message)) from error
     except ValueError as error:
         raise CliUsageError(
-            t"{sentence(str(error))}", param_hint="PROFILE", value=profile
+            t"{sentence(str(error))}", param_hint="PROFILE", value=profile_name
         ) from error
 
 
@@ -120,12 +120,14 @@ def connection_from_cli(
     options: ConnectionOptions,
     configured: ConnectionConfig,
     *,
-    profile: str | None,
+    profile_name: str | None,
 ) -> ConnectionInfo:
-    """Resolve the login connection from the CLI options and `profile`'s config."""
-    config_prefix = f"profile.{profile}.connection" if profile is not None else None
+    """Resolve the login connection from the CLI options and `profile_name`'s config."""
+    config_prefix = (
+        f"profile.{profile_name}.connection" if profile_name is not None else None
+    )
     # Without a profile, the likely fix is to give one.
-    hint = LIST_PROFILES_HINT if profile is None else t""
+    hint = LIST_PROFILES_HINT if profile_name is None else t""
     user = resolve_forbidden_none(
         cli_value=options.user,
         config_value=configured.user,

@@ -47,13 +47,13 @@ class Check:
     show_include: bool = False
 
 
-def _check_profile(source: Config, name: str) -> Check:
+def _check_profile(source: Config, profile_name: str) -> Check:
     try:
-        connection = source.resolve_profile(name).connection
+        connection = source.resolve_profile(profile_name).connection
     except ProfilePasswordSourceError as error:
         return Check(
             Status.FAIL,
-            t"Profile {name:name} is invalid",
+            t"Profile {profile_name:name} is invalid",
             hint=sentence(error.message),
         )
 
@@ -61,14 +61,14 @@ def _check_profile(source: Config, name: str) -> Check:
     if password_file is not None and not password_file.is_file():
         return Check(
             Status.FAIL,
-            t"Profile {name:name} is invalid: {'connection.password_file':name} "
+            t"Profile {profile_name:name} is invalid: {'connection.password_file':name} "
             t"{password_file:path} does not exist",
         )
     if connection.user is None or connection.host is None:
-        return Check(Status.OK, t"Profile {name:name} is valid")
+        return Check(Status.OK, t"Profile {profile_name:name} is valid")
     return Check(
         Status.OK,
-        t"Profile {name:name} is valid: {connection.user}@{connection.host}",
+        t"Profile {profile_name:name} is valid: {connection.user}@{connection.host}",
     )
 
 

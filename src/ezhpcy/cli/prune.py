@@ -131,7 +131,9 @@ async def prune_cmd(
 ) -> None:
     """Prune stale installations and Pixi data."""
     conn_info = connection_from_cli(
-        connection_options, resolve_profile_config(profile).connection, profile=profile
+        connection_options,
+        resolve_profile_config(profile).connection,
+        profile_name=profile,
     )
     async with await connect_or_exit(conn_info) as login:
         remote_state = await login.remote_state()

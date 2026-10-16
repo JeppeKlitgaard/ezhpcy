@@ -13,6 +13,7 @@ from ezhpcy.scheduler.types import SchedulerType
 from ezhpcy.tunnel.ssh_config import WorkerHost
 from ezhpcy.types import ConnectionInfo, ProfileConfig, ResourcesConfig
 from tests.support.cli import capture, invoke
+from tests.support.tunnel import tunnel_log
 
 
 @pytest.mark.parametrize(
@@ -92,9 +93,6 @@ def test_tunnel_command_resolves_profile_and_applies_cli_overrides(
                 {"inherit": "base", "resources": {"queue": "gpu", "cores": 8}}
             ),
         },
-    )
-    monkeypatch.setattr(
-        tunnel_module, "_ensure_local_worker_credentials", lambda _connection: None
     )
     captured = capture(monkeypatch, "tunnel")
 
@@ -294,6 +292,24 @@ _ANONYMOUS_TUNNEL_ARGS = [
     "--submission-mode",
     "interactive",
 ]
+
+
+def test_tunnel_without_auto_provision_needs_the_local_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = capture(monkeypatch, "tunnel")
+
+    with tunnel_log() as log:
+        result = invoke([*_ANONYMOUS_TUNNEL_ARGS, "--no-auto-provision"])
+
+    assert result.exit_code == 1
+    # Before connecting.
+    assert captured == {}
+    [error] = log.command_errors()
+    assert error.startswith(
+        "Could not start tunnel: worker SSH credentials are missing; run "
+        "`ezhpcy provision` first (missing: "
+    )
 
 
 def test_profile_tunnel_alias_defaults_to_its_profiles_conf_block(

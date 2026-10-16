@@ -33,7 +33,6 @@ lazy from ezhpcy.cli.utils.interrupts import interrupts_handled_by
 lazy from ezhpcy.config import config
 lazy from ezhpcy.ipc import IPCError
 lazy from ezhpcy.permissions import FilePermissionError
-lazy from ezhpcy.provision_local import WorkerCredentials
 lazy from ezhpcy.scheduler.types import SchedulerType
 lazy from ezhpcy.tunnel import TunnelError
 lazy from ezhpcy.tunnel.session import TunnelSession
@@ -55,20 +54,6 @@ _DEFAULT_WORKER_PORT_RETRIES = 5
 # Far fewer than the 16384 dynamic ports `select_ports` draws from.
 _MAX_WORKER_PORT_RETRIES = 100
 logger = logging.getLogger(__name__)
-
-
-def _ensure_local_worker_credentials(credentials: WorkerCredentials) -> None:
-    required_files = (
-        credentials.client_key,
-        credentials.client_public_key,
-        credentials.known_hosts,
-    )
-    missing = [str(path) for path in required_files if not path.is_file()]
-    if missing:
-        raise TunnelError(
-            "worker SSH credentials are missing; run `ezhpcy provision` first "
-            f"(missing: {', '.join(missing)})"
-        )
 
 
 def _resolve_ssh_host(
@@ -276,8 +261,14 @@ async def tunnel_cmd(
             written_profile_hosts = []
         if auto_provision is None:
             auto_provision = config.auto_provision
-        if not auto_provision:
-            _ensure_local_worker_credentials(ssh_host.credentials)
+        # Before connecting, so the user isn't asked for a password first.
+        if not auto_provision and (
+            missing := ssh_host.credentials.missing_tunnel_files()
+        ):
+            raise TunnelError(
+                "worker SSH credentials are missing; run `ezhpcy provision` first "
+                f"(missing: {', '.join(map(str, missing))})"
+            )
         worker_ports = (
             (worker_port,)
             if worker_port is not None

@@ -1,12 +1,22 @@
 import re
+from datetime import timedelta
 from enum import StrEnum
 from typing import Annotated, ClassVar
 lazy import hashlib
 lazy import json
-lazy from datetime import timedelta
 lazy from pathlib import Path, PurePosixPath
 
-from pydantic import BaseModel, ByteSize, ConfigDict, Field, field_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    BeforeValidator,
+    ByteSize,
+    ConfigDict,
+    Field,
+    PlainSerializer,
+    Strict,
+    field_validator,
+)
 lazy from pydantic_extra_types.domain import DomainStr
 
 lazy from ezhpcy.constants import EZHPCY_VERSION, PACKAGE_NAME, PIXI_VERSION
@@ -27,19 +37,42 @@ class SubmissionMode(StrEnum):
     BATCH = "batch"
 
 
-def parse_time_limit(value: str | None) -> timedelta | None:
-    if value is None:
-        return None
+def _parse_time_limit(value: object) -> object:
+    """Parse `H:MM`, and leave anything else, such as the `timedelta` of a Python
+    dump, to the field's own validation."""
+    if not isinstance(value, str):
+        return value
     match = _TIME_LIMIT_PATTERN.fullmatch(value.strip())
     if match is None:
         raise ValueError("time_limit must use H:MM format")
     minutes = int(match.group("minutes"))
     if minutes >= 60:
         raise ValueError("time_limit minutes must be less than 60")
-    result = timedelta(hours=int(match.group("hours")), minutes=minutes)
-    if result <= timedelta(0):
+    return timedelta(hours=int(match.group("hours")), minutes=minutes)
+
+
+def _check_time_limit(value: timedelta) -> timedelta:
+    if value <= timedelta(0):
         raise ValueError("time_limit must be positive")
-    return result
+    # `H:MM` has no seconds to write back.
+    if value % timedelta(minutes=1):
+        raise ValueError("time_limit must be a whole number of minutes")
+    return value
+
+
+def _format_time_limit(value: timedelta) -> str:
+    hours, minutes = divmod(value // timedelta(minutes=1), 60)
+    return f"{hours}:{minutes:02d}"
+
+
+# Written and dumped to JSON (as the digest is) as `H:MM`.
+TimeLimit = Annotated[
+    timedelta,
+    BeforeValidator(_parse_time_limit),
+    Strict(),
+    AfterValidator(_check_time_limit),
+    PlainSerializer(_format_time_limit, when_used="json"),
+]
 
 
 class _SubConfig(BaseModel):
@@ -103,18 +136,8 @@ class ResourcesConfig(_SubConfig):
     cores: int = Field(default=1, ge=1)
     gpus: int = Field(default=0, ge=0)
     exclusive: bool = False
-    time_limit: str | None = None
+    time_limit: TimeLimit | None = None
     memory: PositiveByteSize | None = None
-
-    @field_validator("time_limit")
-    @classmethod
-    def validate_time_limit(cls, value: str | None) -> str | None:
-        parse_time_limit(value)
-        return value
-
-    @property
-    def time_limit_delta(self) -> timedelta | None:
-        return parse_time_limit(self.time_limit)
 
     @property
     def memory_bytes(self) -> int | None:

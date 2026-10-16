@@ -344,7 +344,7 @@ _TUNNEL_OPTION_CASES = [
     (["--cores", "8"], "resources.cores", 8),
     (["-n", "8"], "resources.cores", 8),
     (["--gpus", "2"], "resources.gpus", 2),
-    (["--time-limit", "1:30"], "resources.time_limit_delta", timedelta(minutes=90)),
+    (["--time-limit", "1:30"], "resources.time_limit", timedelta(minutes=90)),
     (["--memory", "2GiB"], "resources.memory_bytes", 2 * 1024**3),
     (["--memory", "2GB"], "resources.memory_bytes", 2 * 1000**3),
     (["--queue-timeout", "120"], "timings.queue_timeout_seconds", 120),

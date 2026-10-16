@@ -16,7 +16,8 @@ from ezhpcy.ipc.protocol import (
     authenticate_client,
     wait_for_worker_stream,
 )
-lazy from ezhpcy.ipc import LOOPBACK_HOST, IPCError
+lazy from ezhpcy.constants import LOOPBACK_HOST
+lazy from ezhpcy.ipc import IPCError
 lazy from ezhpcy.ipc.descriptor import TunnelDescriptor, tunnel_not_running
 
 logger = logging.getLogger(__name__)

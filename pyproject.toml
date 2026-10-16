@@ -20,6 +20,7 @@ dependencies = [
     # Utils
     "py-machineid>=1.0.0",
     "platformdirs>=4.9.4",
+    "filelock>=4.2.0",
 ]
 
 [project.scripts]

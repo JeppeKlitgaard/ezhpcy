@@ -197,6 +197,7 @@ source = { editable = "." }
 dependencies = [
     { name = "asyncssh" },
     { name = "cyclopts" },
+    { name = "filelock" },
     { name = "jinja2" },
     { name = "keyring" },
     { name = "platformdirs" },
@@ -237,6 +238,7 @@ typecheck = [
 requires-dist = [
     { name = "asyncssh", specifier = ">=2.24.1" },
     { name = "cyclopts", specifier = ">=5.2.0" },
+    { name = "filelock", specifier = ">=4.2.0" },
     { name = "jinja2", specifier = ">=3.1.6" },
     { name = "keyring", specifier = ">=25.7.0" },
     { name = "platformdirs", specifier = ">=4.9.4" },
@@ -268,6 +270,15 @@ test = [
     { name = "pytest-cov", specifier = ">=7.1.0" },
 ]
 typecheck = [{ name = "pyrefly", specifier = ">=1.4.0" }]
+
+[[package]]
+name = "filelock"
+version = "4.2.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/f4/a9/1af41b37c3279712b22cdc63aac78a52432202b6fe1f9666a2a3d2831fb4/filelock-4.2.0.tar.gz", hash = "sha256:7a60906c75227cf04d0c273afadc8219400f11aeb13cc69591d4f6cdc6c8036e", size = 569667, upload-time = "2026-10-14T20:57:13.11Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8e/a3/9bc26acff301fe1aaea1cc3d82a1d57e0a34df3e1cadbfa91ac2dbcdde5c/filelock-4.2.0-py3-none-any.whl", hash = "sha256:2ff5690882e8cdb00ef31fb3d01a3094c29f30985426c59495afb1733f3b7238", size = 135032, upload-time = "2026-10-14T20:57:11.349Z" },
+]
 
 [[package]]
 name = "iniconfig"

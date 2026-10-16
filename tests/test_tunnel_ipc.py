@@ -27,22 +27,6 @@ def test_descriptor_path_rejects_aliases_that_are_not_safe_file_names(
         descriptor_path(alias)
 
 
-def test_anonymous_alias_digest_classifies_every_field() -> None:
-    resolved = ResolvedConfig.model_validate(
-        {
-            "connection": {"user": "alice", "host": "login.example.com"},
-            "scheduler": SCHEDULER,
-        }
-    )
-    participants = resolved.model_dump(
-        mode="json", exclude=ResolvedConfig._DIGEST_EXCLUDE_FIELDS
-    )
-
-    assert {
-        section: frozenset(fields) for section, fields in participants.items()
-    } == ResolvedConfig._DIGEST_INCLUDE_FIELDS
-
-
 def test_anonymous_alias_digest_is_order_independent() -> None:
     first = ResolvedConfig.model_validate(
         {

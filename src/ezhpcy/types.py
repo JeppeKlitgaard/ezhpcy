@@ -263,8 +263,8 @@ class ResolvedConfig(BaseModel):
     }
 
     # These are only listed as a reminder that they are included in the digest.
-    # This way, when new fields are added, we are forced to make a deliberate
-    # decision to include them!
+    # A test checks every field is either here or excluded above, so a new field
+    # forces a deliberate decision to include it!
     _DIGEST_INCLUDE_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
         "connection": frozenset({"host", "user"}),
         "scheduler": frozenset(
@@ -286,17 +286,8 @@ class ResolvedConfig(BaseModel):
 
     def descriptor_digest(self) -> str:
         """Return the identity for an anonymous descriptor."""
-        # This is all a bit over the top
         digest_participants = self.model_dump(
             mode="json", exclude=self._DIGEST_EXCLUDE_FIELDS
-        )
-
-        assert {
-            section: frozenset(fields)
-            for section, fields in digest_participants.items()
-        } == self._DIGEST_INCLUDE_FIELDS, (
-            "BUG: ResolvedConfig.digest_participants must include all fields in _DIGEST_INCLUDE_FIELDS "
-            "and exclude all fields in _DIGEST_EXCLUDE_FIELDS"
         )
 
         # Canonicalize to ensure ordering, etc does not affect the digest.

@@ -220,15 +220,17 @@ QueueTimeoutOpt = Annotated[
     float | None,
     Parameter(
         name="--queue-timeout",
+        metavar="SECONDS",
         validator=validators.Number(gte=1),
         help="Maximum time to wait for the scheduler allocation.",
         group=TIMINGS_PANEL,
     ),
 ]
-StartupTimeoutOpt = Annotated[
+WorkerStartupTimeoutOpt = Annotated[
     float | None,
     Parameter(
-        name="--startup-timeout",
+        name="--worker-startup-timeout",
+        metavar="SECONDS",
         validator=validators.Number(gte=1),
         help="Maximum time to wait for worker SSH after allocation.",
         group=TIMINGS_PANEL,
@@ -238,6 +240,7 @@ JobPollIntervalOpt = Annotated[
     float | None,
     Parameter(
         name="--job-poll-interval",
+        metavar="SECONDS",
         validator=validators.Number(gte=0.1),
         help="Interval between scheduler and worker-readiness startup checks.",
         group=TIMINGS_PANEL,
@@ -247,6 +250,7 @@ JobMonitorIntervalOpt = Annotated[
     float | None,
     Parameter(
         name="--job-monitor-interval",
+        metavar="SECONDS",
         validator=validators.Number(gte=0.1),
         help="Interval between scheduler checks after the tunnel is ready.",
         group=TIMINGS_PANEL,
@@ -256,6 +260,7 @@ WorkerHeartbeatIntervalOpt = Annotated[
     float | None,
     Parameter(
         name="--worker-heartbeat-interval",
+        metavar="SECONDS",
         validator=validators.Number(gte=1),
         help="Interval between worker lease heartbeats.",
         group=TIMINGS_PANEL,
@@ -265,6 +270,7 @@ WorkerHeartbeatTimeoutOpt = Annotated[
     int | None,
     Parameter(
         name="--worker-heartbeat-timeout",
+        metavar="SECONDS",
         validator=validators.Number(gte=1),
         help="Maximum time the worker may go without a lease heartbeat.",
         group=TIMINGS_PANEL,
@@ -353,7 +359,7 @@ class ResourceOptions:
 @dataclass(frozen=True, kw_only=True)
 class TimingOptions:
     queue_timeout_seconds: QueueTimeoutOpt = None
-    worker_startup_timeout_seconds: StartupTimeoutOpt = None
+    worker_startup_timeout_seconds: WorkerStartupTimeoutOpt = None
     job_poll_interval_seconds: JobPollIntervalOpt = None
     job_monitor_interval_seconds: JobMonitorIntervalOpt = None
     worker_heartbeat_interval_seconds: WorkerHeartbeatIntervalOpt = None

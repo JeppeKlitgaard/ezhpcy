@@ -42,7 +42,7 @@ lazy from ezhpcy.scheduler.base import (
     SchedulerError,
 )
 lazy from ezhpcy.scheduler.types import SchedulerType
-lazy from ezhpcy.ssh import RemoteHost
+lazy from ezhpcy.ssh import RemoteHost, ensure_directory
 lazy from ezhpcy.tunnel import TunnelError
 lazy from ezhpcy.tunnel.server import TunnelServer
 lazy from ezhpcy.tunnel.ssh_config import WorkerHost, publish_host, withdraw_host
@@ -222,8 +222,6 @@ class TunnelSession:
         # The worker's control directory, with its first lease.
         token = secrets.token_hex(16)
         sftp = await self._enter(stack, host.sftp(), "close the SFTP session")
-        await sftp.makedirs(remote_state.worker_cwd_dir(), exist_ok=True)
-        await sftp.makedirs(remote_state.worker_logs_dir(), exist_ok=True)
         control = WorkerControl(
             sftp,
             remote_state.worker_control_root() / token,
@@ -234,7 +232,12 @@ class TunnelSession:
         stack.push_async_callback(
             self._cleanup, "remove the worker control directory", control.close
         )
-        await self._finish("create the worker control directory", control.create())
+        # Concurrently: each takes a round trip or more.
+        await asyncio.gather(
+            ensure_directory(sftp, remote_state.worker_cwd_dir()),
+            ensure_directory(sftp, remote_state.worker_logs_dir()),
+            self._finish("create the worker control directory", control.create()),
+        )
         await control.publish_lease()
 
         # An LSF batch job reads the worker's script from `bsub`'s stdin.

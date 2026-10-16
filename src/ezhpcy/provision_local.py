@@ -35,7 +35,6 @@ class WorkerCredentials:
 
     @classmethod
     def for_login(cls, conn_info: ConnectionInfo, *, machine_id: str) -> Self:
-        assert conn_info.user is not None
         return cls(machine_id, conn_info.user, str(conn_info.host))
 
     @property

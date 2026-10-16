@@ -11,7 +11,6 @@ dependencies = [
     "jinja2>=3.1.6",
     # SSH
     "asyncssh>=2.24.1",
-    "cryptography>=46.0.5",
     # CLI
     "rich>=15.0.0",
     "cyclopts>=5.2.0",

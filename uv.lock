@@ -196,7 +196,6 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "asyncssh" },
-    { name = "cryptography" },
     { name = "cyclopts" },
     { name = "jinja2" },
     { name = "keyring" },
@@ -237,7 +236,6 @@ typecheck = [
 [package.metadata]
 requires-dist = [
     { name = "asyncssh", specifier = ">=2.24.1" },
-    { name = "cryptography", specifier = ">=46.0.5" },
     { name = "cyclopts", specifier = ">=5.2.0" },
     { name = "jinja2", specifier = ">=3.1.6" },
     { name = "keyring", specifier = ">=25.7.0" },

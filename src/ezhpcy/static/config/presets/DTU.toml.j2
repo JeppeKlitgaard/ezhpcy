@@ -7,18 +7,17 @@
 log_level = "INFO"
 auto_provision = true
 
-[profile.base.connection]
-ssh_keepalive_interval_seconds = 30
-password_keyring = false  # Enable fetching password via system keyring, set with `ezhpcy keyring`
-password_prompt = true  # Enable prompting for password on the command line
+[profile.base]
+connection.ssh_keepalive_interval_seconds = 30
+connection.password_keyring = false  # Enable fetching password via system keyring, set with `ezhpcy keyring`
+connection.password_prompt = true  # Enable prompting for password on the command line
 
-[profile.base.timings]
-queue_timeout_seconds = 900
-worker_startup_timeout_seconds = 60
-worker_heartbeat_interval_seconds = 30
-worker_heartbeat_timeout_seconds = 90
-job_poll_interval_seconds = 2.5
-job_monitor_interval_seconds = 60
+timings.queue_timeout_seconds = 900
+timings.worker_startup_timeout_seconds = 60
+timings.worker_heartbeat_interval_seconds = 30
+timings.worker_heartbeat_timeout_seconds = 90
+timings.job_poll_interval_seconds = 2.5
+timings.job_monitor_interval_seconds = 60
 
 [profile.dtu-base]
 description = "DTU HPC"
@@ -31,11 +30,10 @@ description = "DTU HPC LSF based queues"
 inherit = "dtu-base"
 scheduler.type = "LSF"
 
-[profile.dtu-base-lsf.lsf]
-resource_reserve_per_task = true
-application_profile = "qrsh"
-submission_environment = { }
-export_environment = []
+lsf.resource_reserve_per_task = true
+lsf.application_profile = "qrsh"
+lsf.submission_environment = { }
+lsf.export_environment = []
 
 [profile.dtu-base-pbs]
 description = "DTU HPC PBS Pro based queues"
@@ -81,8 +79,7 @@ description = "DTU L40S GPU queue"
 inherit = "dtu-base-lsf"
 scheduler.submission_mode = "batch"
 
-[profile.dtu-gpul40s.resources]
-queue = "gpul40s"
-cores = 8
-time_limit = "1:00"
-memory = "32GB"
+resources.queue = "gpul40s"
+resources.cores = 8
+resources.time_limit = "1:00"
+resources.memory = "32GB"

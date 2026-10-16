@@ -3,23 +3,20 @@
 log_level = "INFO"
 auto_provision = true
 
-[profile.base.connection]
-host = "login.hpc.example.com"
-user = {{ user | tojson }}
-password_prompt = true
-ssh_keepalive_interval_seconds = 30
+[profile.base]
+connection.host = "login.hpc.example.com"
+connection.user = {{ user | tojson }}
+connection.password_prompt = true
+connection.ssh_keepalive_interval_seconds = 30
 
-[profile.base.scheduler]
-type = "LSF"
-submission_mode = "batch"
+scheduler.type = "LSF"
+scheduler.submission_mode = "batch"
 
-[profile.base.resources]
-queue = "hpc-queue"
+resources.queue = "hpc-queue"
 
-[profile.base.timings]
-queue_timeout_seconds = 900
-worker_startup_timeout_seconds = 60
-worker_heartbeat_interval_seconds = 30
-worker_heartbeat_timeout_seconds = 90
-job_poll_interval_seconds = 2.5
-job_monitor_interval_seconds = 60
+timings.queue_timeout_seconds = 900
+timings.worker_startup_timeout_seconds = 60
+timings.worker_heartbeat_interval_seconds = 30
+timings.worker_heartbeat_timeout_seconds = 90
+timings.job_poll_interval_seconds = 2.5
+timings.job_monitor_interval_seconds = 60

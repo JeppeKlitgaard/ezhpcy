@@ -490,23 +490,37 @@ def test_exclusive_and_shared_count_as_given_submission_options(
 
 
 @pytest.mark.parametrize(
-    ("arguments", "env"),
+    ("arguments", "config_debug"),
     [
-        (["--debug", "version"], {}),
-        (["version", "--debug"], {}),
-        (["version"], {"EZHPCY_DEBUG": "1"}),
+        (["--debug", "version"], False),
+        (["version", "--debug"], False),
+        # `EZHPCY_DEBUG` or `debug = true` in the configuration file.
+        (["version"], True),
     ],
 )
 def test_debug_enables_debug_logging_with_timestamps(
-    arguments: list[str], env: dict[str, str]
+    arguments: list[str], config_debug: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    result = invoke(arguments, env=env)
+    monkeypatch.setattr(config, "debug", config_debug)
+
+    result = invoke(arguments)
 
     assert result.exit_code == 0, result
     assert logging.getLogger(PACKAGE_NAME).level == logging.DEBUG
     record = logging.LogRecord(PACKAGE_NAME, logging.DEBUG, "", 0, "message", (), None)
     rendered = _terminal_handler().format(record)
     assert re.match(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} ", rendered), rendered
+
+
+def test_configured_log_level_applies_without_debug(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "log_level", logging.WARNING)
+
+    result = invoke(["version"])
+
+    assert result.exit_code == 0, result
+    assert logging.getLogger(PACKAGE_NAME).level == logging.WARNING
 
 
 # Validation limits

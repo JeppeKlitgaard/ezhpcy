@@ -17,7 +17,6 @@ from pydantic_settings import (
 lazy from pydantic.fields import FieldInfo
 
 from ezhpcy.constants import LOGIN_KNOWN_HOSTS_NAME, PACKAGE_NAME, SSH_DIRECTORY_NAME
-from ezhpcy.logging import configure_logging
 lazy from ezhpcy.messages import plain
 lazy from ezhpcy.types import (
     PASSWORD_SOURCE_FIELDS,
@@ -246,7 +245,3 @@ class Config(BaseSettings, _ConfigValues):
 
 
 config = Config()
-configure_logging(
-    logging.DEBUG if config.debug else config.log_level,
-    include_timestamp=config.debug,
-)

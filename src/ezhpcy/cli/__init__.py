@@ -71,14 +71,20 @@ def _meta(
         bool,
         Parameter(
             name="--debug",
-            help="Enable debug logging and include timestamps in log output.",
-            env_var=DEBUG_ENV_VAR,
+            help=(
+                "Enable debug logging and include timestamps in log output. "
+                f"Also set by {DEBUG_ENV_VAR}=1 or `debug = true` in the "
+                "configuration file."
+            ),
             group=GLOBAL_OPTIONS,
         ),
     ] = False,
 ) -> object:
-    if debug or ezhpcy_config.debug:
-        configure_logging(logging.DEBUG, include_timestamp=True)
+    # The configuration reads `EZHPCY_DEBUG`, so `--debug` doesn't.
+    debug = debug or ezhpcy_config.debug
+    configure_logging(
+        logging.DEBUG if debug else ezhpcy_config.log_level, include_timestamp=debug
+    )
     return app(tokens)
 
 

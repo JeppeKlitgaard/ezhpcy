@@ -17,9 +17,17 @@ os.environ["EZHPCY_CONFIG_FILE"] = str(
 import pytest
 
 from ezhpcy.config import LocalFileConfig, config
-from ezhpcy.logging import ASYNCSSH_LOGGER_NAME, TERMINAL_HANDLER_NAME
+from ezhpcy.logging import (
+    ASYNCSSH_LOGGER_NAME,
+    TERMINAL_HANDLER_NAME,
+    configure_logging,
+)
 from tests.support.login import route_login
 from tests.support.sshserver import SSHTestServer
+
+# As the CLI does, so every test sees the same `ezhpcy` logger: one that has the
+# terminal handler and doesn't propagate.
+configure_logging(config.log_level)
 
 
 @pytest.fixture

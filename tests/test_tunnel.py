@@ -3,7 +3,7 @@
 import re
 from datetime import timedelta
 from pathlib import Path
-from unittest.mock import ANY, patch
+from unittest.mock import patch
 
 import pytest
 from pydantic import ValidationError
@@ -367,33 +367,20 @@ def test_tunnel_without_auto_provision_needs_the_local_credentials(
     )
 
 
-def test_profile_tunnel_alias_defaults_to_its_profiles_conf_block(
-    monkeypatch: pytest.MonkeyPatch, isolated_runtime_dir: Path
-) -> None:
-    monkeypatch.setattr(tunnel_module.config, "profile", _alias_profiles())
-    captured = capture(monkeypatch, "tunnel")
-
-    result = invoke(["tunnel", "gpu"])
-
-    assert result.exit_code == 0, result
-    ssh_host = captured["ssh_host"]
-    assert isinstance(ssh_host, WorkerHost)
-    assert (ssh_host.alias, ssh_host.user) == ("gpu", "alice")
-    assert captured["ssh_host_in_profiles_config"] is True
-    profiles_conf = isolated_runtime_dir / "ssh-config" / "profiles.conf"
-    assert "Host cpu\n" in profiles_conf.read_text(encoding="utf-8")
-    assert "Host gpu\n" in profiles_conf.read_text(encoding="utf-8")
-
-
 @pytest.mark.parametrize(
     ("arguments", "alias", "user"),
     [
+        ([], "gpu", "alice"),
         (["--user", "bob"], "gpu", "bob"),
         (["--alias", "my-gpu"], "my-gpu", "alice"),
     ],
 )
-def test_profile_tunnel_that_differs_from_profiles_conf_needs_its_own_block(
-    monkeypatch: pytest.MonkeyPatch, arguments: list[str], alias: str, user: str
+def test_profile_tunnel_alias_defaults_to_the_profile_name(
+    monkeypatch: pytest.MonkeyPatch,
+    isolated_runtime_dir: Path,
+    arguments: list[str],
+    alias: str,
+    user: str,
 ) -> None:
     monkeypatch.setattr(tunnel_module.config, "profile", _alias_profiles())
     captured = capture(monkeypatch, "tunnel")
@@ -404,28 +391,8 @@ def test_profile_tunnel_that_differs_from_profiles_conf_needs_its_own_block(
     ssh_host = captured["ssh_host"]
     assert isinstance(ssh_host, WorkerHost)
     assert (ssh_host.alias, ssh_host.user) == (alias, user)
-    assert captured["ssh_host_in_profiles_config"] is False
-
-
-def test_tunnel_falls_back_to_its_own_block_when_profiles_conf_cannot_be_written(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(tunnel_module.config, "profile", _alias_profiles())
-    captured = capture(monkeypatch, "tunnel")
-
-    def fail(_hosts: object) -> None:
-        raise OSError("disk full")
-
-    monkeypatch.setattr(tunnel_module, "write_profiles_config", fail)
-
-    with patch("ezhpcy.cli.tunnel.logger") as logger:
-        result = invoke(["tunnel", "gpu"])
-
-    assert result.exit_code == 0, result
-    assert captured["ssh_host_in_profiles_config"] is False
-    logger.warning.assert_any_call(
-        "Could not write the profile SSH configuration: %s", ANY
-    )
+    # Idle profiles get no Host block.
+    assert not (isolated_runtime_dir / "ssh-config").exists()
 
 
 def test_anonymous_tunnel_alias_is_stable_for_identical_options(
@@ -436,7 +403,6 @@ def test_anonymous_tunnel_alias_is_stable_for_identical_options(
     def alias_for(*extra: str) -> str:
         result = invoke([*_ANONYMOUS_TUNNEL_ARGS, *extra])
         assert result.exit_code == 0, result
-        assert captured["ssh_host_in_profiles_config"] is False
         ssh_host = captured["ssh_host"]
         assert isinstance(ssh_host, WorkerHost)
         return ssh_host.alias

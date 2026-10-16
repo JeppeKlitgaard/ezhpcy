@@ -1,8 +1,9 @@
 """
 One tunnel, from connecting to the login node until everything is cleaned up.
 
-`TunnelSession.run` connects, provisions (or checks) the worker infrastructure,
-submits the worker job, waits for its sshd, and starts the tunnel server, then
+`TunnelSession.run` takes the alias lock, connects, provisions (or checks) the
+worker infrastructure, submits the worker job, waits for its sshd, forwards a
+loopback port to it and publishes the Host block that points OpenSSH there, then
 serves until it is stopped. Each step registers its cleanup on an
 `AsyncExitStack` as soon as it has acquired something, so cleanup covers exactly
 what was started, in reverse order. Each cleanup step has a timeout, and one that
@@ -24,11 +25,10 @@ lazy import shlex
 lazy import sys
 lazy import time
 lazy from collections.abc import Awaitable, Callable, Coroutine
-lazy from contextlib import AbstractAsyncContextManager, AsyncExitStack
+lazy from contextlib import AbstractAsyncContextManager, AsyncExitStack, ExitStack
 
 lazy import asyncssh
 
-lazy from ezhpcy.ipc.descriptor import TunnelDescriptor
 lazy from ezhpcy.provision_host import (
     provision_worker_infrastructure,
     validate_worker_infrastructure,
@@ -44,7 +44,7 @@ lazy from ezhpcy.scheduler.base import (
 )
 lazy from ezhpcy.ssh import RemoteHost, ensure_directory
 lazy from ezhpcy.tunnel import TunnelError
-lazy from ezhpcy.tunnel.server import TunnelServer
+lazy from ezhpcy.tunnel.lock import alias_lock
 lazy from ezhpcy.tunnel.ssh_config import WorkerHost, publish_host, withdraw_host
 lazy from ezhpcy.types import ConnectionInfo, ResolvedConfig, SubmissionMode
 lazy from ezhpcy.worker.control import (
@@ -71,6 +71,8 @@ _BANNER_READ_SECONDS = 5.0
 _STATUS_POLL_SECONDS = 1.0
 # How long each cleanup step may take, so that a dead connection can't hang it.
 _CLEANUP_SECONDS = 10.0
+# Releasing the alias lock is a local unlock; the OS releases it at exit anyway.
+_LOCK_RELEASE_SECONDS = 1.0
 # How long a background task asked to stop may take to end by itself.
 _STOP_GRACE_SECONDS = 1.0
 
@@ -90,7 +92,6 @@ class TunnelSession:
         worker_ports: tuple[int, ...],
         auto_provision: bool,
         profile_name: str | None = None,
-        ssh_host_in_profiles_config: bool = False,
     ) -> None:
         self._resolved = resolved
         self._ssh_host = ssh_host
@@ -98,7 +99,6 @@ class TunnelSession:
         self._worker_ports = worker_ports
         self._auto_provision = auto_provision
         self._profile_name = profile_name
-        self._ssh_host_in_profiles_config = ssh_host_in_profiles_config
         # Whether the tunnel got as far as serving.
         self.ready = False
         self._host: RemoteHost | None = None
@@ -184,6 +184,16 @@ class TunnelSession:
         resolved = self._resolved
         resources, timings = resolved.resources, resolved.timings
 
+        # Before connecting, so a second tunnel for the alias fails before any
+        # password prompt; released last.
+        lock = ExitStack()
+        lock.enter_context(alias_lock(self._ssh_host.alias))
+        stack.push_async_callback(
+            self._cleanup,
+            "release the alias lock",
+            lambda: asyncio.to_thread(lock.close),
+            seconds=_LOCK_RELEASE_SECONDS,
+        )
         host = self._host = await self._connect(resolved.connection)
         stack.push_async_callback(
             self._cleanup, "close the login connection", host.close
@@ -344,43 +354,39 @@ class TunnelSession:
             destination, control, scheduler, job_id, deadline
         )
 
-        # Serve, and tell OpenSSH how to reach the tunnel.
-        server = await self._enter(
-            stack, TunnelServer(host, destination), "close the tunnel server"
-        )
-        descriptor = TunnelDescriptor(
-            self._ssh_host.alias,
-            port=server.port,
-            authkey=server.authkey,
-            debug=logger.isEnabledFor(logging.DEBUG),
-        )
-        # Each removal is registered before its file is written: it removes only
-        # this tunnel's file, if there is one.
+        # Serve on a loopback port, and tell OpenSSH how to reach it.
+        def accept(client_host: str, client_port: int) -> bool:
+            logger.debug(
+                "Tunnel client accepted: client=%s:%d destination=%s:%d",
+                client_host,
+                client_port,
+                *destination,
+            )
+            return True
+
+        listener = await host.forward_local_port(*destination, accept_handler=accept)
+
+        async def close_listener() -> None:
+            # New connections are refused at once. Open ones end when the login
+            # connection closes; `wait_closed` would wait for them (FINDINGS.md,
+            # "Phase 1").
+            listener.close()
+
         stack.push_async_callback(
-            self._cleanup,
-            "remove the tunnel descriptor",
-            lambda: asyncio.to_thread(descriptor.remove),
+            self._cleanup, "close the forwarded port", close_listener
         )
-        await self._finish(
-            "publish the tunnel descriptor", asyncio.to_thread(descriptor.publish)
-        )
-        # Withdrawn before the descriptor is removed, so that a Host block never
-        # outlives the tunnel it points at.
+        port = listener.get_port()
+        logger.debug("Forwarding port: port=%d destination=%s:%d", port, *destination)
+        # Registered before the block is written, and withdrawn before the port
+        # closes, so that a Host block never outlives the port it points at.
         stack.push_async_callback(
             self._cleanup,
             "remove the SSH configuration",
-            lambda: asyncio.to_thread(
-                withdraw_host, self._ssh_host, instance_id=descriptor.instance_id
-            ),
+            lambda: asyncio.to_thread(withdraw_host, self._ssh_host),
         )
         await self._finish(
             "publish the SSH configuration",
-            asyncio.to_thread(
-                publish_host,
-                self._ssh_host,
-                instance_id=descriptor.instance_id,
-                in_profiles_config=self._ssh_host_in_profiles_config,
-            ),
+            asyncio.to_thread(publish_host, self._ssh_host, port),
         )
         self._start_task(
             stack, self._monitor_job(scheduler, job_id), name="job monitor"
@@ -711,17 +717,23 @@ class TunnelSession:
         return value
 
     async def _cleanup(
-        self, description: str, step: Callable[[], Awaitable[object]]
+        self,
+        description: str,
+        step: Callable[[], Awaitable[object]],
+        *,
+        seconds: float | None = None,
     ) -> None:
-        """Run one cleanup step, with a timeout; if it fails, warn and carry on."""
+        """
+        Run one cleanup step, for at most `seconds` (by default `_CLEANUP_SECONDS`);
+        if it fails, warn and carry on.
+        """
+        seconds = _CLEANUP_SECONDS if seconds is None else seconds
         try:
-            async with asyncio.timeout(_CLEANUP_SECONDS):
+            async with asyncio.timeout(seconds):
                 await step()
         except TimeoutError:
             logger.warning(
-                "Could not %s: no answer within %g seconds.",
-                description,
-                _CLEANUP_SECONDS,
+                "Could not %s: no answer within %g seconds.", description, seconds
             )
         except Exception as error:
             logger.warning(

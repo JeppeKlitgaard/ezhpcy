@@ -28,6 +28,7 @@ import pytest
 from ezhpcy.scheduler.base import JobInfo, JobSpec, JobState, SchedulerError
 from ezhpcy.ssh import RemoteHost
 from ezhpcy.tunnel import session
+from ezhpcy.tunnel.lock import alias_locked
 from ezhpcy.worker.control import WorkerControl
 from tests.support.cli import invoke
 from tests.support.sshserver import SSHTestServer
@@ -319,14 +320,10 @@ def test_tunnel_shutdown(
     serve_interactive_job(login)
     schedulers = use_scheduler(monkeypatch, rig.scheduler)
     monkeypatch.setattr(
-        session,
-        "publish_host",
-        lambda host, **_kwargs: rig.published.append(host.alias),
+        session, "publish_host", lambda host, _port: rig.published.append(host.alias)
     )
     monkeypatch.setattr(
-        session,
-        "withdraw_host",
-        lambda host, **_kwargs: rig.withdrawn.append(host.alias),
+        session, "withdraw_host", lambda host: rig.withdrawn.append(host.alias)
     )
 
     publish_lease = WorkerControl.publish_lease
@@ -364,3 +361,4 @@ def test_tunnel_shutdown(
     assert rig.withdrawn == (["base"] if scenario.withdrawn else [])
     # A block is only withdrawn if it was published, and never left behind.
     assert rig.published == rig.withdrawn
+    assert not alias_locked("base")

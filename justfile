@@ -7,6 +7,7 @@ set windows-shell := ["powershell.exe", "-NoLogo", "-NoProfile", "-Command"]
 all:
     just format
     just lint
+    just check
     just test
     just pc-all
 
@@ -14,7 +15,7 @@ all:
 [group: 'dev']
 install:
     uv sync
-    uv run prek install
+    uv run --group pre-commit prek install
 
 # Override EzHPCy config with default. Works best with a .dotenv containing EZHPCY_USER
 override-config:
@@ -24,30 +25,35 @@ override-config:
 # Formats the code using ruff
 [group: 'format']
 format:
-    uv run ruff check . --fix
-    uv run ruff format .
+    uv run --group format ruff check . --fix
+    uv run --group format ruff format .
 
 # Checks the code for linting errors
 [group: 'format']
 lint:
-    uv run ruff check .
+    uv run --group format ruff check .
 
 # Runs the pre-commit hooks on all files
 [group: 'format']
 pc-all:
-    uv run prek run --all-files
+    uv run --group pre-commit prek run --all-files
 
 # Runs the pre-commit hooks on the changed files
 [group: 'format']
 pc:
-    uv run prek run
+    uv run --group pre-commit prek run
 
 # Runs the test suite
 [group: 'test']
 test *args:
-    uv run pytest {{args}}
+    uv run --group test pytest {{args}}
 
 # Runs the test suite and reports coverage; `just coverage --cov-report=html` for htmlcov/
 [group: 'test']
 coverage *args:
-    uv run pytest --cov --cov-report=term-missing {{args}}
+    uv run --group test pytest --cov --cov-report=term-missing {{args}}
+
+# Runs the type checker
+[group: 'typecheck']
+check:
+    uv run --group typecheck pyrefly check

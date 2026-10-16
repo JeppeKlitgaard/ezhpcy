@@ -55,7 +55,6 @@ lazy from ezhpcy.worker.job import (
 )
 lazy from ezhpcy.worker.sshd import (
     client_alive,
-    read_ed25519_public_key,
     sshd_config_arguments,
 )
 
@@ -192,9 +191,7 @@ class TunnelSession:
             await provision_worker_infrastructure(host, remote_state, credentials)
         else:
             await validate_worker_infrastructure(host, remote_state, credentials)
-        authorized_key = await asyncio.to_thread(
-            read_ed25519_public_key, credentials.client_public_key
-        )
+        authorized_key = await asyncio.to_thread(credentials.authorized_key)
         scheduler = create_scheduler(resolved, host)
         if self._profile_name is None:
             logger.info(

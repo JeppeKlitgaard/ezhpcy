@@ -12,7 +12,6 @@ lazy from ezhpcy.ssh import RemoteHost
 lazy from ezhpcy.types import RemoteState
 lazy from ezhpcy.worker.sshd import (
     absolute_sshd_command,
-    read_ed25519_public_key,
     sshd_config_arguments,
 )
 
@@ -115,7 +114,7 @@ def _prepare_local_keys(credentials: WorkerCredentials) -> tuple[str, str]:
     """
     credentials.ensure_local_keys()
     credentials.pin_host_key()
-    return read_ed25519_public_key(credentials.client_public_key)
+    return credentials.authorized_key()
 
 
 async def provision_worker_infrastructure(

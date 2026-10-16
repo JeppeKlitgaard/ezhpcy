@@ -17,6 +17,7 @@ first of these wins: it is logged as `Stopping tunnel: <why>`, decides the error
 
 import logging
 lazy import asyncio
+lazy import codecs
 lazy import functools
 lazy import secrets
 lazy import shlex
@@ -708,15 +709,19 @@ class TunnelSession:
 
 async def _forward_output(job: InteractiveJob) -> None:
     """Show the interactive job's output on stderr."""
+    # Incremental, so that a character split across chunks isn't garbled.
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+
+    def write(output: bytes, *, final: bool = False) -> None:
+        if text := decoder.decode(output, final):
+            sys.stderr.write(text)
+            sys.stderr.flush()
+
     try:
-        await job.drain(_write_stderr)
+        await job.drain(write)
     except (asyncssh.Error, OSError) as error:
         logger.debug("Interactive job output ended: error=%r", error)
-
-
-def _write_stderr(output: bytes) -> None:
-    sys.stderr.write(output.decode(errors="replace"))
-    sys.stderr.flush()
+    write(b"", final=True)
 
 
 async def _stop_task(

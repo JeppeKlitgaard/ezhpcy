@@ -76,6 +76,9 @@ class InteractiveJob:
     submission_command: tuple[str, ...]
     # The line that `start_command` sends to the job's shell.
     shell_command: str
+    # What the submission printed up to and including its job ID, which may run
+    # on past the ID. `drain` passes it on first.
+    early_output: bytes = b""
 
     async def start_command(self) -> None:
         """Start the job's command in its shell."""
@@ -90,8 +93,11 @@ class InteractiveJob:
     async def drain(self, sink: Callable[[bytes], object]) -> None:
         """
         Pass the process's output (stdout and stderr: it runs under a terminal)
-        to `sink` until the process ends.
+        to `sink` until the process ends, starting with `early_output`. A chunk
+        may end partway through a character.
         """
+        if self.early_output:
+            sink(self.early_output)
         while output := await self.process.stdout.read(_READ_BYTES):
             sink(output)
 
@@ -155,7 +161,7 @@ class Scheduler(ABC):
             ) from error
 
         try:
-            job_id = await self._read_job_id(process, startup_timeout)
+            job_id, early_output = await self._read_job_id(process, startup_timeout)
         except BaseException:
             process.close()
             raise
@@ -164,6 +170,7 @@ class Scheduler(ABC):
             process=process,
             submission_command=tuple(command),
             shell_command=self._job_shell_command(spec),
+            early_output=early_output,
         )
 
     @abstractmethod
@@ -217,14 +224,15 @@ class Scheduler(ABC):
 
     async def _read_job_id(
         self, process: asyncssh.SSHClientProcess[bytes], startup_timeout: float
-    ) -> str:
+    ) -> tuple[str, bytes]:
+        """The job ID, and all the output read to find it."""
         output = bytearray()
         try:
             async with asyncio.timeout(startup_timeout):
                 while True:
                     decoded = output.decode(errors="replace")
                     if match := self.interactive_job_id_pattern.search(decoded):
-                        return match.group("job_id")
+                        return match.group("job_id"), bytes(output)
                     chunk = await process.stdout.read(_READ_BYTES)
                     if not chunk:
                         await process.wait_closed()

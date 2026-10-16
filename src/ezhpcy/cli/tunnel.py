@@ -3,7 +3,6 @@ from contextlib import contextmanager
 lazy import asyncio
 lazy import os
 lazy import shlex
-lazy import signal
 lazy import sys
 lazy from collections.abc import Generator
 lazy from types import FrameType
@@ -30,6 +29,7 @@ lazy from ezhpcy.cli._resolve import (
     with_cli_options,
 )
 lazy from ezhpcy.cli.utils import ssh as cli_ssh
+lazy from ezhpcy.cli.utils.interrupts import interrupts_handled_by
 lazy from ezhpcy.config import config
 lazy from ezhpcy.ipc import IPCError
 lazy from ezhpcy.permissions import FilePermissionError
@@ -337,12 +337,5 @@ def _interrupts_stop(session: TunnelSession) -> Generator[None]:
         sys.stderr.flush()
         os._exit(130)
 
-    signals = [signal.SIGINT]
-    if hasattr(signal, "SIGBREAK"):
-        signals.append(signal.SIGBREAK)
-    previous = {signum: signal.signal(signum, interrupt) for signum in signals}
-    try:
+    with interrupts_handled_by(interrupt):
         yield
-    finally:
-        for signum, handler in previous.items():
-            signal.signal(signum, handler)

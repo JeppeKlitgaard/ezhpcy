@@ -10,6 +10,8 @@ server's keepalives, which could drop the connection.
 lazy import signal
 lazy from collections.abc import Callable
 
+lazy from ezhpcy.cli.utils.interrupts import interrupts_handled_by
+
 
 def ask[**P, T](prompt: Callable[P, T], /, *args: P.args, **kwargs: P.kwargs) -> T:
     """
@@ -22,14 +24,5 @@ def ask[**P, T](prompt: Callable[P, T], /, *args: P.args, **kwargs: P.kwargs) ->
     `tunnel`'s, which stops the tunnel through the loop. Must be called from the
     main thread.
     """
-    signals = [signal.SIGINT]
-    if hasattr(signal, "SIGBREAK"):
-        signals.append(signal.SIGBREAK)
-    previous = {
-        signum: signal.signal(signum, signal.default_int_handler) for signum in signals
-    }
-    try:
+    with interrupts_handled_by(signal.default_int_handler):
         return prompt(*args, **kwargs)
-    finally:
-        for signum, handler in previous.items():
-            signal.signal(signum, handler)

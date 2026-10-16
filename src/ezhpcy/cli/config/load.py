@@ -35,6 +35,7 @@ def _available_presets() -> dict[str, Traversable]:
 _PRESETS = _available_presets()
 # An enum built at runtime, so the CLI matches presets case-insensitively and
 # lists them in help.
+# pyrefly: ignore[invalid-argument]  # Members are the preset files, found at runtime
 Preset = Enum("Preset", {name: name for name in _PRESETS})
 
 

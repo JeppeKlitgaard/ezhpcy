@@ -21,7 +21,9 @@ def sentence[MessageT: (str, Template)](message: MessageT) -> MessageT:
     A first word that is an identifier, such as `time_limit`, keeps its case.
     """
     if isinstance(message, str):
+        # pyrefly: ignore[bad-assignment]  # https://github.com/facebook/pyrefly/issues/3783
         message = _capitalised(message)
+        # pyrefly: ignore[missing-attribute, unsupported-operation]  # https://github.com/facebook/pyrefly/issues/3783
         return message if message.endswith(_SENTENCE_ENDINGS) else message + "."
     pieces: list[str | Interpolation] = list(message)
     if pieces and isinstance(pieces[0], str):
@@ -30,6 +32,7 @@ def sentence[MessageT: (str, Template)](message: MessageT) -> MessageT:
         _SENTENCE_ENDINGS
     ):
         pieces.append(".")
+    # pyrefly: ignore[bad-return]  # https://github.com/facebook/pyrefly/issues/3783
     return Template(*pieces)
 
 

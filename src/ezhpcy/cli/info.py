@@ -59,6 +59,8 @@ def info_cmd(*, json: bool = False) -> None:
     ]
 
     if json:
+        # pyrefly: ignore[not-a-type]  # PEP 798, not yet supported by pyrefly
+        # See: https://github.com/facebook/pyrefly/issues/5251
         flat_data = [*section for section in datas]
         console.out(json_dumps(flat_data, indent=4))
         return

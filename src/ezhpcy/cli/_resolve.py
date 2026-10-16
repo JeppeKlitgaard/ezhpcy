@@ -110,7 +110,7 @@ def with_cli_options[SubConfigT: BaseModel](
         **{name: value for name, (_, value) in given.items()},
     }
     try:
-        return type(sub_config).model_validate(values)
+        return sub_config.__class__.model_validate(values)
     except ValidationError as error:
         flags = {name: flag for name, (flag, _) in given.items()}
         raise _validation_usage_error(error, flags) from error

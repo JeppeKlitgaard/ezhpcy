@@ -34,7 +34,7 @@ def test_worker_sshd_command_retries_ports_through_pixi() -> None:
         remote_state,
         ports=(54321, 54322),
         heartbeat_token="LEASETOKEN",
-        heartbeat_timeout_seconds=89.5,
+        heartbeat_timeout_seconds=90,
         heartbeat_debug=True,
         control_dir=PurePosixPath("/home/alice/.cache/ezhpcy/control/test"),
         read_script_from_stdin=False,
@@ -60,7 +60,6 @@ def test_worker_sshd_command_retries_ports_through_pixi() -> None:
     assert command[10:16] == (
         "54321:54322",
         "LEASETOKEN",
-        # Whole seconds, rounded up, for the watchdog's integer comparison.
         "90",
         "1",
         f"/home/alice/.local/state/ezhpcy/{EZHPCY_VERSION}/logs/worker",
@@ -91,7 +90,7 @@ def test_worker_sshd_command_retries_ports_through_pixi() -> None:
     ],
 )
 def test_worker_client_alive_gives_up_within_the_heartbeat_timeout(
-    interval: float, timeout: float, expected: tuple[int, int]
+    interval: float, timeout: int, expected: tuple[int, int]
 ) -> None:
     assert worker_client_alive(interval, timeout) == expected
 

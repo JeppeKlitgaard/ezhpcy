@@ -20,11 +20,10 @@ import keyring
 import pytest
 
 from ezhpcy.config import config
-from ezhpcy.constants import PACKAGE_NAME
+from ezhpcy.constants import EZHPCY_VERSION, PACKAGE_NAME
 from ezhpcy.logging import TERMINAL_HANDLER_NAME
 from ezhpcy.scheduler.types import SchedulerType
 from ezhpcy.types import ProfileConfig, SubmissionMode
-from ezhpcy.utils import ezhpcy_version
 from tests.support.cli import RELAYED_BYTES, capture, invoke
 
 _PROFILES = {
@@ -175,7 +174,7 @@ def test_info_runs(arguments: list[str]) -> None:
     result = invoke(["info", *arguments])
 
     assert result.exit_code == 0, result
-    assert ezhpcy_version() in result.stdout
+    assert EZHPCY_VERSION in result.stdout
     if arguments:
         json.loads(result.stdout)
 
@@ -184,14 +183,14 @@ def test_version_prints_the_version() -> None:
     result = invoke(["version"])
 
     assert result.exit_code == 0, result
-    assert result.stdout.strip() == ezhpcy_version()
+    assert result.stdout.strip() == EZHPCY_VERSION
 
 
 def test_version_json_prints_the_version_as_json() -> None:
     result = invoke(["version", "--json"])
 
     assert result.exit_code == 0, result
-    assert json.loads(result.stdout) == {"version": ezhpcy_version()}
+    assert json.loads(result.stdout) == {"version": EZHPCY_VERSION}
 
 
 # Options reach the command

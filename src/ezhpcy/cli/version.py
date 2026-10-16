@@ -3,8 +3,8 @@ lazy from typing import Annotated
 
 lazy from cyclopts import Parameter
 
-lazy from ezhpcy import console
-lazy from ezhpcy.utils import ezhpcy_version
+lazy from ezhpcy.console import console
+lazy from ezhpcy.constants import EZHPCY_VERSION
 
 
 def version_cmd(
@@ -15,8 +15,7 @@ def version_cmd(
     ] = False,
 ) -> None:
     """Show the EzHPCy version."""
-    current_version = ezhpcy_version()
     if json:
-        console.out(json_lib.dumps({"version": current_version}))
+        console.out(json_lib.dumps({"version": EZHPCY_VERSION}))
     else:
-        console.out(current_version)
+        console.out(EZHPCY_VERSION)

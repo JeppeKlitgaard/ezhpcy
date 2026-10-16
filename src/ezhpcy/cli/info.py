@@ -3,9 +3,10 @@ lazy from json import dumps as json_dumps
 lazy from rich.table import Table
 lazy from rich.text import Text
 
-lazy from ezhpcy import console
 lazy from ezhpcy.config import config
-lazy from ezhpcy.utils import ezhpcy_version, local_machine_id
+lazy from ezhpcy.console import console
+lazy from ezhpcy.constants import EZHPCY_VERSION
+lazy from ezhpcy.utils import local_machine_id
 
 
 def info_cmd(*, json: bool = False) -> None:
@@ -16,7 +17,7 @@ def info_cmd(*, json: bool = False) -> None:
         [
             {
                 "key": "EzHPCy Version",
-                "value": ezhpcy_version(),
+                "value": EZHPCY_VERSION,
                 "description": "Current version of EzHPCy.",
             },
             {

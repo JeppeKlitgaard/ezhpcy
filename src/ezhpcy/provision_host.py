@@ -200,12 +200,6 @@ async def _stale_siblings(
 
 async def prune_all_remote_data(login: RemoteHost, remote_state: RemoteState) -> None:
     """Remove the complete EzHPCy-managed remote footprint."""
-    await login.run(
-        [
-            "rm",
-            "-rf",
-            "--",
-            str(remote_state.package_cache_root()),
-            str(remote_state.package_state_root()),
-        ]
-    )
+    roots = (remote_state.package_cache_root(), remote_state.package_state_root())
+    logger.info("Removing %s and %s.", *roots)
+    await login.run(["rm", "-rf", "--", *map(str, roots)])

@@ -38,22 +38,22 @@ async def provision_cmd(
     credentials = WorkerCredentials.for_login(
         conn_info, machine_id=await asyncio.to_thread(local_machine_id)
     )
+    # Asked before connecting (see `ask`).
+    target = f"{conn_info.user}@{conn_info.host}"
+    user_accepts = yes or ask(
+        Confirm.ask,
+        rich_text(
+            t"This will provision or repair EzHPCy worker infrastructure on "
+            t"{target:name}, under its {'$XDG_CACHE_HOME/ezhpcy':path}. Proceed?"
+        ),
+        console=error_console,
+        default=True,
+    )
+    if not user_accepts:
+        print_aborted(t"Provisioning cancelled.")
+        raise SystemExit(1)
+
     async with await connect_or_exit(conn_info) as login:
         remote_state = await login.remote_state()
-        remote_root = remote_state.package_cache_dir()
-
-        user_accepts = yes or ask(
-            Confirm.ask,
-            rich_text(
-                t"This will provision or repair EzHPCy worker infrastructure under "
-                t"{remote_root:path}. Proceed?"
-            ),
-            console=error_console,
-            default=True,
-        )
-        if not user_accepts:
-            print_aborted(t"Provisioning cancelled.")
-            raise SystemExit(1)
-
         await provision_worker_infrastructure(login, remote_state, credentials)
     print_success(t"Remote provisioning completed.")

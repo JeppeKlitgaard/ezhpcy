@@ -340,7 +340,30 @@ async def test_drain_passes_on_output_until_the_process_ends(adapter: Adapter):
 
     await asyncio.wait_for(job.drain(output.append), WAIT_SECONDS)
 
-    assert output == [b"worker log\n", b"more\n"]
+    assert output == [adapter.submitted.encode(), b"worker log\n", b"more\n"]
+
+
+async def test_drain_first_passes_on_what_was_read_for_the_job_id(adapter: Adapter):
+    submitted = adapter.submitted.encode()
+    process = FakeProcess(
+        b"Welcome to the cluster\n",
+        submitted + b"<<Waiting for dispatch ...>>\n",
+        b"worker log\n",
+        exit_status=0,
+    )
+    job = await adapter.create(FakeHost(process=process)).submit_interactive(
+        JobSpec(command=("true",)), startup_timeout=WAIT_SECONDS
+    )
+    output: list[bytes] = []
+
+    await asyncio.wait_for(job.drain(output.append), WAIT_SECONDS)
+
+    # Nothing is lost: not the banner before the ID, nor what followed it.
+    assert b"".join(output) == (
+        b"Welcome to the cluster\n"
+        + submitted
+        + b"<<Waiting for dispatch ...>>\nworker log\n"
+    )
 
 
 async def test_command_failures_carry_the_reason(adapter: Adapter):
@@ -1104,7 +1127,9 @@ async def test_interactive_submission_on_the_login_node(
         job.close()
 
     assert job.job_id == adapter.job_id
-    assert b"".join(output) == f"started exec {_COMMAND} 'two words'\n".encode()
+    assert b"".join(output) == (
+        f"{adapter.submitted}started exec {_COMMAND} 'two words'\n".encode()
+    )
 
 
 async def test_interactive_submission_that_exits_on_the_login_node(

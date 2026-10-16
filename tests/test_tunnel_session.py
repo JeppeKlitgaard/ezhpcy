@@ -123,7 +123,8 @@ def test_a_tunnel_relays_proxies_to_the_worker(
 
     assert result.exit_code == 0, result
     assert outputs == [BANNER + b"worker:hello", BANNER + b"worker:again"]
-    # The interactive job's output after its ID reaches the user.
+    # The interactive job's output reaches the user, its ID included.
+    assert "Job <42> is submitted to queue <normal>." in result.stderr
     assert "<<Starting on 127.0.0.1>>" in result.stderr
 
     [submission] = submissions
@@ -153,6 +154,20 @@ def test_a_tunnel_relays_proxies_to_the_worker(
     assert not descriptor_path("scratch").exists()
     assert control_dirs(login) == []
     assert signal.getsignal(signal.SIGINT) is previous_handler
+
+
+async def test_interactive_output_keeps_characters_split_across_reads(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class Job:
+        async def drain(self, sink: Callable[[bytes], object]) -> None:
+            # "Velkommen på" with its "å" split, then a cut-off "ø".
+            for chunk in (b"Velkommen p\xc3", b"\xa5\n", b"\xc3"):
+                sink(chunk)
+
+    await session._forward_output(Job())  # type: ignore[arg-type]
+
+    assert capsys.readouterr().err == "Velkommen på\n�"
 
 
 def test_an_lsf_batch_tunnel_sends_the_worker_script_to_bsub(

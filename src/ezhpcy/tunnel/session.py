@@ -323,9 +323,11 @@ class TunnelSession:
             await interactive_job.start_command()
 
         worker_host = await self._wait_for_running_job(scheduler, job_id)
-        worker_port = await _wait_for_ready_port(
-            control, startup_timeout=timings.worker_startup_timeout_seconds
+        # From allocation, one budget for the worker's sshd to start and answer.
+        deadline = (
+            asyncio.get_running_loop().time() + timings.worker_startup_timeout_seconds
         )
+        worker_port = await self._wait_for_ready_port(control, deadline)
         # Stopped between leases: cancelling one half written would leave its
         # temporary file in the control directory.
         stopping = asyncio.Event()
@@ -337,7 +339,7 @@ class TunnelSession:
         )
         destination = (worker_host, worker_port)
         logger.info("Waiting for worker SSH endpoint %s:%d.", *destination)
-        await self._wait_for_worker_endpoint(destination)
+        await self._wait_for_worker_endpoint(destination, deadline)
 
         # Serve, and tell OpenSSH how to reach the tunnel.
         server = await self._enter(
@@ -425,13 +427,42 @@ class TunnelSession:
                 f"{timings.queue_timeout_seconds:g} seconds"
             ) from None
 
-    async def _wait_for_worker_endpoint(self, destination: tuple[str, int]) -> None:
-        """Wait until the worker's sshd sends its banner through the login connection."""
+    async def _wait_for_ready_port(
+        self, control: WorkerControl, deadline: float
+    ) -> int:
+        """
+        Wait until `deadline` (loop time) for the worker to say which port its sshd
+        listens on.
+        """
+        try:
+            async with asyncio.timeout_at(deadline):
+                while True:
+                    if (port := await control.read_ready_port()) is not None:
+                        return port
+                    if failure := await control.read_failure():
+                        raise TunnelError(
+                            f"worker SSH daemon failed to start: {failure}"
+                        )
+                    await asyncio.sleep(_READY_POLL_SECONDS)
+        except TimeoutError:
+            timeout = self._resolved.timings.worker_startup_timeout_seconds
+            raise TunnelError(
+                "worker SSH daemon did not bind a candidate port within "
+                f"{timeout:g} seconds"
+            ) from None
+
+    async def _wait_for_worker_endpoint(
+        self, destination: tuple[str, int], deadline: float
+    ) -> None:
+        """
+        Wait until `deadline` (loop time) for the worker's sshd to send its banner
+        through the login connection.
+        """
         timeout = self._resolved.timings.worker_startup_timeout_seconds
         poll_interval = self._resolved.timings.job_poll_interval_seconds
         last_error: Exception | None = None
         try:
-            async with asyncio.timeout(timeout):
+            async with asyncio.timeout_at(deadline):
                 while True:
                     try:
                         async with asyncio.timeout(_BANNER_READ_SECONDS):
@@ -670,25 +701,6 @@ class TunnelSession:
                 error,
                 exc_info=logger.isEnabledFor(logging.DEBUG),
             )
-
-
-async def _wait_for_ready_port(
-    control: WorkerControl, *, startup_timeout: float
-) -> int:
-    """Wait for the worker to say which port its sshd listens on."""
-    try:
-        async with asyncio.timeout(startup_timeout):
-            while True:
-                if (port := await control.read_ready_port()) is not None:
-                    return port
-                if failure := await control.read_failure():
-                    raise TunnelError(f"worker SSH daemon failed to start: {failure}")
-                await asyncio.sleep(_READY_POLL_SECONDS)
-    except TimeoutError:
-        raise TunnelError(
-            "worker SSH daemon did not bind a candidate port within "
-            f"{startup_timeout:g} seconds"
-        ) from None
 
 
 async def _forward_output(job: InteractiveJob) -> None:

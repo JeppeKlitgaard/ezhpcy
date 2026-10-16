@@ -136,7 +136,11 @@ class RemoteHost:
 
         To bound how long it may take, wrap the call in `asyncio.timeout`.
         """
-        process = await self._conn.create_process(shlex.join(args), input=stdin)
+        # Bytes that aren't UTF-8 are replaced: asyncssh would otherwise drop
+        # the whole connection, not just fail this command.
+        process = await self._conn.create_process(
+            shlex.join(args), input=stdin, errors="replace"
+        )
         try:
             # Reads stdout and stderr together, so neither can fill up and
             # stall the command.

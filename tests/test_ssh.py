@@ -4,7 +4,7 @@ import asyncio
 import shlex
 import threading
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, cast
 
 import asyncssh
 import pytest
@@ -133,6 +133,22 @@ async def test_run_sends_stdin(ssh_server: SSHTestServer):
         assert await host.run(["cat"], stdin="#!/bin/bash\necho hi\n") == (
             "#!/bin/bash\necho hi\n"
         )
+
+
+async def test_run_replaces_output_that_is_not_utf8(ssh_server: SSHTestServer):
+    def latin1(invocation: Invocation) -> None:
+        channel = cast(asyncssh.SSHServerChannel[bytes], invocation.process.channel)
+        channel.set_encoding(None)
+        channel.write(b"caf\xe9\n")
+        channel.write_stderr(b"\xff\n")
+
+    ssh_server.command("latin1", latin1)
+    ssh_server.command("true", reply())
+
+    async with await _connect(ssh_server) as host:
+        assert await host.run(["latin1"]) == "caf�\n"
+        # The connection is still usable.
+        assert await host.run(["true"]) == ""
 
 
 async def test_run_raises_process_error_with_stderr(ssh_server: SSHTestServer):

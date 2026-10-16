@@ -45,7 +45,10 @@ def _readable(_type: type, value: Path | None) -> None:
 
 def _complete_profiles(_context: object) -> dict[str, str]:
     """Offer the configured profiles, described like `ezhpcy list-profiles`."""
-    return {name: profile.description or "" for name, profile in config.profile.items()}
+    return {
+        name: profile_config.description or ""
+        for name, profile_config in config.profile.items()
+    }
 
 
 OptionalProfileArg = Annotated[

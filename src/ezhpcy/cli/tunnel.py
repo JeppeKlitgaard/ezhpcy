@@ -103,7 +103,7 @@ def _check_interactive_submission_command(
     *,
     scheduler_options: SchedulerOptions,
     resource_options: ResourceOptions,
-    profile: str | None,
+    profile_name: str | None,
     profile_config: ResolvedProfileConfig,
 ) -> None:
     """Reject an interactive submission command that would drop requested settings.
@@ -119,7 +119,7 @@ def _check_interactive_submission_command(
     - Settings the profile only inherits are logged and ignored instead, because
       wrapper profiles typically inherit from a base profile that sets resources
       (e.g. `dtu-a100sh` inherits from `dtu-base-lsf`). Telling inherited from
-      direct settings is why the raw `config.profile[profile]` is consulted.
+      direct settings is why the raw `config.profile[profile_name]` is consulted.
     """
     command = scheduler.interactive_submission_command
     if command is None:
@@ -128,7 +128,7 @@ def _check_interactive_submission_command(
     command_source = (
         "--interactive-submission-command"
         if scheduler_options.interactive_submission_command is not None
-        else f"profile.{profile}.scheduler.interactive_submission_command"
+        else f"profile.{profile_name}.scheduler.interactive_submission_command"
     )
     command_value = shlex.join(command)
     if scheduler.submission_mode is SubmissionMode.BATCH:
@@ -151,9 +151,9 @@ def _check_interactive_submission_command(
         {
             f"{section}.{field}"
             for section in submission_sections
-            for field in getattr(config.profile[profile], section).model_fields_set
+            for field in getattr(config.profile[profile_name], section).model_fields_set
         }
-        if profile is not None
+        if profile_name is not None
         else set()
     )
     cli_submission_options = [
@@ -162,7 +162,7 @@ def _check_interactive_submission_command(
     ]
     conflicts = [
         *(
-            t"{f'profile.{profile}.{option}':name}"
+            t"{f'profile.{profile_name}.{option}':name}"
             for option in sorted(directly_configured_submission_options)
         ),
         *cli_submission_options,
@@ -232,7 +232,7 @@ async def tunnel_cmd(
     session: TunnelSession | None = None
     profile_config = resolve_profile_config(profile)
     conn_info = connection_from_cli(
-        connection_options, profile_config.connection, profile=profile
+        connection_options, profile_config.connection, profile_name=profile
     )
     scheduler = with_cli_options(profile_config.scheduler, scheduler_options)
     resources = with_cli_options(profile_config.resources, resource_options)
@@ -264,7 +264,7 @@ async def tunnel_cmd(
             scheduler,
             scheduler_options=scheduler_options,
             resource_options=resource_options,
-            profile=profile,
+            profile_name=profile,
             profile_config=profile_config,
         )
         ssh_host = _resolve_ssh_host(alias, profile_name=profile, resolved=resolved)

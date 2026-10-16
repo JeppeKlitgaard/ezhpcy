@@ -291,16 +291,16 @@ def check_host_resolution(host: WorkerHost) -> str | None:
         detail = " ".join(result.stderr.split())
         return detail or f"`ssh -G {host.alias}` exited with {result.returncode}"
 
-    resolved: dict[str, list[str]] = {}
+    ssh_options: dict[str, list[str]] = {}
     for line in result.stdout.splitlines():
         key, _, value = line.partition(" ")
-        resolved.setdefault(key.lower(), []).append(value)
+        ssh_options.setdefault(key.lower(), []).append(value)
 
-    if resolved.get("proxycommand") != [host.proxy_command]:
+    if ssh_options.get("proxycommand") != [host.proxy_command]:
         return "OpenSSH does not resolve it to the ezhpcy-generated configuration"
-    if resolved.get("user") != [host.user]:
-        return f"OpenSSH resolves a different user: {resolved.get('user')}"
-    identity_files = resolved.get("identityfile", [])
+    if ssh_options.get("user") != [host.user]:
+        return f"OpenSSH resolves a different user: {ssh_options.get('user')}"
+    identity_files = ssh_options.get("identityfile", [])
     expected_identity = os.path.normcase(host.identity_file.resolve().as_posix())
     if not identity_files or os.path.normcase(identity_files[0]) != expected_identity:
         return "OpenSSH resolves a different IdentityFile"

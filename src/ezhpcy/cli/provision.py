@@ -31,7 +31,9 @@ async def provision_cmd(
 ) -> None:
     """Idempotently provision worker infrastructure on the remote HPC host."""
     conn_info = connection_from_cli(
-        connection_options, resolve_profile_config(profile).connection, profile=profile
+        connection_options,
+        resolve_profile_config(profile).connection,
+        profile_name=profile,
     )
     credentials = WorkerCredentials.for_login(
         conn_info, machine_id=await asyncio.to_thread(local_machine_id)

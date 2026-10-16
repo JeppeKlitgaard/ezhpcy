@@ -114,30 +114,30 @@ class _ConfigValues(BaseModel):
 
     def resolve_profile(
         self,
-        name: str | None = None,
+        profile_name: str | None = None,
         *,
         validate_password_source: bool = True,
     ) -> ResolvedProfileConfig:
-        if name is None:
+        if profile_name is None:
             raise ValueError("no profile was selected")
-        if name not in self.profile:
-            raise ValueError(f"unknown profile {name!r}")
+        if profile_name not in self.profile:
+            raise ValueError(f"unknown profile {profile_name!r}")
 
-        def merged(profile_name: str, chain: tuple[str, ...]) -> dict[str, Any]:
-            if profile_name in chain:
-                cycle = " -> ".join((*chain, profile_name))
+        def merged(name: str, chain: tuple[str, ...]) -> dict[str, Any]:
+            if name in chain:
+                cycle = " -> ".join((*chain, name))
                 raise ValueError(f"profile inheritance cycle: {cycle}")
             try:
-                current = self.profile[profile_name]
+                current = self.profile[name]
             except KeyError:
-                parent = chain[-1] if chain else name
+                parent = chain[-1] if chain else profile_name
                 raise ValueError(
-                    f"profile {parent!r} inherits unknown profile {profile_name!r}"
+                    f"profile {parent!r} inherits unknown profile {name!r}"
                 ) from None
 
             values: dict[str, Any] = {}
             if current.inherit is not None:
-                values = merged(current.inherit, (*chain, profile_name))
+                values = merged(current.inherit, (*chain, name))
             current_values = current.model_dump(exclude={"inherit"}, exclude_unset=True)
             if current.connection.model_fields_set & PASSWORD_SOURCE_FIELDS:
                 for field in PASSWORD_SOURCE_FIELDS:
@@ -150,16 +150,16 @@ class _ConfigValues(BaseModel):
                     values[key] = value
             return values
 
-        resolved = ResolvedProfileConfig.model_validate(merged(name, ()))
+        profile_config = ResolvedProfileConfig.model_validate(merged(profile_name, ()))
         if validate_password_source:
-            _validate_profile_password_source(name, resolved)
-        return resolved
+            _validate_profile_password_source(profile_name, profile_config)
+        return profile_config
 
 
 def _validate_profile_password_source(
-    profile_name: str, profile: ResolvedProfileConfig
+    profile_name: str, profile_config: ResolvedProfileConfig
 ) -> None:
-    connection = profile.connection
+    connection = profile_config.connection
     if connection.password is not None:
         raise ProfilePasswordSourceError(
             t"profile {profile_name:name} must not set "

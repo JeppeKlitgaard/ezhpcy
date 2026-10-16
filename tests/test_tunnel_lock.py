@@ -6,6 +6,8 @@ import stat
 import subprocess
 import sys
 import textwrap
+import threading
+from contextlib import ExitStack
 from pathlib import Path
 
 import pytest
@@ -71,6 +73,18 @@ def test_alias_lock_can_be_taken_again_after_release():
 
     with alias_lock("gpu"):
         assert alias_locked("gpu")
+
+
+def test_alias_lock_can_be_released_from_another_thread():
+    """As the tunnel does, so that a release that hangs can be given up on."""
+    stack = ExitStack()
+    stack.enter_context(alias_lock("gpu"))
+
+    releasing = threading.Thread(target=stack.close)
+    releasing.start()
+    releasing.join(PROCESS_SECONDS)
+
+    assert not alias_locked("gpu")
 
 
 def test_alias_lock_is_freed_when_its_holder_is_killed(isolated_runtime_dir: Path):

@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from enum import StrEnum
+lazy import secrets
 lazy from collections.abc import Iterator
 lazy from shutil import which
 lazy from string.templatelib import Template
@@ -10,12 +11,15 @@ from ezhpcy.config import Config, ProfilePasswordSourceError, config
 lazy from ezhpcy.cli._errors import sentence
 lazy from ezhpcy.cli._output import rich_text
 lazy from ezhpcy.console import console
+lazy from ezhpcy.constants import LOOPBACK_HOST
 lazy from ezhpcy.permissions import FilePermissionError
+lazy from ezhpcy.tunnel.lock import alias_locked
 lazy from ezhpcy.tunnel.ssh_config import (
-    check_host_resolution,
+    PROBE_HOST_NAME,
     echo_include_directive,
-    profile_hosts,
-    write_profiles_config,
+    probe_hosts,
+    prune_stale_active_configs,
+    resolve_alias,
 )
 
 _INCLUDE_HINT = (
@@ -99,13 +103,46 @@ def check_config(source: Config = config) -> Iterator[Check]:
         yield _check_profile(source, name)
 
 
-def check_ssh_config() -> Iterator[Check]:
-    """Regenerate the profile hosts and check that OpenSSH resolves them."""
+def _profile_aliases(source: Config) -> list[str]:
+    """The profiles a tunnel can start from as they are: with a user and a host."""
+    aliases = []
+    for name in source.profile:
+        connection = source.resolve_profile(
+            name, validate_password_source=False
+        ).connection
+        if connection.user is not None and connection.host is not None:
+            aliases.append(name)
+    return aliases
+
+
+def _resolves_to_ezhpcy(alias: str) -> str | None:
+    """
+    `None` if `ssh <alias>` gets EzHPCy's block for it, a running tunnel's or
+    the probe's; otherwise what went wrong.
+    """
+    resolved = resolve_alias(alias)
+    if resolved is None:
+        return "`ssh` is no longer on PATH"
+    if isinstance(resolved, str):
+        return resolved
+    hostname = resolved.get("hostname", [""])[0]
+    if hostname == PROBE_HOST_NAME:
+        return None
+    if hostname == LOOPBACK_HOST and alias_locked(alias):
+        return None
+    return f"OpenSSH resolves it to {hostname}"
+
+
+def check_ssh_config(source: Config = config) -> Iterator[Check]:
+    """
+    Remove stale Host blocks, then check that OpenSSH gives each profile's alias
+    EzHPCy's Host block, as it does for a running tunnel.
+    """
     ssh = which("ssh")
     if ssh is None:
         yield Check(
             Status.WARN,
-            t"SSH client not found on PATH, so {'ssh <profile>':suggestion} "
+            t"SSH client not found on PATH, so {'ssh <alias>':suggestion} "
             t"cannot be checked",
             hint=t"Install an OpenSSH client to connect to tunnels with "
             t"{'ssh':suggestion}.",
@@ -113,35 +150,47 @@ def check_ssh_config() -> Iterator[Check]:
     else:
         yield Check(Status.OK, t"SSH client found: {ssh:path}")
 
-    hosts = profile_hosts()
     try:
-        write_profiles_config(hosts)
-    except (OSError, FilePermissionError) as error:
-        yield Check(Status.FAIL, t"Could not write SSH hosts: {error}")
+        removed = prune_stale_active_configs()
+    except OSError as error:
+        yield Check(Status.FAIL, t"Could not remove stale SSH hosts: {error}")
         return
-
-    if not hosts:
-        yield Check(
-            Status.WARN,
-            t"No profile has both a user and a host, so the SSH setup cannot be "
-            t"checked",
-            hint=_INCLUDE_HINT,
-            show_include=True,
-        )
-        return
+    if removed:
+        names = ", ".join(path.name for path in removed)
+        yield Check(Status.OK, t"Removed stale SSH configuration: {names}")
     if ssh is None:
         return
 
-    for host in hosts:
-        problem = check_host_resolution(host)
+    aliases = _profile_aliases(source)
+    # Without profiles, a made-up alias still shows whether the Include works.
+    probed = aliases or [f"ezhpcy-doctor-{secrets.token_hex(4)}"]
+    problems: dict[str, str | None] = {}
+    try:
+        with probe_hosts(probed):
+            problems = {alias: _resolves_to_ezhpcy(alias) for alias in probed}
+    except (OSError, FilePermissionError) as error:
+        yield Check(Status.FAIL, t"Could not write the SSH probe: {error}")
+        return
+
+    if not aliases:
+        [problem] = problems.values()
         if problem is None:
-            yield Check(
-                Status.OK, t"{f'ssh {host.alias}':suggestion} goes through EzHPCy"
-            )
+            yield Check(Status.OK, t"OpenSSH reads EzHPCy's SSH configuration")
         else:
             yield Check(
                 Status.FAIL,
-                t"{f'ssh {host.alias}':suggestion} bypasses EzHPCy: {problem}",
+                t"OpenSSH does not read EzHPCy's SSH configuration: {problem}",
+                hint=_INCLUDE_HINT,
+                show_include=True,
+            )
+        return
+    for alias, problem in problems.items():
+        if problem is None:
+            yield Check(Status.OK, t"{f'ssh {alias}':suggestion} goes through EzHPCy")
+        else:
+            yield Check(
+                Status.FAIL,
+                t"{f'ssh {alias}':suggestion} bypasses EzHPCy: {problem}",
                 hint=_INCLUDE_HINT,
                 show_include=True,
             )
@@ -163,10 +212,10 @@ def _print_check(check: Check, printed_hints: set[str]) -> None:
 
 
 def doctor_cmd() -> None:
-    """Check the configuration and that OpenSSH picks up the profile hosts."""
+    """Check the configuration and that OpenSSH picks up EzHPCy's Host blocks."""
     sections = {
         "Configuration": check_config,
-        "SSH (lets `ssh <profile>` reach tunnels)": check_ssh_config,
+        "SSH (lets `ssh <alias>` reach running tunnels)": check_ssh_config,
     }
     printed_hints: set[str] = set()
     warnings = 0

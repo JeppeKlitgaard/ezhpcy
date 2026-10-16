@@ -1,12 +1,22 @@
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 from ezhpcy.cli import doctor as doctor_cli
 from ezhpcy.config import config
-from ezhpcy.tunnel.ssh_config import WorkerHost, include_directive
+from ezhpcy.tunnel import ssh_config
+from ezhpcy.tunnel.lock import alias_lock
+from ezhpcy.tunnel.ssh_config import (
+    PROBE_HOST_NAME,
+    WorkerHost,
+    include_directive,
+    write_active_host_config,
+)
 from ezhpcy.types import ProfileConfig
 from tests.support.cli import invoke
+
+type Resolver = Callable[[str], dict[str, list[str]] | str | None]
 
 
 @pytest.fixture(autouse=True)
@@ -23,10 +33,30 @@ def unwrapped_output(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(doctor_cli.console, "soft_wrap", True)
 
 
+def resolving_to(hostnames: dict[str, str]) -> Resolver:
+    """`ssh -G` as OpenSSH would answer with the probe: the probe's HostName for an
+    alias that isn't in `hostnames`."""
+
+    def resolve(alias: str) -> dict[str, list[str]]:
+        return {"hostname": [hostnames.get(alias, PROBE_HOST_NAME)]}
+
+    return resolve
+
+
 @pytest.fixture(autouse=True)
-def ssh_client(monkeypatch: pytest.MonkeyPatch) -> None:
+def resolved(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """An SSH client on PATH that gives every alias the probe's block; returns
+    the aliases resolved."""
     monkeypatch.setattr(doctor_cli, "which", lambda _name: "/usr/bin/ssh")
-    monkeypatch.setattr(doctor_cli, "check_host_resolution", lambda _host: None)
+    aliases: list[str] = []
+    resolve = resolving_to({})
+
+    def recording(alias: str) -> dict[str, list[str]] | str | None:
+        aliases.append(alias)
+        return resolve(alias)
+
+    monkeypatch.setattr(doctor_cli, "resolve_alias", recording)
+    return aliases
 
 
 @pytest.fixture
@@ -52,15 +82,166 @@ def profiles(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-def test_doctor_passes_when_everything_is_set_up(profiles: None) -> None:
+def worker_host(alias: str) -> WorkerHost:
+    return WorkerHost.for_endpoint(alias, user="alice", host="login.example.com")
 
+
+def test_doctor_passes_when_everything_is_set_up(
+    profiles: None, resolved: list[str]
+) -> None:
     result = invoke(["doctor"])
 
     assert result.exit_code == 0, result
     assert "ok    Profile base is valid\n" in result.stdout
     assert "ok    Profile cpu is valid: alice@login.example.com" in result.stdout
+    assert "SSH (lets `ssh <alias>` reach running tunnels)" in result.stdout
     assert "ok    ssh cpu goes through EzHPCy" in result.stdout
+    assert "ok    ssh gpu goes through EzHPCy" in result.stdout
+    # Only profiles with a user and a host can start a tunnel as they are.
+    assert resolved == ["cpu", "gpu"]
     assert "All checks passed." in result.stdout
+    # The Include lines are only shown when OpenSSH does not pick the hosts up.
+    assert include_directive().splitlines()[-1] not in result.stdout
+
+
+def test_doctor_probes_with_a_file_it_then_removes(
+    profiles: None, monkeypatch: pytest.MonkeyPatch, isolated_runtime_dir: Path
+) -> None:
+    probe = isolated_runtime_dir / "ssh-config" / "doctor-probe.conf"
+    contents: list[str] = []
+
+    def resolve(_alias: str) -> dict[str, list[str]]:
+        contents.append(probe.read_text(encoding="utf-8"))
+        return {"hostname": [PROBE_HOST_NAME]}
+
+    monkeypatch.setattr(doctor_cli, "resolve_alias", resolve)
+
+    result = invoke(["doctor"])
+
+    assert result.exit_code == 0, result
+    assert f"Host cpu\n    HostName {PROBE_HOST_NAME}\n" in contents[0]
+    assert "Host base\n" not in contents[0]
+    assert not probe.exists()
+
+
+def test_doctor_accepts_a_running_tunnels_block(
+    profiles: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(doctor_cli, "resolve_alias", resolving_to({"cpu": "127.0.0.1"}))
+
+    with alias_lock("cpu"):
+        result = invoke(["doctor"])
+
+    assert result.exit_code == 0, result
+    assert "ok    ssh cpu goes through EzHPCy" in result.stdout
+
+
+def test_doctor_fails_on_a_loopback_block_without_a_tunnel(
+    profiles: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A hand-written block, say, since no tunnel holds the alias.
+    monkeypatch.setattr(doctor_cli, "resolve_alias", resolving_to({"cpu": "127.0.0.1"}))
+
+    result = invoke(["doctor"])
+
+    assert result.exit_code == 1
+    assert "fail  ssh cpu bypasses EzHPCy: OpenSSH resolves it to 127.0.0.1" in (
+        result.stdout
+    )
+
+
+def test_doctor_fails_when_openssh_resolves_a_host_elsewhere(
+    profiles: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        doctor_cli, "resolve_alias", resolving_to({"cpu": "cpu.example.com"})
+    )
+
+    result = invoke(["doctor"])
+
+    assert result.exit_code == 1
+    assert (
+        "fail  ssh cpu bypasses EzHPCy: OpenSSH resolves it to cpu.example.com"
+        in result.stdout
+    )
+    assert "ssh gpu" not in result.stdout
+    lines = result.stdout.splitlines()
+    for line in include_directive().splitlines():
+        # Flush-left and on one line, so copying it yields a valid directive.
+        assert line in lines
+
+
+def test_doctor_reports_ssh_refusing_the_configuration(
+    profiles: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        doctor_cli, "resolve_alias", lambda _alias: "Bad owner or permissions on x"
+    )
+
+    result = invoke(["doctor"])
+
+    assert result.exit_code == 1
+    assert "fail  ssh cpu bypasses EzHPCy: Bad owner or permissions on x" in (
+        result.stdout
+    )
+
+
+def test_doctor_checks_the_include_without_profiles(
+    monkeypatch: pytest.MonkeyPatch, resolved: list[str]
+) -> None:
+    monkeypatch.setattr(config, "profile", {})
+
+    result = invoke(["doctor"])
+
+    assert result.exit_code == 0, result
+    assert "warn  No profiles are configured" in result.stdout
+    assert "Add a [profile.NAME] table" in result.stdout
+    assert "ok    OpenSSH reads EzHPCy's SSH configuration" in result.stdout
+    [alias] = resolved
+    assert alias.startswith("ezhpcy-doctor-")
+
+
+def test_doctor_fails_without_the_include_and_without_profiles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(config, "profile", {})
+    monkeypatch.setattr(
+        doctor_cli, "resolve_alias", lambda alias: {"hostname": [alias]}
+    )
+
+    result = invoke(["doctor"])
+
+    assert result.exit_code == 1
+    assert "fail  OpenSSH does not read EzHPCy's SSH configuration: OpenSSH " in (
+        result.stdout
+    )
+    assert include_directive().splitlines()[-1] in result.stdout.splitlines()
+
+
+def test_doctor_removes_stale_blocks(profiles: None) -> None:
+    live = write_active_host_config(worker_host("live"), 50022)
+    write_active_host_config(worker_host("gone"), 50023)
+
+    with alias_lock("live"):
+        result = invoke(["doctor"])
+
+    assert result.exit_code == 0, result
+    assert "ok    Removed stale SSH configuration: active-gone.conf" in result.stdout
+    assert [path.name for path in live.parent.iterdir()] == ["active-live.conf"]
+
+
+def test_doctor_reports_a_probe_write_failure(
+    profiles: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fail(_path: Path, _content: str) -> None:
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(ssh_config, "_write_private", fail)
+
+    result = invoke(["doctor"])
+
+    assert result.exit_code == 1
+    assert "Could not write the SSH probe: read-only file system" in result.stdout
 
 
 def test_doctor_fails_without_a_configuration_file(
@@ -76,18 +257,6 @@ def test_doctor_fails_without_a_configuration_file(
     # Doctor stops at the first failure, before touching the SSH configuration.
     assert "SSH (" not in result.stdout
     assert not (isolated_runtime_dir / "ssh-config").exists()
-
-
-def test_doctor_warns_without_profiles(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(config, "profile", {})
-
-    result = invoke(["doctor"])
-
-    assert result.exit_code == 0, result
-    assert "warn  No profiles are configured" in result.stdout
-    assert "Add a [profile.NAME] table" in result.stdout
-    assert "so the SSH setup cannot be checked" in result.stdout
-    assert include_directive().splitlines()[-1] in result.stdout.splitlines()
 
 
 @pytest.mark.parametrize(
@@ -116,63 +285,19 @@ def test_doctor_fails_on_invalid_profiles(
     assert message in result.stdout
 
 
-def test_doctor_regenerates_the_profile_ssh_hosts(
-    profiles: None, isolated_runtime_dir: Path
+def test_doctor_skips_the_probe_without_ssh(
+    profiles: None,
+    monkeypatch: pytest.MonkeyPatch,
+    resolved: list[str],
+    isolated_runtime_dir: Path,
 ) -> None:
-    result = invoke(["doctor"])
-
-    assert result.exit_code == 0, result
-    profiles_conf = isolated_runtime_dir / "ssh-config" / "profiles.conf"
-    content = profiles_conf.read_text(encoding="utf-8")
-    assert "Host cpu\n" in content
-    assert "Host base\n" not in content
-    # The Include lines are only shown when OpenSSH does not pick the hosts up.
-    assert include_directive().splitlines()[-1] not in result.stdout
-
-
-def test_doctor_reports_ssh_config_write_failure(
-    profiles: None, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    def fail(_hosts: object) -> None:
-        raise OSError("read-only file system")
-
-    monkeypatch.setattr(doctor_cli, "write_profiles_config", fail)
-
-    result = invoke(["doctor"])
-
-    assert result.exit_code == 1
-    assert "Could not write SSH hosts: read-only file system" in (result.stdout)
-
-
-def test_doctor_fails_when_openssh_resolves_a_host_elsewhere(
-    profiles: None, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    def check(host: WorkerHost) -> str | None:
-        return "shadowed by ~/.ssh/config" if host.alias == "cpu" else None
-
-    monkeypatch.setattr(doctor_cli, "check_host_resolution", check)
-
-    result = invoke(["doctor"])
-
-    assert result.exit_code == 1
-    assert "fail  ssh cpu bypasses EzHPCy: shadowed by ~/.ssh/config" in result.stdout
-    assert "ssh gpu" not in result.stdout
-    lines = result.stdout.splitlines()
-    for line in include_directive().splitlines():
-        # Flush-left and on one line, so copying it yields a valid directive.
-        assert line in lines
-
-
-def test_doctor_skips_host_resolution_without_ssh(
-    profiles: None, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    def unexpected(_host: WorkerHost) -> str | None:
-        raise AssertionError("host resolution should be skipped")
-
     monkeypatch.setattr(doctor_cli, "which", lambda _name: None)
-    monkeypatch.setattr(doctor_cli, "check_host_resolution", unexpected)
+    write_active_host_config(worker_host("gone"), 50023)
 
     result = invoke(["doctor"])
 
     assert result.exit_code == 0, result
     assert "warn  SSH client not found on PATH" in result.stdout
+    assert resolved == []
+    # Stale blocks are removed all the same.
+    assert list((isolated_runtime_dir / "ssh-config").iterdir()) == []

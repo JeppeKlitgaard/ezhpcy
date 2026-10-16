@@ -31,16 +31,10 @@ lazy from ezhpcy.cli._resolve import (
 lazy from ezhpcy.cli.utils import ssh as cli_ssh
 lazy from ezhpcy.cli.utils.interrupts import interrupts_handled_by
 lazy from ezhpcy.config import config
-lazy from ezhpcy.ipc import IPCError
-lazy from ezhpcy.permissions import FilePermissionError
 lazy from ezhpcy.scheduler.types import SchedulerType
 lazy from ezhpcy.tunnel import TunnelError
 lazy from ezhpcy.tunnel.session import TunnelSession
-lazy from ezhpcy.tunnel.ssh_config import (
-    WorkerHost,
-    profile_hosts,
-    write_profiles_config,
-)
+lazy from ezhpcy.tunnel.ssh_config import WorkerHost
 lazy from ezhpcy.types import (
     ResolvedConfig,
     ResolvedProfileConfig,
@@ -213,7 +207,7 @@ async def tunnel_cmd(
 ) -> None:
     """Allocate a compute node and expose its SSH service through a tunnel."""
     # Nothing else runs on the event loop until the session starts, so the local
-    # work up to there (reading the keyring, writing files) may block it.
+    # work up to there (reading the keyring and local files) may block it.
     session: TunnelSession | None = None
     profile_config = resolve_profile_config(profile)
     conn_info = connection_from_cli(
@@ -253,12 +247,6 @@ async def tunnel_cmd(
             profile_config=profile_config,
         )
         ssh_host = _resolve_ssh_host(alias, profile_name=profile, resolved=resolved)
-        written_profile_hosts = profile_hosts()
-        try:
-            write_profiles_config(written_profile_hosts)
-        except (OSError, FilePermissionError) as error:
-            logger.warning("Could not write the profile SSH configuration: %s", error)
-            written_profile_hosts = []
         if auto_provision is None:
             auto_provision = config.auto_provision
         # Before connecting, so the user isn't asked for a password first.
@@ -279,15 +267,12 @@ async def tunnel_cmd(
             ssh_host=ssh_host,
             connect=cli_ssh.connect_interactive,
             profile_name=profile,
-            # A profile tunnel without user/host overrides renders exactly the
-            # block profiles.conf already holds, so it needs no active file.
-            ssh_host_in_profiles_config=ssh_host in written_profile_hosts,
             worker_ports=worker_ports,
             auto_provision=auto_provision,
         )
         with _interrupts_stop(session):
             await session.run()
-    except (IPCError, RuntimeError, asyncssh.Error, OSError) as error:
+    except (RuntimeError, asyncssh.Error, OSError) as error:
         served = session is not None and session.ready
         logger.error(
             "%s: %s",

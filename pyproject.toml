@@ -54,6 +54,9 @@ typecheck = [
 # `async def` tests and fixtures run on asyncio without a marker
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "real_machine_id: read this machine's ID instead of the fixed one tests get",
+]
 
 # Test coverage
 [tool.coverage.run]

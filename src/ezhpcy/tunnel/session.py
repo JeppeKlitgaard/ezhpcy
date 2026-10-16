@@ -46,18 +46,18 @@ lazy from ezhpcy.ssh import RemoteHost
 lazy from ezhpcy.tunnel import TunnelError
 lazy from ezhpcy.tunnel.server import TunnelServer
 lazy from ezhpcy.tunnel.ssh_config import WorkerHost, publish_host, withdraw_host
-lazy from ezhpcy.tunnel.sshd import (
+lazy from ezhpcy.types import ConnectionInfo, ResolvedConfig, SubmissionMode
+lazy from ezhpcy.worker.control import WorkerControl
+lazy from ezhpcy.worker.job import (
+    WORKER_SCRIPT,
+    batch_script,
+    sshd_command,
+)
+lazy from ezhpcy.worker.sshd import (
+    client_alive,
     read_ed25519_public_key,
-    retrying_sshd_script,
     sshd_config_arguments,
 )
-lazy from ezhpcy.tunnel.worker import (
-    WorkerControl,
-    worker_client_alive,
-    worker_job_script,
-    worker_sshd_command,
-)
-lazy from ezhpcy.types import ConnectionInfo, ResolvedConfig, SubmissionMode
 
 logger = logging.getLogger(__name__)
 
@@ -247,7 +247,7 @@ class TunnelSession:
         )
         logs_dir = remote_state.worker_logs_dir()
         spec = JobSpec(
-            command=worker_sshd_command(
+            command=sshd_command(
                 remote_state,
                 ports=self._worker_ports,
                 heartbeat_token=token,
@@ -259,7 +259,7 @@ class TunnelSession:
                     host_key=credentials.remote_host_key(remote_state),
                     remote_username=credentials.login_user,
                     authorized_key=authorized_key,
-                    client_alive=worker_client_alive(
+                    client_alive=client_alive(
                         timings.worker_heartbeat_interval_seconds,
                         timings.worker_heartbeat_timeout_seconds,
                     ),
@@ -302,9 +302,7 @@ class TunnelSession:
             cancel_on_cleanup(job_id)
         else:
             submission = (
-                scheduler.submit_script(
-                    spec, worker_job_script(spec.command, retrying_sshd_script())
-                )
+                scheduler.submit_script(spec, batch_script(spec.command, WORKER_SCRIPT))
                 if stream_script
                 else scheduler.submit(spec)
             )

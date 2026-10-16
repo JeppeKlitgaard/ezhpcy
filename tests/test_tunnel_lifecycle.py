@@ -2,7 +2,7 @@ from pathlib import PurePosixPath
 
 import pytest
 
-from ezhpcy.tunnel.sshd import sshd_config_arguments
+from ezhpcy.worker.sshd import sshd_config_arguments
 
 
 def test_sshd_config_is_expressed_as_cli_arguments() -> None:

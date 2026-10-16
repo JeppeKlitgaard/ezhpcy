@@ -1,106 +1,16 @@
-"""
-The worker job's command, and the control directory it shares with the tunnel.
-
-The tunnel and the worker talk through files in a directory on the cluster's
-shared filesystem, which the tunnel reaches over SFTP:
-
-- The tunnel renews a lease (`lease.<sequence>`) every heartbeat interval. The
-  worker stops sshd once no newer lease has appeared within the heartbeat
-  timeout, so a worker never outlives its tunnel by long.
-- The worker writes `ready` with the port sshd listens on, or `failed` with the
-  reason, and `stopped` with its exit status when it ends.
-
-Every file names the run's token, so one from another run is never taken for
-this run's.
-"""
+"""The tunnel's side of the worker's control directory (see `ezhpcy.worker`)."""
 
 import logging
 lazy import contextlib
-lazy import math
-lazy import secrets
-lazy import shlex
 lazy from pathlib import PurePosixPath
 
 lazy import asyncssh
 
-lazy from ezhpcy.constants import OPENSSH_MATCHSPEC
-lazy from ezhpcy.tunnel import TunnelError
-lazy from ezhpcy.tunnel.sshd import retrying_sshd_command
-lazy from ezhpcy.types import RemoteState
+lazy from ezhpcy.worker import WorkerError
 
 logger = logging.getLogger(__name__)
 
-_FIRST_DYNAMIC_PORT = 49152
-_LAST_DYNAMIC_PORT = 65535
 _LEASE_FILE_RETAIN_COUNT = 2
-_SCRIPT_DELIMITER = "EZHPCY_WORKER_SCRIPT"
-
-
-def select_worker_ports(count: int) -> tuple[int, ...]:
-    """`count` distinct random ports from the dynamic range, for sshd to try in turn."""
-    ports: list[int] = []
-    while len(ports) < count:
-        port = _FIRST_DYNAMIC_PORT + secrets.randbelow(
-            _LAST_DYNAMIC_PORT - _FIRST_DYNAMIC_PORT + 1
-        )
-        if port not in ports:
-            ports.append(port)
-    return tuple(ports)
-
-
-def worker_client_alive(
-    heartbeat_interval_seconds: float, heartbeat_timeout_seconds: int
-) -> tuple[int, int]:
-    """
-    Bound how long the worker serves an SSH client that stopped answering.
-
-    A connection that was open when the login session died must end even if
-    the lease watchdog cannot signal its handler. The probes reuse the
-    heartbeat cadence and give up within the heartbeat timeout.
-    """
-    interval_seconds = max(1, math.ceil(heartbeat_interval_seconds))
-    count_max = max(1, heartbeat_timeout_seconds // interval_seconds)
-    return interval_seconds, count_max
-
-
-def worker_sshd_command(
-    remote_state: RemoteState,
-    *,
-    ports: tuple[int, ...],
-    heartbeat_token: str,
-    heartbeat_timeout_seconds: int,
-    heartbeat_debug: bool,
-    control_dir: PurePosixPath,
-    read_script_from_stdin: bool,
-    sshd_arguments: list[str],
-) -> tuple[str, ...]:
-    """The worker job's command: sshd from the cached Pixi environment."""
-    return remote_state.pixi_command(
-        "exec",
-        f"--spec={OPENSSH_MATCHSPEC}",
-        *retrying_sshd_command(
-            sshd_arguments,
-            ports,
-            heartbeat_token=heartbeat_token,
-            heartbeat_timeout_seconds=heartbeat_timeout_seconds,
-            heartbeat_debug=heartbeat_debug,
-            heartbeat_log_dir=remote_state.worker_logs_dir(),
-            control_dir=control_dir,
-            read_script_from_stdin=read_script_from_stdin,
-        ),
-    )
-
-
-def worker_job_script(command: tuple[str, ...], worker_script: str) -> str:
-    """Wrap the worker shell program in a batch script fed to LSF over stdin."""
-    if f"\n{_SCRIPT_DELIMITER}\n" in worker_script:
-        raise ValueError("worker script conflicts with its here-document delimiter")
-    return (
-        "#!/usr/bin/env bash\n"
-        f"exec {shlex.join(command)} <<'{_SCRIPT_DELIMITER}'\n"
-        f"{worker_script.rstrip()}\n"
-        f"{_SCRIPT_DELIMITER}\n"
-    )
 
 
 class WorkerControl:
@@ -167,13 +77,13 @@ class WorkerControl:
         if fields is None:
             return None
         if len(fields) != 4 or fields[:3] != ["v1", self._token, "ready"]:
-            raise TunnelError("worker wrote an invalid ready record")
+            raise WorkerError("worker wrote an invalid ready record")
         try:
             port = int(fields[3])
         except ValueError as error:
-            raise TunnelError("worker reported a non-numeric SSH port") from error
+            raise WorkerError("worker reported a non-numeric SSH port") from error
         if port not in self._ports:
-            raise TunnelError(f"worker reported unexpected SSH port {port}")
+            raise WorkerError(f"worker reported unexpected SSH port {port}")
         return port
 
     async def read_failure(self) -> str | None:

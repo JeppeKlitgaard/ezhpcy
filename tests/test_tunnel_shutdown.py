@@ -27,7 +27,8 @@ import pytest
 
 from ezhpcy.scheduler.base import JobInfo, JobSpec, JobState, SchedulerError
 from ezhpcy.ssh import RemoteHost
-from ezhpcy.tunnel import session, worker
+from ezhpcy.tunnel import session
+from ezhpcy.worker.control import WorkerControl
 from tests.support.cli import invoke
 from tests.support.sshserver import SSHTestServer
 from tests.support.tunnel import (
@@ -292,10 +293,10 @@ def test_tunnel_shutdown(
         lambda host, **_kwargs: rig.withdrawn.append(host.alias),
     )
 
-    publish_lease = worker.WorkerControl.publish_lease
+    publish_lease = WorkerControl.publish_lease
     lease_calls = 0
 
-    async def failing_publish_lease(control: worker.WorkerControl) -> int:
+    async def failing_publish_lease(control: WorkerControl) -> int:
         nonlocal lease_calls
         lease_calls += 1
         # The first lease is written before submission; later ones are heartbeats.
@@ -303,7 +304,7 @@ def test_tunnel_shutdown(
             raise OSError("sftp write failed")
         return await publish_lease(control)
 
-    monkeypatch.setattr(worker.WorkerControl, "publish_lease", failing_publish_lease)
+    monkeypatch.setattr(WorkerControl, "publish_lease", failing_publish_lease)
 
     with tunnel_log() as log:
         result = invoke(["tunnel", "base", "--worker-port", str(rig.worker_port)])

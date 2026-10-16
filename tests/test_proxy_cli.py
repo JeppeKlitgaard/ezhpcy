@@ -86,7 +86,8 @@ def test_proxy_does_not_import_other_commands_or_their_dependencies() -> None:
     unwanted = {
         "ezhpcy.cli.tunnel",
         "ezhpcy.tunnel.session",
-        "ezhpcy.tunnel.worker",
+        "ezhpcy.worker.control",
+        "ezhpcy.worker.job",
         "ezhpcy.tunnel.server",
         "ezhpcy.cli.provision",
         "ezhpcy.cli.keyring",

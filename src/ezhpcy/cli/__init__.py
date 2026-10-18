@@ -110,12 +110,6 @@ app.command(
     help="Allocate a compute node and host an SSH tunnel to it.",
     sort_key=3,
 )
-app.command(
-    "ezhpcy.cli.proxy:proxy_cmd",
-    name="proxy",
-    help="Connect through a running tunnel (SSH ProxyCommand).",
-    sort_key=4,
-)
 
 
 ## ezhpcy config

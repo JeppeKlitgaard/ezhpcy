@@ -60,7 +60,7 @@ def _resolve_ssh_host(
     if alias is None:
         # Identical anonymous options yield the same alias across restarts, so
         # saved hosts (e.g. in VS Code) keep working.
-        alias = profile_name or f"ezhpcy-{resolved.descriptor_digest()[:12]}"
+        alias = profile_name or f"ezhpcy-{resolved.alias_digest()[:12]}"
     if alias != profile_name and alias in config.profile:
         raise CliUsageError(
             t"It is the name of profile {alias:name}; choose another alias.",

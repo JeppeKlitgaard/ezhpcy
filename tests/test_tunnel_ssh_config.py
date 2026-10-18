@@ -210,7 +210,7 @@ def test_an_explicit_proxycommand_none_has_no_problem(
     [
         ({"hostname": "gpu.example.com"}, "does not resolve it to the ezhpcy"),
         ({"port": "22"}, "does not resolve it to the ezhpcy"),
-        ({"proxycommand": "ezhpcy proxy gpu"}, "ProxyCommand: ezhpcy proxy gpu"),
+        ({"proxycommand": "nc gpu 22"}, "ProxyCommand: nc gpu 22"),
         ({"user": "bob"}, "different user"),
         ({"identityfile": "~/.ssh/id_ed25519"}, "different IdentityFile"),
     ],

@@ -10,13 +10,13 @@ as held, even in the same process.
 """
 
 from contextlib import contextmanager
-lazy import os
 lazy from collections.abc import Generator
 lazy from pathlib import Path
 
 lazy from filelock import FileLock, Timeout
 
 lazy from ezhpcy.config import config, validate_alias
+lazy from ezhpcy.permissions import private_directory
 lazy from ezhpcy.tunnel import TunnelError
 
 LOCK_DIRECTORY_NAME = "tunnels"
@@ -51,10 +51,7 @@ def alias_lock(alias: str) -> Generator[None]:
     tunnel holds it.
     """
     path = lock_path(alias)
-    directory = path.parent
-    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    if os.name == "posix":
-        directory.chmod(0o700)
+    private_directory(path.parent)
     lock = _file_lock(path)
     try:
         lock.acquire()

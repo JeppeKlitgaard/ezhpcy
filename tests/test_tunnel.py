@@ -8,10 +8,11 @@ from unittest.mock import patch
 import pytest
 from pydantic import ValidationError
 
+from ezhpcy import types as types_module
 from ezhpcy.cli import tunnel as tunnel_module
 from ezhpcy.scheduler.types import SchedulerType
 from ezhpcy.tunnel.ssh_config import WorkerHost
-from ezhpcy.types import ConnectionInfo, ProfileConfig, ResourcesConfig
+from ezhpcy.types import ConnectionInfo, ProfileConfig, ResolvedConfig, ResourcesConfig
 from tests.support.cli import capture, invoke
 from tests.support.tunnel import tunnel_log
 
@@ -412,6 +413,123 @@ def test_anonymous_tunnel_alias_is_stable_for_identical_options(
     assert re.fullmatch(r"ezhpcy-[0-9a-f]{12}", first)
     assert alias_for("--queue", "gpu") == first
     assert alias_for("--queue", "cpu") != first
+
+
+SCHEDULER = {"type": "LSF", "submission_mode": "batch"}
+
+
+def test_anonymous_alias_digest_is_order_independent() -> None:
+    first = ResolvedConfig.model_validate(
+        {
+            "connection": {"user": "alice", "host": "login.example.com"},
+            "scheduler": SCHEDULER,
+            "lsf": {"submission_environment": {"A": "first", "Z": "last"}},
+        }
+    )
+    second = ResolvedConfig.model_validate(
+        {
+            "connection": {"host": "login.example.com", "user": "alice"},
+            "scheduler": SCHEDULER,
+            "lsf": {"submission_environment": {"Z": "last", "A": "first"}},
+        }
+    )
+
+    assert first.alias_digest() == second.alias_digest()
+
+
+def test_anonymous_alias_digest_excludes_password_sources() -> None:
+    without_password = ResolvedConfig.model_validate(
+        {
+            "connection": {"user": "alice", "host": "login.example.com"},
+            "scheduler": SCHEDULER,
+        }
+    )
+    password = ResolvedConfig.model_validate(
+        {
+            "connection": {
+                "user": "alice",
+                "host": "login.example.com",
+                "password": "secret",
+                "password_prompt": False,
+            },
+            "scheduler": SCHEDULER,
+        }
+    )
+
+    assert password.alias_digest() == without_password.alias_digest()
+
+
+def test_anonymous_alias_digest_excludes_timings() -> None:
+    connection = {"user": "alice", "host": "login.example.com"}
+    default = ResolvedConfig.model_validate(
+        {"connection": connection, "scheduler": SCHEDULER}
+    )
+    changed = ResolvedConfig.model_validate(
+        {
+            "connection": {**connection, "ssh_keepalive_interval_seconds": 75},
+            "scheduler": SCHEDULER,
+            "timings": {"queue_timeout_seconds": 60},
+        }
+    )
+
+    assert default.alias_digest() == changed.alias_digest()
+
+
+def test_anonymous_alias_digest_is_stable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A change to the digest renames every anonymous tunnel, so make it on purpose.
+
+    Pinned from before `time_limit` became a `timedelta`.
+    """
+    monkeypatch.setattr(types_module, "local_machine_id", lambda: "test-machine")
+    resolved = ResolvedConfig.model_validate(
+        {
+            "connection": {"user": "alice", "host": "login.example.com"},
+            "scheduler": SCHEDULER,
+            "resources": {
+                "queue": "gpu",
+                "cores": 8,
+                "gpus": 1,
+                "time_limit": "4:30",
+                "memory": "32GB",
+            },
+        }
+    )
+
+    assert resolved.alias_digest() == (
+        "9a8261e14d47a7b754e2d99f08e637a816f77cbc8a9e177c10804875f6f6e18a"
+    )
+
+
+@pytest.mark.parametrize(
+    ("section", "field", "value"),
+    [
+        ("connection", "user", "bob"),
+        ("connection", "host", "other.example.com"),
+        ("resources", "queue", "cpu"),
+        ("resources", "cores", 16),
+        ("scheduler", "type", "PBS"),
+        ("scheduler", "submission_mode", "interactive"),
+        ("scheduler", "interactive_submission_command", ["/site/bin/interactive"]),
+        ("pbs", "command_directory", "/opt/pbspro/bin"),
+    ],
+)
+def test_anonymous_alias_digest_includes_job_configuration(
+    section: str, field: str, value: object
+) -> None:
+    base_values: dict[str, dict[str, object]] = {
+        "connection": {"user": "alice", "host": "login.example.com"},
+        "scheduler": SCHEDULER,
+        "resources": {"queue": "gpu", "cores": 8},
+    }
+    changed_values = {
+        **base_values,
+        section: {**base_values.get(section, {}), field: value},
+    }
+
+    assert (
+        ResolvedConfig.model_validate(base_values).alias_digest()
+        != ResolvedConfig.model_validate(changed_values).alias_digest()
+    )
 
 
 def test_anonymous_tunnel_accepts_an_explicit_alias(

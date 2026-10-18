@@ -286,7 +286,7 @@ class ResolvedConfig(BaseModel):
     }
 
     # These are only listed as a reminder that they are included in the digest.
-    # tests/human_reviewed/test_descriptor_digest.py checks every field is either
+    # tests/human_reviewed/test_alias_digest.py checks every field is either
     # here or excluded above, so a new field forces a deliberate decision to
     # include it!
     _DIGEST_INCLUDE_FIELDS: ClassVar[dict[str, frozenset[str]]] = {
@@ -308,8 +308,8 @@ class ResolvedConfig(BaseModel):
         "pbs": frozenset({"command_directory"}),
     }
 
-    def descriptor_digest(self) -> str:
-        """Return the identity for an anonymous descriptor."""
+    def alias_digest(self) -> str:
+        """Return the identity that names an anonymous tunnel's alias."""
         digest_participants = self.model_dump(
             mode="json", exclude=self._DIGEST_EXCLUDE_FIELDS
         )

@@ -52,7 +52,7 @@ async def connect(
     defaults: dict[str, object] = {
         "username": conn_info.user,
         # Never apply the user's OpenSSH configuration to the login connection:
-        # it may hold EzHPCy's own Host blocks, whose ProxyCommand is EzHPCy.
+        # it may hold EzHPCy's own Host blocks, which point at running tunnels.
         "config": None,
         "keepalive_interval": conn_info.ssh_keepalive_interval_seconds,
         "keepalive_count_max": SERVER_ALIVE_COUNT_MAX,

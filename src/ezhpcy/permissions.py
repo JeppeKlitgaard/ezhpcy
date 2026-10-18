@@ -42,6 +42,19 @@ def windows_current_user_sid() -> str:
     return sid
 
 
+def private_directory(path: Path) -> None:
+    """
+    Make a directory, with its parents, that only the current user can enter.
+
+    On POSIX, `mkdir` applies the umask and leaves an existing directory as it
+    is, so the mode is set again. On Windows, `mkdir` gives a new directory a
+    private ACL, and `chmod` would only set its read-only flag.
+    """
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if sys.platform != "win32":
+        path.chmod(0o700)
+
+
 # This is a hacky fix because Windows is a nightmare OS that should not exist.
 def restrict_to_current_user(path: Path) -> None:
     """

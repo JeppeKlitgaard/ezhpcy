@@ -16,7 +16,7 @@ lazy from ezhpcy.constants import (
     WORKER_HOST_KEY_NAME,
     WORKER_KNOWN_HOSTS_NAME,
 )
-lazy from ezhpcy.permissions import restrict_to_current_user
+lazy from ezhpcy.permissions import private_directory, restrict_to_current_user
 lazy from ezhpcy.types import ConnectionInfo, RemoteState
 lazy from ezhpcy.utils import ssh_connection_id
 
@@ -142,9 +142,7 @@ class WorkerCredentials:
 
 def _ensure_key_pair(private_key: Path, public_key: Path, *, comment: str) -> None:
     """Create one dedicated local Ed25519 key pair if it does not exist."""
-    ssh_dir = private_key.parent
-    ssh_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-    ssh_dir.chmod(0o700)
+    private_directory(private_key.parent)
     if private_key.exists() != public_key.exists():
         raise RuntimeError(
             f"Incomplete SSH key pair at {private_key}; restore or remove it."

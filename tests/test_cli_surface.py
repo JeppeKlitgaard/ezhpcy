@@ -3,7 +3,7 @@ The CLI's user-facing surface: commands, options, validation and errors.
 
 These tests go through `invoke` and the `capture` seams only, and never compare
 exact help text. Behaviour that one command owns in depth (e.g. `config edit`'s
-editor handling, `doctor`'s checks, the proxy relay) is tested in that command's
+editor handling, `doctor`'s checks) is tested in that command's
 own test file instead; this file has one test per behaviour shared across the CLI.
 """
 
@@ -24,7 +24,7 @@ from ezhpcy.constants import EZHPCY_VERSION, PACKAGE_NAME
 from ezhpcy.logging import TERMINAL_HANDLER_NAME
 from ezhpcy.scheduler.types import SchedulerType
 from ezhpcy.types import ProfileConfig, SubmissionMode
-from tests.support.cli import RELAYED_BYTES, capture, invoke
+from tests.support.cli import capture, invoke
 
 _PROFILES = {
     "base": {
@@ -793,7 +793,6 @@ def test_no_arguments_shows_help_with_the_commands_in_order() -> None:
         "provision",
         "prune",
         "tunnel",
-        "proxy",
         "Configuration Commands",
         "config",
         "doctor",
@@ -883,36 +882,3 @@ def test_tunnel_options_are_grouped_in_help() -> None:
     for title, options in groups.items():
         for option in options:
             assert option in panels[title], (title, option)
-
-
-# proxy stdout carries only relayed bytes
-
-
-def test_proxy_logs_to_stderr_when_the_tunnel_has_debug_enabled(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    capture(monkeypatch, "proxy", tunnel_debug=True)
-
-    result = invoke(["proxy", "gpu"])
-
-    assert result.exit_code == 0, result
-    assert result.stdout == RELAYED_BYTES.decode()
-    assert "Relaying." in result.stderr
-
-
-@pytest.mark.parametrize(
-    ("arguments", "exit_code"),
-    [
-        (["proxy", "gpu"], 1),
-        (["--debug", "proxy", "gpu"], 1),
-        (["proxy", "../escape"], 2),
-    ],
-)
-def test_proxy_errors_write_nothing_to_stdout(
-    arguments: list[str], exit_code: int
-) -> None:
-    result = invoke(arguments)
-
-    assert result.exit_code == exit_code, result
-    assert result.stdout == ""
-    assert "ezhpcy proxy:" in result.stderr

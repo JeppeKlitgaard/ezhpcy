@@ -51,8 +51,8 @@ def isolated_local_files(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> LocalFileConfig:
     """Keep every file EzHPCy reads or writes in `tmp_path`: the configuration file,
-    worker keys, accepted login-node host keys, and the tunnel descriptors and
-    generated SSH configuration that the user's ~/.ssh/config may Include."""
+    worker keys, accepted login-node host keys, the alias locks, and the generated
+    SSH configuration that the user's ~/.ssh/config may Include."""
     local_file = LocalFileConfig(
         cache_dir=tmp_path / "cache",
         config_dir=tmp_path / "config",

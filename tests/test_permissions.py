@@ -1,4 +1,5 @@
 import ctypes
+import stat
 import subprocess
 import sys
 from collections.abc import Iterator
@@ -10,6 +11,7 @@ import pytest
 
 from ezhpcy.permissions import (
     FilePermissionError,
+    private_directory,
     restrict_to_current_user,
     windows_current_user_sid,
 )
@@ -139,3 +141,38 @@ def test_posix_permissions_need_no_windows_acl(
 
     chmod.assert_called_once_with(path, 0o600)
     user_sid.assert_not_called()
+
+
+def test_private_directory_creates_its_parents_and_accepts_an_existing_one(
+    tmp_path: Path,
+) -> None:
+    directory = tmp_path / "a" / "b"
+
+    private_directory(directory)
+    private_directory(directory)
+
+    assert directory.is_dir()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+def test_private_directory_restricts_an_existing_directory(tmp_path: Path) -> None:
+    directory = tmp_path / "private"
+    directory.mkdir()
+    directory.chmod(0o777)
+
+    private_directory(directory)
+
+    assert stat.S_IMODE(directory.stat().st_mode) == 0o700
+
+
+@pytest.mark.parametrize(("platform", "chmods"), [("linux", 1), ("win32", 0)])
+def test_private_directory_sets_the_mode_again_only_on_posix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, platform: str, chmods: int
+) -> None:
+    """On Windows, `chmod` sets only a directory's read-only flag."""
+    monkeypatch.setattr("ezhpcy.permissions.sys.platform", platform)
+
+    with patch.object(Path, "chmod", autospec=True) as chmod:
+        private_directory(tmp_path / "private")
+
+    assert chmod.call_args_list == [((tmp_path / "private", 0o700),)] * chmods

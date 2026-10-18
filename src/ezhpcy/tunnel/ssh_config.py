@@ -31,7 +31,11 @@ lazy from ezhpcy.constants import (
     WINDOWS_CREATION_FLAGS,
     WORKER_HOST_ALIAS,
 )
-lazy from ezhpcy.permissions import FilePermissionError, restrict_to_current_user
+lazy from ezhpcy.permissions import (
+    FilePermissionError,
+    private_directory,
+    restrict_to_current_user,
+)
 lazy from ezhpcy.provision_local import WorkerCredentials
 lazy from ezhpcy.tunnel.lock import alias_locked
 lazy from ezhpcy.utils import local_machine_id
@@ -121,9 +125,7 @@ class WorkerHost:
 def _write_private(path: Path, content: str) -> None:
     """Atomically write a file that OpenSSH accepts as an included config."""
     directory = path.parent
-    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    if os.name == "posix":
-        directory.chmod(0o700)
+    private_directory(directory)
     # The temporary name does not match the `*.conf` Include glob, so OpenSSH
     # never reads a file before its permissions are restricted.
     temporary = directory / f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"

@@ -1,20 +1,17 @@
 """Run the EzHPCy CLI in-process through its `main()`."""
 
 import io
-import logging
 import sys
 from collections.abc import Mapping, Sequence
-from contextlib import nullcontext
 from dataclasses import dataclass
 from pathlib import PurePosixPath
-from types import SimpleNamespace
-from typing import BinaryIO, Literal, Self, TextIO
+from typing import Literal, Self, TextIO
 
 import keyring
 import pytest
 from rich.console import Console
 
-from ezhpcy.cli import main, proxy, tunnel
+from ezhpcy.cli import main, tunnel
 from ezhpcy.cli.utils import ssh as cli_ssh
 from ezhpcy.types import ConnectionInfo, RemoteState
 
@@ -53,8 +50,7 @@ def invoke(
     with pytest.MonkeyPatch.context() as monkeypatch:
         for name, value in {"COLUMNS": str(_TERMINAL_WIDTH), **(env or {})}.items():
             monkeypatch.setenv(name, value)
-        # Prompts read `sys.stdin`, the proxy relays through `sys.stdout.buffer`
-        # and interactive job output goes to `sys.stderr`.
+        # Prompts read `sys.stdin` and interactive job output goes to `sys.stderr`.
         monkeypatch.setattr(
             sys,
             "stdin",
@@ -103,10 +99,7 @@ def _written(stream: io.TextIOWrapper) -> str:
     return buffer.getvalue().decode("utf-8", errors="replace")
 
 
-type CapturedCommand = Literal["tunnel", "provision", "prune", "proxy", "keyring"]
-
-# What the fake relay writes to the proxy's stdout.
-RELAYED_BYTES = b"relayed"
+type CapturedCommand = Literal["tunnel", "provision", "prune", "keyring"]
 
 
 class _Reached(Exception):
@@ -142,10 +135,7 @@ class _FakeLogin:
 
 
 def capture(
-    monkeypatch: pytest.MonkeyPatch,
-    command: CapturedCommand,
-    *,
-    tunnel_debug: bool = False,
+    monkeypatch: pytest.MonkeyPatch, command: CapturedCommand
 ) -> dict[str, object]:
     """
     Stop `command` at the layer below it and return what that layer received.
@@ -157,8 +147,6 @@ def capture(
     - `provision`, `prune`: the `conn_info` given to `connect_interactive`, and
       `remote_operation` (name, args, kwargs) for the first operation after
       `remote_state`, at which the command stops with an exception.
-    - `proxy`: the tunnel `alias` it looked up. The relay writes `RELAYED_BYTES` to
-      stdout and logs one debug record; `tunnel_debug` is the tunnel's `--debug`.
     - `keyring`: `service`, `account` and `password` given to the system keyring.
     """
     captured: dict[str, object] = {}
@@ -180,22 +168,6 @@ def capture(
                 return _FakeLogin(captured)
 
             monkeypatch.setattr(cli_ssh, "connect_interactive", connect_interactive)
-        case "proxy":
-
-            def load(alias: str) -> SimpleNamespace:
-                captured["alias"] = alias
-                return SimpleNamespace(debug=tunnel_debug)
-
-            def relay_proxy_stdio(
-                _stream: object, _stdin: BinaryIO, stdout: BinaryIO
-            ) -> None:
-                logging.getLogger("ezhpcy.ipc.client").debug("Relaying.")
-                stdout.write(RELAYED_BYTES)
-                stdout.flush()
-
-            monkeypatch.setattr(proxy, "TunnelDescriptor", SimpleNamespace(load=load))
-            monkeypatch.setattr(proxy, "connect", lambda _descriptor: nullcontext())
-            monkeypatch.setattr(proxy, "relay_proxy_stdio", relay_proxy_stdio)
         case "keyring":
 
             def set_password(service: str, account: str, password: str) -> None:

@@ -63,6 +63,16 @@ OptionalProfileArg = Annotated[
         completer=_complete_profiles,
     ),
 ]
+ShownProfileArg = Annotated[
+    str | None,
+    Parameter(
+        help=(
+            "Configured EzHPCy profile to show, instead of every profile, with "
+            "the settings outside the profiles."
+        ),
+        completer=_complete_profiles,
+    ),
+]
 AliasArg = Annotated[
     str,
     Parameter(

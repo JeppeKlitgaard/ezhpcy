@@ -74,19 +74,25 @@ def _validation_usage_error(
     )
 
 
+def check_profile_name(profile_name: str) -> None:
+    """Report a PROFILE argument that names no configured profile."""
+    if profile_name in config.profile:
+        return
+    # Worded like Cyclopts' error for an invalid choice.
+    if config.profile:
+        message = t"Choose from: {list(config.profile):choice}."
+    else:
+        message = (
+            t"No profiles are configured; run "
+            t"{'ezhpcy config load <preset>':suggestion} to start from one."
+        )
+    raise CliUsageError(message, param_hint="PROFILE", value=profile_name)
+
+
 def resolve_profile_config(profile_name: str | None) -> ResolvedProfileConfig:
     """Resolve the selected profile, or the top-level settings when none is selected."""
     if profile_name is not None:
-        if profile_name not in config.profile:
-            # Worded like Cyclopts' error for an invalid choice.
-            if config.profile:
-                message = t"Choose from: {list(config.profile):choice}."
-            else:
-                message = (
-                    t"No profiles are configured; run "
-                    t"{'ezhpcy config load <preset>':suggestion} to start from one."
-                )
-            raise CliUsageError(message, param_hint="PROFILE", value=profile_name)
+        check_profile_name(profile_name)
         # Profile names are safe as file names (`validate_alias`).
         label_log_file(profile_name)
     try:

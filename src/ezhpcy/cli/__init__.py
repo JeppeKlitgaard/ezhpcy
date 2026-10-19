@@ -152,6 +152,12 @@ config_app.command(
     name="load",
     help="Load a packaged configuration preset.",
 )
+# ezhpcy config show
+config_app.command(
+    "ezhpcy.cli.config.show:show_cmd",
+    name="show",
+    help="Show the configuration, marking inherited and default settings.",
+)
 app.command(config_app)
 
 # ezhpcy doctor

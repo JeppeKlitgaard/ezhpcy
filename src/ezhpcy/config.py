@@ -7,7 +7,14 @@ lazy from string.templatelib import Template
 lazy from typing import Any, Self
 
 from platformdirs import PlatformDirs
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    PlainSerializer,
+    model_validator,
+)
 from pydantic_settings import (
     BaseSettings,
     EnvSettingsSource,
@@ -97,8 +104,17 @@ def _parse_log_level(value: object) -> object:
         raise ValueError(f"unknown logging level: {value!r}") from None
 
 
-# A level by number or by name, in any case.
-LogLevel = Annotated[int, BeforeValidator(_parse_log_level)]
+def _format_log_level(value: int) -> str | int:
+    name = logging.getLevelName(value)
+    return name if name in logging.getLevelNamesMapping() else value
+
+
+# A level by number or by name, in any case. Dumped to JSON by name, if it has one.
+LogLevel = Annotated[
+    int,
+    BeforeValidator(_parse_log_level),
+    PlainSerializer(_format_log_level, when_used="json"),
+]
 
 
 class ConsoleLoggingConfig(BaseModel):
@@ -160,25 +176,10 @@ class _ConfigValues(BaseModel):
         top_level = {"connection": self.connection.model_dump(exclude_unset=True)}
         if profile_name is None:
             return ResolvedProfileConfig.model_validate(top_level)
-        if profile_name not in self.profile:
-            raise ValueError(f"unknown profile {profile_name!r}")
-
-        def merged(name: str, chain: tuple[str, ...]) -> dict[str, Any]:
-            if name in chain:
-                cycle = " -> ".join((*chain, name))
-                raise ValueError(f"profile inheritance cycle: {cycle}")
-            try:
-                current = self.profile[name]
-            except KeyError:
-                parent = chain[-1] if chain else profile_name
-                raise ValueError(
-                    f"profile {parent!r} inherits unknown profile {name!r}"
-                ) from None
-
-            # The top-level settings are the root of every inheritance chain.
-            values: dict[str, Any] = top_level
-            if current.inherit is not None:
-                values = merged(current.inherit, (*chain, name))
+        # The top-level settings are the root of every inheritance chain.
+        values: dict[str, Any] = top_level
+        for name in reversed(self.inheritance_chain(profile_name)):
+            current = self.profile[name]
             current_values = current.model_dump(exclude={"inherit"}, exclude_unset=True)
             if current.connection.model_fields_set & PASSWORD_SOURCE_FIELDS:
                 for field in PASSWORD_SOURCE_FIELDS:
@@ -189,9 +190,8 @@ class _ConfigValues(BaseModel):
                     values[key] = {**values.get(key, {}), **value}
                 else:
                     values[key] = value
-            return values
 
-        profile_config = ResolvedProfileConfig.model_validate(merged(profile_name, ()))
+        profile_config = ResolvedProfileConfig.model_validate(values)
         if validate_password_source:
             # The top-level table is valid, so any fault is the profile's.
             _validate_password_source(
@@ -200,6 +200,24 @@ class _ConfigValues(BaseModel):
                 prefix="connection.",
             )
         return profile_config
+
+    def inheritance_chain(self, profile_name: str) -> tuple[str, ...]:
+        """Return the profile, then the profile it inherits, and so on."""
+        if profile_name not in self.profile:
+            raise ValueError(f"unknown profile {profile_name!r}")
+        chain: list[str] = []
+        name: str | None = profile_name
+        while name is not None:
+            if name in chain:
+                cycle = " -> ".join((*chain, name))
+                raise ValueError(f"profile inheritance cycle: {cycle}")
+            if name not in self.profile:
+                raise ValueError(
+                    f"profile {chain[-1]!r} inherits unknown profile {name!r}"
+                )
+            chain.append(name)
+            name = self.profile[name].inherit
+        return tuple(chain)
 
 
 def _validate_password_source(
@@ -288,7 +306,9 @@ class Config(BaseSettings, _ConfigValues):
     def from_mapping(cls, values: object) -> Self:
         """Validate explicit values without loading workstation settings sources."""
         validated = _ConfigValues.model_validate(values)
-        return cls.model_construct(**validated.__dict__)
+        return cls.model_construct(
+            _fields_set=validated.model_fields_set, **validated.__dict__
+        )
 
 
 config = Config()

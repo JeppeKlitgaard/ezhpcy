@@ -5,10 +5,11 @@ from types import ModuleType
 
 import pytest
 
-from ezhpcy.cli import list_profiles as config_list_profiles
+from ezhpcy.cli import _resolve as cli_resolve, list_profiles as config_list_profiles
 from ezhpcy.cli.config import (
     edit as config_edit,
     load as config_load,
+    show as config_show,
 )
 from ezhpcy.config import Config
 from ezhpcy.types import SubmissionMode
@@ -327,3 +328,129 @@ def test_config_load_help_lists_available_presets() -> None:
     assert result.exit_code == 0
     output = result.stdout.casefold()
     assert "[choices: dtu, generic]" in output
+
+
+def use_config(monkeypatch: pytest.MonkeyPatch, values: dict[str, object]) -> None:
+    """Replace the configuration that `config show` reads."""
+    config = Config.from_mapping(values)
+    for module in (config_show, cli_resolve):
+        monkeypatch.setattr(module, "config", config)
+
+
+_SHOWN_CONFIG = {
+    "debug": True,
+    "connection": {"password_keyring": True},
+    "profile": {
+        "base": {
+            "connection": {"user": "alice"},
+            "lsf": {"submission_environment": {"A": "b", "C D": "e"}},
+        },
+        "child": {
+            "inherit": "base",
+            "connection": {"password_file": "password.txt"},
+            "resources": {"cores": 4},
+        },
+    },
+}
+
+
+def test_config_show_marks_inherited_and_default_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    use_config(monkeypatch, _SHOWN_CONFIG)
+
+    result = invoke(["config", "show"])
+
+    assert result.exit_code == 0, result
+    lines = result.stdout.splitlines()
+    assert lines[:2] == ["debug = true", "auto_provision = true  # default"]
+    for line in (
+        "[logging.console]",
+        'level = "INFO"  # default',
+        "[connection]",
+        "password_keyring = true",
+        "[profile.base]",
+        "inherit = (not set)  # default",
+        "connection.password_keyring = true  # from [connection]",
+        'lsf.submission_environment = { A = "b", "C D" = "e" }',
+        "[profile.child]",
+        'inherit = "base"',
+        'connection.user = "alice"  # from base',
+        'connection.password_file = "password.txt"',
+        # Its own password source replaces the inherited one.
+        "connection.password_keyring = false  # default",
+        "resources.cores = 4",
+        "resources.gpus = 0  # default",
+    ):
+        assert line in lines
+    assert lines.index("[profile.base]") < lines.index("[profile.child]")
+
+
+def test_config_show_with_a_profile_leaves_out_the_other_profiles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    use_config(monkeypatch, _SHOWN_CONFIG)
+
+    result = invoke(["config", "show", "child"])
+
+    assert result.exit_code == 0, result
+    lines = result.stdout.splitlines()
+    assert lines[0] == "debug = true"
+    assert "[connection]" in lines
+    assert "[profile.child]" in lines
+    assert "[profile.base]" not in lines
+
+
+def test_config_show_only_profile_shows_just_the_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    use_config(monkeypatch, _SHOWN_CONFIG)
+
+    result = invoke(["config", "show", "child", "--only-profile"])
+
+    assert result.exit_code == 0, result
+    lines = result.stdout.splitlines()
+    assert lines[0] == "[profile.child]"
+    assert "[profile.base]" not in lines
+    assert "[connection]" not in lines
+    assert "debug = true" not in lines
+
+
+def test_config_show_only_profile_without_a_profile_shows_every_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    use_config(monkeypatch, _SHOWN_CONFIG)
+
+    result = invoke(["config", "show", "--only-profile"])
+
+    assert result.exit_code == 0, result
+    lines = result.stdout.splitlines()
+    assert lines[0] == "[profile.base]"
+    assert "[profile.child]" in lines
+    assert "[connection]" not in lines
+    assert "debug = true" not in lines
+
+
+def test_config_show_never_shows_a_configured_password(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    use_config(
+        monkeypatch,
+        {"profile": {"base": {"connection": {"password": "hunter2"}}}},
+    )
+
+    result = invoke(["config", "show"])
+
+    assert result.exit_code == 0, result
+    assert "hunter2" not in result.stdout
+
+
+def test_config_show_rejects_an_unknown_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    use_config(monkeypatch, _SHOWN_CONFIG)
+
+    result = invoke(["config", "show", "missing"])
+
+    assert result.exit_code == 2
+    assert 'Invalid value "missing" for PROFILE' in result.stderr

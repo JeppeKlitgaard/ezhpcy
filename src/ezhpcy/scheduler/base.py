@@ -61,6 +61,8 @@ class JobInfo:
     # Where the job runs, once it has started.
     host: str | None = None
     exit_code: int | None = None
+    # Why the scheduler hasn't started it yet.
+    pending_reason: str | None = None
 
 
 class SchedulerError(RuntimeError):

@@ -226,6 +226,16 @@ QueueTimeoutOpt = Annotated[
         group=TIMINGS_PANEL,
     ),
 ]
+QueueProgressIntervalOpt = Annotated[
+    float | None,
+    Parameter(
+        name="--queue-progress-interval",
+        metavar="SECONDS",
+        validator=validators.Number(gte=1),
+        help="Interval between progress lines while the worker job waits to start.",
+        group=TIMINGS_PANEL,
+    ),
+]
 WorkerStartupTimeoutOpt = Annotated[
     float | None,
     Parameter(
@@ -359,6 +369,7 @@ class ResourceOptions:
 @dataclass(frozen=True, kw_only=True)
 class TimingOptions:
     queue_timeout_seconds: QueueTimeoutOpt = None
+    queue_progress_interval_seconds: QueueProgressIntervalOpt = None
     worker_startup_timeout_seconds: WorkerStartupTimeoutOpt = None
     job_poll_interval_seconds: JobPollIntervalOpt = None
     job_monitor_interval_seconds: JobMonitorIntervalOpt = None

@@ -68,20 +68,25 @@ app = App(
 def _meta(
     *tokens: Annotated[str, Parameter(show=False, allow_leading_hyphen=True)],
     debug: Annotated[
-        bool,
+        bool | None,
         Parameter(
             name="--debug",
+            negative="--no-debug",
+            # The default is `None` so that either flag overrides the configuration.
+            # Help doesn't load the configuration, so it can't show the value.
+            show_default="auto",
             help=(
                 "Enable debug logging and include timestamps in log output. "
-                f"Also set by {DEBUG_ENV_VAR}=1 or `debug = true` in the "
-                "configuration file."
+                f"Defaults to {DEBUG_ENV_VAR} or `debug` in the configuration "
+                "file."
             ),
             group=GLOBAL_OPTIONS,
         ),
-    ] = False,
+    ] = None,
 ) -> object:
     # The configuration reads `EZHPCY_DEBUG`, so `--debug` doesn't.
-    debug = debug or ezhpcy_config.debug
+    if debug is None:
+        debug = ezhpcy_config.debug
     configure_logging(
         logging.DEBUG if debug else ezhpcy_config.log_level, include_timestamp=debug
     )

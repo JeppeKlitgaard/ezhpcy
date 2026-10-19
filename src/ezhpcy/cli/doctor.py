@@ -51,13 +51,19 @@ class Check:
     show_include: bool = False
 
 
-def _check_profile(source: Config, profile_name: str) -> Check:
+def _check_profile(source: Config, profile_name: str | None) -> Check:
+    """Check a profile resolves, or with `None` the top-level `connection` table."""
+    subject = (
+        t"Top-level {'connection':name} table"
+        if profile_name is None
+        else t"Profile {profile_name:name}"
+    )
     try:
         connection = source.resolve_profile(profile_name).connection
     except ProfilePasswordSourceError as error:
         return Check(
             Status.FAIL,
-            t"Profile {profile_name:name} is invalid",
+            subject + t" is invalid",
             hint=sentence(error.message),
         )
 
@@ -65,19 +71,22 @@ def _check_profile(source: Config, profile_name: str) -> Check:
     if password_file is not None and not password_file.is_file():
         return Check(
             Status.FAIL,
-            t"Profile {profile_name:name} is invalid: {'connection.password_file':name} "
+            subject + t" is invalid: {'connection.password_file':name} "
             t"{password_file:path} does not exist",
         )
     if connection.user is None or connection.host is None:
-        return Check(Status.OK, t"Profile {profile_name:name} is valid")
+        return Check(Status.OK, subject + t" is valid")
     return Check(
         Status.OK,
-        t"Profile {profile_name:name} is valid: {connection.user}@{connection.host}",
+        subject + t" is valid: {connection.user}@{connection.host}",
     )
 
 
 def check_config(source: Config = config) -> Iterator[Check]:
-    """Check that the configuration file exists and every profile resolves."""
+    """
+    Check that the configuration file exists, and that its top-level `connection`
+    table and every profile resolve.
+    """
     config_file = source.local_file.config_file
     if not config_file.is_file():
         yield Check(
@@ -88,6 +97,9 @@ def check_config(source: Config = config) -> Iterator[Check]:
         )
         return
     yield Check(Status.OK, t"Config file found: {config_file:path}")
+
+    if source.connection.model_fields_set:
+        yield _check_profile(source, None)
 
     if not source.profile:
         yield Check(

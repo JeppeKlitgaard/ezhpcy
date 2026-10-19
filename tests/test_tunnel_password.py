@@ -7,7 +7,7 @@ from keyring.errors import KeyringError
 
 from ezhpcy.cli import _options, _password, _resolve
 from ezhpcy.cli._errors import CliUsageError
-from ezhpcy.types import ProfileConfig
+from ezhpcy.types import PasswordConfig, ProfileConfig
 from tests.support.cli import invoke
 
 
@@ -86,6 +86,31 @@ def test_profile_password_keyring_can_read_from_keyring(
     )
 
     assert resolve_password(config_password_keyring=True) == "from-keyring"
+
+
+@pytest.mark.parametrize("profile_name", [None, "base"])
+def test_top_level_password_keyring_applies_with_and_without_a_profile(
+    monkeypatch: pytest.MonkeyPatch, profile_name: str | None
+) -> None:
+    monkeypatch.setattr(
+        _resolve.config, "connection", PasswordConfig(password_keyring=True)
+    )
+    accounts: list[str] = []
+
+    def get_password(_service: str, account: str) -> str:
+        accounts.append(account)
+        return "from-keyring"
+
+    monkeypatch.setattr(_password.keyring, "get_password", get_password)
+
+    conn_info = _resolve.connection_from_cli(
+        _options.ConnectionOptions(user="alice", host="login.example.com"),
+        _resolve.resolve_profile_config(profile_name).connection,
+        profile_name=profile_name,
+    )
+
+    assert conn_info.password == "from-keyring"
+    assert accounts == ["alice@login.example.com"]
 
 
 def test_explicit_password_source_overrides_profile_password_source(

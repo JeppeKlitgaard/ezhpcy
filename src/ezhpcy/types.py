@@ -81,11 +81,8 @@ class _SubConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class ConnectionConfig(_SubConfig):
-    """How to reach and authenticate with the login node."""
-
-    host: DomainStr | None = None
-    user: str | None = Field(default=None, min_length=1)
+class PasswordConfig(_SubConfig):
+    """How to get the login-node password."""
 
     # Accepted only to reject it with a helpful message: passwords must not be
     # stored in configuration files.
@@ -94,6 +91,13 @@ class ConnectionConfig(_SubConfig):
     password_fd: int | None = Field(default=None, ge=0)
     password_keyring: bool = False
     password_prompt: bool = True
+
+
+class ConnectionConfig(PasswordConfig):
+    """How to reach and authenticate with the login node."""
+
+    host: DomainStr | None = None
+    user: str | None = Field(default=None, min_length=1)
 
     ssh_keepalive_interval_seconds: int = Field(default=30, gt=0)
 
@@ -205,8 +209,8 @@ class ResolvedProfileConfig(_ProfileSettings):
     """
     An inherited profile before CLI values are applied.
 
-    The `model_fields_set` of each sub-config holds the fields the profile or
-    one of its ancestors configured.
+    The `model_fields_set` of each sub-config holds the fields the profile, one
+    of its ancestors, or the top-level `connection` table configured.
     """
 
 

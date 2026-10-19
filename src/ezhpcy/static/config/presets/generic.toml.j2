@@ -16,7 +16,6 @@ keep = 10  # Log files of the most recent runs to keep
 [profile.base]
 connection.host = "login.hpc.example.com"
 connection.user = {{ user | tojson }}
-connection.password_prompt = true
 connection.ssh_keepalive_interval_seconds = 30
 
 scheduler.type = "LSF"

@@ -18,6 +18,7 @@ from pydantic_settings import (
 lazy from pydantic.fields import FieldInfo
 
 from ezhpcy.constants import LOGIN_KNOWN_HOSTS_NAME, PACKAGE_NAME, SSH_DIRECTORY_NAME
+from ezhpcy.types import PasswordConfig
 lazy from ezhpcy.messages import plain
 lazy from ezhpcy.types import (
     PASSWORD_SOURCE_FIELDS,
@@ -132,6 +133,8 @@ class _ConfigValues(BaseModel):
     logging: LoggingConfig = LoggingConfig()
     debug: bool = False
     auto_provision: bool = True
+    # Every profile inherits these, and a run without a profile uses them.
+    connection: PasswordConfig = PasswordConfig()
     profile: dict[str, ProfileConfig] = Field(default_factory=dict)
 
     model_config = ConfigDict(extra="forbid")
@@ -149,8 +152,14 @@ class _ConfigValues(BaseModel):
         *,
         validate_password_source: bool = True,
     ) -> ResolvedProfileConfig:
+        """Resolve a profile, or the top-level settings alone when `None`."""
+        if validate_password_source:
+            _validate_password_source(
+                self.connection, subject=t"the top-level {'connection':name} table"
+            )
+        top_level = {"connection": self.connection.model_dump(exclude_unset=True)}
         if profile_name is None:
-            raise ValueError("no profile was selected")
+            return ResolvedProfileConfig.model_validate(top_level)
         if profile_name not in self.profile:
             raise ValueError(f"unknown profile {profile_name!r}")
 
@@ -166,7 +175,8 @@ class _ConfigValues(BaseModel):
                     f"profile {parent!r} inherits unknown profile {name!r}"
                 ) from None
 
-            values: dict[str, Any] = {}
+            # The top-level settings are the root of every inheritance chain.
+            values: dict[str, Any] = top_level
             if current.inherit is not None:
                 values = merged(current.inherit, (*chain, name))
             current_values = current.model_dump(exclude={"inherit"}, exclude_unset=True)
@@ -183,42 +193,47 @@ class _ConfigValues(BaseModel):
 
         profile_config = ResolvedProfileConfig.model_validate(merged(profile_name, ()))
         if validate_password_source:
-            _validate_profile_password_source(profile_name, profile_config)
+            # The top-level table is valid, so any fault is the profile's.
+            _validate_password_source(
+                profile_config.connection,
+                subject=t"profile {profile_name:name}",
+                prefix="connection.",
+            )
         return profile_config
 
 
-def _validate_profile_password_source(
-    profile_name: str, profile_config: ResolvedProfileConfig
+def _validate_password_source(
+    connection: PasswordConfig, *, subject: Template, prefix: str = ""
 ) -> None:
-    connection = profile_config.connection
+    """Check the password settings of `subject`, whose keys start with `prefix`."""
     if connection.password is not None:
         raise ProfilePasswordSourceError(
-            t"profile {profile_name:name} must not set "
-            t"{'connection.password':name}, because passwords must not be stored "
-            t"in configuration files; use {'connection.password_file':name}, "
-            t"{'connection.password_fd':name}, or "
-            t"{'connection.password_keyring':name} instead"
+            subject
+            + t" must not set {f'{prefix}password':name}, because passwords must "
+            t"not be stored in configuration files; use "
+            t"{f'{prefix}password_file':name}, {f'{prefix}password_fd':name}, or "
+            t"{f'{prefix}password_keyring':name} instead"
         )
 
     selected_sources = [
-        name
+        f"{prefix}{name}"
         for name, selected in (
-            ("connection.password_file", connection.password_file is not None),
-            ("connection.password_fd", connection.password_fd is not None),
-            ("connection.password_keyring", connection.password_keyring),
+            ("password_file", connection.password_file is not None),
+            ("password_fd", connection.password_fd is not None),
+            ("password_keyring", connection.password_keyring),
         )
         if selected
     ]
     if len(selected_sources) > 1:
         raise ProfilePasswordSourceError(
-            t"profile {profile_name:name} has mutually exclusive password source "
-            t"settings: {selected_sources:name}"
+            subject + t" has mutually exclusive password source settings: "
+            t"{selected_sources:name}"
         )
 
 
 # Settings that `EZHPCY_<NAME>` environment variables can't set: they're tables, and
 # `EZHPCY_PROFILE` is the CLI's PROFILE argument.
-_NOT_FROM_ENV = frozenset({"profile", "local_file", "logging"})
+_NOT_FROM_ENV = frozenset({"profile", "local_file", "logging", "connection"})
 
 
 class _EnvSettingsSource(EnvSettingsSource):

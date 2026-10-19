@@ -75,21 +75,20 @@ def _validation_usage_error(
 
 
 def resolve_profile_config(profile_name: str | None) -> ResolvedProfileConfig:
-    """Resolve the selected profile, or the defaults when none is selected."""
-    if profile_name is None:
-        return ResolvedProfileConfig()
-    if profile_name not in config.profile:
-        # Worded like Cyclopts' error for an invalid choice.
-        if config.profile:
-            message = t"Choose from: {list(config.profile):choice}."
-        else:
-            message = (
-                t"No profiles are configured; run "
-                t"{'ezhpcy config load <preset>':suggestion} to start from one."
-            )
-        raise CliUsageError(message, param_hint="PROFILE", value=profile_name)
-    # Profile names are safe as file names (`validate_alias`).
-    label_log_file(profile_name)
+    """Resolve the selected profile, or the top-level settings when none is selected."""
+    if profile_name is not None:
+        if profile_name not in config.profile:
+            # Worded like Cyclopts' error for an invalid choice.
+            if config.profile:
+                message = t"Choose from: {list(config.profile):choice}."
+            else:
+                message = (
+                    t"No profiles are configured; run "
+                    t"{'ezhpcy config load <preset>':suggestion} to start from one."
+                )
+            raise CliUsageError(message, param_hint="PROFILE", value=profile_name)
+        # Profile names are safe as file names (`validate_alias`).
+        label_log_file(profile_name)
     try:
         return config.resolve_profile(profile_name)
     except ProfilePasswordSourceError as error:

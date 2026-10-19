@@ -13,7 +13,7 @@ from ezhpcy.tunnel.ssh_config import (
     include_directive,
     write_active_host_config,
 )
-from ezhpcy.types import ProfileConfig
+from ezhpcy.types import PasswordConfig, ProfileConfig
 from tests.support.cli import invoke
 
 type Resolver = Callable[[str], dict[str, list[str]] | str | None]
@@ -283,6 +283,24 @@ def test_doctor_fails_on_invalid_profiles(
 
     assert result.exit_code == 1
     assert message in result.stdout
+
+
+def test_doctor_fails_on_invalid_top_level_password_settings(
+    profiles: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        config,
+        "connection",
+        PasswordConfig.model_validate({"password_file": Path("missing.txt")}),
+    )
+
+    result = invoke(["doctor"])
+
+    assert result.exit_code == 1
+    assert (
+        "Top-level connection table is invalid: connection.password_file "
+        "missing.txt does not exist" in result.stdout
+    )
 
 
 def test_doctor_skips_the_probe_without_ssh(

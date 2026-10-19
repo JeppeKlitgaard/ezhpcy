@@ -9,7 +9,7 @@ from pydantic_settings import SettingsConfigDict
 
 from ezhpcy import config as config_module
 from ezhpcy.scheduler.types import SchedulerType
-from ezhpcy.types import ResolvedConfig
+from ezhpcy.types import PasswordConfig, ResolvedConfig
 
 
 def test_logging_defaults_to_info_on_the_console_and_debug_in_a_file() -> None:
@@ -267,6 +267,87 @@ def test_profile_password_source_overrides_the_inherited_source() -> None:
     assert connection.user == "alice"
 
 
+def test_top_level_password_settings_are_inherited_by_every_profile() -> None:
+    config = config_module.Config.from_mapping(
+        {
+            "connection": {"password_keyring": True, "password_prompt": False},
+            "profile": {
+                "base": {"connection": {"user": "alice"}},
+                "child": {"inherit": "base"},
+            },
+        }
+    )
+
+    for name in ("base", "child"):
+        connection = config.resolve_profile(name).connection
+        assert connection.password_keyring is True
+        assert connection.password_prompt is False
+        assert connection.user == "alice"
+
+
+def test_profile_password_source_overrides_the_top_level_source() -> None:
+    config = config_module.Config.from_mapping(
+        {
+            "connection": {"password_keyring": True, "password_prompt": False},
+            "profile": {"base": {"connection": {"password_file": "password.txt"}}},
+        }
+    )
+
+    connection = config.resolve_profile("base").connection
+    assert connection.password_keyring is False
+    assert connection.password_file == Path("password.txt")
+    # Only the password source is replaced; the prompt setting is still inherited.
+    assert connection.password_prompt is False
+
+
+def test_without_a_profile_only_the_top_level_settings_apply() -> None:
+    config = config_module.Config.from_mapping(
+        {
+            "connection": {"password_keyring": True},
+            "profile": {"base": {"connection": {"user": "alice"}}},
+        }
+    )
+
+    connection = config.resolve_profile(None).connection
+    assert connection.password_keyring is True
+    assert connection.user is None
+
+
+@pytest.mark.parametrize(
+    ("connection", "message"),
+    [
+        (
+            {"password": "not-a-secret"},
+            (
+                r"top-level connection table must not set password, because "
+                r"passwords must not be stored"
+            ),
+        ),
+        (
+            {"password_file": "password.txt", "password_fd": 3},
+            (
+                r"top-level connection table has mutually exclusive password source "
+                r"settings: password_file, password_fd"
+            ),
+        ),
+    ],
+)
+@pytest.mark.parametrize("profile_name", [None, "base"])
+def test_invalid_top_level_password_settings_are_reported_as_top_level(
+    connection: dict[str, object], message: str, profile_name: str | None
+) -> None:
+    config = config_module.Config.from_mapping(
+        {
+            "connection": connection,
+            # A profile's own source doesn't hide the fault in the top-level table.
+            "profile": {"base": {"connection": {"password_keyring": True}}},
+        }
+    )
+
+    with pytest.raises(config_module.ProfilePasswordSourceError, match=message):
+        config.resolve_profile(profile_name)
+
+
 def test_local_file_cannot_be_set_in_the_config_file(tmp_path: Path) -> None:
     config_file = tmp_path / "ezhpcy.toml"
     config_file.write_text(
@@ -288,6 +369,7 @@ def test_local_file_cannot_be_set_in_the_config_file(tmp_path: Path) -> None:
         ("EZHPCY_PROFILE", '{"base": {"connection": {"host": "elsewhere"}}}'),
         ("EZHPCY_LOCAL_FILE", '{"config_dir": "elsewhere"}'),
         ("EZHPCY_LOGGING", '{"console": {"level": "debug"}}'),
+        ("EZHPCY_CONNECTION", '{"password_keyring": true}'),
     ],
 )
 def test_tables_are_not_read_from_the_environment(
@@ -304,6 +386,7 @@ def test_tables_are_not_read_from_the_environment(
     assert config.profile == {}
     assert config.local_file == config_module.LocalFileConfig()
     assert config.logging == config_module.LoggingConfig()
+    assert config.connection == PasswordConfig()
     # Plain settings still come from the environment.
     assert config.auto_provision is False
 

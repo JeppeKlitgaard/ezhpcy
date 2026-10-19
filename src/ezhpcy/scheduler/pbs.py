@@ -146,6 +146,9 @@ def _parse_job_info(job_id: str, output: str) -> JobInfo:
         exit_code = None if raw_exit_code is None else int(raw_exit_code)
         # `node1/0*2+node1/1`, though the job asks for a single host.
         host = str(record.get("exec_host", "")).split("+")[0].partition("/")[0]
+        # E.g. `Not Running: Insufficient amount of resource: ncpus`. It says
+        # other things once the job runs (`Job run at … on …`).
+        comment = str(record.get("comment", "")).strip()
     except (AttributeError, KeyError, TypeError, ValueError) as error:
         excerpt = output.strip()
         if len(excerpt) > 1000:
@@ -167,5 +170,9 @@ def _parse_job_info(job_id: str, output: str) -> JobInfo:
     else:
         state = JobState.UNKNOWN
     return JobInfo(
-        state=state, raw_state=raw_state, host=host or None, exit_code=exit_code
+        state=state,
+        raw_state=raw_state,
+        host=host or None,
+        exit_code=exit_code,
+        pending_reason=(comment or None) if state is JobState.PENDING else None,
     )

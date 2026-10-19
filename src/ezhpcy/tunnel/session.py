@@ -405,25 +405,48 @@ class TunnelSession:
         )
 
     async def _wait_for_running_job(self, scheduler: Scheduler, job_id: str) -> str:
-        """Poll the scheduler until the job runs, and return its host."""
+        """
+        Poll the scheduler until the job runs, and return its host. Says so when
+        the job's state changes, and otherwise every queue progress interval how
+        long it has waited, so that a long wait in the queue doesn't look like a
+        hang. Both say why the job waits, if the scheduler does.
+        """
         timings = self._resolved.timings
+        progress_interval = timings.queue_progress_interval_seconds
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        next_progress = started + progress_interval
         previous_state: tuple[JobState, str] | None = None
         try:
             async with asyncio.timeout(timings.queue_timeout_seconds):
                 while True:
                     info = await scheduler.inspect(job_id)
+                    reason = f": {info.pending_reason}" if info.pending_reason else ""
                     if (info.state, info.raw_state) != previous_state:
                         previous_state = (info.state, info.raw_state)
+                        next_progress = loop.time() + progress_interval
                         logger.info(
-                            "Worker job %s: %s (%s).",
+                            "Worker job %s: %s (%s)%s.",
                             job_id,
                             info.state.value,
                             info.raw_state,
+                            reason,
                         )
                     if info.state is JobState.RUNNING and info.host is not None:
                         return info.host
                     if ended := self._job_ended(job_id, info):
                         raise TunnelError(ended)
+                    if loop.time() >= next_progress:
+                        next_progress = loop.time() + progress_interval
+                        waited = loop.time() - started
+                        logger.info(
+                            "Worker job %s still %s after %s (queue timeout in %s)%s.",
+                            job_id,
+                            info.state.value,
+                            _duration(waited),
+                            _duration(timings.queue_timeout_seconds - waited),
+                            reason,
+                        )
                     await asyncio.sleep(timings.job_poll_interval_seconds)
         except TimeoutError:
             raise TunnelError(
@@ -797,6 +820,12 @@ def _worker_gone(status: WorkerStatus | None) -> TunnelError | None:
 
 def _connection_lost(error: Exception) -> TunnelError:
     return TunnelError(f"login-node SSH connection lost: {error}")
+
+
+def _duration(seconds: float) -> str:
+    """`seconds` as `2 min 30 s`, or `45 s` under a minute."""
+    minutes, seconds = divmod(round(seconds), 60)
+    return f"{minutes} min {seconds} s" if minutes else f"{seconds} s"
 
 
 def _ending(info: JobInfo) -> str:

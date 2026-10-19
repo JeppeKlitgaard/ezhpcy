@@ -127,6 +127,7 @@ def test_profile_job_intervals_default_and_are_inherited() -> None:
                     "timings": {
                         "job_poll_interval_seconds": 4.5,
                         "job_monitor_interval_seconds": 120,
+                        "queue_progress_interval_seconds": 45,
                     }
                 },
                 "child": {"inherit": "base"},
@@ -139,12 +140,19 @@ def test_profile_job_intervals_default_and_are_inherited() -> None:
     child = config.resolve_profile("child").timings
     assert default.job_poll_interval_seconds == 2.5
     assert default.job_monitor_interval_seconds == 60
+    assert default.queue_progress_interval_seconds == 20
     assert child.job_poll_interval_seconds == 4.5
     assert child.job_monitor_interval_seconds == 120
+    assert child.queue_progress_interval_seconds == 45
 
 
 @pytest.mark.parametrize(
-    "field", ["job_poll_interval_seconds", "job_monitor_interval_seconds"]
+    "field",
+    [
+        "job_poll_interval_seconds",
+        "job_monitor_interval_seconds",
+        "queue_progress_interval_seconds",
+    ],
 )
 def test_profile_job_intervals_must_be_positive(field: str) -> None:
     with pytest.raises(ValidationError, match=field):

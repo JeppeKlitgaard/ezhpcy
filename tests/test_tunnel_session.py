@@ -22,7 +22,7 @@ from ezhpcy.cli import tunnel as tunnel_cli
 from ezhpcy.cli.utils import ssh as cli_ssh
 from ezhpcy.constants import LOOPBACK_HOST
 from ezhpcy.logging import flush_logs
-from ezhpcy.scheduler.base import JobState
+from ezhpcy.scheduler.base import JobInfo, JobState
 from ezhpcy.ssh import RemoteHost
 from ezhpcy.tunnel import lock, session, ssh_config
 from ezhpcy.tunnel.lock import alias_lock, alias_locked
@@ -87,7 +87,8 @@ def bjobs(running: threading.Event, done: threading.Event):
         else:
             state, exit_code = "PEND", "-"
         host = "-" if state == "PEND" else "127.0.0.1"
-        invocation.stdout.write(f"{JOB_ID}|{state}|{host}|{exit_code}\n")
+        reason = "Job slot limit reached: 3 hosts;" if state == "PEND" else "-"
+        invocation.stdout.write(f"{JOB_ID}|{state}|{host}|{exit_code}|{reason}\n")
 
     return handler
 
@@ -431,6 +432,50 @@ def test_keepalive_loss_while_serving_stops_the_tunnel(
     [scheduler] = schedulers
     # The fake doesn't need the connection; a real `bkill` would fail.
     assert scheduler.cancelled == [JOB_ID]
+
+
+def test_a_job_waiting_in_the_queue_says_why_and_for_how_long(
+    login: SSHTestServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    configure_tunnel(
+        monkeypatch,
+        login,
+        timings=FAST_TIMINGS
+        | {"queue_timeout_seconds": 0.35, "queue_progress_interval_seconds": 0.1},
+    )
+    serve_interactive_job(login)
+    waiting = JobInfo(
+        state=JobState.PENDING,
+        raw_state="PEND",
+        pending_reason="Job slot limit reached: 3 hosts",
+    )
+    use_scheduler(monkeypatch, lambda host: FakeScheduler(host, [waiting]))
+
+    with tunnel_log() as log:
+        result = invoke(["tunnel", "base"])
+
+    assert result.exit_code == 1, result
+    changed, *progress = log.starting(f"Worker job {JOB_ID}")
+    assert changed == (
+        f"Worker job {JOB_ID}: pending (PEND): Job slot limit reached: 3 hosts."
+    )
+    # At about 0.1, 0.2 and 0.3 seconds.
+    assert 2 <= len(progress) <= 3, progress
+    for message in progress:
+        assert message == (
+            f"Worker job {JOB_ID} still pending after 0 s (queue timeout in 0 s): "
+            "Job slot limit reached: 3 hosts."
+        )
+
+
+@pytest.mark.parametrize(
+    ("seconds", "shown"),
+    [(0, "0 s"), (45.4, "45 s"), (59.6, "1 min 0 s"), (150, "2 min 30 s")],
+)
+def test_waiting_times_are_shown_in_minutes_and_seconds(
+    seconds: float, shown: str
+) -> None:
+    assert session._duration(seconds) == shown
 
 
 def test_the_worker_startup_timeout_covers_both_waits(

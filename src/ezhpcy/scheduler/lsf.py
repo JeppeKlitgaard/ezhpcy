@@ -9,7 +9,9 @@ lazy from ezhpcy.ssh import RemoteHost
 lazy from ezhpcy.types import LSFConfig
 
 _SUBMITTED_JOB_PATTERN = re.compile(r"Job <(?P<job_id>\d+)> is submitted")
-_BJOBS_FORMAT = "jobid stat exec_host exit_code delimiter='|'"
+# `pend_reason` last: it is free text. LSF 10.1 prints one reason per job, on its
+# line, ending in `;` (e.g. `Job slot limit reached: 3 hosts;`).
+_BJOBS_FORMAT = "jobid stat exec_host exit_code pend_reason delimiter='|'"
 _MEBIBYTE = 1024**2
 
 _STATE_MAP = {
@@ -63,10 +65,11 @@ class LSFScheduler(Scheduler):
         )
         try:
             [line] = output.strip().splitlines()
-            _, raw_state, raw_host, raw_exit_code = (
-                field.strip() for field in line.split("|")
+            _, raw_state, raw_host, raw_exit_code, raw_reason = (
+                field.strip() for field in line.split("|", 4)
             )
             exit_code = None if raw_exit_code in {"", "-"} else int(raw_exit_code)
+            reason = raw_reason.rstrip(";").strip()
         except ValueError as error:
             raise SchedulerError(
                 f"could not parse bjobs output for job {job_id!r}: {output.strip()!r}"
@@ -81,6 +84,7 @@ class LSFScheduler(Scheduler):
                 else re.sub(r"^\d+\*", "", raw_host.split(":")[0])
             ),
             exit_code=exit_code,
+            pending_reason=None if reason in {"", "-"} else reason,
         )
 
     def _interactive_command(self, spec: JobSpec) -> list[str]:

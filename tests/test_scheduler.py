@@ -577,7 +577,7 @@ async def test_lsf_interactive_submission_sets_explicit_core_and_host_defaults()
     ],
 )
 async def test_lsf_states_are_normalized(raw_state: str, expected: JobState):
-    info = await _lsf(FakeHost(f"42|{raw_state}|-|-")).inspect("42")
+    info = await _lsf(FakeHost(f"42|{raw_state}|-|-|-")).inspect("42")
 
     assert info.state is expected
     assert info.raw_state == raw_state
@@ -585,8 +585,28 @@ async def test_lsf_states_are_normalized(raw_state: str, expected: JobState):
     assert info.exit_code is None
 
 
+@pytest.mark.parametrize(
+    ("raw_reason", "reason"),
+    [
+        # As LSF 10.1 prints it.
+        ("Job slot limit reached: 3 hosts;", "Job slot limit reached: 3 hosts"),
+        ("New job is waiting for scheduling;", "New job is waiting for scheduling"),
+        # Free text, last on the line.
+        ("Odd | reason;", "Odd | reason"),
+        ("-", None),
+        ("", None),
+    ],
+)
+async def test_lsf_inspection_returns_why_a_job_waits(
+    raw_reason: str, reason: str | None
+):
+    info = await _lsf(FakeHost(f"42|PEND|-|-|{raw_reason}\n")).inspect("42")
+
+    assert info.pending_reason == reason
+
+
 async def test_lsf_inspection_returns_execution_host_and_exit_code():
-    host = FakeHost("42|DONE|4*node1:4*node1:2*node2|0\n")
+    host = FakeHost("42|DONE|4*node1:4*node1:2*node2|0|-\n")
 
     info = await _lsf(host).inspect("42")
 
@@ -599,14 +619,22 @@ async def test_lsf_inspection_returns_execution_host_and_exit_code():
             "-a",
             "-noheader",
             "-o",
-            "jobid stat exec_host exit_code delimiter='|'",
+            "jobid stat exec_host exit_code pend_reason delimiter='|'",
             "42",
         ]
     ]
 
 
 @pytest.mark.parametrize(
-    "output", ["42 RUN node1", "", "42|RUN|-|-\n43|RUN|-|-\n", "42|EXIT|-|oops"]
+    "output",
+    [
+        "42 RUN node1",
+        "",
+        "42|RUN|-|-|-\n43|RUN|-|-|-\n",
+        "42|EXIT|-|oops|-",
+        # Without `pend_reason`.
+        "42|RUN|-|-",
+    ],
 )
 async def test_lsf_rejects_unparseable_output(output: str):
     with pytest.raises(SchedulerError, match="could not parse bjobs output"):
@@ -781,6 +809,33 @@ async def test_pbs_inspection_parses_json_state_host_and_exit_status():
     info = await scheduler.inspect("690874.hnode41")
     assert info.state is JobState.SUCCEEDED
     assert info.host is None
+
+
+@pytest.mark.parametrize(
+    ("raw_state", "comment", "reason"),
+    [
+        (
+            "Q",
+            "Not Running: Insufficient amount of resource: ncpus",
+            "Not Running: Insufficient amount of resource: ncpus",
+        ),
+        ("Q", None, None),
+        # Once the job runs, the comment no longer says why it waits.
+        ("R", "Job run at Sat Oct 17 at 09:04 on (n-62-30-3:ncpus=1)", None),
+    ],
+)
+async def test_pbs_inspection_returns_why_a_job_waits(
+    raw_state: str, comment: str | None, reason: str | None
+):
+    record: dict[str, object] = {"job_state": raw_state}
+    if comment is not None:
+        record["comment"] = comment
+
+    info = await _pbs(FakeHost(json.dumps({"Jobs": {"42.server": record}}))).inspect(
+        "42.server"
+    )
+
+    assert info.pending_reason == reason
 
 
 @pytest.mark.parametrize(
@@ -993,7 +1048,7 @@ async def test_lsf_on_the_login_node(ssh_server: SSHTestServer):
     _login_shell(
         ssh_server,
         bsub=bsub,
-        bjobs=reply(stdout="7|RUN|node1|-\n"),
+        bjobs=reply(stdout="7|RUN|node1|-|-\n"),
         bkill=reply(stdout="Job <7> is being terminated\n"),
     )
 

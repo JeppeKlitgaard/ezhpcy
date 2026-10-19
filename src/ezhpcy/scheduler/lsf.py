@@ -54,14 +54,14 @@ class LSFScheduler(Scheduler):
         # joins them with spaces, losing their quoting.
         script = f"#!/usr/bin/env bash\nexec {shlex.join(spec.command)}\n"
         output = await self._run(
-            self._bsub_command(spec, interactive=False), "submit a job", stdin=script
+            self._bsub_command(spec, interactive=False), t"submit a job", stdin=script
         )
         return self._parse_job_id(output)
 
     async def inspect(self, job_id: str) -> JobInfo:
         output = await self._run(
             ["bjobs", "-a", "-noheader", "-o", _BJOBS_FORMAT, job_id],
-            f"inspect job {job_id!r}",
+            t"inspect job {job_id:detail}",
         )
         try:
             [line] = output.strip().splitlines()
@@ -72,7 +72,8 @@ class LSFScheduler(Scheduler):
             reason = raw_reason.rstrip(";").strip()
         except ValueError as error:
             raise SchedulerError(
-                f"could not parse bjobs output for job {job_id!r}: {output.strip()!r}"
+                t"could not parse bjobs output for job {job_id:detail}: "
+                t"{output.strip()!r:detail}"
             ) from error
         return JobInfo(
             state=_STATE_MAP.get(raw_state, JobState.UNKNOWN),
@@ -107,7 +108,8 @@ class LSFScheduler(Scheduler):
         match = _SUBMITTED_JOB_PATTERN.search(output)
         if match is None:
             raise SchedulerError(
-                f"could not find an LSF job ID in bsub output: {output.strip()!r}"
+                t"could not find an LSF job ID in bsub output: "
+                t"{output.strip()!r:detail}"
             )
         return match.group("job_id")
 

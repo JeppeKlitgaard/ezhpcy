@@ -24,6 +24,7 @@ lazy import shlex
 lazy import time
 lazy from collections.abc import Awaitable, Callable, Coroutine
 lazy from contextlib import AbstractAsyncContextManager, AsyncExitStack, ExitStack
+lazy from string.templatelib import Template
 
 lazy import asyncssh
 lazy from rich.text import Text
@@ -111,7 +112,7 @@ class TunnelSession:
         self._job_finished = False
         self._main_task: asyncio.Task[object] | None = None
         # Why the tunnel stops, once it does, and the error that stops it, if any.
-        self._why: str | None = None
+        self._why: Template | None = None
         self._error: Exception | None = None
         self._cancelled_main_task = False
 
@@ -146,19 +147,20 @@ class TunnelSession:
         if self._error is not None:
             raise self._error
 
-    def stop(self, why: str) -> None:
+    def stop(self, why: Template) -> None:
         """
         Stop the tunnel and clean up, saying `why`; `run` then returns. Call it
         while `run` runs.
         """
         self._stop(None, why)
 
-    def _stop(self, error: Exception | None, why: str | None = None) -> None:
+    def _stop(self, error: Exception | None, why: Template | None = None) -> None:
         """
         Stop the tunnel, failing with `error` (whose message is `why` by default),
         unless it is stopping already. Every way the tunnel stops logs this one line.
         """
-        why = why or str(error)
+        if why is None:
+            why = t"{error}"
         if self._why is not None:
             logger.debug(t"Tunnel already stopping; also: {why}")
             return
@@ -450,11 +452,11 @@ class TunnelSession:
                     await asyncio.sleep(timings.job_poll_interval_seconds)
         except TimeoutError:
             raise TunnelError(
-                f"worker job {job_id} did not start within "
-                f"{timings.queue_timeout_seconds:g} seconds"
+                t"worker job {job_id:detail} did not start within "
+                t"{timings.queue_timeout_seconds:detail:g} seconds"
             ) from None
 
-    def _job_ended(self, job_id: str, info: JobInfo) -> str | None:
+    def _job_ended(self, job_id: str, info: JobInfo) -> Template | None:
         """
         If the scheduler says the job has ended, note that it needn't be cancelled,
         and return how it ended, to stop the tunnel with. Raises for a state the
@@ -462,12 +464,13 @@ class TunnelSession:
         """
         if info.state is JobState.UNKNOWN:
             raise TunnelError(
-                f"worker job {job_id} entered unknown scheduler state {info.raw_state}"
+                t"worker job {job_id:detail} entered unknown scheduler state "
+                t"{info.raw_state:detail}"
             )
         if not info.state.is_terminal:
             return None
         self._job_finished = True
-        return f"worker job {job_id} ended{_ending(info)}"
+        return t"worker job {job_id:detail} ended{_ending(info)}"
 
     async def _check_job_lives(self, scheduler: Scheduler, job_id: str) -> None:
         """
@@ -503,8 +506,8 @@ class TunnelSession:
         except TimeoutError:
             timeout = self._resolved.timings.worker_startup_timeout_seconds
             raise TunnelError(
-                "worker SSH daemon did not bind a candidate port within "
-                f"{timeout:g} seconds"
+                t"worker SSH daemon did not bind a candidate port within "
+                t"{timeout:detail:g} seconds"
             ) from None
 
     async def _wait_for_worker_endpoint(
@@ -532,7 +535,8 @@ class TunnelSession:
                             banner = await self._read_banner(destination)
                     except TimeoutError:
                         last_error = TunnelError(
-                            f"no SSH banner within {_BANNER_READ_SECONDS:g} seconds"
+                            t"no SSH banner within "
+                            t"{_BANNER_READ_SECONDS:detail:g} seconds"
                         )
                     except (asyncssh.Error, OSError) as error:
                         last_error = error
@@ -543,7 +547,9 @@ class TunnelSession:
                     else:
                         if banner.startswith(b"SSH-"):
                             return
-                        last_error = TunnelError(f"unexpected worker banner {banner!r}")
+                        last_error = TunnelError(
+                            t"unexpected worker banner {banner!r:detail}"
+                        )
                         logger.debug(
                             t"Worker readiness returned an unexpected banner: "
                             t"destination={endpoint:endpoint} banner={banner!r:detail}"
@@ -553,10 +559,10 @@ class TunnelSession:
                     await self._check_job_lives(scheduler, job_id)
                     await asyncio.sleep(poll_interval)
         except TimeoutError:
-            detail = f": {last_error}" if last_error is not None else ""
+            detail = t": {last_error}" if last_error is not None else t""
             raise TunnelError(
-                f"worker SSH endpoint {endpoint} did not "
-                f"become ready within {timeout:g} seconds{detail}"
+                t"worker SSH endpoint {endpoint:endpoint} did not "
+                t"become ready within {timeout:detail:g} seconds{detail}"
             ) from None
 
     async def _read_banner(self, destination: tuple[str, int]) -> bytes:
@@ -625,8 +631,8 @@ class TunnelSession:
                     sequence = await control.publish_lease()
                 except (asyncssh.Error, OSError) as error:
                     raise TunnelError(
-                        f"worker heartbeat write failed for job {job_id} at "
-                        f"sequence {sequence}: {error}"
+                        t"worker heartbeat write failed for job {job_id:detail} at "
+                        t"sequence {sequence:detail}: {error}"
                     ) from error
                 elapsed = time.monotonic() - started
                 logger.debug(
@@ -657,7 +663,7 @@ class TunnelSession:
                 info = await scheduler.inspect(job_id)
             except SchedulerError as error:
                 raise TunnelError(
-                    f"could not monitor worker job {job_id}: {error}"
+                    t"could not monitor worker job {job_id:detail}: {error}"
                 ) from error
             logger.debug(
                 t"Job monitor poll: job={job_id:detail} poll={polls:detail} "
@@ -808,15 +814,17 @@ def _worker_gone(status: WorkerStatus | None) -> TunnelError | None:
     """The error to stop with if `status` says sshd won't serve, else None."""
     match status:
         case WorkerFailed(reason):
-            return TunnelError(f"worker SSH daemon failed to start: {reason}")
+            return TunnelError(t"worker SSH daemon failed to start: {reason}")
         case WorkerStopped(exit_status):
-            return TunnelError(f"worker SSH daemon exited with status {exit_status}")
+            return TunnelError(
+                t"worker SSH daemon exited with status {exit_status:detail}"
+            )
         case _:
             return None
 
 
 def _connection_lost(error: Exception) -> TunnelError:
-    return TunnelError(f"login-node SSH connection lost: {error}")
+    return TunnelError(t"login-node SSH connection lost: {error}")
 
 
 def _duration(seconds: float) -> str:
@@ -825,10 +833,12 @@ def _duration(seconds: float) -> str:
     return f"{minutes} min {seconds} s" if minutes else f"{seconds} s"
 
 
-def _ending(info: JobInfo) -> str:
+def _ending(info: JobInfo) -> Template:
     """How a job ended, as far as the scheduler still says (PBS may not)."""
-    state = f" in scheduler state {info.raw_state}" if info.raw_state else ""
+    state = t" in scheduler state {info.raw_state:detail}" if info.raw_state else t""
     exit_code = (
-        f" with exit code {info.exit_code}" if info.exit_code is not None else ""
+        t" with exit code {info.exit_code:detail}"
+        if info.exit_code is not None
+        else t""
     )
     return state + exit_code

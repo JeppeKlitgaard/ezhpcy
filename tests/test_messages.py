@@ -2,7 +2,7 @@ import pytest
 from rich.style import Style
 from rich.text import Text
 
-from ezhpcy.messages import plain, rich_text
+from ezhpcy.messages import MessageError, plain, rich_text
 
 
 def styled_runs(text: Text) -> list[tuple[str, str | Style]]:
@@ -29,6 +29,23 @@ def test_a_nested_template_s_plain_text_takes_the_enclosing_kind() -> None:
         ("8 min", "bold cyan"),
         (")", "dim"),
     ]
+
+
+def test_an_interpolated_message_error_is_rendered_as_its_template() -> None:
+    job_id = "42"
+    error = MessageError(t"job {job_id:detail} failed")
+
+    text = rich_text(t"Stopping: {error}")
+
+    assert str(error) == "job 42 failed"
+    assert text.plain == "Stopping: job 42 failed"
+    assert styled_runs(text) == [("42", "bold cyan")]
+
+
+def test_a_converted_message_error_is_plain_text() -> None:
+    error = MessageError(t"{'gone':detail}")
+
+    assert styled_runs(rich_text(t"{error!r}")) == []
 
 
 @pytest.mark.parametrize(

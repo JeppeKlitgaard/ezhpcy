@@ -49,9 +49,7 @@ def test_alias_lock_is_held_until_released():
 def test_a_second_lock_for_a_held_alias_is_refused():
     with alias_lock("gpu"):
         with (
-            pytest.raises(
-                TunnelError, match=r"^a tunnel is already running for `gpu`$"
-            ),
+            pytest.raises(TunnelError, match=r"^a tunnel is already running for gpu$"),
             alias_lock("gpu"),
         ):
             pass

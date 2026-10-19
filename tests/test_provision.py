@@ -280,7 +280,7 @@ async def test_validate_worker_infrastructure_accepts_a_provisioned_host(
 async def test_validate_worker_infrastructure_names_what_is_missing(
     ssh_server: SSHTestServer,
 ) -> None:
-    with pytest.raises(ProvisioningError, match="run `ezhpcy provision`") as raised:
+    with pytest.raises(ProvisioningError, match="run 'ezhpcy provision'") as raised:
         await _validate(ssh_server)
 
     assert f"{_PIXI_HOME}/bin/pixi" in str(raised.value)

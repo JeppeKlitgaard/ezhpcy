@@ -6,6 +6,7 @@ lazy from pathlib import PurePosixPath
 lazy import asyncssh
 
 from ezhpcy.logging import get_logger
+from ezhpcy.messages import MessageError
 lazy from ezhpcy.constants import OPENSSH_MATCHSPEC, PIXI_INSTALLER_URL, PIXI_VERSION
 lazy from ezhpcy.provision_local import WorkerCredentials
 lazy from ezhpcy.ssh import RemoteHost, ensure_directory
@@ -20,7 +21,7 @@ _VERSION_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+!-]*$")
 logger = get_logger(__name__)
 
 
-class ProvisioningError(RuntimeError):
+class ProvisioningError(MessageError, RuntimeError):
     pass
 
 
@@ -142,18 +143,18 @@ async def validate_worker_infrastructure(
         credentials.remote_host_key(remote_state),
         credentials.remote_host_public_key(remote_state),
     )
-    missing: list[str] = []
+    missing: list[PurePosixPath] = []
     async with login.sftp() as sftp:
         for path in required:
             try:
                 await sftp.stat(path)
             except asyncssh.SFTPNoSuchFile:
-                missing.append(str(path))
+                missing.append(path)
 
     if missing:
         raise ProvisioningError(
-            "worker infrastructure is incomplete; run `ezhpcy provision` "
-            f"(missing: {', '.join(missing)})"
+            t"worker infrastructure is incomplete; run "
+            t"{'ezhpcy provision':suggestion} (missing: {missing:path})"
         )
 
 

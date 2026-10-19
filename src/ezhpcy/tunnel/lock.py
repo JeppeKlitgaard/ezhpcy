@@ -56,7 +56,7 @@ def alias_lock(alias: str) -> Generator[None]:
     try:
         lock.acquire()
     except Timeout:
-        raise TunnelError(f"a tunnel is already running for `{alias}`") from None
+        raise TunnelError(t"a tunnel is already running for {alias:name}") from None
     try:
         yield
     finally:

@@ -8,9 +8,11 @@ lazy import shlex
 lazy from collections.abc import Awaitable, Callable, Sequence
 lazy from datetime import timedelta
 lazy from pathlib import PurePosixPath
+lazy from string.templatelib import Template
 
 lazy import asyncssh
 
+from ezhpcy.messages import MessageError
 lazy from ezhpcy.scheduler.types import SchedulerType
 lazy from ezhpcy.ssh import RemoteHost
 
@@ -65,7 +67,7 @@ class JobInfo:
     pending_reason: str | None = None
 
 
-class SchedulerError(RuntimeError):
+class SchedulerError(MessageError, RuntimeError):
     """A scheduler command failed, or its output made no sense."""
 
 
@@ -89,7 +91,7 @@ class InteractiveJob:
             await self.process.stdin.drain()
         except (asyncssh.Error, OSError) as error:
             raise SchedulerError(
-                f"interactive shell did not accept the worker command: {error}"
+                t"interactive shell did not accept the worker command: {error}"
             ) from error
 
     async def drain(self, sink: Callable[[bytes], Awaitable[object]]) -> None:
@@ -152,7 +154,7 @@ class Scheduler(ABC):
             process = await self._host.start_login_shell(command)
         except (asyncssh.Error, OSError) as error:
             raise SchedulerError(
-                f"{self.scheduler_type} failed to start interactive submission: {error}"
+                t"{self.scheduler_type} failed to start interactive submission: {error}"
             ) from error
 
         try:
@@ -174,7 +176,7 @@ class Scheduler(ABC):
 
     async def cancel(self, job_id: str) -> None:
         """Request cancellation of a job."""
-        await self._run(self._cancel_command(job_id), f"cancel job {job_id!r}")
+        await self._run(self._cancel_command(job_id), t"cancel job {job_id:detail}")
 
     # Adapter hooks
 
@@ -188,7 +190,7 @@ class Scheduler(ABC):
     # Shared by adapters
 
     async def _run(
-        self, command: list[str], operation: str, *, stdin: str | None = None
+        self, command: list[str], operation: Template, *, stdin: str | None = None
     ) -> str:
         """
         Run a command in the login shell and return its stdout. A failure's
@@ -198,7 +200,7 @@ class Scheduler(ABC):
             return await self._host.run_login_shell(command, stdin=stdin)
         except (asyncssh.Error, OSError) as error:
             raise SchedulerError(
-                f"{self.scheduler_type} failed to {operation}: {error}"
+                t"{self.scheduler_type} failed to {operation}: {error}"
             ) from error
 
     @staticmethod
@@ -224,14 +226,14 @@ class Scheduler(ABC):
                     if not chunk:
                         await process.wait_closed()
                         raise SchedulerError(
-                            f"{self.scheduler_type} interactive submission exited "
-                            f"before returning a job ID ({process.exit_status}): "
-                            f"{decoded.strip()}"
+                            t"{self.scheduler_type} interactive submission exited "
+                            t"before returning a job ID "
+                            t"({process.exit_status:detail}): {decoded.strip()}"
                         )
                     output.extend(chunk)
         except TimeoutError:
             raise SchedulerError(
-                f"{self.scheduler_type} interactive submission did not return a job "
-                f"ID within {startup_timeout:g} seconds: "
-                f"{output.decode(errors='replace').strip()}"
+                t"{self.scheduler_type} interactive submission did not return a job "
+                t"ID within {startup_timeout:detail:g} seconds: "
+                t"{output.decode(errors='replace').strip()}"
             ) from None

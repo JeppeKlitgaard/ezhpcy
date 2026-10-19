@@ -2,7 +2,8 @@ lazy from string.templatelib import Interpolation, Template
 
 lazy from rich.text import Text
 
-lazy from ezhpcy.messages import plain, rich_text
+from ezhpcy.messages import MessageError
+lazy from ezhpcy.messages import rich_text
 
 _SENTENCE_ENDINGS = (".", "?", "!")
 
@@ -35,7 +36,7 @@ def sentence[MessageT: (str, Template)](message: MessageT) -> MessageT:
     return Template(*pieces)
 
 
-class CliUsageError(Exception):
+class CliUsageError(MessageError):
     """A usage error found in a command body.
 
     `main()` renders it like Cyclopts' own parse errors and exits with code 2.
@@ -57,8 +58,7 @@ class CliUsageError(Exception):
                 else t"Invalid value {value:value} for {param_hint:name}. "
             )
             message = prefix + message
-        self.message = message
-        super().__init__(plain(message))
+        super().__init__(message)
 
     def __rich__(self) -> Text:
         text = rich_text(self.message)

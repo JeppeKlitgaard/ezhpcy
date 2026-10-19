@@ -9,6 +9,8 @@ reached through the login connection.
 - `lock` keeps one running tunnel per alias.
 """
 
+from ezhpcy.messages import MessageError
 
-class TunnelError(RuntimeError):
+
+class TunnelError(MessageError, RuntimeError):
     """The tunnel couldn't start, or stopped because something failed."""

@@ -323,7 +323,7 @@ def test_a_second_tunnel_for_a_served_alias_is_refused_before_connecting(
 
     assert result.exit_code == 1, result
     assert log.command_errors() == [
-        "Could not start tunnel: a tunnel is already running for `base`"
+        "Could not start tunnel: a tunnel is already running for base"
     ]
     # Before any password prompt.
     assert login.auth_attempts == []
@@ -734,7 +734,7 @@ def test_a_second_interrupt_quits_without_cleaning_up(
     assert result.exit_code == 0, result
     assert exits == [130]
     assert "Stopping tunnel: Ctrl+C" in log.messages()
-    assert "Press Ctrl+C again to quit without cleaning up." in log.messages()
+    assert "(press Ctrl+C again to quit without cleaning up)" in log.messages()
     assert log.starting("Quitting without cleaning up.")
     assert signal.getsignal(interrupt) is previous_handler
 

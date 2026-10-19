@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 import shlex
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -391,7 +392,7 @@ async def test_command_failures_carry_the_reason(adapter: Adapter):
     with pytest.raises(
         SchedulerError,
         match=f"^{adapter.scheduler.scheduler_type} failed to cancel job "
-        f"'{adapter.job_id}': connection lost$",
+        f"{re.escape(adapter.job_id)}: connection lost$",
     ):
         await scheduler.cancel(adapter.job_id)
     with pytest.raises(SchedulerError, match="failed to submit a job"):
@@ -952,7 +953,7 @@ async def test_pbs_history_query_failure_is_still_an_error():
             raise _failed("qstat: cannot connect to server hnode41")
 
     with pytest.raises(
-        SchedulerError, match=r"^PBS failed to inspect historical job '42\.server'"
+        SchedulerError, match=r"^PBS failed to inspect historical job 42\.server:"
     ):
         await _pbs(FailingHistoryHost()).inspect("42.server")
 
@@ -1077,7 +1078,7 @@ async def test_lsf_command_failure_on_the_login_node_carries_stderr(
     async with await _connect(ssh_server) as host:
         with pytest.raises(
             SchedulerError,
-            match=r"^LSF failed to inspect job '7': Remote command failed \(255\): "
+            match=r"^LSF failed to inspect job 7: Remote command failed \(255\): "
             "Job <7> is not found$",
         ):
             await _lsf(host).inspect("7")

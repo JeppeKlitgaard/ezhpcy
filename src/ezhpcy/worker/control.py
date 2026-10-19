@@ -111,7 +111,7 @@ class WorkerControl:
         except asyncssh.SFTPNoSuchFile:
             return None
         if fields[:1] != [self._token]:
-            raise WorkerError("worker wrote an invalid status record")
+            raise WorkerError(t"worker wrote an invalid status record")
         match fields[1:]:
             case ["ready", port]:
                 return WorkerReady(self._ready_port(port))
@@ -120,15 +120,15 @@ class WorkerControl:
             case ["stopped", exit_status] if exit_status.isdigit():
                 return WorkerStopped(int(exit_status))
             case _:
-                raise WorkerError("worker wrote an invalid status record")
+                raise WorkerError(t"worker wrote an invalid status record")
 
     def _ready_port(self, field: str) -> int:
         try:
             port = int(field)
         except ValueError as error:
-            raise WorkerError("worker reported a non-numeric SSH port") from error
+            raise WorkerError(t"worker reported a non-numeric SSH port") from error
         if port not in self._ports:
-            raise WorkerError(f"worker reported unexpected SSH port {port}")
+            raise WorkerError(t"worker reported unexpected SSH port {port:detail}")
         return port
 
     async def close(self) -> None:

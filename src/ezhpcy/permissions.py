@@ -7,6 +7,7 @@ lazy import ctypes
 lazy import subprocess
 lazy from pathlib import Path
 
+from ezhpcy.messages import MessageError
 lazy from ezhpcy.constants import WINDOWS_CREATION_FLAGS
 
 _SDDL_REVISION_1 = 1
@@ -14,7 +15,7 @@ _DACL_SECURITY_INFORMATION = 0x00000004
 _PROTECTED_DACL_SECURITY_INFORMATION = 0x80000000
 
 
-class FilePermissionError(RuntimeError):
+class FilePermissionError(MessageError, RuntimeError):
     pass
 
 
@@ -33,11 +34,11 @@ def windows_current_user_sid() -> str:
         sid = row[1]
     except (IndexError, OSError, StopIteration, subprocess.CalledProcessError) as error:
         raise FilePermissionError(
-            "Could not determine the current Windows user for file permissions."
+            t"Could not determine the current Windows user for file permissions."
         ) from error
     if not sid.startswith("S-"):
         raise FilePermissionError(
-            "Windows returned an invalid user SID while securing a file."
+            t"Windows returned an invalid user SID while securing a file."
         )
     return sid
 
@@ -93,7 +94,7 @@ def restrict_to_current_user(path: Path) -> None:
                 raise ctypes.WinError(ctypes.get_last_error())
         except OSError as error:
             raise FilePermissionError(
-                f"Could not restrict Windows permissions on {path}."
+                t"Could not restrict Windows permissions on {path:path}."
             ) from error
         finally:
             kernel32.LocalFree(descriptor)

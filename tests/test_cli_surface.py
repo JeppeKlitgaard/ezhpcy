@@ -449,7 +449,7 @@ def test_tunnel_without_auto_provision_needs_existing_worker_credentials(
     result = invoke(["tunnel", "base", *arguments])
 
     assert result.exit_code == 1, result
-    assert "run `ezhpcy provision` first" in result.stderr
+    assert "run 'ezhpcy provision' first" in result.stderr
     assert captured == {}
 
 

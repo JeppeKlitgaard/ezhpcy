@@ -44,13 +44,14 @@ class PBSScheduler(Scheduler):
         self._qdel = _executable(pbs.command_directory, "qdel")
 
     async def submit(self, spec: JobSpec) -> str:
-        output = await self._run(self._submit_command(spec), "submit a job")
+        output = await self._run(self._submit_command(spec), t"submit a job")
         return self._parse_job_id(output)
 
     async def inspect(self, job_id: str) -> JobInfo:
         try:
             output = await self._run(
-                [self._qstat, "-f", "-F", "json", job_id], f"inspect job {job_id!r}"
+                [self._qstat, "-f", "-F", "json", job_id],
+                t"inspect job {job_id:detail}",
             )
         except SchedulerError as error:
             if not _job_not_found(error):
@@ -60,7 +61,7 @@ class PBSScheduler(Scheduler):
             try:
                 output = await self._run(
                     [self._qstat, "-x", "-f", "-F", "json", job_id],
-                    f"inspect historical job {job_id!r}",
+                    t"inspect historical job {job_id:detail}",
                 )
             except SchedulerError as history_error:
                 if not _job_not_found(history_error):
@@ -90,7 +91,7 @@ class PBSScheduler(Scheduler):
         job_id = output.strip()
         if _JOB_ID_PATTERN.fullmatch(job_id) is None:
             raise SchedulerError(
-                f"could not find a PBS job ID in qsub output: {job_id!r}"
+                t"could not find a PBS job ID in qsub output: {job_id!r:detail}"
             )
         return job_id
 
@@ -154,7 +155,8 @@ def _parse_job_info(job_id: str, output: str) -> JobInfo:
         if len(excerpt) > 1000:
             excerpt = f"{excerpt[:1000]}..."
         raise SchedulerError(
-            f"could not parse PBS qstat output for job {job_id!r}: {excerpt!r}"
+            t"could not parse PBS qstat output for job {job_id:detail}: "
+            t"{excerpt!r:detail}"
         ) from error
 
     if raw_state in _PENDING_STATES:

@@ -367,7 +367,7 @@ def test_tunnel_without_auto_provision_needs_the_local_credentials(
     [error] = log.command_errors()
     assert error.startswith(
         "Could not start tunnel: worker SSH credentials are missing; run "
-        "`ezhpcy provision` first (missing: "
+        "'ezhpcy provision' first (missing: "
     )
 
 

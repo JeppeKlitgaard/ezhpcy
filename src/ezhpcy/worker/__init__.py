@@ -22,6 +22,8 @@ Every file names the run's token, so one from another run is never taken for
 this run's.
 """
 
+from ezhpcy.messages import MessageError
 
-class WorkerError(RuntimeError):
+
+class WorkerError(MessageError, RuntimeError):
     """The worker wrote something the tunnel can't use."""

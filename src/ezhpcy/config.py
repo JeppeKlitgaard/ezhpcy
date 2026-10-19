@@ -25,8 +25,8 @@ from pydantic_settings import (
 lazy from pydantic.fields import FieldInfo
 
 from ezhpcy.constants import LOGIN_KNOWN_HOSTS_NAME, PACKAGE_NAME, SSH_DIRECTORY_NAME
+from ezhpcy.messages import MessageError
 from ezhpcy.types import PasswordConfig
-lazy from ezhpcy.messages import plain
 lazy from ezhpcy.types import (
     PASSWORD_SOURCE_FIELDS,
     ProfileConfig,
@@ -51,16 +51,8 @@ def validate_alias(alias: str) -> str:
     return alias
 
 
-class ProfilePasswordSourceError(ValueError):
-    """A profile's configured password sources are invalid.
-
-    `message` is a template, so the CLI can style the names in it (see
-    `ezhpcy.messages`).
-    """
-
-    def __init__(self, message: Template) -> None:
-        self.message = message
-        super().__init__(plain(message))
+class ProfilePasswordSourceError(MessageError, ValueError):
+    """A profile's configured password sources are invalid."""
 
 
 def _default_config_file() -> Path:

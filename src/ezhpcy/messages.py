@@ -24,6 +24,9 @@ rendered in place, its plain text in the enclosing kind:
     t"Retrying in {2.50:detail:g} seconds."  # Retrying in 2.5 seconds.
     t"Waiting {t'(timeout in {wait:detail})':aside}."  # Dimmed but `wait`.
 
+A `MessageError`'s message is a template too, and the error is rendered as its
+template wherever it is interpolated: `t"Could not start tunnel: {error}"`.
+
 Printed, errors, warnings and aborts go to stderr with Cyclopts' usage errors,
 prompts and the log.
 """
@@ -91,6 +94,14 @@ _KINDS = {
 }
 
 
+class MessageError(Exception):
+    """An error whose message is a template, styled wherever it is shown."""
+
+    def __init__(self, message: Template) -> None:
+        self.message = message
+        super().__init__(plain(message))
+
+
 def _parts(
     message: Template, plain_kind: _Kind = _KINDS[""]
 ) -> Iterator[tuple[str, _Kind]]:
@@ -112,6 +123,8 @@ def _interpolation_parts(part: Interpolation) -> Iterator[tuple[str, _Kind]]:
     for index, item in enumerate(items):
         if index:
             yield ", ", _KINDS[""]
+        if isinstance(item, MessageError):
+            item = item.message
         if isinstance(item, Template):
             yield from _parts(item, kind)
         else:

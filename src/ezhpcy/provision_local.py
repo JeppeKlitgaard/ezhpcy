@@ -17,6 +17,7 @@ lazy from ezhpcy.constants import (
     WORKER_KNOWN_HOSTS_NAME,
 )
 lazy from ezhpcy.permissions import private_directory, restrict_to_current_user
+lazy from ezhpcy.provision_host import ProvisioningError
 lazy from ezhpcy.types import ConnectionInfo, RemoteState
 lazy from ezhpcy.utils import ssh_connection_id
 
@@ -101,12 +102,14 @@ class WorkerCredentials:
         try:
             key = asyncssh.read_public_key(self.client_public_key)
         except (OSError, asyncssh.KeyImportError) as error:
-            raise RuntimeError(
-                f"Could not read worker public key at {self.client_public_key}: {error}"
+            raise ProvisioningError(
+                t"Could not read worker public key at "
+                t"{self.client_public_key:path}: {error}"
             ) from error
         if key.algorithm != b"ssh-ed25519":
-            raise RuntimeError(
-                f"The worker public key at {self.client_public_key} is not ssh-ed25519."
+            raise ProvisioningError(
+                t"The worker public key at {self.client_public_key:path} is not "
+                t"{'ssh-ed25519':detail}."
             )
         # Base64 output can't hold characters that sshd's AuthorizedKeysCommand
         # would interpret.
@@ -122,8 +125,9 @@ class WorkerCredentials:
         """
         fields = self.host_public_key.read_text(encoding="utf-8").split()
         if len(fields) < 2:
-            raise RuntimeError(
-                f"The worker host public key at {self.host_public_key} is malformed."
+            raise ProvisioningError(
+                t"The worker host public key at {self.host_public_key:path} is "
+                t"malformed."
             )
         replacement = f"{WORKER_HOST_ALIAS} {fields[0]} {fields[1]}\n"
         known_hosts = self.known_hosts
@@ -144,8 +148,8 @@ def _ensure_key_pair(private_key: Path, public_key: Path, *, comment: str) -> No
     """Create one dedicated local Ed25519 key pair if it does not exist."""
     private_directory(private_key.parent)
     if private_key.exists() != public_key.exists():
-        raise RuntimeError(
-            f"Incomplete SSH key pair at {private_key}; restore or remove it."
+        raise ProvisioningError(
+            t"Incomplete SSH key pair at {private_key:path}; restore or remove it."
         )
     if not private_key.exists():
         key = asyncssh.generate_private_key("ssh-ed25519", comment=comment)

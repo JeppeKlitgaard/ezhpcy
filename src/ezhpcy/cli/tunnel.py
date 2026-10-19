@@ -263,8 +263,8 @@ async def tunnel_cmd(
             missing := ssh_host.credentials.missing_tunnel_files()
         ):
             raise TunnelError(
-                "worker SSH credentials are missing; run `ezhpcy provision` first "
-                f"(missing: {', '.join(map(str, missing))})"
+                t"worker SSH credentials are missing; run "
+                t"{'ezhpcy provision':suggestion} first (missing: {missing:path})"
             )
         worker_ports = (
             (worker_port,)
@@ -325,8 +325,8 @@ def _interrupts_stop(session: TunnelSession) -> Generator[None]:
     presses = 0
 
     def stop() -> None:
-        session.stop("Ctrl+C")
-        logger.info("Press Ctrl+C again to quit without cleaning up.")
+        session.stop(t"Ctrl+C")
+        logger.info(t"{'(press Ctrl+C again to quit without cleaning up)':aside}")
 
     def interrupt(_signum: int, _frame: FrameType | None) -> None:
         nonlocal presses

@@ -1,6 +1,7 @@
 """Tests for `ezhpcy.cli.utils.prompt`."""
 
 import asyncio
+import logging
 import os
 import select
 import signal
@@ -11,8 +12,11 @@ import time
 from pathlib import Path
 
 import pytest
+from rich.console import Console
 
 from ezhpcy.cli.utils.prompt import ask
+from ezhpcy.logging import flush_logs
+from tests.support.terminal import SlowLogTerminal, terminal_handler
 
 # How long a test waits for something that should happen at once.
 WAIT_SECONDS = 5
@@ -97,6 +101,24 @@ def test_the_previous_ctrl_c_handler_is_restored(fails: bool):
         assert fails
 
     assert signal.getsignal(signal.SIGINT) is previous
+
+
+def test_the_records_logged_before_a_prompt_come_before_it(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    terminal = SlowLogTerminal()
+    monkeypatch.setattr(terminal_handler(), "console", Console(file=terminal))
+
+    def prompt() -> str:
+        terminal.write("Password: ")
+        return "answer"
+
+    logging.getLogger("ezhpcy.cli.utils.ssh").warning("Could not save the host key")
+    ask(prompt)
+
+    assert flush_logs(WAIT_SECONDS)
+    output = terminal.getvalue()
+    assert output.index("Could not save the host key") < output.index("Password: ")
 
 
 _CTRL_C_PROGRAM = textwrap.dedent(

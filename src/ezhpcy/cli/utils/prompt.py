@@ -11,6 +11,7 @@ lazy import signal
 lazy from collections.abc import Callable
 
 lazy from ezhpcy.cli.utils.interrupts import interrupts_handled_by
+lazy from ezhpcy.logging import flush_logs
 
 
 def ask[**P, T](prompt: Callable[P, T], /, *args: P.args, **kwargs: P.kwargs) -> T:
@@ -23,6 +24,9 @@ def ask[**P, T](prompt: Callable[P, T], /, *args: P.args, **kwargs: P.kwargs) ->
     blocks the loop, so the prompt would keep waiting; so would a handler like
     `tunnel`'s, which stops the tunnel through the loop. Must be called from the
     main thread.
+
+    The records logged so far are written first, so none lands after the prompt.
     """
+    flush_logs()
     with interrupts_handled_by(signal.default_int_handler):
         return prompt(*args, **kwargs)

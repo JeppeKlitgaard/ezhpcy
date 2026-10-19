@@ -3,7 +3,7 @@
 import asyncio
 import json
 import shlex
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import PurePosixPath
@@ -36,6 +36,15 @@ WAIT_SECONDS = 5
 
 
 # Fakes
+
+
+def collect_into(output: list[bytes]) -> Callable[[bytes], Awaitable[None]]:
+    """A sink for `InteractiveJob.drain` that keeps each chunk in `output`."""
+
+    async def sink(chunk: bytes) -> None:
+        output.append(chunk)
+
+    return sink
 
 
 class FakeStdout:
@@ -338,7 +347,7 @@ async def test_drain_passes_on_output_until_the_process_ends(adapter: Adapter):
     )
     output: list[bytes] = []
 
-    await asyncio.wait_for(job.drain(output.append), WAIT_SECONDS)
+    await asyncio.wait_for(job.drain(collect_into(output)), WAIT_SECONDS)
 
     assert output == [adapter.submitted.encode(), b"worker log\n", b"more\n"]
 
@@ -356,7 +365,7 @@ async def test_drain_first_passes_on_what_was_read_for_the_job_id(adapter: Adapt
     )
     output: list[bytes] = []
 
-    await asyncio.wait_for(job.drain(output.append), WAIT_SECONDS)
+    await asyncio.wait_for(job.drain(collect_into(output)), WAIT_SECONDS)
 
     # Nothing is lost: not the banner before the ID, nor what followed it.
     assert b"".join(output) == (
@@ -1088,7 +1097,7 @@ async def test_interactive_submission_on_the_login_node(
         )
         await job.start_command()
         output: list[bytes] = []
-        await asyncio.wait_for(job.drain(output.append), WAIT_SECONDS)
+        await asyncio.wait_for(job.drain(collect_into(output)), WAIT_SECONDS)
         job.close()
 
     assert job.job_id == adapter.job_id

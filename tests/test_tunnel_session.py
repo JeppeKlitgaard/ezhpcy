@@ -11,15 +11,17 @@ import signal
 import socket
 import threading
 import time
-from collections.abc import Callable, Generator
+from collections.abc import Awaitable, Callable, Generator
 from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
+from rich.console import Console
 
 from ezhpcy.cli import tunnel as tunnel_cli
 from ezhpcy.cli.utils import ssh as cli_ssh
 from ezhpcy.constants import LOOPBACK_HOST
+from ezhpcy.logging import flush_logs
 from ezhpcy.scheduler.base import JobState
 from ezhpcy.ssh import RemoteHost
 from ezhpcy.tunnel import lock, session, ssh_config
@@ -27,6 +29,7 @@ from ezhpcy.tunnel.lock import alias_lock, alias_locked
 from ezhpcy.worker.control import WorkerControl
 from tests.support.cli import invoke
 from tests.support.sshserver import Invocation, SSHTestServer, reply
+from tests.support.terminal import GatedTerminal, terminal_handler
 from tests.support.tunnel import (
     BANNER,
     FAST_TIMINGS,
@@ -182,6 +185,67 @@ def test_a_tunnel_forwards_its_port_to_the_worker(
     assert signal.getsignal(signal.SIGINT) is previous_handler
 
 
+def test_a_terminal_that_takes_no_output_does_not_stop_the_tunnel(
+    login: SSHTestServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    With debug logging, each connection logs. Written from the event loop, a
+    terminal that took no output froze every session (FINDINGS.md, "Phase 4").
+    """
+    worker_port = login.listen(banner_then_echo)
+    running, done = threading.Event(), threading.Event()
+
+    async def bsub(invocation: Invocation) -> None:
+        invocation.stdout.write(f"Job <{JOB_ID}> is submitted to queue <normal>.\n")
+        await invocation.stdin.readline()
+        write_worker_status(login, "ready", str(worker_port))
+        running.set()
+        while await invocation.stdin.readline():
+            pass
+
+    serve_login_shell(login, bsub=bsub, bjobs=bjobs(running, done), bkill=reply())
+    configure_tunnel(monkeypatch, login)
+    monkeypatch.setattr(ssh_config, "check_host_resolution", lambda _host, _port: None)
+    terminal = GatedTerminal()
+    terminal.opened.set()
+    monkeypatch.setattr(terminal_handler(), "console", Console(file=terminal))
+    outputs: list[bytes] = []
+    blocked_while_serving: list[bool] = []
+
+    def publish_then_connect(host: ssh_config.WorkerHost, port: int) -> None:
+        ssh_config.publish_host(host, port)
+        # The terminal stops taking output once the tunnel serves.
+        terminal.opened.clear()
+        try:
+            for number in range(10):
+                outputs.append(connect_through(port, b"%d" % number))
+            blocked_while_serving.append(not flush_logs(0))
+        finally:
+            # Also if a connection hung, so the test fails rather than hangs.
+            terminal.opened.set()
+            done.set()
+
+    monkeypatch.setattr(session, "publish_host", publish_then_connect)
+
+    result = invoke(
+        [
+            "--debug",
+            "tunnel",
+            "base",
+            "--alias",
+            "scratch",
+            "--worker-port",
+            str(worker_port),
+        ]
+    )
+
+    assert result.exit_code == 0, result
+    assert outputs == [BANNER + b"worker:%d" % number for number in range(10)]
+    assert blocked_while_serving == [True]
+    # Nothing is lost once the terminal takes output again.
+    assert terminal.getvalue().count("Tunnel client accepted") == 10
+
+
 def test_a_second_tunnel_for_a_served_alias_is_refused_before_connecting(
     login: SSHTestServer, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -283,10 +347,10 @@ async def test_interactive_output_keeps_characters_split_across_reads(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     class Job:
-        async def drain(self, sink: Callable[[bytes], object]) -> None:
+        async def drain(self, sink: Callable[[bytes], Awaitable[object]]) -> None:
             # "Velkommen på" with its "å" split, then a cut-off "ø".
             for chunk in (b"Velkommen p\xc3", b"\xa5\n", b"\xc3"):
-                sink(chunk)
+                await sink(chunk)
 
     await session._forward_output(Job())  # type: ignore[arg-type]
 

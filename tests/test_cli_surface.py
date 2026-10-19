@@ -21,10 +21,10 @@ import pytest
 
 from ezhpcy.config import config
 from ezhpcy.constants import EZHPCY_VERSION, PACKAGE_NAME
-from ezhpcy.logging import TERMINAL_HANDLER_NAME
 from ezhpcy.scheduler.types import SchedulerType
 from ezhpcy.types import ProfileConfig, SubmissionMode
 from tests.support.cli import capture, invoke
+from tests.support.terminal import terminal_handler
 
 _PROFILES = {
     "base": {
@@ -64,19 +64,11 @@ def restore_logger() -> Iterator[None]:
     """Undo the logging configuration that `--debug` applies."""
     package_logger = logging.getLogger(PACKAGE_NAME)
     previous_level = package_logger.level
-    handler = _terminal_handler()
+    handler = terminal_handler()
     previous_formatter = handler.formatter
     yield
     package_logger.setLevel(previous_level)
     handler.setFormatter(previous_formatter)
-
-
-def _terminal_handler() -> logging.Handler:
-    return next(
-        handler
-        for handler in logging.getLogger(PACKAGE_NAME).handlers
-        if handler.get_name() == TERMINAL_HANDLER_NAME
-    )
 
 
 def _password_fd(password: str) -> int:
@@ -512,7 +504,7 @@ def test_debug_enables_debug_logging_with_timestamps(
     assert result.exit_code == 0, result
     assert logging.getLogger(PACKAGE_NAME).level == logging.DEBUG
     record = logging.LogRecord(PACKAGE_NAME, logging.DEBUG, "", 0, "message", (), None)
-    rendered = _terminal_handler().format(record)
+    rendered = terminal_handler().format(record)
     assert re.match(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} ", rendered), rendered
 
 

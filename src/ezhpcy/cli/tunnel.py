@@ -31,6 +31,7 @@ lazy from ezhpcy.cli._resolve import (
 lazy from ezhpcy.cli.utils import ssh as cli_ssh
 lazy from ezhpcy.cli.utils.interrupts import interrupts_handled_by
 lazy from ezhpcy.config import config
+lazy from ezhpcy.logging import flush_logs
 lazy from ezhpcy.scheduler.types import SchedulerType
 lazy from ezhpcy.tunnel import TunnelError
 lazy from ezhpcy.tunnel.session import TunnelSession
@@ -47,6 +48,8 @@ lazy from ezhpcy.worker.job import select_ports
 _DEFAULT_WORKER_PORT_RETRIES = 5
 # Far fewer than the 16384 dynamic ports `select_ports` draws from.
 _MAX_WORKER_PORT_RETRIES = 100
+# How long the second Ctrl+C waits for the log to be written before quitting.
+_EXIT_FLUSH_SECONDS = 0.5
 logger = logging.getLogger(__name__)
 
 
@@ -309,6 +312,8 @@ def _interrupts_stop(session: TunnelSession) -> Generator[None]:
             "Quitting without cleaning up. The worker job ends by itself once its "
             "heartbeats stop."
         )
+        # Briefly: a terminal that doesn't take output mustn't keep it running.
+        flush_logs(_EXIT_FLUSH_SECONDS)
         sys.stdout.flush()
         sys.stderr.flush()
         os._exit(130)

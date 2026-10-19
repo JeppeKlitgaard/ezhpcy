@@ -36,7 +36,6 @@ def test_sshd_command_retries_ports_through_pixi() -> None:
         ports=(54321, 54322),
         heartbeat_token="LEASETOKEN",
         heartbeat_timeout_seconds=90,
-        heartbeat_debug=True,
         control_dir=PurePosixPath("/home/alice/.cache/ezhpcy/control/test"),
         sshd_arguments=sshd_config_arguments(
             host_key=PurePosixPath("/remote/ssh_host_ed25519_key"),
@@ -57,18 +56,17 @@ def test_sshd_command_retries_ports_through_pixi() -> None:
         f"--spec={OPENSSH_MATCHSPEC}",
     )
     assert command[6:10] == ("bash", "-c", WORKER_SCRIPT, "sshd")
-    assert command[10:16] == (
+    assert command[10:15] == (
         "54321:54322",
         "LEASETOKEN",
         "90",
-        "1",
         f"/home/alice/.local/state/ezhpcy/{EZHPCY_VERSION}/logs/worker",
         "/home/alice/.cache/ezhpcy/control/test",
     )
     worker_script = WORKER_SCRIPT
     assert "command -v sshd" in worker_script
     assert 'ports="$1"' in worker_script
-    assert "shift 6" in worker_script
+    assert "shift 5" in worker_script
     assert 'port="${ports%%:*}"' in worker_script
     assert '"$sshd_path" -D -e -p "$port" "$@"' in worker_script
     assert 'publish_state ready "$port"' in worker_script

@@ -16,20 +16,19 @@ first of these wins: it is logged as `Stopping tunnel: <why>`, decides the error
 `run` raises, if any, and cancels the main task, which then cleans up.
 """
 
-import logging
 lazy import asyncio
 lazy import codecs
 lazy import functools
 lazy import secrets
 lazy import shlex
-lazy import sys
 lazy import time
 lazy from collections.abc import Awaitable, Callable, Coroutine
 lazy from contextlib import AbstractAsyncContextManager, AsyncExitStack, ExitStack
 
 lazy import asyncssh
+lazy from rich.text import Text
 
-from ezhpcy.logging import flush_logs, get_logger
+from ezhpcy.logging import REPLAY_ON_ERROR, get_logger
 lazy from ezhpcy.provision_host import (
     provision_worker_infrastructure,
     validate_worker_infrastructure,
@@ -62,6 +61,7 @@ lazy from ezhpcy.worker.sshd import (
 )
 
 logger = get_logger(__name__)
+_job_output_logger = get_logger(f"{__name__}.job_output")
 
 _SSH_BANNER_LIMIT = 255
 # How long one attempt to read the worker's SSH banner may take.
@@ -76,9 +76,6 @@ _CLEANUP_SECONDS = 10.0
 _LOCK_RELEASE_SECONDS = 1.0
 # How long a background task asked to stop may take to end by itself.
 _STOP_GRACE_SECONDS = 1.0
-# How much of an interactive job's output to keep, without debug logging, to show
-# if the tunnel fails: all of it for any startup, but bounded for a long tunnel.
-_KEPT_OUTPUT_BYTES = 2 * 1024 * 1024
 
 
 class TunnelSession:
@@ -117,8 +114,6 @@ class TunnelSession:
         self._why: str | None = None
         self._error: Exception | None = None
         self._cancelled_main_task = False
-        # An interactive job's output, once it is submitted.
-        self._job_output: _JobOutput | None = None
 
     async def run(self) -> None:
         """
@@ -149,9 +144,6 @@ class TunnelSession:
                 t"job_finished={self._job_finished:detail}"
             )
         if self._error is not None:
-            # After cleanup, which closes the job, so that its last output is in.
-            if self._job_output is not None:
-                await self._job_output.show_kept()
             raise self._error
 
     def stop(self, why: str) -> None:
@@ -271,7 +263,6 @@ class TunnelSession:
                 ports=self._worker_ports,
                 heartbeat_token=token,
                 heartbeat_timeout_seconds=timings.worker_heartbeat_timeout_seconds,
-                heartbeat_debug=logger.isEnabledFor(logging.DEBUG),
                 control_dir=control.directory,
                 sshd_arguments=sshd_config_arguments(
                     host_key=credentials.remote_host_key(remote_state),
@@ -310,11 +301,10 @@ class TunnelSession:
                 spec, startup_timeout=timings.worker_startup_timeout_seconds
             )
             job_id = interactive_job.job_id
-            self._job_output = _JobOutput(interactive_job)
             # Stopped by closing the job, after its last output.
             self._start_task(
                 stack,
-                self._job_output.forward(),
+                _log_job_output(interactive_job),
                 name="interactive job output",
                 stop=interactive_job.close,
             )
@@ -759,70 +749,46 @@ class TunnelSession:
         except Exception as error:
             logger.warning(
                 t"Could not {description}: {error}",
-                exc_info=logger.isEnabledFor(logging.DEBUG),
+                exc_info=True,
             )
 
 
-class _JobOutput:
+async def _log_job_output(job: InteractiveJob) -> None:
     """
-    An interactive job's output, which echoes the long worker script.
-
-    With debug logging, `forward` shows it on stderr as it arrives, after the
-    records logged before it. Otherwise it keeps only the last
-    `_KEPT_OUTPUT_BYTES`, for `show_kept` to show if the tunnel fails. Either way
-    it reads all of it: unread output would stall the job once SSH's window fills.
-
-    Written from a thread, as logging is (`ezhpcy.logging`), so that a terminal
-    that doesn't take output holds up only the job's output.
+    Log an interactive job's output, which echoes the long worker script, a line at
+    a time at DEBUG. The terminal shows it with debug logging, or before the error
+    when the tunnel fails (`REPLAY_ON_ERROR`). Reads all of it: unread output
+    would stall the job once SSH's window fills.
     """
+    # Incremental, so that a character split across chunks isn't garbled.
+    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+    # The line read so far, up to its newline.
+    partial = ""
 
-    def __init__(self, job: InteractiveJob) -> None:
-        self._job = job
-        self._live = logger.isEnabledFor(logging.DEBUG)
-        self._kept = bytearray()
-        # Whether the start of the output was dropped to keep within the limit.
-        self._cut = False
+    async def log_lines(output: bytes) -> None:
+        nonlocal partial
+        *lines, partial = (partial + decoder.decode(output)).split("\n")
+        for line in lines:
+            _job_output_logger.debug(_as_displayed(line), extra=REPLAY_ON_ERROR)
 
-    async def forward(self) -> None:
-        # Incremental, so that a character split across chunks isn't garbled.
-        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
-
-        async def write(output: bytes, *, final: bool = False) -> None:
-            if text := decoder.decode(output, final):
-                await asyncio.to_thread(_write_stderr, text)
-
-        async def keep(output: bytes) -> None:
-            self._kept += output
-            if len(self._kept) > _KEPT_OUTPUT_BYTES:
-                del self._kept[:-_KEPT_OUTPUT_BYTES]
-                self._cut = True
-
-        try:
-            await self._job.drain(write if self._live else keep)
-        except (asyncssh.Error, OSError) as error:
-            logger.debug(t"Interactive job output ended: error={error!r}")
-        if self._live:
-            await write(b"", final=True)
-
-    async def show_kept(self) -> None:
-        """Show the end of the output that `forward` kept, if any."""
-        if not self._kept:
-            return
-        logger.info(
-            t"{'End of the output' if self._cut else 'Output'} of worker job "
-            t"{self._job.job_id:detail}:"
-        )
-        # Cut at a byte count, so its first character may be a replacement.
-        text = self._kept.decode(errors="replace")
-        await asyncio.to_thread(
-            _write_stderr, text if text.endswith("\n") else f"{text}\n"
-        )
+    try:
+        await job.drain(log_lines)
+    except (asyncssh.Error, OSError) as error:
+        logger.debug(t"Interactive job output ended: error={error!r}")
+    if last := partial + decoder.decode(b"", final=True):
+        _job_output_logger.debug(_as_displayed(last), extra=REPLAY_ON_ERROR)
 
 
-def _write_stderr(text: str) -> None:
-    flush_logs()
-    sys.stderr.write(text)
-    sys.stderr.flush()
+def _as_displayed(line: str) -> str:
+    """
+    A line of terminal output as the terminal shows it: without escape sequences
+    or control characters, and from its last carriage return, which writes over
+    what came before. Such as bash's echo of the worker script, around bracketed
+    paste.
+    """
+    # Without a line ending's carriage return, which Rich would take for one that
+    # writes over the whole line.
+    return Text.from_ansi(line.removesuffix("\r")).plain
 
 
 async def _stop_task(

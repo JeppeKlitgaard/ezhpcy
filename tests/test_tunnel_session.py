@@ -7,6 +7,7 @@ the worker played by the tests. How each failure shuts the tunnel down is in
 import asyncio
 import functools
 import logging
+import re
 import signal
 import socket
 import threading
@@ -19,9 +20,10 @@ import pytest
 
 from ezhpcy.cli import tunnel as tunnel_cli
 from ezhpcy.cli.utils import ssh as cli_ssh
+from ezhpcy.config import LocalFileConfig
 from ezhpcy.console import make_console
 from ezhpcy.constants import LOOPBACK_HOST
-from ezhpcy.logging import flush_logs
+from ezhpcy.logging import REPLAY_ON_ERROR, flush_logs
 from ezhpcy.scheduler.base import JobInfo, JobState
 from ezhpcy.ssh import RemoteHost
 from ezhpcy.tunnel import lock, session, ssh_config
@@ -121,6 +123,7 @@ def test_a_tunnel_forwards_its_port_to_the_worker(
     login: SSHTestServer,
     monkeypatch: pytest.MonkeyPatch,
     isolated_runtime_dir: Path,
+    isolated_local_files: LocalFileConfig,
 ) -> None:
     worker_port = login.listen(banner_then_echo)
     running, done = threading.Event(), threading.Event()
@@ -174,10 +177,14 @@ def test_a_tunnel_forwards_its_port_to_the_worker(
 
     assert result.exit_code == 0, result
     assert outputs == [BANNER + b"worker:hello", BANNER + b"worker:again"]
-    # With debug logging (`tunnel_log`), the interactive job's output reaches the
-    # user, its ID included.
-    assert "Job <42> is submitted to queue <normal>." in result.stderr
-    assert "<<Starting on 127.0.0.1>>" in result.stderr
+    # The interactive job's output is logged, its ID included.
+    job_output = "\n".join(log.messages())
+    assert "Job <42> is submitted to queue <normal>." in job_output
+    assert "<<Starting on 127.0.0.1>>" in job_output
+    # To a log file named after the alias, not the profile.
+    assert flush_logs(5)
+    [log_file] = isolated_local_files.log_dir.iterdir()
+    assert re.fullmatch(r"ezhpcy-\d{8}-\d{6}-scratch-\d+\.log", log_file.name)
 
     [submission] = submissions
     assert submission[:2] == ["bsub", "-Is"]
@@ -418,57 +425,56 @@ class _OutputJob:
             await sink(chunk)
 
 
-async def test_interactive_output_keeps_characters_split_across_reads(
-    capsys: pytest.CaptureFixture[str], caplog: pytest.LogCaptureFixture
-) -> None:
-    caplog.set_level(logging.DEBUG, logger=session.__name__)
-    # "Velkommen på" with its "å" split, then a cut-off "ø".
-    job = _OutputJob(b"Velkommen p\xc3", b"\xa5\n", b"\xc3")
-
-    await session._JobOutput(job).forward()  # type: ignore[arg-type]
-
-    assert capsys.readouterr().err == "Velkommen på\n�"
-
-
-async def test_without_debug_logging_interactive_output_is_kept_not_shown(
-    capsys: pytest.CaptureFixture[str],
+async def test_interactive_output_is_logged_line_by_line(
     caplog: pytest.LogCaptureFixture,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    caplog.set_level(logging.INFO, logger=session.__name__)
-    monkeypatch.setattr(session, "_KEPT_OUTPUT_BYTES", 1024)
-    end = "cd /worker && exec env bash -c '...'\nBoom"
-    job = _OutputJob(b"x" * 1000, end.encode())
-    output = session._JobOutput(job)  # type: ignore[arg-type]
-
-    await output.forward()
-
-    # All read, so that the job doesn't stall, but none shown.
-    assert job.drained == list(job.chunks)
-    assert capsys.readouterr().err == ""
-
-    await output.show_kept()
-
-    # Only the last KiB is kept, shown after the record that introduces it, and
-    # ended with a newline.
-    shown = capsys.readouterr().err
-    kept_x = 1024 - len(end)
-    assert shown.endswith(f"\n{'x' * kept_x}{end}\n")
-    assert "x" * (kept_x + 1) not in shown
-    assert caplog.messages == [f"End of the output of worker job {JOB_ID}:"]
-
-
-async def test_with_debug_logging_no_output_is_kept_to_show_again(
-    capsys: pytest.CaptureFixture[str], caplog: pytest.LogCaptureFixture
 ) -> None:
     caplog.set_level(logging.DEBUG, logger=session.__name__)
-    output = session._JobOutput(_OutputJob(b"Boom\n"))  # type: ignore[arg-type]
-    await output.forward()
-    capsys.readouterr()
+    # "Velkommen på" with its "å" split and a terminal's line ending, then a
+    # cut-off "ø" without one.
+    job = _OutputJob(b"Velkommen p\xc3", b"\xa5\r\nHej", b"\n\n\xc3")
 
-    await output.show_kept()
+    await session._log_job_output(job)  # type: ignore[arg-type]
 
-    assert capsys.readouterr().err == ""
+    # All read, so that the job doesn't stall.
+    assert job.drained == list(job.chunks)
+    assert caplog.messages == ["Velkommen på", "Hej", "", "\ufffd"]
+    assert {record.levelno for record in caplog.records} == {logging.DEBUG}
+    # To show before an error, by a terminal that didn't.
+    assert all(
+        record.__dict__.items() >= REPLAY_ON_ERROR.items() for record in caplog.records
+    )
+
+
+@pytest.mark.parametrize(
+    ("output", "shown"),
+    [
+        # Bash echoing a line of the worker script, around bracketed paste.
+        (b"\x1b[?2004l\r\x1b[?2004h>     fi\r\n", ">     fi"),
+        (b"\x1b[1;31mError\x1b[0m: no sshd\n", "Error: no sshd"),
+        (b"\x1b(B\x1b[m$ \n", "$ "),
+        (b"\x1b=\x1b>ready\x07\n", "ready"),
+        # A progress line, written over.
+        (b"10%\r50%\r100%\n", "100%"),
+        pytest.param(
+            b"\x1b]0;user@n-62-12-19: ~\x07$ \n",
+            "$ ",
+            marks=pytest.mark.xfail(
+                reason="Rich only knows a window title that ends with ESC \\, not "
+                "BEL; bash sets one only for xterm-like terminals, not our vt100",
+                strict=True,
+            ),
+            id="window-title-ending-with-bel",
+        ),
+    ],
+)
+async def test_interactive_output_is_logged_as_a_terminal_shows_it(
+    caplog: pytest.LogCaptureFixture, output: bytes, shown: str
+) -> None:
+    caplog.set_level(logging.DEBUG, logger=session.__name__)
+
+    await session._log_job_output(_OutputJob(output))  # type: ignore[arg-type]
+
+    assert caplog.messages == [shown]
 
 
 def test_a_failed_interactive_tunnel_shows_the_end_of_the_job_output(
@@ -500,10 +506,13 @@ def test_a_failed_interactive_tunnel_shows_the_end_of_the_job_output(
     result = invoke(["tunnel", "base"])
 
     assert result.exit_code == 1, result
-    # All of it: it is well within the limit.
-    assert f"] Output of worker job {JOB_ID}:" in result.stderr
-    assert f"Job <{JOB_ID}> is submitted to queue <normal>." in result.stderr
-    assert "sshd must resolve to an absolute path" in result.stderr
+    # All of it, as it led up to the error: it is well within the limit.
+    stderr = " ".join(result.stderr.split())
+    assert f"] Job <{JOB_ID}> is submitted to queue <normal>." in stderr
+    failure = stderr.index("ERROR [ezhpcy.cli.tunnel] Could not start tunnel")
+    assert 0 <= stderr.find("] sshd must resolve to an absolute path") < failure
+    # The job's output, not the session's own debug records.
+    assert "Cleaning up the tunnel" not in stderr
 
 
 def test_an_lsf_batch_tunnel_sends_the_worker_script_to_bsub(

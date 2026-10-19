@@ -20,6 +20,7 @@ from ezhpcy.config import LocalFileConfig, config
 from ezhpcy.logging import (
     ASYNCSSH_LOGGER_NAME,
     LOG_QUEUE_HANDLER_NAME,
+    configure_log_file,
     configure_logging,
 )
 from tests.support.login import MACHINE_ID, route_login
@@ -27,7 +28,7 @@ from tests.support.sshserver import SSHTestServer
 
 # As the CLI does, so every test sees the same `ezhpcy` logger: one that has the
 # terminal handler and doesn't propagate.
-configure_logging(config.log_level)
+configure_logging(config.logging.console.level)
 
 
 @pytest.fixture
@@ -52,12 +53,14 @@ def isolated_local_files(
 ) -> LocalFileConfig:
     """Keep every file EzHPCy reads or writes in `tmp_path`: the configuration file,
     worker keys, accepted login-node host keys, the alias locks, and the generated
-    SSH configuration that the user's ~/.ssh/config may Include."""
+    SSH configuration that the user's ~/.ssh/config may Include, and the log
+    files."""
     local_file = LocalFileConfig(
         cache_dir=tmp_path / "cache",
         config_dir=tmp_path / "config",
         data_dir=tmp_path / "data",
         runtime_dir=tmp_path / "runtime",
+        log_dir=tmp_path / "log",
         config_file=tmp_path / "config" / "ezhpcy.toml",
     )
     monkeypatch.setattr(config, "local_file", local_file)
@@ -76,6 +79,13 @@ def fixed_machine_id(
     if request.node.get_closest_marker("real_machine_id"):
         return
     monkeypatch.setattr("ezhpcy.utils.machineid.hashed_id", lambda _: MACHINE_ID)
+
+
+@pytest.fixture(autouse=True)
+def no_log_file() -> Iterator[None]:
+    """Stop writing the log file a CLI run started, in the test's `tmp_path`."""
+    yield
+    configure_log_file(None)
 
 
 @pytest.fixture

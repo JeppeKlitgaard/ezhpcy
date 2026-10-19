@@ -1,12 +1,13 @@
 import logging
 import re
+from typing import Annotated
 lazy import os
 lazy from pathlib import Path
 lazy from string.templatelib import Template
 lazy from typing import Any, Self
 
 from platformdirs import PlatformDirs
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, model_validator
 from pydantic_settings import (
     BaseSettings,
     EnvSettingsSource,
@@ -68,6 +69,7 @@ class LocalFileConfig(BaseModel):
     config_dir: Path = _DIRS.user_config_path
     data_dir: Path = _DIRS.user_data_path
     runtime_dir: Path = _DIRS.user_runtime_path
+    log_dir: Path = _DIRS.user_log_path
     config_file: Path = Field(default_factory=_default_config_file)
 
     @property
@@ -85,24 +87,54 @@ class LocalFileConfig(BaseModel):
         )
 
 
+def _parse_log_level(value: object) -> object:
+    if not isinstance(value, str):
+        return value
+    try:
+        return logging.getLevelNamesMapping()[value.strip().upper()]
+    except KeyError:
+        raise ValueError(f"unknown logging level: {value!r}") from None
+
+
+# A level by number or by name, in any case.
+LogLevel = Annotated[int, BeforeValidator(_parse_log_level)]
+
+
+class ConsoleLoggingConfig(BaseModel):
+    """The log on the terminal. `debug` (or `--debug`) enables it at DEBUG."""
+
+    enabled: bool = True
+    level: LogLevel = logging.INFO
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class FileLoggingConfig(BaseModel):
+    """Each run's log file, in `LocalFileConfig.log_dir`."""
+
+    enabled: bool = True
+    level: LogLevel = logging.DEBUG
+    # How many runs' log files to keep, the current one's included.
+    keep: int = Field(default=10, ge=1)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class LoggingConfig(BaseModel):
+    console: ConsoleLoggingConfig = ConsoleLoggingConfig()
+    file: FileLoggingConfig = FileLoggingConfig()
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class _ConfigValues(BaseModel):
     local_file: LocalFileConfig = LocalFileConfig()
-    log_level: int = logging.INFO
+    logging: LoggingConfig = LoggingConfig()
     debug: bool = False
     auto_provision: bool = True
     profile: dict[str, ProfileConfig] = Field(default_factory=dict)
 
     model_config = ConfigDict(extra="forbid")
-
-    @field_validator("log_level", mode="before")
-    @classmethod
-    def parse_log_level(cls, value: object) -> object:
-        if not isinstance(value, str):
-            return value
-        try:
-            return logging.getLevelNamesMapping()[value.strip().upper()]
-        except KeyError:
-            raise ValueError(f"unknown logging level: {value!r}") from None
 
     @model_validator(mode="after")
     def validate_profiles(self) -> Self:
@@ -186,7 +218,7 @@ def _validate_profile_password_source(
 
 # Settings that `EZHPCY_<NAME>` environment variables can't set: they're tables, and
 # `EZHPCY_PROFILE` is the CLI's PROFILE argument.
-_NOT_FROM_ENV = frozenset({"profile", "local_file"})
+_NOT_FROM_ENV = frozenset({"profile", "local_file", "logging"})
 
 
 class _EnvSettingsSource(EnvSettingsSource):

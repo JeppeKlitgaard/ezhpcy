@@ -56,6 +56,11 @@ def info_cmd(*, json: bool = False) -> None:
                 "value": str(config.local_file.runtime_dir),
                 "description": "Directory where EzHPCy stores runtime files.",
             },
+            {
+                "key": "Log Directory",
+                "value": str(config.local_file.log_dir),
+                "description": "Directory where EzHPCy writes each run's log file.",
+            },
         ],
     ]
 

@@ -20,7 +20,7 @@ from ezhpcy import console as consoles
 lazy from ezhpcy.cli._errors import CliUsageError
 lazy from ezhpcy.cli._options import DEBUG_ENV_VAR
 lazy from ezhpcy.config import config as ezhpcy_config  # To avoid shadowing
-lazy from ezhpcy.logging import configure_logging, flush_logs
+lazy from ezhpcy.logging import configure_log_file, configure_logging, flush_logs
 
 
 def _format_error(error: CycloptsError) -> Panel:
@@ -91,8 +91,18 @@ def _meta(
     # The configuration reads `EZHPCY_DEBUG`, so `--debug` doesn't.
     if debug is None:
         debug = ezhpcy_config.debug
+    console_log = ezhpcy_config.logging.console
     configure_logging(
-        logging.DEBUG if debug else ezhpcy_config.log_level, include_timestamp=debug
+        logging.DEBUG if debug else console_log.level,
+        debug=debug,
+        # Debug logging is for the terminal.
+        enabled=debug or console_log.enabled,
+    )
+    log_file = ezhpcy_config.logging.file
+    configure_log_file(
+        ezhpcy_config.local_file.log_dir if log_file.enabled else None,
+        level=log_file.level,
+        keep=log_file.keep,
     )
     return app(tokens)
 

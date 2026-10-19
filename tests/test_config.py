@@ -1,4 +1,5 @@
 import logging
+import re
 from datetime import timedelta
 from pathlib import Path
 
@@ -11,23 +12,49 @@ from ezhpcy.scheduler.types import SchedulerType
 from ezhpcy.types import ResolvedConfig
 
 
-def test_log_level_is_case_insensitive() -> None:
-    config = config_module.Config.from_mapping({"log_level": "debug"})
+def test_logging_defaults_to_info_on_the_console_and_debug_in_a_file() -> None:
+    logging_config = config_module.Config.from_mapping({}).logging
 
-    assert config.log_level == logging.DEBUG
-
-
-def test_log_level_can_be_overridden_from_the_environment(monkeypatch) -> None:
-    monkeypatch.setenv("EZHPCY_LOG_LEVEL", "warning")
-
-    config = config_module.Config()
-
-    assert config.log_level == logging.WARNING
+    assert logging_config.console.enabled is True
+    assert logging_config.console.level == logging.INFO
+    assert logging_config.file.enabled is True
+    assert logging_config.file.level == logging.DEBUG
+    assert logging_config.file.keep == 10
 
 
-def test_invalid_log_level_is_rejected() -> None:
-    with pytest.raises(ValidationError, match="log_level"):
-        config_module.Config.from_mapping({"log_level": "verbose"})
+def test_logging_is_configured_in_its_tables() -> None:
+    config = config_module.Config.from_mapping(
+        {
+            "logging": {
+                "console": {"enabled": False, "level": "debug"},
+                "file": {"enabled": False, "level": "Warning", "keep": 3},
+            }
+        }
+    )
+
+    assert config.logging == config_module.LoggingConfig(
+        console=config_module.ConsoleLoggingConfig(enabled=False, level=logging.DEBUG),
+        file=config_module.FileLoggingConfig(
+            enabled=False, level=logging.WARNING, keep=3
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("logging_config", "field"),
+    [
+        ({"console": {"level": "verbose"}}, "console.level"),
+        ({"file": {"level": "verbose"}}, "file.level"),
+        ({"file": {"keep": 0}}, "file.keep"),
+        ({"file": {"rotate": 1}}, "file.rotate"),
+        ({"level": "debug"}, "level"),
+    ],
+)
+def test_invalid_logging_settings_are_rejected(
+    logging_config: dict[str, object], field: str
+) -> None:
+    with pytest.raises(ValidationError, match=re.escape(f"logging.{field}")):
+        config_module.Config.from_mapping({"logging": logging_config})
 
 
 def test_debug_defaults_to_false() -> None:
@@ -260,6 +287,7 @@ def test_local_file_cannot_be_set_in_the_config_file(tmp_path: Path) -> None:
         ("EZHPCY_PROFILE", "base"),
         ("EZHPCY_PROFILE", '{"base": {"connection": {"host": "elsewhere"}}}'),
         ("EZHPCY_LOCAL_FILE", '{"config_dir": "elsewhere"}'),
+        ("EZHPCY_LOGGING", '{"console": {"level": "debug"}}'),
     ],
 )
 def test_tables_are_not_read_from_the_environment(
@@ -275,6 +303,7 @@ def test_tables_are_not_read_from_the_environment(
 
     assert config.profile == {}
     assert config.local_file == config_module.LocalFileConfig()
+    assert config.logging == config_module.LoggingConfig()
     # Plain settings still come from the environment.
     assert config.auto_provision is False
 

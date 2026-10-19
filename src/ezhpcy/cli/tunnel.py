@@ -1,4 +1,3 @@
-import logging
 from contextlib import contextmanager
 lazy import asyncio
 lazy import functools
@@ -35,7 +34,7 @@ lazy from ezhpcy.cli.utils import ssh as cli_ssh
 lazy from ezhpcy.cli.utils.interrupts import interrupts_handled_by
 lazy from ezhpcy.config import config
 lazy from ezhpcy.console import console
-lazy from ezhpcy.logging import flush_logs
+lazy from ezhpcy.logging import flush_logs, label_log_file
 lazy from ezhpcy.messages import rich_text
 lazy from ezhpcy.scheduler.types import SchedulerType
 lazy from ezhpcy.tunnel import TunnelError
@@ -255,6 +254,8 @@ async def tunnel_cmd(
             profile_config=profile_config,
         )
         ssh_host = _resolve_ssh_host(alias, profile_name=profile, resolved=resolved)
+        # The tunnel is known by its alias, which is usually the profile name.
+        label_log_file(ssh_host.alias)
         if auto_provision is None:
             auto_provision = config.auto_provision
         # Before connecting, so the user isn't asked for a password first.
@@ -285,9 +286,9 @@ async def tunnel_cmd(
             await session.run()
     except (RuntimeError, asyncssh.Error, OSError) as error:
         served = session is not None and session.ready
-        logger.error(
-            t"{'Tunnel stopped' if served else 'Could not start tunnel'}: {error}",
-            exc_info=logger.isEnabledFor(logging.DEBUG),
+        # ruff: ignore[TRY401]  # The terminal shows the traceback only at DEBUG
+        logger.exception(
+            t"{'Tunnel stopped' if served else 'Could not start tunnel'}: {error}"
         )
 
         raise SystemExit(1) from error

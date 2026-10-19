@@ -10,6 +10,7 @@ lazy from ezhpcy.cli._options import (
 )
 lazy from ezhpcy.cli._password import resolve_password
 lazy from ezhpcy.config import ProfilePasswordSourceError, config
+lazy from ezhpcy.logging import label_log_file
 lazy from ezhpcy.types import (
     ConnectionConfig,
     ConnectionInfo,
@@ -87,6 +88,8 @@ def resolve_profile_config(profile_name: str | None) -> ResolvedProfileConfig:
                 t"{'ezhpcy config load <preset>':suggestion} to start from one."
             )
         raise CliUsageError(message, param_hint="PROFILE", value=profile_name)
+    # Profile names are safe as file names (`validate_alias`).
+    label_log_file(profile_name)
     try:
         return config.resolve_profile(profile_name)
     except ProfilePasswordSourceError as error:

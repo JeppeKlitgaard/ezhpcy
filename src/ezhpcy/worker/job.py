@@ -19,10 +19,9 @@ WORKER_SCRIPT = f"""{RESOLVE_SSHD}
 ports="$1"
 heartbeat_token="$2"
 heartbeat_timeout="$3"
-heartbeat_debug="$4"
-heartbeat_log_dir="$5"
-control_dir="$6"
-shift 6
+heartbeat_log_dir="$4"
+control_dir="$5"
+shift 5
 pid=
 job_id="${{LSB_JOBID:-${{PBS_JOBID:-unknown-$$}}}}"
 safe_job_id="${{job_id//[^A-Za-z0-9_.-]/_}}"
@@ -133,9 +132,7 @@ while [ -n "$ports" ]; do
         if [ -n "$sequence" ] && {{ [ -z "$last_sequence" ] || [ "$sequence" -gt "$last_sequence" ]; }}; then
             last_sequence="$sequence"
             last_seen=$SECONDS
-            if [ "$heartbeat_debug" -eq 1 ]; then
-                log_heartbeat DEBUG heartbeat_received sequence="$sequence"
-            fi
+            log_heartbeat DEBUG heartbeat_received sequence="$sequence"
         fi
         if [ $((SECONDS - last_seen)) -ge "$heartbeat_timeout" ]; then
             lease_exit_status=75
@@ -185,7 +182,6 @@ def sshd_command(
     ports: tuple[int, ...],
     heartbeat_token: str,
     heartbeat_timeout_seconds: int,
-    heartbeat_debug: bool,
     control_dir: PurePosixPath,
     sshd_arguments: list[str],
 ) -> tuple[str, ...]:
@@ -205,7 +201,6 @@ def sshd_command(
         ":".join(str(port) for port in ports),
         heartbeat_token,
         str(heartbeat_timeout_seconds),
-        "1" if heartbeat_debug else "0",
         str(remote_state.worker_logs_dir()),
         str(control_dir),
         *sshd_arguments,

@@ -1,7 +1,16 @@
 # {{ preset }} HPC configuration for EzHPCy.
 
-log_level = "INFO"
 auto_provision = true
+
+[logging.console]
+enabled = true
+level = "INFO"
+
+# Each run also logs to a file in the log directory (see `ezhpcy info`).
+[logging.file]
+enabled = true
+level = "DEBUG"
+keep = 10  # Log files of the most recent runs to keep
 
 [profile.base]
 connection.host = "login.hpc.example.com"

@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+import time
 from collections.abc import Iterator
 from datetime import timedelta
 from operator import attrgetter
@@ -19,12 +20,23 @@ from pathlib import Path
 import keyring
 import pytest
 
-from ezhpcy.config import config
+from ezhpcy.config import (
+    ConsoleLoggingConfig,
+    FileLoggingConfig,
+    LocalFileConfig,
+    config,
+)
 from ezhpcy.constants import EZHPCY_VERSION, PACKAGE_NAME
+from ezhpcy.logging import TERMINAL_HANDLER_NAME, configure_logging, flush_logs
 from ezhpcy.scheduler.types import SchedulerType
 from ezhpcy.types import ProfileConfig, SubmissionMode
 from tests.support.cli import capture, invoke
-from tests.support.terminal import terminal_handler
+from tests.support.terminal import (
+    file_handler,
+    log_file_path,
+    log_handlers,
+    terminal_handler,
+)
 
 _PROFILES = {
     "base": {
@@ -65,9 +77,11 @@ def restore_logger() -> Iterator[None]:
     package_logger = logging.getLogger(PACKAGE_NAME)
     previous_level = package_logger.level
     handler = terminal_handler()
+    previous_handler_level = handler.level
     previous_formatter = handler.formatter
     yield
     package_logger.setLevel(previous_level)
+    configure_logging(previous_handler_level)
     handler.setFormatter(previous_formatter)
 
 
@@ -170,6 +184,14 @@ def test_info_runs(arguments: list[str]) -> None:
     assert EZHPCY_VERSION in result.stdout
     if arguments:
         json.loads(result.stdout)
+
+
+def test_info_shows_the_log_directory(isolated_local_files: LocalFileConfig) -> None:
+    result = invoke(["info", "--json"])
+
+    assert result.exit_code == 0, result
+    rows = {row["key"]: row["value"] for row in json.loads(result.stdout)}
+    assert rows["Log Directory"] == str(isolated_local_files.log_dir)
 
 
 def test_version_prints_the_version() -> None:
@@ -507,7 +529,7 @@ def test_debug_enables_debug_logging_with_timestamps(
     result = invoke(arguments)
 
     assert result.exit_code == 0, result
-    assert logging.getLogger(PACKAGE_NAME).level == logging.DEBUG
+    assert terminal_handler().level == logging.DEBUG
     record = logging.LogRecord(PACKAGE_NAME, logging.DEBUG, "", 0, "message", (), None)
     rendered = terminal_handler().format(record)
     assert re.match(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} ", rendered), rendered
@@ -534,12 +556,99 @@ def test_configured_log_level_applies_without_debug(
     arguments: list[str], config_debug: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(config, "debug", config_debug)
-    monkeypatch.setattr(config, "log_level", logging.WARNING)
+    monkeypatch.setattr(config.logging.console, "level", logging.WARNING)
 
     result = invoke(arguments)
 
     assert result.exit_code == 0, result
-    assert logging.getLogger(PACKAGE_NAME).level == logging.WARNING
+    assert terminal_handler().level == logging.WARNING
+
+
+@pytest.mark.parametrize(
+    ("arguments", "shown"), [(["version"], False), (["--debug", "version"], True)]
+)
+def test_the_console_log_can_be_disabled_but_debug_enables_it(
+    arguments: list[str], shown: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(config.logging, "console", ConsoleLoggingConfig(enabled=False))
+
+    result = invoke(arguments)
+    logging.getLogger("ezhpcy.cli.version").warning("Worker gone")
+
+    assert result.exit_code == 0, result
+    assert flush_logs(5)
+    assert (log_handlers().get(TERMINAL_HANDLER_NAME) is not None) is shown
+    # Still in the log file.
+    assert "Worker gone" in log_file_path().read_text(encoding="utf-8")
+
+
+def test_a_run_also_logs_debug_records_to_a_file_in_the_log_directory(
+    isolated_local_files: LocalFileConfig,
+) -> None:
+    result = invoke(["version"])
+    logging.getLogger("ezhpcy.cli.version").debug("Hidden on the terminal")
+
+    assert result.exit_code == 0, result
+    assert flush_logs(5)
+    [log_file] = isolated_local_files.log_dir.glob("ezhpcy-*.log")
+    assert re.fullmatch(
+        r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} DEBUG    "
+        r"\[ezhpcy\.cli\.version\] Hidden on the terminal\n",
+        log_file.read_text(encoding="utf-8"),
+    )
+    assert "Hidden" not in result.stderr
+
+
+def test_the_log_file_follows_its_configuration(
+    isolated_local_files: LocalFileConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        config.logging,
+        "file",
+        FileLoggingConfig.model_validate({"level": "warning", "keep": 2}),
+    )
+    log_dir = isolated_local_files.log_dir
+    log_dir.mkdir(parents=True)
+    for age, name in enumerate(["ezhpcy-old.log", "ezhpcy-older.log"], start=1):
+        (log_dir / name).touch()
+        os.utime(log_dir / name, (0, time.time() - age * 60))
+
+    result = invoke(["version"])
+    logger = logging.getLogger("ezhpcy.cli.version")
+    logger.info("Below the file's level")
+    logger.warning("At the file's level")
+
+    assert result.exit_code == 0, result
+    assert flush_logs(5)
+    [old, current] = sorted(log_dir.iterdir(), key=lambda path: path.stat().st_mtime)
+    assert old.name == "ezhpcy-old.log"
+    assert current.read_text(encoding="utf-8").endswith("At the file's level\n")
+    assert "Below" not in current.read_text(encoding="utf-8")
+
+
+def test_the_log_file_is_named_after_the_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Stops the command once it reaches the login node.
+    capture(monkeypatch, "prune")
+
+    invoke(["prune", "base"])
+
+    assert "-base-" in log_file_path().name
+
+
+def test_the_log_file_can_be_disabled(
+    isolated_local_files: LocalFileConfig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(config.logging, "file", FileLoggingConfig(enabled=False))
+
+    result = invoke(["version"])
+    logging.getLogger("ezhpcy.cli.version").warning("Not written to a file")
+
+    assert result.exit_code == 0, result
+    assert flush_logs(5)
+    assert file_handler() is None
+    assert not isolated_local_files.log_dir.exists()
 
 
 # Validation limits

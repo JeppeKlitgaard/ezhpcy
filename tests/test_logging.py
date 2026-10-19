@@ -1,9 +1,11 @@
 import io
 import logging
+import os
 import re
 import time
 from collections.abc import Iterator
 from logging.handlers import QueueHandler
+from pathlib import Path
 
 import pytest
 from rich.console import Console
@@ -14,11 +16,21 @@ from ezhpcy.constants import PACKAGE_NAME
 from ezhpcy.logging import (
     ASYNCSSH_LOGGER_NAME,
     LOG_QUEUE_HANDLER_NAME,
+    REPLAY_ON_ERROR,
+    REPLAYED_RECORDS,
+    configure_log_file,
     configure_logging,
     flush_logs,
     get_logger,
+    label_log_file,
 )
-from tests.support.terminal import GatedTerminal, SlowLogTerminal, terminal_handler
+from tests.support.terminal import (
+    GatedTerminal,
+    SlowLogTerminal,
+    log_file_path,
+    log_handlers,
+    terminal_handler,
+)
 from tests.support.tunnel import LogRecords
 
 # How long a test waits for something that should happen at once.
@@ -30,10 +42,12 @@ def restore_logger() -> Iterator[None]:
     package_logger = logging.getLogger(PACKAGE_NAME)
     previous_level = package_logger.level
     handler = terminal_handler()
+    previous_handler_level = handler.level
     previous_console = handler.console
     previous_formatter = handler.formatter
     yield
     package_logger.setLevel(previous_level)
+    configure_logging(previous_handler_level)
     handler.console = previous_console
     handler.setFormatter(previous_formatter)
 
@@ -79,7 +93,7 @@ def test_default_logger_queues_records_for_a_rich_stderr_handler() -> None:
 
 def test_debug_logger_includes_a_timestamp() -> None:
     stream = io.StringIO()
-    configure_logging("DEBUG", stream=stream, include_timestamp=True)
+    configure_logging("DEBUG", stream=stream, debug=True)
 
     logging.getLogger("ezhpcy.cli.tunnel").debug("Transport active")
 
@@ -171,7 +185,7 @@ def test_invalid_log_level_is_rejected() -> None:
 
 def test_debug_logging_shows_asyncssh_info_records() -> None:
     stream = io.StringIO()
-    configure_logging("DEBUG", stream=stream)
+    configure_logging("DEBUG", stream=stream, debug=True)
 
     asyncssh_logger = logging.getLogger(ASYNCSSH_LOGGER_NAME)
     asyncssh_logger.info("Opening SSH connection")
@@ -179,13 +193,15 @@ def test_debug_logging_shows_asyncssh_info_records() -> None:
 
     assert flush_logs(WAIT_SECONDS)
     rendered = " ".join(stream.getvalue().split())
-    assert rendered == "INFO [asyncssh] Opening SSH connection"
+    assert re.fullmatch(r"INFO \S+ \S+ \[asyncssh\] Opening SSH connection", rendered)
 
 
-def test_asyncssh_records_are_not_shown_without_debug_logging() -> None:
+@pytest.mark.parametrize("level", ["DEBUG", "INFO"])
+def test_asyncssh_records_are_not_shown_without_debug_logging(level: str) -> None:
+    """Not even at DEBUG: only `--debug` asks for them."""
     stream = io.StringIO()
-    configure_logging("DEBUG", stream=stream)
-    configure_logging("INFO", stream=stream)
+    configure_logging("DEBUG", stream=stream, debug=True)
+    configure_logging(level, stream=stream)
 
     logging.getLogger(ASYNCSSH_LOGGER_NAME).info("Opening SSH connection")
 
@@ -196,7 +212,7 @@ def test_asyncssh_records_are_not_shown_without_debug_logging() -> None:
 
 def test_records_logged_before_reconfiguring_keep_their_stream_and_format() -> None:
     first, second = SlowLogTerminal(), io.StringIO()
-    configure_logging("DEBUG", stream=first, include_timestamp=True)
+    configure_logging("DEBUG", stream=first, debug=True)
     logging.getLogger("ezhpcy.cli.tunnel").debug("Before")
 
     configure_logging("INFO", stream=second)
@@ -267,16 +283,311 @@ def test_a_flush_from_the_logs_own_thread_returns_at_once() -> None:
     assert all(flushed)
 
 
-def test_a_logged_exception_keeps_its_traceback() -> None:
-    stream = io.StringIO()
-    configure_logging("INFO", stream=stream)
-
+def log_exception() -> None:
     try:
         raise RuntimeError("worker gone")
     except RuntimeError:
         logging.getLogger("ezhpcy.cli.tunnel").exception("Tunnel stopped")
 
+
+def test_a_logged_exception_keeps_its_traceback_at_debug() -> None:
+    stream = io.StringIO()
+    configure_logging("DEBUG", stream=stream)
+
+    log_exception()
+
     assert flush_logs(WAIT_SECONDS)
     rendered = stream.getvalue()
     assert "Traceback" in rendered
     assert "RuntimeError: worker gone" in rendered
+
+
+# The log file
+
+
+@pytest.fixture
+def terminal() -> io.StringIO:
+    stream = io.StringIO()
+    configure_logging("INFO", stream=stream)
+    return stream
+
+
+def read_log(path: Path) -> str:
+    assert flush_logs(WAIT_SECONDS)
+    return path.read_text(encoding="utf-8")
+
+
+def test_a_disabled_terminal_shows_no_records(
+    terminal: io.StringIO, tmp_path: Path
+) -> None:
+    configure_logging("INFO", enabled=False)
+    configure_log_file(tmp_path)
+    path = log_file_path()
+
+    logging.getLogger("ezhpcy.cli.tunnel").warning("Worker gone")
+
+    assert read_log(path).endswith("] Worker gone\n")
+    assert terminal.getvalue() == ""
+
+
+def test_with_no_log_nothing_is_logged() -> None:
+    configure_logging("DEBUG", enabled=False)
+
+    assert not logging.getLogger("ezhpcy.cli.tunnel").isEnabledFor(logging.CRITICAL)
+    assert logging.getLogger(ASYNCSSH_LOGGER_NAME).handlers == []
+
+
+def test_the_log_file_has_debug_records_the_terminal_does_not(
+    terminal: io.StringIO, tmp_path: Path
+) -> None:
+    configure_log_file(tmp_path / "log")
+    path = log_file_path()
+    logger = logging.getLogger("ezhpcy.cli.tunnel")
+
+    logger.debug("Transport active")
+    logger.info("Worker ready")
+
+    log = read_log(path)
+    assert re.fullmatch(
+        r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} DEBUG    "
+        r"\[ezhpcy\.cli\.tunnel\] Transport active\n"
+        r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} INFO     "
+        r"\[ezhpcy\.cli\.tunnel\] Worker ready\n",
+        log,
+    )
+    assert (
+        " ".join(terminal.getvalue().split()) == "INFO [ezhpcy.cli.tunnel] Worker ready"
+    )
+
+
+def test_a_template_message_is_plain_text_in_the_log_file(tmp_path: Path) -> None:
+    configure_log_file(tmp_path)
+    path = log_file_path()
+
+    get_logger("ezhpcy.tunnel.session").info(t"Connect with {'ssh gpu':suggestion}.")
+
+    assert read_log(path).endswith("] Connect with 'ssh gpu'.\n")
+
+
+def test_only_logs_at_debug_show_tracebacks(
+    terminal: io.StringIO, tmp_path: Path
+) -> None:
+    configure_log_file(tmp_path)
+    path = log_file_path()
+
+    log_exception()
+
+    log = read_log(path)
+    assert "RuntimeError: worker gone" in log
+    rendered = " ".join(terminal.getvalue().split())
+    assert rendered == "ERROR [ezhpcy.cli.tunnel] Tunnel stopped"
+
+
+def test_a_log_file_at_debug_has_asyncssh_records(
+    terminal: io.StringIO, tmp_path: Path
+) -> None:
+    configure_log_file(tmp_path)
+    path = log_file_path()
+
+    logging.getLogger(ASYNCSSH_LOGGER_NAME).info("Opening SSH connection")
+
+    assert read_log(path).endswith("INFO     [asyncssh] Opening SSH connection\n")
+    assert terminal.getvalue() == ""
+
+
+def test_a_log_file_above_debug_has_no_asyncssh_records(tmp_path: Path) -> None:
+    configure_log_file(tmp_path, level="INFO")
+    path = log_file_path()
+
+    logging.getLogger(ASYNCSSH_LOGGER_NAME).info("Opening SSH connection")
+    logging.getLogger("ezhpcy.cli.tunnel").info("Worker ready")
+
+    assert "asyncssh" not in read_log(path)
+    assert logging.getLogger(ASYNCSSH_LOGGER_NAME).handlers == []
+
+
+# What led up to an error
+
+
+def lines(terminal: io.StringIO) -> list[str]:
+    assert flush_logs(WAIT_SECONDS)
+    return [" ".join(line.split()) for line in terminal.getvalue().splitlines()]
+
+
+def test_an_error_brings_out_the_replayed_records_the_terminal_did_not_show(
+    terminal: io.StringIO,
+) -> None:
+    logger = logging.getLogger("ezhpcy.tunnel.session")
+
+    logger.debug("Job output", extra=REPLAY_ON_ERROR)
+    logger.debug("Polling the scheduler")
+    logger.info("Waiting for worker")
+    logger.warning("Worker is slow")
+    assert lines(terminal) == [
+        "INFO [ezhpcy.tunnel.session] Waiting for worker",
+        "WARNING [ezhpcy.tunnel.session] Worker is slow",
+    ]
+    logger.error("Worker gone")
+    logger.error("Tunnel stopped")
+
+    # Only the one to replay, and only once.
+    assert lines(terminal)[2:] == [
+        "DEBUG [ezhpcy.tunnel.session] Job output",
+        "ERROR [ezhpcy.tunnel.session] Worker gone",
+        "ERROR [ezhpcy.tunnel.session] Tunnel stopped",
+    ]
+
+
+def test_the_terminal_keeps_only_the_last_records_to_replay(
+    terminal: io.StringIO,
+) -> None:
+    logger = logging.getLogger("ezhpcy.tunnel.session")
+
+    for number in range(REPLAYED_RECORDS + 1):
+        logger.debug("Line %d", number, extra=REPLAY_ON_ERROR)
+    logger.error("Worker gone")
+
+    shown = lines(terminal)
+    assert len(shown) == REPLAYED_RECORDS + 1
+    assert shown[0] == "DEBUG [ezhpcy.tunnel.session] Line 1"
+
+
+def test_a_terminal_at_debug_shows_records_once() -> None:
+    stream = io.StringIO()
+    configure_logging("DEBUG", stream=stream)
+    logger = logging.getLogger("ezhpcy.tunnel.session")
+
+    logger.debug("Job output", extra=REPLAY_ON_ERROR)
+    logger.error("Worker gone")
+
+    assert lines(stream) == [
+        "DEBUG [ezhpcy.tunnel.session] Job output",
+        "ERROR [ezhpcy.tunnel.session] Worker gone",
+    ]
+
+
+def test_records_kept_before_reconfiguring_are_not_brought_out(
+    terminal: io.StringIO,
+) -> None:
+    logger = logging.getLogger("ezhpcy.tunnel.session")
+    logger.debug("From before", extra=REPLAY_ON_ERROR)
+
+    configure_logging("INFO", stream=terminal)
+    logger.error("Worker gone")
+
+    assert lines(terminal) == ["ERROR [ezhpcy.tunnel.session] Worker gone"]
+
+
+def test_records_kept_are_not_brought_out_at_exit(terminal: io.StringIO) -> None:
+    logging.getLogger("ezhpcy.tunnel.session").debug(
+        "Job output", extra=REPLAY_ON_ERROR
+    )
+
+    # As at exit.
+    for handler in log_handlers().values():
+        handler.flush()
+
+    assert lines(terminal) == []
+
+
+def test_a_run_that_logs_nothing_leaves_no_log_file(tmp_path: Path) -> None:
+    configure_log_file(tmp_path / "log")
+    path = log_file_path()
+
+    configure_log_file(None)
+
+    assert not path.parent.exists()
+
+
+def test_once_stopped_the_log_file_takes_no_more_records(tmp_path: Path) -> None:
+    configure_log_file(tmp_path)
+    path = log_file_path()
+    logger = logging.getLogger("ezhpcy.cli.tunnel")
+    logger.info("Before")
+
+    configure_log_file(None)
+    logger.info("After")
+
+    log = read_log(path)
+    assert "Before" in log
+    assert "After" not in log
+
+
+def test_the_most_recently_written_log_files_are_kept(tmp_path: Path) -> None:
+    now = time.time()
+    # Named by when they started, but the oldest was written last, as a long
+    # tunnel's log is.
+    ages = {
+        "ezhpcy-20260101-000000-1.log": 1,
+        "ezhpcy-20260102-000000-2.log": 3,
+        "ezhpcy-20260103-000000-3.log": 2,
+        "other.log": 100,
+    }
+    for name, age in ages.items():
+        (tmp_path / name).touch()
+        os.utime(tmp_path / name, (now - age, now - age))
+
+    configure_log_file(tmp_path, keep=3)
+    path = log_file_path()
+    logging.getLogger("ezhpcy.cli.tunnel").info("Worker ready")
+
+    assert flush_logs(WAIT_SECONDS)
+    assert sorted(item.name for item in tmp_path.iterdir()) == sorted(
+        [
+            "ezhpcy-20260101-000000-1.log",
+            "ezhpcy-20260103-000000-3.log",
+            path.name,
+            "other.log",
+        ]
+    )
+
+
+def test_the_log_file_is_named_after_its_label(tmp_path: Path) -> None:
+    configure_log_file(tmp_path)
+
+    label_log_file("base")
+    logging.getLogger("ezhpcy.cli.tunnel").info("Worker ready")
+
+    assert flush_logs(WAIT_SECONDS)
+    [path] = tmp_path.iterdir()
+    assert re.fullmatch(rf"ezhpcy-\d{{8}}-\d{{6}}-base-{os.getpid()}\.log", path.name)
+
+
+def test_a_log_file_already_made_moves_to_its_new_label(tmp_path: Path) -> None:
+    configure_log_file(tmp_path)
+    logger = logging.getLogger("ezhpcy.cli.tunnel")
+    logger.info("Before")
+    assert flush_logs(WAIT_SECONDS)
+
+    label_log_file("base")
+    label_log_file("scratch")
+    logger.info("After")
+
+    assert flush_logs(WAIT_SECONDS)
+    [path] = tmp_path.iterdir()
+    assert path == log_file_path()
+    assert "-scratch-" in path.name
+    log = path.read_text(encoding="utf-8")
+    assert log.index("Before") < log.index("After")
+
+
+def test_keep_must_include_the_current_run(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="keep"):
+        configure_log_file(tmp_path, keep=0)
+
+
+def test_a_log_file_that_cannot_be_written_is_reported_once(
+    terminal: io.StringIO, tmp_path: Path
+) -> None:
+    (tmp_path / "file").touch()
+    configure_log_file(tmp_path / "file" / "log")
+    logger = logging.getLogger("ezhpcy.cli.tunnel")
+
+    logger.info("Worker ready")
+    logger.info("Tunnel ready")
+
+    assert flush_logs(WAIT_SECONDS)
+    rendered = terminal.getvalue()
+    assert rendered.count("Could not write the log file") == 1
+    assert "Worker ready" in rendered
+    assert "Tunnel ready" in rendered

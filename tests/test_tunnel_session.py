@@ -33,6 +33,7 @@ from tests.support.terminal import GatedTerminal, terminal_handler
 from tests.support.tunnel import (
     BANNER,
     FAST_TIMINGS,
+    INTERACTIVE_JOB,
     JOB_ID,
     RUNNING,
     FakeScheduler,
@@ -173,7 +174,8 @@ def test_a_tunnel_forwards_its_port_to_the_worker(
 
     assert result.exit_code == 0, result
     assert outputs == [BANNER + b"worker:hello", BANNER + b"worker:again"]
-    # The interactive job's output reaches the user, its ID included.
+    # With debug logging (`tunnel_log`), the interactive job's output reaches the
+    # user, its ID included.
     assert "Job <42> is submitted to queue <normal>." in result.stderr
     assert "<<Starting on 127.0.0.1>>" in result.stderr
 
@@ -396,18 +398,107 @@ def test_shutdown_withdraws_the_block_before_closing_the_port(
     assert not alias_locked("base")
 
 
-async def test_interactive_output_keeps_characters_split_across_reads(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    class Job:
-        async def drain(self, sink: Callable[[bytes], Awaitable[object]]) -> None:
-            # "Velkommen på" with its "å" split, then a cut-off "ø".
-            for chunk in (b"Velkommen p\xc3", b"\xa5\n", b"\xc3"):
-                await sink(chunk)
+class _OutputJob:
+    """An interactive job that has written `chunks`."""
 
-    await session._forward_output(Job())  # type: ignore[arg-type]
+    job_id = JOB_ID
+
+    def __init__(self, *chunks: bytes) -> None:
+        self.chunks = chunks
+        self.drained: list[bytes] = []
+
+    async def drain(self, sink: Callable[[bytes], Awaitable[object]]) -> None:
+        for chunk in self.chunks:
+            self.drained.append(chunk)
+            await sink(chunk)
+
+
+async def test_interactive_output_keeps_characters_split_across_reads(
+    capsys: pytest.CaptureFixture[str], caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.DEBUG, logger=session.__name__)
+    # "Velkommen på" with its "å" split, then a cut-off "ø".
+    job = _OutputJob(b"Velkommen p\xc3", b"\xa5\n", b"\xc3")
+
+    await session._JobOutput(job).forward()  # type: ignore[arg-type]
 
     assert capsys.readouterr().err == "Velkommen på\n�"
+
+
+async def test_without_debug_logging_interactive_output_is_kept_not_shown(
+    capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    caplog.set_level(logging.INFO, logger=session.__name__)
+    monkeypatch.setattr(session, "_KEPT_OUTPUT_BYTES", 1024)
+    end = "cd /worker && exec env bash -c '...'\nBoom"
+    job = _OutputJob(b"x" * 1000, end.encode())
+    output = session._JobOutput(job)  # type: ignore[arg-type]
+
+    await output.forward()
+
+    # All read, so that the job doesn't stall, but none shown.
+    assert job.drained == list(job.chunks)
+    assert capsys.readouterr().err == ""
+
+    await output.show_kept()
+
+    # Only the last KiB is kept, shown after the record that introduces it, and
+    # ended with a newline.
+    shown = capsys.readouterr().err
+    kept_x = 1024 - len(end)
+    assert shown.endswith(f"\n{'x' * kept_x}{end}\n")
+    assert "x" * (kept_x + 1) not in shown
+    assert caplog.messages == [f"End of the output of worker job {JOB_ID}:"]
+
+
+async def test_with_debug_logging_no_output_is_kept_to_show_again(
+    capsys: pytest.CaptureFixture[str], caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.DEBUG, logger=session.__name__)
+    output = session._JobOutput(_OutputJob(b"Boom\n"))  # type: ignore[arg-type]
+    await output.forward()
+    capsys.readouterr()
+
+    await output.show_kept()
+
+    assert capsys.readouterr().err == ""
+
+
+def test_a_failed_interactive_tunnel_shows_the_end_of_the_job_output(
+    login: SSHTestServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    failing = threading.Event()
+
+    async def job(invocation: Invocation) -> None:
+        invocation.stdout.write(f"Job <{JOB_ID}> is submitted to queue <normal>.\n")
+        # As the job's terminal echoes the worker command, then its error.
+        invocation.stdout.write(await invocation.stdin.readline())
+        invocation.stdout.write("sshd must resolve to an absolute path\n")
+        failing.set()
+        while await invocation.stdin.readline():
+            pass
+
+    login.command(f"bash -lc {INTERACTIVE_JOB}", job)
+    configure_tunnel(monkeypatch, login)
+    pending = snapshot(JobState.PENDING, "PEND")
+    failed = snapshot(JobState.FAILED, "EXIT")
+    use_scheduler(
+        monkeypatch,
+        lambda host: FakeScheduler(
+            host, [lambda: failed if failing.is_set() else pending]
+        ),
+    )
+
+    # Without debug logging, which would show the output as it arrives.
+    result = invoke(["tunnel", "base"])
+
+    assert result.exit_code == 1, result
+    # All of it: it is well within the limit.
+    assert f"] Output of worker job {JOB_ID}:" in result.stderr
+    assert f"Job <{JOB_ID}> is submitted to queue <normal>." in result.stderr
+    assert "sshd must resolve to an absolute path" in result.stderr
 
 
 def test_an_lsf_batch_tunnel_sends_the_worker_script_to_bsub(

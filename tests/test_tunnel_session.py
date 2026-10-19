@@ -93,6 +93,29 @@ def bjobs(running: threading.Event, done: threading.Event):
     return handler
 
 
+def serve_lsf_job(
+    login: SSHTestServer, monkeypatch: pytest.MonkeyPatch, worker_port: int
+) -> threading.Event:
+    """
+    Configure profile `base` with an interactive LSF job whose worker serves on
+    `worker_port` at once. The job runs until the returned event is set.
+    """
+    running, done = threading.Event(), threading.Event()
+
+    async def bsub(invocation: Invocation) -> None:
+        invocation.stdout.write(f"Job <{JOB_ID}> is submitted to queue <normal>.\n")
+        await invocation.stdin.readline()
+        write_worker_status(login, "ready", str(worker_port))
+        running.set()
+        while await invocation.stdin.readline():
+            pass
+
+    serve_login_shell(login, bsub=bsub, bjobs=bjobs(running, done), bkill=reply())
+    configure_tunnel(monkeypatch, login)
+    monkeypatch.setattr(ssh_config, "check_host_resolution", lambda _host, _port: None)
+    return done
+
+
 def test_a_tunnel_forwards_its_port_to_the_worker(
     login: SSHTestServer,
     monkeypatch: pytest.MonkeyPatch,
@@ -176,6 +199,7 @@ def test_a_tunnel_forwards_its_port_to_the_worker(
     )
 
     assert len(log.starting("Tunnel client accepted: client=127.0.0.1:")) == 2
+    assert log.starting("Connect with `ssh scratch` or select `scratch` in your editor")
 
     # The Host block was there while serving, the stale one was pruned, and
     # everything is cleaned up.
@@ -194,19 +218,7 @@ def test_a_terminal_that_takes_no_output_does_not_stop_the_tunnel(
     terminal that took no output froze every session (FINDINGS.md, "Phase 4").
     """
     worker_port = login.listen(banner_then_echo)
-    running, done = threading.Event(), threading.Event()
-
-    async def bsub(invocation: Invocation) -> None:
-        invocation.stdout.write(f"Job <{JOB_ID}> is submitted to queue <normal>.\n")
-        await invocation.stdin.readline()
-        write_worker_status(login, "ready", str(worker_port))
-        running.set()
-        while await invocation.stdin.readline():
-            pass
-
-    serve_login_shell(login, bsub=bsub, bjobs=bjobs(running, done), bkill=reply())
-    configure_tunnel(monkeypatch, login)
-    monkeypatch.setattr(ssh_config, "check_host_resolution", lambda _host, _port: None)
+    done = serve_lsf_job(login, monkeypatch, worker_port)
     terminal = GatedTerminal()
     terminal.opened.set()
     monkeypatch.setattr(terminal_handler(), "console", Console(file=terminal))
@@ -245,6 +257,46 @@ def test_a_terminal_that_takes_no_output_does_not_stop_the_tunnel(
     assert blocked_while_serving == [True]
     # Nothing is lost once the terminal takes output again.
     assert terminal.getvalue().count("Tunnel client accepted") == 10
+
+
+def test_open_sessions_are_cut_when_the_tunnel_stops(
+    login: SSHTestServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """As `ssh` sees it: a session still open when the tunnel stops ends with it."""
+    # A worker that keeps each session open until the client hangs up.
+    worker_port = login.listen(banner(BANNER))
+    done = serve_lsf_job(login, monkeypatch, worker_port)
+    watchers: list[threading.Thread] = []
+    endings: list[bytes | str] = []
+
+    def wait_for_the_end(stream: socket.socket) -> None:
+        with stream:
+            try:
+                endings.append(stream.recv(64 * 1024))
+            except OSError as error:
+                endings.append(type(error).__name__)
+
+    def publish_then_open_a_session(host: ssh_config.WorkerHost, port: int) -> None:
+        ssh_config.publish_host(host, port)
+        stream = socket.create_connection((LOOPBACK_HOST, port), WAIT_SECONDS)
+        received = b""
+        while len(received) < len(BANNER):
+            received += stream.recv(len(BANNER) - len(received))
+        assert received == BANNER
+        watchers.append(threading.Thread(target=wait_for_the_end, args=(stream,)))
+        watchers[0].start()
+        # Then the job ends, and the tunnel stops.
+        done.set()
+
+    monkeypatch.setattr(session, "publish_host", publish_then_open_a_session)
+
+    result = invoke(["tunnel", "base", "--worker-port", str(worker_port)])
+
+    assert result.exit_code == 0, result
+    [watcher] = watchers
+    watcher.join(WAIT_SECONDS)
+    # End of stream or a reset, not a timeout: the session didn't outlive the tunnel.
+    assert endings in ([b""], ["ConnectionResetError"], ["ConnectionAbortedError"])
 
 
 def test_a_second_tunnel_for_a_served_alias_is_refused_before_connecting(

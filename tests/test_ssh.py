@@ -463,6 +463,29 @@ async def test_forward_local_port_listens_on_loopback(ssh_server: SSHTestServer)
     assert listener.get_port() not in {0, port}
 
 
+async def test_forward_local_port_listens_on_no_other_address() -> None:
+    """
+    Connecting through loopback can't tell `127.0.0.1` from `0.0.0.0`, and
+    asyncssh's listener doesn't say what it is bound to, so check what it is asked.
+    """
+    asked: list[tuple[object, ...]] = []
+
+    class Connection:
+        async def forward_local_port(self, *args: object, **_kwargs: object) -> None:
+            asked.append(args)
+
+    host = RemoteHost(
+        cast(asyncssh.SSHClientConnection, Connection()),
+        ConnectionInfo.model_construct(user="alice", host="login.example.com"),
+        asyncio.get_running_loop().create_future(),
+    )
+
+    await host.forward_local_port("n-62-11-19", 2222)
+
+    # A port the OS picks, on loopback only.
+    assert asked == [("127.0.0.1", 0, "n-62-11-19", 2222)]
+
+
 async def test_forward_local_port_passes_on_the_clients_eof(
     ssh_server: SSHTestServer,
 ):

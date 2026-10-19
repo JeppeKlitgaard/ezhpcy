@@ -4,7 +4,6 @@ The login-node connection.
 Covers connecting to login node, quoting remote commands, login shells and pixi helpers.
 """
 
-import logging
 from contextlib import asynccontextmanager
 lazy import asyncio
 lazy import shlex
@@ -15,10 +14,11 @@ lazy from typing import Self
 
 import asyncssh
 
+from ezhpcy.logging import get_logger
 lazy from ezhpcy.constants import LOOPBACK_HOST
 lazy from ezhpcy.types import ConnectionInfo, RemoteState
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Keepalive probes that may go unanswered before the connection counts as lost,
 # as OpenSSH's ServerAliveCountMax.
@@ -229,5 +229,5 @@ class RemoteHost:
         raw = (await self.run(["bash", "-lc", cmd])).strip()
 
         remote_state = RemoteState.model_validate_json(raw, strict=True)
-        logger.debug("Discovered remote state: %s", remote_state)
+        logger.debug(t"Discovered remote state: {remote_state:detail}")
         return remote_state

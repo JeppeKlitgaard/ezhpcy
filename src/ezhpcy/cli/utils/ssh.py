@@ -16,7 +16,6 @@ The user is never asked anything during authentication itself, so a prompt can
 block the event loop and the server's login timeout doesn't run while the user types.
 """
 
-import logging
 lazy import asyncio
 lazy from collections.abc import Awaitable
 lazy from pathlib import Path
@@ -25,13 +24,14 @@ lazy import asyncssh
 lazy from rich.prompt import Confirm, Prompt
 
 from ezhpcy import ssh
-lazy from ezhpcy.cli._output import print_error, print_warning, rich_text
+from ezhpcy.logging import get_logger
 lazy from ezhpcy.cli.utils.prompt import ask
 lazy from ezhpcy.config import config
 lazy from ezhpcy.console import error_console
+lazy from ezhpcy.messages import print_error, print_warning, rich_text
 lazy from ezhpcy.types import ConnectionInfo
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 PASSWORD_ATTEMPTS = 3
 _DEFAULT_PORT = 22
@@ -151,10 +151,10 @@ class _KnownHosts:
             # NotADirectoryError: a parent is a file (Windows reports that as
             # FileNotFoundError).
             except FileNotFoundError, NotADirectoryError:
-                logger.debug("No known hosts file: file=%s", file)
+                logger.debug(t"No known hosts file: file={file:path}")
                 continue
             except (OSError, UnicodeDecodeError) as error:
-                logger.warning("Could not read known hosts file %s: %s", file, error)
+                logger.warning(t"Could not read known hosts file {file:path}: {error}")
                 continue
             lines[file] = []
             for number, line in enumerate(text.splitlines(), start=1):
@@ -162,15 +162,14 @@ class _KnownHosts:
                     asyncssh.import_known_hosts(line)
                 except ValueError as error:
                     logger.warning(
-                        "Skipping line %d of known hosts file %s: %s",
-                        number,
-                        file,
-                        error,
+                        t"Skipping line {number:detail} of known hosts file "
+                        t"{file:path}: {error}"
                     )
                     continue
                 lines[file].append(line)
             logger.debug(
-                "Loaded known hosts file: file=%s lines=%d", file, len(lines[file])
+                t"Loaded known hosts file: file={file:path} "
+                t"lines={len(lines[file]):detail}"
             )
         return cls(lines)
 
@@ -281,19 +280,15 @@ async def _accept_host_key(
         # The key is still trusted for this connection; it is only not
         # remembered, so the next connection prompts again.
         logger.warning(
-            "Could not save the host key for %s to %s: %s",
-            host,
-            known_hosts_file,
-            error,
+            t"Could not save the host key for {host:detail} to "
+            t"{known_hosts_file:path}: {error}"
         )
         return line
     logger.debug(
-        "Saved host key: host=%s type=%s fingerprint=%s file=%s",
-        host,
-        key_type,
-        key.get_fingerprint(),
-        known_hosts_file,
+        t"Saved host key: host={host:detail} type={key_type:detail} "
+        t"fingerprint={key.get_fingerprint():detail} file={known_hosts_file:path}"
     )
+
     error_console.print(
         rich_text(t"Host key for {host} saved to {known_hosts_file:path}.")
     )

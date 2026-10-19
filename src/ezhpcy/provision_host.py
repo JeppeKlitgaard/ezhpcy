@@ -1,4 +1,3 @@
-import logging
 import re
 lazy import asyncio
 lazy import shlex
@@ -6,6 +5,7 @@ lazy from pathlib import PurePosixPath
 
 lazy import asyncssh
 
+from ezhpcy.logging import get_logger
 lazy from ezhpcy.constants import OPENSSH_MATCHSPEC, PIXI_INSTALLER_URL, PIXI_VERSION
 lazy from ezhpcy.provision_local import WorkerCredentials
 lazy from ezhpcy.ssh import RemoteHost, ensure_directory
@@ -17,7 +17,7 @@ lazy from ezhpcy.worker.sshd import (
 
 _VERSION_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+!-]*$")
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class ProvisioningError(RuntimeError):
@@ -54,7 +54,7 @@ async def provision_pixi(login: RemoteHost, remote_state: RemoteState) -> None:
         "fi"
     )
 
-    logger.info("Ensuring Pixi %s is installed at %s.", PIXI_VERSION, home)
+    logger.info(t"Ensuring Pixi {PIXI_VERSION:detail} is installed at {home:path}.")
     await login.run(["bash", "-c", command])
 
 
@@ -177,7 +177,7 @@ async def prune_stale_data(
     if stale:
         await login.run(["rm", "-rf", "--", *(str(path) for path in stale)])
         for path in stale:
-            logger.info("Pruned stale data %s.", path)
+            logger.info(t"Pruned stale data {path:path}.")
     else:
         logger.info("Remote EzHPCy data is current.")
     return tuple(stale)
@@ -191,7 +191,7 @@ async def _stale_siblings(
     try:
         names = await sftp.listdir(root)
     except asyncssh.SFTPNoSuchFile:
-        logger.debug("No remote data exists at %s.", root)
+        logger.debug(t"No remote data exists at {root:path}.")
         return []
 
     stale: list[PurePosixPath] = []
@@ -199,7 +199,7 @@ async def _stale_siblings(
         if name in {".", "..", current_directory.name}:
             continue
         if _VERSION_NAME_PATTERN.fullmatch(name) is None:
-            logger.warning("Retaining unrecognized entry %s/%s.", root, name)
+            logger.warning(t"Retaining unrecognized entry {root / name:path}.")
             continue
         stale.append(root / name)
     return stale
@@ -208,5 +208,6 @@ async def _stale_siblings(
 async def prune_all_remote_data(login: RemoteHost, remote_state: RemoteState) -> None:
     """Remove the complete EzHPCy-managed remote footprint."""
     roots = (remote_state.package_cache_root(), remote_state.package_state_root())
-    logger.info("Removing %s and %s.", *roots)
+    logger.info(t"Removing {roots[0]:path} and {roots[1]:path}.")
+
     await login.run(["rm", "-rf", "--", *map(str, roots)])

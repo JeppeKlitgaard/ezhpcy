@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from ezhpcy.config import LocalFileConfig
+from ezhpcy.messages import plain
 from ezhpcy.provision_local import WorkerCredentials
 from ezhpcy.tunnel import ssh_config
 from ezhpcy.tunnel.lock import alias_lock
@@ -297,12 +298,12 @@ def test_publish_explains_how_to_include_the_configuration(
     monkeypatch.setattr(
         ssh_config.logger,
         "warning",
-        lambda message, *args: warnings.append(message % args),
+        lambda message: warnings.append(plain(message)),
     )
 
     ssh_config.publish_host(worker_host(), PORT)
 
-    assert warnings and "`ssh gpu` will not reach this tunnel: not ours" in warnings[0]
+    assert warnings and "'ssh gpu' will not reach this tunnel: not ours" in warnings[0]
     stderr_lines = capsys.readouterr().err.splitlines()
     assert stderr_lines[1:3] == include_directive().splitlines()
 
@@ -318,7 +319,7 @@ def test_publish_failure_is_a_warning_not_an_error(
     monkeypatch.setattr(
         ssh_config.logger,
         "warning",
-        lambda message, *args: warnings.append(message % args),
+        lambda message: warnings.append(plain(message)),
     )
 
     ssh_config.publish_host(worker_host(), PORT)

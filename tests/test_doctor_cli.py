@@ -95,8 +95,8 @@ def test_doctor_passes_when_everything_is_set_up(
     assert "ok    Profile base is valid\n" in result.stdout
     assert "ok    Profile cpu is valid: alice@login.example.com" in result.stdout
     assert "SSH (lets `ssh <alias>` reach running tunnels)" in result.stdout
-    assert "ok    ssh cpu goes through EzHPCy" in result.stdout
-    assert "ok    ssh gpu goes through EzHPCy" in result.stdout
+    assert "ok    'ssh cpu' goes through EzHPCy" in result.stdout
+    assert "ok    'ssh gpu' goes through EzHPCy" in result.stdout
     # Only profiles with a user and a host can start a tunnel as they are.
     assert resolved == ["cpu", "gpu"]
     assert "All checks passed." in result.stdout
@@ -133,7 +133,7 @@ def test_doctor_accepts_a_running_tunnels_block(
         result = invoke(["doctor"])
 
     assert result.exit_code == 0, result
-    assert "ok    ssh cpu goes through EzHPCy" in result.stdout
+    assert "ok    'ssh cpu' goes through EzHPCy" in result.stdout
 
 
 def test_doctor_fails_on_a_loopback_block_without_a_tunnel(
@@ -145,7 +145,7 @@ def test_doctor_fails_on_a_loopback_block_without_a_tunnel(
     result = invoke(["doctor"])
 
     assert result.exit_code == 1
-    assert "fail  ssh cpu bypasses EzHPCy: OpenSSH resolves it to 127.0.0.1" in (
+    assert "fail  'ssh cpu' bypasses EzHPCy: OpenSSH resolves it to 127.0.0.1" in (
         result.stdout
     )
 
@@ -161,7 +161,7 @@ def test_doctor_fails_when_openssh_resolves_a_host_elsewhere(
 
     assert result.exit_code == 1
     assert (
-        "fail  ssh cpu bypasses EzHPCy: OpenSSH resolves it to cpu.example.com"
+        "fail  'ssh cpu' bypasses EzHPCy: OpenSSH resolves it to cpu.example.com"
         in result.stdout
     )
     assert "ssh gpu" not in result.stdout
@@ -181,7 +181,7 @@ def test_doctor_reports_ssh_refusing_the_configuration(
     result = invoke(["doctor"])
 
     assert result.exit_code == 1
-    assert "fail  ssh cpu bypasses EzHPCy: Bad owner or permissions on x" in (
+    assert "fail  'ssh cpu' bypasses EzHPCy: Bad owner or permissions on x" in (
         result.stdout
     )
 
@@ -195,7 +195,7 @@ def test_doctor_checks_the_include_without_profiles(
 
     assert result.exit_code == 0, result
     assert "warn  No profiles are configured" in result.stdout
-    assert "Add a [profile.NAME] table" in result.stdout
+    assert "Add a '[profile.NAME]' table" in result.stdout
     assert "ok    OpenSSH reads EzHPCy's SSH configuration" in result.stdout
     [alias] = resolved
     assert alias.startswith("ezhpcy-doctor-")

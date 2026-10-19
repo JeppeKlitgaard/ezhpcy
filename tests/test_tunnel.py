@@ -10,6 +10,7 @@ from pydantic import ValidationError
 
 from ezhpcy import types as types_module
 from ezhpcy.cli import tunnel as tunnel_module
+from ezhpcy.messages import plain
 from ezhpcy.scheduler.types import SchedulerType
 from ezhpcy.tunnel.ssh_config import WorkerHost
 from ezhpcy.types import ConnectionInfo, ProfileConfig, ResolvedConfig, ResourcesConfig
@@ -272,11 +273,13 @@ def test_tunnel_command_logs_inherited_submission_options_ignored_by_wrapper(
         result = invoke(["tunnel", "wrapper"])
 
     assert result.exit_code == 0, result
-    logger.info.assert_called_once_with(
+    [[message], _] = logger.info.call_args
+    assert plain(message) == (
         "Ignoring inherited scheduler submission options for "
-        "scheduler.interactive_submission_command: %s",
-        "lsf.application_profile, resources.queue",
+        "scheduler.interactive_submission_command: "
+        "lsf.application_profile, resources.queue"
     )
+    logger.info.assert_called_once()
 
 
 @pytest.mark.parametrize(

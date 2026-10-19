@@ -9,15 +9,17 @@ import pytest
 from rich.console import Console
 from rich.logging import RichHandler
 
-from ezhpcy.console import error_console
+from ezhpcy.console import make_console
 from ezhpcy.constants import PACKAGE_NAME
 from ezhpcy.logging import (
     ASYNCSSH_LOGGER_NAME,
     LOG_QUEUE_HANDLER_NAME,
     configure_logging,
     flush_logs,
+    get_logger,
 )
 from tests.support.terminal import GatedTerminal, SlowLogTerminal, terminal_handler
+from tests.support.tunnel import LogRecords
 
 # How long a test waits for something that should happen at once.
 WAIT_SECONDS = 5
@@ -88,6 +90,69 @@ def test_debug_logger_includes_a_timestamp() -> None:
         r"\[ezhpcy\.cli\.tunnel\] Transport active",
         rendered,
     )
+
+
+def colour_terminal() -> io.StringIO:
+    """Log to a colour terminal, whatever `NO_COLOR` says."""
+    stream = io.StringIO()
+    configure_logging("INFO", stream=stream)
+    terminal_handler().console = make_console(
+        file=stream,
+        force_terminal=True,
+        color_system="standard",
+        no_color=False,
+        # So that no record wraps.
+        width=200,
+    )
+    return stream
+
+
+def test_a_log_message_is_styled_on_the_terminal() -> None:
+    stream = colour_terminal()
+
+    get_logger("ezhpcy.tunnel.session").info(
+        t"Connect with {'ssh scratch':suggestion}."
+    )
+
+    assert flush_logs(WAIT_SECONDS)
+    output = stream.getvalue()
+    assert "\x1b[1;32m'ssh scratch'\x1b[0m" in output
+    rendered = " ".join(re.sub(r"\x1b\[[0-9;]*m", "", output).split())
+    assert rendered == "INFO [ezhpcy.tunnel.session] Connect with 'ssh scratch'."
+
+
+def test_only_the_marked_parts_of_a_log_message_are_styled() -> None:
+    """Rich's own highlighting would style the digits of a host name."""
+    stream = colour_terminal()
+    logger = get_logger("ezhpcy.tunnel.session")
+
+    logger.info("Waiting for worker SSH endpoint %s.", "n-62-12-19:58395")
+    logger.info(t"Waiting for worker SSH endpoint {'n-62-12-19:58395':endpoint}.")
+
+    assert flush_logs(WAIT_SECONDS)
+    unmarked, marked = stream.getvalue().splitlines()
+    assert "] Waiting for worker SSH endpoint n-62-12-19:58395. " in unmarked
+    assert (
+        "endpoint \x1b[1;36mn-62-12-19\x1b[0m\x1b[1;37m:\x1b[0m\x1b[36m58395\x1b[0m. "
+        in marked
+    )
+
+
+def test_a_template_message_is_plain_text_to_other_handlers() -> None:
+    records = LogRecords()
+    logger = logging.getLogger("ezhpcy.tunnel.session")
+    logger.addHandler(records)
+    try:
+        get_logger("ezhpcy.tunnel.session").warning(
+            t"{'ssh gpu':suggestion} will not reach {'tunnel':value}."
+        )
+    finally:
+        logger.removeHandler(records)
+
+    [record] = records.records
+    assert record.getMessage() == "'ssh gpu' will not reach \"tunnel\"."
+    # The call site, not the adapter.
+    assert record.funcName == "test_a_template_message_is_plain_text_to_other_handlers"
 
 
 def test_configure_logging_is_idempotent() -> None:
@@ -175,7 +240,7 @@ def test_console_output_comes_after_the_records_logged_before_it() -> None:
     terminal = SlowLogTerminal()
     configure_logging("INFO", stream=terminal)
     # The CLI's kind of console, writing where the log does.
-    console = type(error_console)(file=terminal)
+    console = make_console(file=terminal)
 
     logging.getLogger("ezhpcy.cli.doctor").warning("Could not read the profile")
     console.print("Error: no tunnel")

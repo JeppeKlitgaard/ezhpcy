@@ -16,10 +16,10 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
-from rich.console import Console
 
 from ezhpcy.cli import tunnel as tunnel_cli
 from ezhpcy.cli.utils import ssh as cli_ssh
+from ezhpcy.console import make_console
 from ezhpcy.constants import LOOPBACK_HOST
 from ezhpcy.logging import flush_logs
 from ezhpcy.scheduler.base import JobInfo, JobState
@@ -201,7 +201,12 @@ def test_a_tunnel_forwards_its_port_to_the_worker(
     )
 
     assert len(log.starting("Tunnel client accepted: client=127.0.0.1:")) == 2
-    assert log.starting("Connect with `ssh scratch` or select `scratch` in your editor")
+    assert log.starting("Connect with 'ssh scratch' or select 'scratch' in your editor")
+    # And the banner says so on stdout.
+    assert "Tunnel ready" in result.stdout
+    assert (
+        "Connect with 'ssh scratch' or select 'scratch' in your editor" in result.stdout
+    )
 
     # The Host block was there while serving, the stale one was pruned, and
     # everything is cleaned up.
@@ -223,7 +228,7 @@ def test_a_terminal_that_takes_no_output_does_not_stop_the_tunnel(
     done = serve_lsf_job(login, monkeypatch, worker_port)
     terminal = GatedTerminal()
     terminal.opened.set()
-    monkeypatch.setattr(terminal_handler(), "console", Console(file=terminal))
+    monkeypatch.setattr(terminal_handler(), "console", make_console(file=terminal))
     outputs: list[bytes] = []
     blocked_while_serving: list[bool] = []
 

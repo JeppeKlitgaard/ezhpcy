@@ -1,6 +1,7 @@
 import logging
 from contextlib import contextmanager
 lazy import asyncio
+lazy import functools
 lazy import os
 lazy import shlex
 lazy import sys
@@ -10,6 +11,7 @@ lazy from typing import Annotated
 
 lazy import asyncssh
 lazy from cyclopts import Parameter, validators
+lazy from rich.panel import Panel
 
 from ezhpcy.cli._options import (
     AliasOpt,
@@ -20,6 +22,7 @@ from ezhpcy.cli._options import (
     TimingOptions,
     given_options,
 )
+from ezhpcy.logging import get_logger
 lazy from ezhpcy.cli._errors import CliUsageError, sentence
 lazy from ezhpcy.cli._resolve import (
     LIST_PROFILES_HINT,
@@ -31,7 +34,9 @@ lazy from ezhpcy.cli._resolve import (
 lazy from ezhpcy.cli.utils import ssh as cli_ssh
 lazy from ezhpcy.cli.utils.interrupts import interrupts_handled_by
 lazy from ezhpcy.config import config
+lazy from ezhpcy.console import console
 lazy from ezhpcy.logging import flush_logs
+lazy from ezhpcy.messages import rich_text
 lazy from ezhpcy.scheduler.types import SchedulerType
 lazy from ezhpcy.tunnel import TunnelError
 lazy from ezhpcy.tunnel.session import TunnelSession
@@ -50,7 +55,7 @@ _DEFAULT_WORKER_PORT_RETRIES = 5
 _MAX_WORKER_PORT_RETRIES = 100
 # How long the second Ctrl+C waits for the log to be written before quitting.
 _EXIT_FLUSH_SECONDS = 0.5
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def _resolve_ssh_host(
@@ -161,9 +166,9 @@ def _check_interactive_submission_command(
     )
     if inherited_submission_options:
         logger.info(
-            "Ignoring inherited scheduler submission options for "
-            "scheduler.interactive_submission_command: %s",
-            ", ".join(sorted(inherited_submission_options)),
+            t"Ignoring inherited scheduler submission options for "
+            t"{'scheduler.interactive_submission_command':name}: "
+            t"{sorted(inherited_submission_options):name}"
         )
 
 
@@ -269,6 +274,9 @@ async def tunnel_cmd(
             resolved=resolved,
             ssh_host=ssh_host,
             connect=cli_ssh.connect_interactive,
+            on_ready=functools.partial(
+                asyncio.to_thread, _print_ready_banner, ssh_host.alias
+            ),
             profile_name=profile,
             worker_ports=worker_ports,
             auto_provision=auto_provision,
@@ -278,12 +286,29 @@ async def tunnel_cmd(
     except (RuntimeError, asyncssh.Error, OSError) as error:
         served = session is not None and session.ready
         logger.error(
-            "%s: %s",
-            "Tunnel stopped" if served else "Could not start tunnel",
-            error,
+            t"{'Tunnel stopped' if served else 'Could not start tunnel'}: {error}",
             exc_info=logger.isEnabledFor(logging.DEBUG),
         )
+
         raise SystemExit(1) from error
+
+
+def _print_ready_banner(alias: str) -> None:
+    """Say how to connect, on stdout, after the log so far."""
+    console.print(
+        Panel(
+            rich_text(
+                t"Connect with {f'ssh {alias}':suggestion} or select "
+                t"{alias:suggestion} in your editor's remote development "
+                t"interface.\n{'Press Ctrl+C to stop.':aside}"
+            ),
+            title="Tunnel ready",
+            title_align="left",
+            border_style="green",
+            expand=False,
+            padding=(1, 2),
+        )
+    )
 
 
 @contextmanager

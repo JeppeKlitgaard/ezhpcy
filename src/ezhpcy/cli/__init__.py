@@ -16,6 +16,7 @@ lazy from rich.console import Console
 lazy from rich.panel import Panel
 lazy from rich.text import Text
 
+from ezhpcy import console as consoles
 lazy from ezhpcy.cli._errors import CliUsageError
 lazy from ezhpcy.cli._options import DEBUG_ENV_VAR
 lazy from ezhpcy.config import config as ezhpcy_config  # To avoid shadowing
@@ -55,6 +56,9 @@ app = App(
     # their negative (`--exclusive/--shared`).
     default_parameter=Parameter(negative=()),
     error_formatter=_format_error,
+    # Ours, so that what Cyclopts prints comes after the log so far.
+    console=consoles.console,
+    error_console=consoles.error_console,
 )
 
 
@@ -218,7 +222,6 @@ def main(
         app.meta(tokens, console=console, error_console=error_console)
     # Cyclopts only handles its own parse errors, not errors from command bodies.
     except CliUsageError as error:
-        flush_logs()
         error_console.print(CycloptsPanel(error.__rich__()))
         sys.exit(2)
     finally:

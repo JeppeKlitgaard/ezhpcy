@@ -12,9 +12,9 @@ import time
 from pathlib import Path
 
 import pytest
-from rich.console import Console
 
 from ezhpcy.cli.utils.prompt import ask
+from ezhpcy.console import make_console
 from ezhpcy.logging import flush_logs
 from tests.support.terminal import SlowLogTerminal, terminal_handler
 
@@ -107,7 +107,7 @@ def test_the_records_logged_before_a_prompt_come_before_it(
     monkeypatch: pytest.MonkeyPatch,
 ):
     terminal = SlowLogTerminal()
-    monkeypatch.setattr(terminal_handler(), "console", Console(file=terminal))
+    monkeypatch.setattr(terminal_handler(), "console", make_console(file=terminal))
 
     def prompt() -> str:
         terminal.write("Password: ")

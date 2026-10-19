@@ -8,7 +8,13 @@ stops reading. Written from the loop, that froze the whole tunnel (FINDINGS.md,
 "Phase 4").
 
 Output written straight to the terminal, such as a prompt, calls `flush_logs`
-first, so that it comes after the records logged before it.
+first, so that it comes after the records logged before it. The records go
+through the CLI's `error_console` too, whose prints flush the log first; from
+the log's own thread, a flush returns at once.
+
+EzHPCy's modules log through `get_logger`, which also takes a message as a
+template (see `ezhpcy.messages`): `logger.info(t"Run {'ssh gpu':suggestion}.")`.
+Records carry it as plain text, and the terminal log styles its parts.
 """
 
 import logging
@@ -17,12 +23,16 @@ from logging.handlers import QueueHandler, QueueListener
 lazy import atexit
 lazy import copy
 lazy import queue
-lazy from typing import TextIO
+lazy from collections.abc import MutableMapping
+lazy from string.templatelib import Template
+lazy from typing import Any, TextIO
 
-lazy from rich.console import Console
-lazy from rich.logging import RichHandler
+from rich.logging import RichHandler
+lazy from rich.text import Text
 
+lazy from ezhpcy.console import error_console, make_console
 lazy from ezhpcy.constants import PACKAGE_NAME
+lazy from ezhpcy.messages import plain, rich_text
 
 TERMINAL_HANDLER_NAME = "ezhpcy-terminal"
 LOG_QUEUE_HANDLER_NAME = "ezhpcy-log-queue"
@@ -33,6 +43,28 @@ ASYNCSSH_LOGGER_NAME = "asyncssh"
 _terminal_handler: RichHandler | None = None
 _queue_handler: QueueHandler | None = None
 _listener: _Listener | None = None
+
+
+class _Logger(logging.LoggerAdapter[logging.Logger]):
+    def process(
+        self, msg: Any, kwargs: MutableMapping[str, Any]
+    ) -> tuple[Any, MutableMapping[str, Any]]:
+        return (_LogMessage(msg) if isinstance(msg, Template) else msg), kwargs
+
+
+def get_logger(name: str) -> _Logger:
+    """The logger `name`, which also takes a message as a template."""
+    return _Logger(logging.getLogger(name))
+
+
+class _LogMessage:
+    """A template message: plain text to every handler, styled by the terminal's."""
+
+    def __init__(self, template: Template) -> None:
+        self.template = template
+
+    def __str__(self) -> str:
+        return plain(self.template)
 
 
 class _Flushed:
@@ -61,11 +93,25 @@ class _QueueHandler(QueueHandler):
         Resolve the message now, as its arguments may change before the listener
         formats it. The default would also format it, which the terminal handler
         does, and drop the exception, which Rich renders as a traceback.
+
+        A template message keeps its template, for the terminal handler to style.
         """
         record = copy.copy(record)
+        if isinstance(record.msg, _LogMessage):
+            record.template = record.msg.template
         record.msg = record.getMessage()
         record.args = None
         return record
+
+
+class _TerminalHandler(RichHandler):
+    def render_message(self, record: logging.LogRecord, message: str) -> Text:
+        """Style templated parts of message."""
+        template: Template | None = getattr(record, "template", None)
+        if template is None:
+            return Text(message)
+        # The format ends with the message.
+        return Text(message.removesuffix(record.getMessage())) + rich_text(template)
 
 
 def configure_logging(
@@ -75,6 +121,9 @@ def configure_logging(
     include_timestamp: bool = False,
 ) -> logging.Logger:
     """Configure EzHPCy's default terminal logger and return it.
+
+    Records are written through `ezhpcy.console.error_console`, or with `stream`,
+    a console like it on that stream.
 
     Repeated calls reuse the same handlers, allowing entry points and tests to
     adjust the level without duplicating each emitted record.
@@ -91,10 +140,8 @@ def configure_logging(
     logger.propagate = False
 
     if _terminal_handler is None:
-        _terminal_handler = RichHandler(
-            console=Console(file=stream, highlight=False)
-            if stream is not None
-            else Console(stderr=True, highlight=False),
+        _terminal_handler = _TerminalHandler(
+            console=error_console if stream is None else make_console(file=stream),
             show_time=False,
             show_path=False,
             rich_tracebacks=True,
@@ -102,7 +149,7 @@ def configure_logging(
         )
         _terminal_handler.set_name(TERMINAL_HANDLER_NAME)
     elif stream is not None:
-        _terminal_handler.console = Console(file=stream, highlight=False)
+        _terminal_handler.console = make_console(file=stream)
     _terminal_handler.setFormatter(
         logging.Formatter(
             f"%(asctime)s {LOG_FORMAT}" if include_timestamp else LOG_FORMAT,

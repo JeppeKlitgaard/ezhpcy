@@ -9,9 +9,9 @@ lazy from rich.text import Text
 
 from ezhpcy.config import Config, ProfilePasswordSourceError, config
 lazy from ezhpcy.cli._errors import sentence
-lazy from ezhpcy.cli._output import rich_text
 lazy from ezhpcy.console import console
 lazy from ezhpcy.constants import LOOPBACK_HOST
+lazy from ezhpcy.messages import rich_text
 lazy from ezhpcy.permissions import FilePermissionError
 lazy from ezhpcy.tunnel.lock import alias_locked
 lazy from ezhpcy.tunnel.ssh_config import (

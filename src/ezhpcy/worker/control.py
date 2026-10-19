@@ -1,16 +1,16 @@
 """The tunnel's side of the worker's control directory (see `ezhpcy.worker`)."""
 
-import logging
 from dataclasses import dataclass
 lazy import contextlib
 lazy from pathlib import PurePosixPath
 
 lazy import asyncssh
 
+from ezhpcy.logging import get_logger
 lazy from ezhpcy.ssh import ensure_directory
 lazy from ezhpcy.worker import WorkerError
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _LEASE_FILE_RETAIN_COUNT = 2
 
@@ -94,7 +94,9 @@ class WorkerControl:
             try:
                 await self._sftp.remove(stale)
             except asyncssh.SFTPError as error:
-                logger.debug("Could not remove stale worker lease %s: %r", stale, error)
+                logger.debug(
+                    t"Could not remove stale worker lease {stale:path}: {error!r}"
+                )
         return self._sequence
 
     async def read_status(self) -> WorkerStatus | None:

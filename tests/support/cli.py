@@ -13,6 +13,7 @@ from rich.console import Console
 
 from ezhpcy.cli import main, tunnel
 from ezhpcy.cli.utils import ssh as cli_ssh
+from ezhpcy.console import make_console
 from ezhpcy.types import ConnectionInfo, RemoteState
 
 # Wide enough that help and error panels never wrap: at any narrower width, which
@@ -81,7 +82,7 @@ def invoke(
 
 
 def _console(file: TextIO, *, color: bool) -> Console:
-    return Console(
+    return make_console(
         file=file,
         width=_TERMINAL_WIDTH,
         force_terminal=color,

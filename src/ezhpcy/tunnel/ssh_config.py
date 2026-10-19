@@ -13,7 +13,6 @@ failure breaks every host rather than just ours, so files are written with an
 explicit owner-only ACL and moved into place atomically.
 """
 
-import logging
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,6 +24,7 @@ lazy from collections.abc import Generator, Iterable
 lazy from rich.text import Text
 
 from ezhpcy.config import config, validate_alias
+from ezhpcy.logging import get_logger
 lazy from ezhpcy.console import console, error_console
 lazy from ezhpcy.constants import (
     LOOPBACK_HOST,
@@ -40,7 +40,7 @@ lazy from ezhpcy.provision_local import WorkerCredentials
 lazy from ezhpcy.tunnel.lock import alias_locked
 lazy from ezhpcy.utils import local_machine_id
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 SSH_CONFIG_DIRECTORY_NAME = "ssh-config"
 ACTIVE_FILE_PREFIX = "active-"
@@ -162,17 +162,16 @@ def publish_host(host: WorkerHost, port: int) -> None:
         write_active_host_config(host, port)
     except (OSError, FilePermissionError) as error:
         logger.warning(
-            "Could not write the SSH configuration for %s: %s", host.alias, error
+            t"Could not write the SSH configuration for {host.alias:name}: {error}"
         )
         return
     problem = check_host_resolution(host, port)
     if problem is not None:
         logger.warning(
-            "`ssh %s` will not reach this tunnel: %s. If ~/.ssh/config does not "
-            "include EzHPCy's SSH profiles yet, copy the two highlighted lines "
-            "below to its top, before any Host or Match block:",
-            host.alias,
-            problem,
+            t"{f'ssh {host.alias}':suggestion} will not reach this tunnel: "
+            t"{problem}. If {'~/.ssh/config':path} does not include EzHPCy's SSH "
+            t"profiles yet, copy the two highlighted lines below to its top, "
+            t"before any Host or Match block:"
         )
         error_console.print()
         echo_include_directive(err=True)
@@ -184,7 +183,7 @@ def withdraw_host(host: WorkerHost) -> None:
         _active_path(host.alias).unlink(missing_ok=True)
     except OSError as error:
         logger.warning(
-            "Could not remove the SSH configuration for %s: %s", host.alias, error
+            t"Could not remove the SSH configuration for {host.alias:name}: {error}"
         )
 
 
@@ -199,7 +198,8 @@ def prune_stale_active_configs() -> list[Path]:
         except ValueError:
             live = False
         if not live:
-            logger.debug("Removing stale SSH host configuration %s.", path)
+            logger.debug(t"Removing stale SSH host configuration {path:path}.")
+
             path.unlink(missing_ok=True)
             removed.append(path)
     return removed
@@ -268,7 +268,9 @@ def check_host_resolution(host: WorkerHost, port: int) -> str | None:
     """
     ssh_options = resolve_alias(host.alias)
     if ssh_options is None:
-        logger.debug("Skipping SSH configuration check: `ssh` is not on PATH.")
+        logger.debug(
+            t"Skipping SSH configuration check: {'ssh':suggestion} is not on PATH."
+        )
         return None
     if isinstance(ssh_options, str):
         return ssh_options

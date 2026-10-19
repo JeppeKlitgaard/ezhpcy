@@ -14,9 +14,9 @@ lazy from rich.text import Text
 
 lazy from ezhpcy.cli._errors import CliUsageError
 lazy from ezhpcy.cli._options import UserOpt
-lazy from ezhpcy.cli._output import print_aborted, print_success, print_warning
 lazy from ezhpcy.config import Config, config
 lazy from ezhpcy.console import error_console
+lazy from ezhpcy.messages import print_aborted, print_success, print_warning
 
 PRESET_DIRECTORY = "static/config/presets"
 PRESET_SUFFIX = ".toml.j2"

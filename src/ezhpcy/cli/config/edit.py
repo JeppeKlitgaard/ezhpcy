@@ -8,8 +8,8 @@ lazy from typing import Annotated
 lazy from cyclopts import Parameter
 
 lazy from ezhpcy.cli._errors import CliUsageError
-lazy from ezhpcy.cli._output import print_error
 lazy from ezhpcy.config import config
+lazy from ezhpcy.messages import print_error
 
 IS_WINDOWS = os.name == "nt"
 DEFAULT_EDITOR = "notepad" if IS_WINDOWS else "vi"

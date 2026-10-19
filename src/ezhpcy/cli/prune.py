@@ -4,11 +4,11 @@ lazy from cyclopts import Parameter
 lazy from rich.prompt import Confirm
 
 from ezhpcy.cli._options import ConnectionOptions, OptionalProfileArg
-lazy from ezhpcy.cli._output import print_aborted, print_success, rich_text
 lazy from ezhpcy.cli._resolve import connection_from_cli, resolve_profile_config
 lazy from ezhpcy.cli.utils.prompt import ask
 lazy from ezhpcy.cli.utils.ssh import connect_or_exit
 lazy from ezhpcy.console import error_console
+lazy from ezhpcy.messages import print_aborted, print_success, rich_text
 lazy from ezhpcy.provision_host import prune_all_remote_data, prune_stale_data
 
 

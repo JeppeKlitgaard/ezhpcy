@@ -3,9 +3,9 @@ lazy from keyring.errors import KeyringError
 lazy from rich.prompt import Prompt
 
 from ezhpcy.cli._options import KEYRING_SERVICE_NAME, ConnectionOptions
-lazy from ezhpcy.cli._output import print_error, rich_text
 lazy from ezhpcy.cli._resolve import direct_connection_from_cli
 lazy from ezhpcy.console import console, error_console
+lazy from ezhpcy.messages import print_error, rich_text
 
 
 # ruff: ignore[B008]  # See the comment above the option dataclasses in _options.py

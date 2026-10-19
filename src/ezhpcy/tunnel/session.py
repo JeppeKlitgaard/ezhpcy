@@ -29,7 +29,7 @@ lazy from contextlib import AbstractAsyncContextManager, AsyncExitStack, ExitSta
 
 lazy import asyncssh
 
-lazy from ezhpcy.logging import flush_logs
+from ezhpcy.logging import flush_logs, get_logger
 lazy from ezhpcy.provision_host import (
     provision_worker_infrastructure,
     validate_worker_infrastructure,
@@ -61,7 +61,7 @@ lazy from ezhpcy.worker.sshd import (
     sshd_config_arguments,
 )
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _SSH_BANNER_LIMIT = 255
 # How long one attempt to read the worker's SSH banner may take.
@@ -84,7 +84,9 @@ _KEPT_OUTPUT_BYTES = 2 * 1024 * 1024
 class TunnelSession:
     """
     Runs one tunnel to a worker job. `connect` opens the login connection; the
-    CLI's asks for passwords and host keys as needed.
+    CLI's asks for passwords and host keys as needed. `on_ready` is awaited once
+    the tunnel serves; the CLI's prints a banner, from a thread (see
+    `ezhpcy.console`).
     """
 
     def __init__(
@@ -93,6 +95,7 @@ class TunnelSession:
         resolved: ResolvedConfig,
         ssh_host: WorkerHost,
         connect: Callable[[ConnectionInfo], Awaitable[RemoteHost]],
+        on_ready: Callable[[], Awaitable[object]],
         worker_ports: tuple[int, ...],
         auto_provision: bool,
         profile_name: str | None = None,
@@ -100,6 +103,7 @@ class TunnelSession:
         self._resolved = resolved
         self._ssh_host = ssh_host
         self._connect = connect
+        self._on_ready = on_ready
         self._worker_ports = worker_ports
         self._auto_provision = auto_provision
         self._profile_name = profile_name
@@ -141,9 +145,8 @@ class TunnelSession:
             if self._cancelled_main_task:
                 main_task.uncancel()
             logger.debug(
-                "Cleaning up the tunnel: why=%s job_finished=%s",
-                self._why,
-                self._job_finished,
+                t"Cleaning up the tunnel: why={self._why} "
+                t"job_finished={self._job_finished:detail}"
             )
         if self._error is not None:
             # After cleanup, which closes the job, so that its last output is in.
@@ -165,10 +168,10 @@ class TunnelSession:
         """
         why = why or str(error)
         if self._why is not None:
-            logger.debug("Tunnel already stopping; also: %s", why)
+            logger.debug(t"Tunnel already stopping; also: {why}")
             return
         self._why, self._error = why, error
-        logger.info("Stopping tunnel: %s", why)
+        logger.info(t"Stopping tunnel: {why}")
         assert self._main_task is not None
         if asyncio.current_task() is not self._main_task:
             self._main_task.cancel()
@@ -221,28 +224,23 @@ class TunnelSession:
         scheduler = create_scheduler(resolved, host)
         if self._profile_name is None:
             logger.info(
-                "Using anonymous configuration with %s scheduler.",
-                resolved.scheduler.type,
+                t"Using anonymous configuration with "
+                t"{resolved.scheduler.type:detail} scheduler."
             )
         else:
             logger.info(
-                "Using profile %r with %s scheduler.",
-                self._profile_name,
-                resolved.scheduler.type,
+                t"Using profile {self._profile_name:name} with "
+                t"{resolved.scheduler.type:detail} scheduler."
             )
         logger.debug(
-            "Worker request: queue=%r cores=%d gpus=%d exclusive=%s "
-            "time_limit=%s memory_bytes=%s ports=%s heartbeat_interval=%g "
-            "heartbeat_timeout=%g",
-            resources.queue,
-            resources.cores,
-            resources.gpus,
-            resources.exclusive,
-            resources.time_limit,
-            resources.memory_bytes,
-            self._worker_ports,
-            timings.worker_heartbeat_interval_seconds,
-            timings.worker_heartbeat_timeout_seconds,
+            t"Worker request: queue={resources.queue!r:detail} "
+            t"cores={resources.cores:detail} gpus={resources.gpus:detail} "
+            t"exclusive={resources.exclusive:detail} "
+            t"time_limit={resources.time_limit:detail} "
+            t"memory_bytes={resources.memory_bytes:detail} "
+            t"ports={self._worker_ports!s:detail} "
+            t"heartbeat_interval={timings.worker_heartbeat_interval_seconds:detail:g} "
+            t"heartbeat_timeout={timings.worker_heartbeat_timeout_seconds:detail:g}"
         )
 
         # The worker's control directory, with its first lease.
@@ -325,19 +323,22 @@ class TunnelSession:
             job_id = await self._finish(
                 "submit the worker job", scheduler.submit(spec), then=cancel_on_cleanup
             )
-        logger.info("Submitted worker job %s.", job_id)
+        logger.info(t"Submitted worker job {job_id:detail}.")
         logger.info(
-            "Worker heartbeat enabled for job %s: interval=%g seconds, "
-            "timeout=%g seconds.",
-            job_id,
-            timings.worker_heartbeat_interval_seconds,
-            timings.worker_heartbeat_timeout_seconds,
+            t"Worker heartbeat enabled for job {job_id:detail}: "
+            t"interval={timings.worker_heartbeat_interval_seconds:detail:g} seconds, "
+            t"timeout={timings.worker_heartbeat_timeout_seconds:detail:g} seconds."
         )
-        logger.info("Worker heartbeat log: %s.", logs_dir / f"heartbeat-{job_id}.log")
-        logger.info("Worker logs: %s and %s.", spec.stdout_path, spec.stderr_path)
+        logger.info(
+            t"Worker heartbeat log: {logs_dir / f'heartbeat-{job_id}.log':path}."
+        )
+        logger.info(
+            t"Worker logs: {spec.stdout_path:path} and {spec.stderr_path:path}."
+        )
         if interactive_job is not None:
             logger.debug(
-                "Submission command: %s", shlex.join(interactive_job.submission_command)
+                t"Submission command: "
+                t"{shlex.join(interactive_job.submission_command):detail}"
             )
             await interactive_job.start_command()
 
@@ -359,7 +360,8 @@ class TunnelSession:
             stop=stopping.set,
         )
         destination = (worker_host, worker_port)
-        logger.info("Waiting for worker SSH endpoint %s:%d.", *destination)
+        endpoint = f"{worker_host}:{worker_port}"
+        logger.info(t"Waiting for worker SSH endpoint {endpoint:endpoint}.")
         await self._wait_for_worker_endpoint(
             destination, control, scheduler, job_id, deadline
         )
@@ -367,10 +369,9 @@ class TunnelSession:
         # Serve on a loopback port, and tell OpenSSH how to reach it.
         def accept(client_host: str, client_port: int) -> bool:
             logger.debug(
-                "Tunnel client accepted: client=%s:%d destination=%s:%d",
-                client_host,
-                client_port,
-                *destination,
+                t"Tunnel client accepted: "
+                t"client={f'{client_host}:{client_port}':endpoint} "
+                t"destination={endpoint:endpoint}"
             )
             return True
 
@@ -386,7 +387,9 @@ class TunnelSession:
             self._cleanup, "close the forwarded port", close_listener
         )
         port = listener.get_port()
-        logger.debug("Forwarding port: port=%d destination=%s:%d", port, *destination)
+        logger.debug(
+            t"Forwarding port: port={port:detail} destination={endpoint:endpoint}"
+        )
         # Registered before the block is written, and withdrawn before the port
         # closes, so that a Host block never outlives the port it points at.
         stack.push_async_callback(
@@ -402,16 +405,16 @@ class TunnelSession:
             stack, self._monitor_job(scheduler, job_id), name="job monitor"
         )
         self.ready = True
+        alias = self._ssh_host.alias
         logger.info(
-            "Tunnel ready for %s via worker %s:%d (press Ctrl+C to stop).",
-            self._ssh_host.alias,
-            *destination,
+            t"Tunnel ready for {alias:name} via worker {endpoint:endpoint} "
+            t"{'(press Ctrl+C to stop)':aside}."
         )
         logger.info(
-            "Connect with `ssh %s` or select `%s` in your editor's remote development interface.",
-            self._ssh_host.alias,
-            self._ssh_host.alias,
+            t"Connect with {f'ssh {alias}':suggestion} or select "
+            t"{alias:suggestion} in your editor's remote development interface."
         )
+        await self._on_ready()
 
     async def _wait_for_running_job(self, scheduler: Scheduler, job_id: str) -> str:
         """
@@ -435,11 +438,9 @@ class TunnelSession:
                         previous_state = (info.state, info.raw_state)
                         next_progress = loop.time() + progress_interval
                         logger.info(
-                            "Worker job %s: %s (%s)%s.",
-                            job_id,
-                            info.state.value,
-                            info.raw_state,
-                            reason,
+                            t"Worker job {job_id:detail}: "
+                            t"{info.state.value:detail} "
+                            t"{f'({info.raw_state})':aside}{reason}."
                         )
                     if info.state is JobState.RUNNING and info.host is not None:
                         return info.host
@@ -448,13 +449,13 @@ class TunnelSession:
                     if loop.time() >= next_progress:
                         next_progress = loop.time() + progress_interval
                         waited = loop.time() - started
+                        timeout_in = _duration(timings.queue_timeout_seconds - waited)
                         logger.info(
-                            "Worker job %s still %s after %s (queue timeout in %s)%s.",
-                            job_id,
-                            info.state.value,
-                            _duration(waited),
-                            _duration(timings.queue_timeout_seconds - waited),
-                            reason,
+                            t"Worker job {job_id:detail} still "
+                            t"{info.state.value:detail} after "
+                            t"{_duration(waited):detail} "
+                            t"{t'(queue timeout in {timeout_in:detail})':aside}"
+                            t"{reason}."
                         )
                     await asyncio.sleep(timings.job_poll_interval_seconds)
         except TimeoutError:
@@ -531,6 +532,7 @@ class TunnelSession:
         """
         timeout = self._resolved.timings.worker_startup_timeout_seconds
         poll_interval = self._resolved.timings.job_poll_interval_seconds
+        endpoint = f"{destination[0]}:{destination[1]}"
         last_error: Exception | None = None
         try:
             async with asyncio.timeout_at(deadline):
@@ -545,20 +547,16 @@ class TunnelSession:
                     except (asyncssh.Error, OSError) as error:
                         last_error = error
                         logger.debug(
-                            "Worker readiness attempt failed: destination=%s:%d "
-                            "error=%r",
-                            *destination,
-                            error,
+                            t"Worker readiness attempt failed: "
+                            t"destination={endpoint:endpoint} error={error!r}"
                         )
                     else:
                         if banner.startswith(b"SSH-"):
                             return
                         last_error = TunnelError(f"unexpected worker banner {banner!r}")
                         logger.debug(
-                            "Worker readiness returned an unexpected banner: "
-                            "destination=%s:%d banner=%r",
-                            *destination,
-                            banner,
+                            t"Worker readiness returned an unexpected banner: "
+                            t"destination={endpoint:endpoint} banner={banner!r:detail}"
                         )
                     if error := _worker_gone(await control.read_status()):
                         raise error
@@ -567,7 +565,7 @@ class TunnelSession:
         except TimeoutError:
             detail = f": {last_error}" if last_error is not None else ""
             raise TunnelError(
-                f"worker SSH endpoint {destination[0]}:{destination[1]} did not "
+                f"worker SSH endpoint {endpoint} did not "
                 f"become ready within {timeout:g} seconds{detail}"
             ) from None
 
@@ -627,9 +625,8 @@ class TunnelSession:
         interval_seconds = self._resolved.timings.worker_heartbeat_interval_seconds
         sequence = 0
         logger.debug(
-            "Worker heartbeat sender started: job=%s interval_seconds=%g",
-            job_id,
-            interval_seconds,
+            t"Worker heartbeat sender started: job={job_id:detail} "
+            t"interval_seconds={interval_seconds:detail:g}"
         )
         try:
             while True:
@@ -641,12 +638,10 @@ class TunnelSession:
                         f"worker heartbeat write failed for job {job_id} at "
                         f"sequence {sequence}: {error}"
                     ) from error
+                elapsed = time.monotonic() - started
                 logger.debug(
-                    "Worker heartbeat published: job=%s sequence=%d "
-                    "elapsed_seconds=%.3f",
-                    job_id,
-                    sequence,
-                    time.monotonic() - started,
+                    t"Worker heartbeat published: job={job_id:detail} "
+                    t"sequence={sequence:detail} elapsed_seconds={elapsed:detail:.3f}"
                 )
                 try:
                     async with asyncio.timeout(interval_seconds):
@@ -656,9 +651,8 @@ class TunnelSession:
                 return
         finally:
             logger.debug(
-                "Worker heartbeat sender stopped: job=%s last_sequence=%d",
-                job_id,
-                sequence,
+                t"Worker heartbeat sender stopped: job={job_id:detail} "
+                t"last_sequence={sequence:detail}"
             )
 
     async def _monitor_job(self, scheduler: Scheduler, job_id: str) -> None:
@@ -676,14 +670,9 @@ class TunnelSession:
                     f"could not monitor worker job {job_id}: {error}"
                 ) from error
             logger.debug(
-                "Job monitor poll: job=%s poll=%d state=%s raw_state=%s host=%s "
-                "exit_code=%s",
-                job_id,
-                polls,
-                info.state.name,
-                info.raw_state,
-                info.host,
-                info.exit_code,
+                t"Job monitor poll: job={job_id:detail} poll={polls:detail} "
+                t"state={info.state.name:detail} raw_state={info.raw_state:detail} "
+                t"host={info.host:detail} exit_code={info.exit_code:detail}"
             )
             if ended := self._job_ended(job_id, info):
                 self._stop(None, ended)
@@ -712,15 +701,14 @@ class TunnelSession:
         try:
             result = await asyncio.shield(task)
         except asyncio.CancelledError:
-            logger.debug("Waiting to %s before stopping.", description)
+            logger.debug(t"Waiting to {description} before stopping.")
             done, _ = await asyncio.wait([task], timeout=_CLEANUP_SECONDS)
             if not done:
                 task.cancel()
                 logger.warning(
-                    "Gave up waiting to %s after %g seconds; it may have left "
-                    "something behind.",
-                    description,
-                    _CLEANUP_SECONDS,
+                    t"Gave up waiting to {description} after "
+                    t"{_CLEANUP_SECONDS:detail:g} seconds; it may have left "
+                    t"something behind."
                 )
             # A step that failed acquired nothing, and the tunnel stops anyway.
             elif task.exception() is None and then is not None:
@@ -735,7 +723,7 @@ class TunnelSession:
         if self._job_finished:
             return
         await scheduler.cancel(job_id)
-        logger.info("Cancelled worker job %s.", job_id)
+        logger.info(t"Cancelled worker job {job_id:detail}.")
 
     async def _enter[T](
         self,
@@ -766,13 +754,11 @@ class TunnelSession:
                 await step()
         except TimeoutError:
             logger.warning(
-                "Could not %s: no answer within %g seconds.", description, seconds
+                t"Could not {description}: no answer within {seconds:detail:g} seconds."
             )
         except Exception as error:
             logger.warning(
-                "Could not %s: %s",
-                description,
-                error,
+                t"Could not {description}: {error}",
                 exc_info=logger.isEnabledFor(logging.DEBUG),
             )
 
@@ -814,7 +800,7 @@ class _JobOutput:
         try:
             await self._job.drain(write if self._live else keep)
         except (asyncssh.Error, OSError) as error:
-            logger.debug("Interactive job output ended: error=%r", error)
+            logger.debug(t"Interactive job output ended: error={error!r}")
         if self._live:
             await write(b"", final=True)
 
@@ -823,9 +809,8 @@ class _JobOutput:
         if not self._kept:
             return
         logger.info(
-            "%s of worker job %s:",
-            "End of the output" if self._cut else "Output",
-            self._job.job_id,
+            t"{'End of the output' if self._cut else 'Output'} of worker job "
+            t"{self._job.job_id:detail}:"
         )
         # Cut at a byte count, so its first character may be a replacement.
         text = self._kept.decode(errors="replace")
@@ -850,7 +835,7 @@ async def _stop_task(
     task.cancel()
     await asyncio.wait([task], timeout=_CLEANUP_SECONDS)
     if not task.done():
-        logger.warning("The %s did not stop.", task.get_name())
+        logger.warning(t"The {task.get_name()} did not stop.")
 
 
 def _worker_gone(status: WorkerStatus | None) -> TunnelError | None:

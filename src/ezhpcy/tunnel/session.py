@@ -29,6 +29,7 @@ lazy from contextlib import AbstractAsyncContextManager, AsyncExitStack, ExitSta
 
 lazy import asyncssh
 
+lazy from ezhpcy.logging import flush_logs
 lazy from ezhpcy.provision_host import (
     provision_worker_infrastructure,
     validate_worker_infrastructure,
@@ -745,20 +746,29 @@ class TunnelSession:
 
 
 async def _forward_output(job: InteractiveJob) -> None:
-    """Show the interactive job's output on stderr."""
+    """
+    Show the interactive job's output on stderr, after the records logged before
+    it. Written from a thread, as logging is (`ezhpcy.logging`), so that a
+    terminal that doesn't take output holds up only the job's output.
+    """
     # Incremental, so that a character split across chunks isn't garbled.
     decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
 
-    def write(output: bytes, *, final: bool = False) -> None:
+    async def write(output: bytes, *, final: bool = False) -> None:
         if text := decoder.decode(output, final):
-            sys.stderr.write(text)
-            sys.stderr.flush()
+            await asyncio.to_thread(_write_stderr, text)
 
     try:
         await job.drain(write)
     except (asyncssh.Error, OSError) as error:
         logger.debug("Interactive job output ended: error=%r", error)
-    write(b"", final=True)
+    await write(b"", final=True)
+
+
+def _write_stderr(text: str) -> None:
+    flush_logs()
+    sys.stderr.write(text)
+    sys.stderr.flush()
 
 
 async def _stop_task(

@@ -5,7 +5,7 @@ from enum import StrEnum
 from typing import ClassVar
 lazy import asyncio
 lazy import shlex
-lazy from collections.abc import Callable, Sequence
+lazy from collections.abc import Awaitable, Callable, Sequence
 lazy from datetime import timedelta
 lazy from pathlib import PurePosixPath
 
@@ -90,16 +90,17 @@ class InteractiveJob:
                 f"interactive shell did not accept the worker command: {error}"
             ) from error
 
-    async def drain(self, sink: Callable[[bytes], object]) -> None:
+    async def drain(self, sink: Callable[[bytes], Awaitable[object]]) -> None:
         """
         Pass the process's output (stdout and stderr: it runs under a terminal)
         to `sink` until the process ends, starting with `early_output`. A chunk
-        may end partway through a character.
+        may end partway through a character. The next chunk is read once `sink`
+        has taken the last.
         """
         if self.early_output:
-            sink(self.early_output)
+            await sink(self.early_output)
         while output := await self.process.stdout.read(_READ_BYTES):
-            sink(output)
+            await sink(output)
 
     def close(self) -> None:
         self.process.close()

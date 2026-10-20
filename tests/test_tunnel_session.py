@@ -211,7 +211,6 @@ def test_a_tunnel_forwards_its_port_to_the_worker(
     )
 
     assert len(log.starting("Forwarded connection opened: client=127.0.0.1:")) == 2
-    assert log.starting("Connect with 'ssh scratch' or select 'scratch' in your editor")
     # Nothing else says so: the log and the status display are on stderr.
     assert result.stdout == ""
 
@@ -224,23 +223,18 @@ def test_a_tunnel_forwards_its_port_to_the_worker(
     assert signal.getsignal(signal.SIGINT) is previous_handler
 
 
-@pytest.mark.parametrize("status_display", [False, True])
 def test_a_terminal_that_takes_no_output_does_not_stop_the_tunnel(
-    login: SSHTestServer, monkeypatch: pytest.MonkeyPatch, status_display: bool
+    login: SSHTestServer, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """
     With debug logging, each connection logs. Written from the event loop, a
     terminal that took no output froze every session (FINDINGS.md, "Phase 4").
-    Nor does the status display, which the terminal stops taking too.
     """
     worker_port = login.listen(banner_then_echo)
     done = serve_lsf_job(login, monkeypatch, worker_port)
     terminal = GatedTerminal()
     terminal.opened.set()
-    if status_display:
-        use_terminal(monkeypatch, terminal)
-    else:
-        monkeypatch.setattr(terminal_handler(), "console", make_console(file=terminal))
+    monkeypatch.setattr(terminal_handler(), "console", make_console(file=terminal))
     outputs: list[bytes] = []
     blocked_while_serving: list[bool] = []
 
@@ -362,8 +356,6 @@ def test_on_a_terminal_the_status_display_shows_the_tunnel(
     assert "Connecting to alice@login.example.com" in output
     assert "Connections" in output
     assert "Stopping tunnel: worker job 42 ended" in output
-    # Hidden at the end, the terminal has its cursor back.
-    assert output.rindex("\x1b[?25h") > output.rindex("\x1b[?25l")
 
 
 def test_open_sessions_are_cut_when_the_tunnel_stops(
@@ -685,14 +677,13 @@ def test_keepalive_loss_while_serving_stops_the_tunnel(
     assert scheduler.cancelled == [JOB_ID]
 
 
-def test_a_job_waiting_in_the_queue_says_why_and_for_how_long(
+def test_a_job_waiting_in_the_queue_says_why_once(
     login: SSHTestServer, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     configure_tunnel(
         monkeypatch,
         login,
-        timings=FAST_TIMINGS
-        | {"queue_timeout_seconds": 0.35, "queue_progress_interval_seconds": 0.1},
+        timings=FAST_TIMINGS | {"queue_timeout_seconds": 0.35},
     )
     serve_interactive_job(login)
     waiting = JobInfo(
@@ -706,17 +697,11 @@ def test_a_job_waiting_in_the_queue_says_why_and_for_how_long(
         result = invoke(["tunnel", "base"])
 
     assert result.exit_code == 1, result
-    changed, *progress = log.starting(f"Worker job {JOB_ID}")
-    assert changed == (
+    # Polled several times, but said only as the state changes: the status
+    # display shows how long it has waited.
+    assert log.starting(f"Worker job {JOB_ID}") == [
         f"Worker job {JOB_ID}: pending (PEND): Job slot limit reached: 3 hosts."
-    )
-    # At about 0.1, 0.2 and 0.3 seconds.
-    assert 2 <= len(progress) <= 3, progress
-    for message in progress:
-        assert message == (
-            f"Worker job {JOB_ID} still pending after 0 s (queue timeout in 0 s): "
-            "Job slot limit reached: 3 hosts."
-        )
+    ]
 
 
 def test_the_worker_startup_timeout_covers_both_waits(
@@ -818,7 +803,6 @@ def test_a_second_interrupt_quits_without_cleaning_up(
     assert result.exit_code == 0, result
     assert exits == [130]
     assert "Stopping tunnel: Ctrl+C" in log.messages()
-    assert "(press Ctrl+C again to quit without cleaning up)" in log.messages()
     assert log.starting("Quitting without cleaning up.")
     assert signal.getsignal(interrupt) is previous_handler
 

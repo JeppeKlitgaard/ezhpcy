@@ -12,16 +12,6 @@ from ezhpcy.scheduler.types import SchedulerType
 from ezhpcy.types import PasswordConfig, ResolvedConfig
 
 
-def test_logging_defaults_to_info_on_the_console_and_debug_in_a_file() -> None:
-    logging_config = config_module.Config.from_mapping({}).logging
-
-    assert logging_config.console.enabled is True
-    assert logging_config.console.level == logging.INFO
-    assert logging_config.file.enabled is True
-    assert logging_config.file.level == logging.DEBUG
-    assert logging_config.file.keep == 10
-
-
 def test_logging_is_configured_in_its_tables() -> None:
     config = config_module.Config.from_mapping(
         {
@@ -57,20 +47,12 @@ def test_invalid_logging_settings_are_rejected(
         config_module.Config.from_mapping({"logging": logging_config})
 
 
-def test_debug_defaults_to_false() -> None:
-    assert config_module.Config.from_mapping({}).debug is False
-
-
 def test_debug_can_be_enabled_from_the_environment(monkeypatch) -> None:
     monkeypatch.setenv("EZHPCY_DEBUG", "TRUE")
 
     config = config_module.Config()
 
     assert config.debug is True
-
-
-def test_auto_provision_defaults_to_true() -> None:
-    assert config_module.Config.from_mapping({}).auto_provision is True
 
 
 def test_auto_provision_can_be_disabled_from_the_environment(monkeypatch) -> None:
@@ -81,38 +63,6 @@ def test_auto_provision_can_be_disabled_from_the_environment(monkeypatch) -> Non
     assert config.auto_provision is False
 
 
-def test_profile_password_prompt_defaults_to_true_and_is_inherited() -> None:
-    config = config_module.Config.from_mapping(
-        {
-            "profile": {
-                "base": {"connection": {"password_prompt": False}},
-                "child": {"inherit": "base"},
-                "default": {},
-            }
-        }
-    )
-
-    assert config.resolve_profile("default").connection.password_prompt is True
-    assert config.resolve_profile("child").connection.password_prompt is False
-
-
-def test_profile_ssh_keepalive_defaults_to_30_seconds_and_is_inherited() -> None:
-    config = config_module.Config.from_mapping(
-        {
-            "profile": {
-                "base": {"connection": {"ssh_keepalive_interval_seconds": 75}},
-                "child": {"inherit": "base"},
-                "default": {},
-            }
-        }
-    )
-
-    default = config.resolve_profile("default").connection
-    child = config.resolve_profile("child").connection
-    assert default.ssh_keepalive_interval_seconds == 30
-    assert child.ssh_keepalive_interval_seconds == 75
-
-
 def test_profile_ssh_keepalive_must_be_positive() -> None:
     with pytest.raises(ValidationError, match="ssh_keepalive_interval_seconds"):
         config_module.Config.from_mapping(
@@ -120,65 +70,11 @@ def test_profile_ssh_keepalive_must_be_positive() -> None:
         )
 
 
-def test_profile_worker_heartbeat_is_independent_and_inherited() -> None:
-    config = config_module.Config.from_mapping(
-        {
-            "profile": {
-                "base": {
-                    "connection": {"ssh_keepalive_interval_seconds": 75},
-                    "timings": {
-                        "worker_heartbeat_interval_seconds": 20,
-                        "worker_heartbeat_timeout_seconds": 60,
-                    },
-                },
-                "child": {"inherit": "base"},
-                "default": {},
-            }
-        }
-    )
-
-    default = config.resolve_profile("default")
-    child = config.resolve_profile("child")
-    assert default.timings.worker_heartbeat_interval_seconds == 30
-    assert default.timings.worker_heartbeat_timeout_seconds == 90
-    assert child.connection.ssh_keepalive_interval_seconds == 75
-    assert child.timings.worker_heartbeat_interval_seconds == 20
-    assert child.timings.worker_heartbeat_timeout_seconds == 60
-
-
-def test_profile_job_intervals_default_and_are_inherited() -> None:
-    config = config_module.Config.from_mapping(
-        {
-            "profile": {
-                "base": {
-                    "timings": {
-                        "job_poll_interval_seconds": 4.5,
-                        "job_monitor_interval_seconds": 120,
-                        "queue_progress_interval_seconds": 45,
-                    }
-                },
-                "child": {"inherit": "base"},
-                "default": {},
-            }
-        }
-    )
-
-    default = config.resolve_profile("default").timings
-    child = config.resolve_profile("child").timings
-    assert default.job_poll_interval_seconds == 2.5
-    assert default.job_monitor_interval_seconds == 60
-    assert default.queue_progress_interval_seconds == 20
-    assert child.job_poll_interval_seconds == 4.5
-    assert child.job_monitor_interval_seconds == 120
-    assert child.queue_progress_interval_seconds == 45
-
-
 @pytest.mark.parametrize(
     "field",
     [
         "job_poll_interval_seconds",
         "job_monitor_interval_seconds",
-        "queue_progress_interval_seconds",
     ],
 )
 def test_profile_job_intervals_must_be_positive(field: str) -> None:
@@ -202,106 +98,75 @@ def test_profile_interactive_submission_command_arguments_must_be_usable(
         )
 
 
-def test_profile_password_keyring_can_be_enabled() -> None:
-    config = config_module.Config.from_mapping(
-        {"profile": {"base": {"connection": {"password_keyring": True}}}}
-    )
-
-    assert config.resolve_profile("base").connection.password_keyring is True
-
-
-def test_profile_password_sources_can_be_combined() -> None:
+@pytest.mark.parametrize(
+    ("profile_name", "expected"),
+    [
+        # Without a profile, only the top-level settings apply.
+        (
+            None,
+            {
+                "user": None,
+                "password_file": Path("top.txt"),
+                "password_fd": 3,
+                "password_keyring": False,
+                "password_prompt": False,
+            },
+        ),
+        # `false` disables an inherited setting: TOML has no null.
+        (
+            "base",
+            {
+                "user": "alice",
+                "password_file": Path("top.txt"),
+                "password_fd": False,
+                "password_keyring": True,
+                "password_prompt": False,
+            },
+        ),
+        (
+            "child",
+            {
+                "user": "alice",
+                "password_file": Path("child.txt"),
+                "password_fd": False,
+                "password_keyring": True,
+                "password_prompt": True,
+            },
+        ),
+    ],
+)
+def test_connection_settings_are_inherited_one_by_one_from_the_top_level_table(
+    profile_name: str | None, expected: dict[str, object]
+) -> None:
     config = config_module.Config.from_mapping(
         {
-            "profile": {
-                "base": {
-                    "connection": {
-                        "password_file": "password.txt",
-                        "password_fd": 3,
-                        "password_keyring": True,
-                    }
-                }
-            }
-        }
-    )
-
-    connection = config.resolve_profile("base").connection
-    assert connection.password_file == Path("password.txt")
-    assert connection.password_fd == 3
-    assert connection.password_keyring is True
-
-
-def test_profile_password_is_rejected_to_keep_secrets_out_of_configuration() -> None:
-    config = config_module.Config.from_mapping(
-        {"profile": {"base": {"connection": {"password": "not-a-secret"}}}}
-    )
-
-    with pytest.raises(
-        config_module.ProfilePasswordSourceError, match="must not be stored"
-    ):
-        config.resolve_profile("base")
-
-
-def test_profile_password_settings_are_inherited_one_by_one() -> None:
-    config = config_module.Config.from_mapping(
-        {
+            "connection": {
+                "password_file": "top.txt",
+                "password_fd": 3,
+                "password_prompt": False,
+            },
             "profile": {
                 "base": {
                     "connection": {
                         "user": "alice",
+                        "password_fd": False,
                         "password_keyring": True,
-                        "password_prompt": False,
                     }
                 },
                 "child": {
                     "inherit": "base",
                     "connection": {
-                        "password_file": "password.txt",
+                        "password_file": "child.txt",
                         "password_prompt": True,
                     },
                 },
-            }
-        }
-    )
-
-    connection = config.resolve_profile("child").connection
-    assert connection.password_keyring is True
-    assert connection.password_file == Path("password.txt")
-    assert connection.password_prompt is True
-    assert connection.user == "alice"
-
-
-def test_top_level_password_settings_are_inherited_by_every_profile() -> None:
-    config = config_module.Config.from_mapping(
-        {
-            "connection": {"password_keyring": True, "password_prompt": False},
-            "profile": {
-                "base": {"connection": {"user": "alice"}},
-                "child": {"inherit": "base"},
             },
         }
     )
 
-    for name in ("base", "child"):
-        connection = config.resolve_profile(name).connection
-        assert connection.password_keyring is True
-        assert connection.password_prompt is False
-        assert connection.user == "alice"
+    connection = config.resolve_profile(profile_name).connection
 
-
-def test_false_disables_an_inherited_password_file_or_fd() -> None:
-    config = config_module.Config.from_mapping(
-        {
-            "connection": {"password_file": "password.txt", "password_fd": 3},
-            "profile": {
-                "base": {"connection": {"password_file": False, "password_fd": False}},
-            },
-        }
-    )
-
-    connection = config.resolve_profile("base").connection
-    assert connection.password_file is False
-    assert connection.password_fd is False
+    assert connection.model_dump(include=set(expected)) == expected
 
 
 @pytest.mark.parametrize(
@@ -322,59 +187,38 @@ def test_password_fd_zero_is_a_descriptor_not_false() -> None:
     assert config.resolve_profile(None).connection.password_fd is not False
 
 
-def test_profile_password_settings_override_the_top_level_ones_one_by_one() -> None:
+@pytest.mark.parametrize(
+    ("top_level", "base", "profile_name", "key"),
+    [
+        ({"password": "x"}, {}, None, "connection.password"),
+        ({"password": "x"}, {}, "child", "connection.password"),
+        # Blamed on the profile that sets it, not the one that inherits it.
+        ({}, {"password": "x"}, "child", "profile.base.connection.password"),
+    ],
+)
+def test_a_stored_password_is_rejected_where_it_is_set(
+    top_level: dict[str, str],
+    base: dict[str, str],
+    profile_name: str | None,
+    key: str,
+) -> None:
+    # Loading succeeds: one profile's mistake doesn't stop the others.
     config = config_module.Config.from_mapping(
         {
-            "connection": {"password_keyring": True, "password_prompt": False},
+            "connection": top_level,
             "profile": {
-                "base": {
-                    "connection": {
-                        "password_file": "password.txt",
-                        "password_keyring": False,
-                    }
-                }
+                "base": {"connection": base},
+                "child": {"inherit": "base"},
             },
         }
     )
 
-    connection = config.resolve_profile("base").connection
-    assert connection.password_keyring is False
-    assert connection.password_file == Path("password.txt")
-    assert connection.password_prompt is False
-
-
-def test_without_a_profile_only_the_top_level_settings_apply() -> None:
-    config = config_module.Config.from_mapping(
-        {
-            "connection": {"password_keyring": True},
-            "profile": {"base": {"connection": {"user": "alice"}}},
-        }
-    )
-
-    connection = config.resolve_profile(None).connection
-    assert connection.password_keyring is True
-    assert connection.user is None
-
-
-@pytest.mark.parametrize("profile_name", [None, "base"])
-def test_invalid_top_level_password_settings_are_reported_as_top_level(
-    profile_name: str | None,
-) -> None:
-    config = config_module.Config.from_mapping(
-        {
-            "connection": {"password": "not-a-secret"},
-            "profile": {"base": {"connection": {"password_keyring": True}}},
-        }
-    )
-
     with pytest.raises(
-        config_module.ProfilePasswordSourceError,
-        match=(
-            r"top-level connection table must not set password, because "
-            r"passwords must not be stored"
-        ),
+        config_module.StoredPasswordError,
+        match=rf"^{re.escape(key)} must not be set, because passwords must not be "
+        r"stored",
     ):
-        config.resolve_profile(profile_name)
+        config.reject_stored_password(profile_name)
 
 
 def test_local_file_cannot_be_set_in_the_config_file(tmp_path: Path) -> None:

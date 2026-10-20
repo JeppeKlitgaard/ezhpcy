@@ -147,7 +147,8 @@ def _progress(status: TunnelStatus, now: float) -> _Rows:
             job += t" {f'({info.raw_state})':aside}"
         rows.append(("Job", job))
         if info is not None and info.pending_reason and status.running_since is None:
-            rows.append(("Waiting on", t"{_waiting_on(info.pending_reason)}"))
+            reason = info.pending_reason
+            rows.append(("Waiting on", t"{_TERSE_PENDING_REASONS.get(reason, reason)}"))
     if status.worker is not None:
         rows.append(("Worker", t"{status.worker:endpoint}"))
     if status.running_since is not None:
@@ -163,16 +164,7 @@ def _progress(status: TunnelStatus, now: float) -> _Rows:
     return rows
 
 
-def _waiting_on(pending_reason: str) -> str:
-    """
-    What the scheduler says the job waits on, after "Waiting on": tersely if it's
-    a reason we know, else as it says it, without LSF's closing semicolon.
-    """
-    reason = pending_reason.strip().removesuffix(";")
-    return _TERSE_PENDING_REASONS.get(reason, reason)
-
-
-# Pending reasons, as LSF or PBS give them, that a few words say as well.
+# Pending reasons, as the schedulers give them, that a few words say as well.
 _TERSE_PENDING_REASONS = {
     "New job is waiting for scheduling": "job scheduling",
 }

@@ -84,30 +84,22 @@ def test_password_without_an_explicit_or_profile_source_is_none() -> None:
     assert resolve_password() is None
 
 
-def test_profile_password_keyring_can_read_from_keyring(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("profile_name", [None, "base"])
+def test_top_level_keyring_and_prompt_reach_the_connection(
+    monkeypatch: pytest.MonkeyPatch, profile_name: str | None
 ) -> None:
+    """
+    With both enabled, the keyring's password is used, and the prompt setting
+    kept for when it is needed.
+    """
+    monkeypatch.setattr(
+        _resolve.config,
+        "connection",
+        PasswordConfig(password_keyring=True, password_prompt=False),
+    )
     monkeypatch.setattr(
         _password.keyring, "get_password", lambda *_args: "from-keyring"
     )
-
-    assert resolve_password(config_password_keyring=True) == "from-keyring"
-
-
-@pytest.mark.parametrize("profile_name", [None, "base"])
-def test_top_level_password_keyring_applies_with_and_without_a_profile(
-    monkeypatch: pytest.MonkeyPatch, profile_name: str | None
-) -> None:
-    monkeypatch.setattr(
-        _resolve.config, "connection", PasswordConfig(password_keyring=True)
-    )
-    accounts: list[str] = []
-
-    def get_password(_service: str, account: str) -> str:
-        accounts.append(account)
-        return "from-keyring"
-
-    monkeypatch.setattr(_password.keyring, "get_password", get_password)
 
     conn_info = _resolve.connection_from_cli(
         _options.ConnectionOptions(user="alice", host="login.example.com"),
@@ -116,12 +108,10 @@ def test_top_level_password_keyring_applies_with_and_without_a_profile(
     )
 
     assert conn_info.password == "from-keyring"
-    assert accounts == ["alice@login.example.com"]
+    assert conn_info.password_prompt is False
 
 
-def test_explicit_password_source_overrides_profile_password_source(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_explicit_password_source_overrides_profile_password_source() -> None:
     assert (
         resolve_password(password="from-command-line", config_password_keyring=True)
         == "from-command-line"
@@ -161,12 +151,10 @@ def _failing_keyring(monkeypatch: pytest.MonkeyPatch) -> None:
         (_failing_keyring, "backend unavailable"),
     ],
 )
-@pytest.mark.parametrize("from_config", [False, True])
-def test_keyring_without_a_password_leaves_it_to_the_prompt(
+def test_keyring_without_a_password_leaves_it_to_the_prompt_if_allowed(
     monkeypatch: pytest.MonkeyPatch,
     keyring_state: Callable[[pytest.MonkeyPatch], None],
     message: str,
-    from_config: bool,
 ) -> None:
     keyring_state(monkeypatch)
     # The `ezhpcy` logger doesn't propagate, so `caplog` doesn't see it.
@@ -176,12 +164,7 @@ def test_keyring_without_a_password_leaves_it_to_the_prompt(
     logger = logging.getLogger(_password.__name__)
     logger.addHandler(handler)
     try:
-        assert (
-            resolve_password(
-                password_keyring=not from_config, config_password_keyring=from_config
-            )
-            is None
-        )
+        assert resolve_password(config_password_keyring=True) is None
     finally:
         logger.removeHandler(handler)
 
@@ -189,29 +172,8 @@ def test_keyring_without_a_password_leaves_it_to_the_prompt(
     assert message in warning
     assert warning.endswith("The password is asked for if needed.")
 
-
-@pytest.mark.parametrize(
-    ("keyring_state", "message"),
-    [
-        (_keyring_without_password, "No password was found"),
-        (_failing_keyring, "backend unavailable"),
-    ],
-)
-@pytest.mark.parametrize("from_config", [False, True])
-def test_keyring_without_a_password_is_an_error_when_prompting_is_off(
-    monkeypatch: pytest.MonkeyPatch,
-    keyring_state: Callable[[pytest.MonkeyPatch], None],
-    message: str,
-    from_config: bool,
-) -> None:
-    keyring_state(monkeypatch)
-
     with pytest.raises(CliUsageError, match=message):
-        resolve_password(
-            password_keyring=not from_config,
-            config_password_keyring=from_config,
-            password_prompt=False,
-        )
+        resolve_password(config_password_keyring=True, password_prompt=False)
 
 
 def test_configured_password_sources_are_tried_fd_file_then_keyring(
@@ -280,40 +242,6 @@ def test_a_disabled_password_file_and_fd_leave_it_to_the_keyring(
     assert conn_info.password == "from-keyring"
 
 
-def test_a_disabled_keyring_is_not_read(monkeypatch: pytest.MonkeyPatch) -> None:
-    def unexpected(*_args: str) -> None:
-        raise AssertionError("the keyring was read")
-
-    monkeypatch.setattr(_password.keyring, "get_password", unexpected)
-
-    assert resolve_password(config_password_keyring=False) is None
-
-
-@pytest.mark.parametrize("prompt", [True, False])
-def test_profile_keyring_and_prompt_reach_the_connection(
-    monkeypatch: pytest.MonkeyPatch, prompt: bool
-) -> None:
-    """With both enabled, the keyring's password is used, and the prompt kept
-    for when it is needed."""
-    monkeypatch.setattr(
-        _resolve.config,
-        "connection",
-        PasswordConfig(password_keyring=True, password_prompt=prompt),
-    )
-    monkeypatch.setattr(
-        _password.keyring, "get_password", lambda *_args: "from-keyring"
-    )
-
-    conn_info = _resolve.connection_from_cli(
-        _options.ConnectionOptions(),
-        _resolve.resolve_profile_config("base").connection,
-        profile_name="base",
-    )
-
-    assert conn_info.password == "from-keyring"
-    assert conn_info.password_prompt is prompt
-
-
 def test_invalid_profile_password_settings_are_reported_as_a_cli_parameter_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -333,18 +261,12 @@ def test_invalid_profile_password_settings_are_reported_as_a_cli_parameter_error
         },
     )
 
-    with pytest.raises(CliUsageError):
-        _resolve.resolve_profile_config("base")
-
-    result = invoke(
-        ["tunnel", "base"],
-        color=True,
-    )
+    result = invoke(["tunnel", "base"], color=True)
 
     assert result.exit_code == 2
     # Each setting is one styled run: Rich's highlighter didn't split it up.
-    assert "\x1b[1;39mconnection.password\x1b[0m" in result.stderr
+    assert "\x1b[1;39mprofile.base.connection.password\x1b[0m" in result.stderr
     stderr = re.sub(r"\x1b\[[0-9;]*m", "", result.stderr)
-    assert "Profile base must not set connection.password" in stderr
+    assert "profile.base.connection.password must not be set" in stderr
     assert "Invalid value for" not in result.stdout
     assert "Invalid value for" not in stderr

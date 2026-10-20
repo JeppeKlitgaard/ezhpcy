@@ -34,7 +34,6 @@ lazy import asyncssh
 lazy from rich.text import Text
 
 from ezhpcy.logging import REPLAY_ON_ERROR, get_logger
-lazy from ezhpcy.messages import duration
 lazy from ezhpcy.provision_host import (
     provision_worker_infrastructure,
     validate_worker_infrastructure,
@@ -399,7 +398,7 @@ class TunnelSession:
 
         async def close_forwarded_port() -> None:
             # New connections are refused at once. Open ones end when the login
-            # connection closes; `wait_closed` would wait for them (FINDINGS.md,
+            # connection closes; waiting for them could take forever (FINDINGS.md,
             # "Phase 1").
             forwarded.close()
 
@@ -426,38 +425,28 @@ class TunnelSession:
         )
         self.ready = True
         self._report(Phase.SERVING)
-        alias = self._ssh_host.alias
         logger.info(
-            t"Tunnel ready for {alias:name} via worker {endpoint:endpoint} "
-            t"{'(press Ctrl+C to stop)':aside}."
-        )
-        logger.info(
-            t"Connect with {f'ssh {alias}':suggestion} or select "
-            t"{alias:suggestion} in your editor's remote development interface."
+            t"Tunnel ready for {self._ssh_host.alias:name} via worker "
+            t"{endpoint:endpoint}."
         )
 
     async def _wait_for_running_job(self, scheduler: Scheduler, job_id: str) -> str:
         """
         Poll the scheduler until the job runs, and return its host. Says so when
-        the job's state changes, and otherwise every queue progress interval how
-        long it has waited, so that a long wait in the queue doesn't look like a
-        hang. Both say why the job waits, if the scheduler does.
+        the job's state changes, and why the job waits, if the scheduler does.
         """
         timings = self._resolved.timings
-        progress_interval = timings.queue_progress_interval_seconds
-        loop = asyncio.get_running_loop()
-        started = loop.time()
-        next_progress = started + progress_interval
         previous_state: tuple[JobState, str] | None = None
         try:
             async with asyncio.timeout(timings.queue_timeout_seconds):
                 while True:
                     info = await scheduler.inspect(job_id)
                     self._report_job(info)
-                    reason = f": {info.pending_reason}" if info.pending_reason else ""
                     if (info.state, info.raw_state) != previous_state:
                         previous_state = (info.state, info.raw_state)
-                        next_progress = loop.time() + progress_interval
+                        reason = (
+                            f": {info.pending_reason}" if info.pending_reason else ""
+                        )
                         logger.info(
                             t"Worker job {job_id:detail}: "
                             t"{info.state.value:detail} "
@@ -467,17 +456,6 @@ class TunnelSession:
                         return info.host
                     if ended := self._job_ended(job_id, info):
                         raise TunnelError(ended)
-                    if loop.time() >= next_progress:
-                        next_progress = loop.time() + progress_interval
-                        waited = loop.time() - started
-                        timeout_in = duration(timings.queue_timeout_seconds - waited)
-                        logger.info(
-                            t"Worker job {job_id:detail} still "
-                            t"{info.state.value:detail} after "
-                            t"{duration(waited):detail} "
-                            t"{t'(queue timeout in {timeout_in:detail})':aside}"
-                            t"{reason}."
-                        )
                     await asyncio.sleep(timings.job_poll_interval_seconds)
         except TimeoutError:
             raise TunnelError(

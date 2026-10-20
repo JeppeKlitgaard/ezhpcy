@@ -104,7 +104,7 @@ def _profile_settings(source: Config, profile_name: str) -> Iterator[_Setting]:
     profiles = [
         (name, source.profile[name]) for name in source.inheritance_chain(profile_name)
     ]
-    resolved = source.resolve_profile(profile_name, validate_password_source=False)
+    resolved = source.resolve_profile(profile_name)
     yield from _settings(resolved, profiles)
     # `inherit` itself isn't inherited.
     own = source.profile[profile_name]

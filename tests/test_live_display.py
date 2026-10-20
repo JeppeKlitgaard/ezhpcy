@@ -159,6 +159,9 @@ def test_a_display_that_fails_to_draw_is_hidden_its_error_printed_once(
     with live_display(failing_once_drawn):
         time.sleep(2 * REDRAWS_SECONDS)
         assert flush_output(WAIT_SECONDS)
+        # A prompt after it failed doesn't bring it back.
+        ask(lambda: None)
+        time.sleep(REDRAWS_SECONDS)
 
     assert flush_output(WAIT_SECONDS)
     assert errors.getvalue().count("RuntimeError: renderer bug") == 1

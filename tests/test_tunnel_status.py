@@ -55,7 +55,17 @@ def test_while_connecting_it_says_where_to() -> None:
     assert "Press Ctrl+C to stop." in lines
 
 
-def test_while_queued_it_says_what_the_job_waits_on() -> None:
+@pytest.mark.parametrize(
+    ("pending_reason", "waiting_on"),
+    [
+        ("Job slot limit reached: 3 hosts", "Job slot limit reached: 3 hosts"),
+        # Tersely, if it's a reason we know.
+        ("New job is waiting for scheduling", "job scheduling"),
+    ],
+)
+def test_while_queued_it_says_what_the_job_waits_on(
+    pending_reason: str, waiting_on: str
+) -> None:
     status = TunnelStatus(
         alias="scratch",
         login="alice@login.example.com",
@@ -63,9 +73,7 @@ def test_while_queued_it_says_what_the_job_waits_on() -> None:
         since=NOW - 65,
         job_id="42",
         job=JobInfo(
-            state=JobState.PENDING,
-            raw_state="PEND",
-            pending_reason="Job slot limit reached",
+            state=JobState.PENDING, raw_state="PEND", pending_reason=pending_reason
         ),
     )
 
@@ -73,29 +81,7 @@ def test_while_queued_it_says_what_the_job_waits_on() -> None:
 
     assert "Waiting for the worker job to start (1 min 5 s)" in lines
     assert "Job 42 (PEND)" in lines
-    assert "Waiting on Job slot limit reached" in lines
-
-
-@pytest.mark.parametrize(
-    ("pending_reason", "waiting_on"),
-    [
-        ("New job is waiting for scheduling;", "job scheduling"),
-        ("Job slot limit reached: 3 hosts;", "Job slot limit reached: 3 hosts"),
-    ],
-)
-def test_a_pending_reason_is_said_tersely(pending_reason: str, waiting_on: str) -> None:
-    status = TunnelStatus(
-        alias="scratch",
-        login="alice@login.example.com",
-        phase=Phase.QUEUED,
-        since=NOW,
-        job_id="42",
-        job=JobInfo(
-            state=JobState.PENDING, raw_state="PEND", pending_reason=pending_reason
-        ),
-    )
-
-    assert f"Waiting on {waiting_on}" in shown(status)
+    assert f"Waiting on {waiting_on}" in lines
 
 
 def test_once_serving_it_says_how_to_connect_and_how_the_worker_does() -> None:

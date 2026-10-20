@@ -301,15 +301,11 @@ def _interrupts_stop(session: TunnelSession) -> Generator[None]:
     loop = asyncio.get_running_loop()
     presses = 0
 
-    def stop() -> None:
-        session.stop(t"Ctrl+C")
-        logger.info(t"{'(press Ctrl+C again to quit without cleaning up)':aside}")
-
     def interrupt(_signum: int, _frame: FrameType | None) -> None:
         nonlocal presses
         presses += 1
         if presses == 1:
-            loop.call_soon_threadsafe(stop)
+            loop.call_soon_threadsafe(session.stop, t"Ctrl+C")
             return
         logger.warning(
             "Quitting without cleaning up. The worker job ends by itself once its "

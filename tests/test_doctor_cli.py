@@ -264,7 +264,7 @@ def test_doctor_fails_without_a_configuration_file(
     [
         (
             ProfileConfig.model_validate({"connection": {"password": "hunter2"}}),
-            "must not set connection.password",
+            "profile.broken.connection.password must not be set",
         ),
         (
             ProfileConfig.model_validate(
@@ -301,6 +301,23 @@ def test_doctor_fails_on_invalid_top_level_password_settings(
         "Top-level connection table is invalid: connection.password_file "
         "missing.txt does not exist" in result.stdout
     )
+
+
+def test_doctor_ignores_a_password_file_that_a_descriptor_comes_before(
+    profiles: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        config,
+        "connection",
+        PasswordConfig.model_validate(
+            {"password_fd": 3, "password_file": Path("missing.txt")}
+        ),
+    )
+
+    result = invoke(["doctor"])
+
+    assert "ok    Top-level connection table is valid" in result.stdout
+    assert "does not exist" not in result.stdout
 
 
 def test_doctor_skips_the_probe_without_ssh(

@@ -154,7 +154,6 @@ class TimingsConfig(_SubConfig):
     """Timeouts and intervals of the tunnel's scheduler and worker checks."""
 
     queue_timeout_seconds: float = Field(default=15 * 60, gt=0)
-    queue_progress_interval_seconds: float = Field(default=20, gt=0)
     worker_startup_timeout_seconds: float = Field(default=120, gt=0)
     job_poll_interval_seconds: float = Field(default=2.5, gt=0)
     job_monitor_interval_seconds: float = Field(default=60, gt=0)

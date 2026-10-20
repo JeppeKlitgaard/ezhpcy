@@ -68,6 +68,9 @@ class _OutputThread(threading.Thread):
         super().__init__(name="output", daemon=True)
         self.writes: queue.SimpleQueue[Callable[[], object]] = queue.SimpleQueue()
         self._live: Live | None = None
+        # One that failed to draw: drawn again, it would fail again, a traceback
+        # each time, so it is never shown again, its error reported once.
+        self._failed: Live | None = None
         self._next_redraw = 0.0
 
     def run(self) -> None:
@@ -88,17 +91,17 @@ class _OutputThread(threading.Thread):
         if _call(live.refresh):
             self._next_redraw = time.monotonic() + _REDRAW_SECONDS
             return
-        # Drawn again, it would fail again, a traceback each time: hidden
-        # instead, its error reported once.
-        self._live = None
+        self._live, self._failed = None, live
         with suppress(Exception):
             live.stop()
 
     def show(self, live: Live) -> None:
-        if self._live is not None:
+        if self._live is not None or live is self._failed:
             return
         # Shown only if it can be drawn; if not, `Live` stops it.
-        live.start(refresh=True)
+        if not _call(functools.partial(live.start, refresh=True)):
+            self._failed = live
+            return
         self._live = live
         self._next_redraw = time.monotonic() + _REDRAW_SECONDS
 

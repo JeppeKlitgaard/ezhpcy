@@ -3,7 +3,6 @@ import re
 from typing import Annotated
 lazy import os
 lazy from pathlib import Path
-lazy from string.templatelib import Template
 lazy from typing import Any, Self
 
 from platformdirs import PlatformDirs
@@ -47,8 +46,8 @@ def validate_alias(alias: str) -> str:
     return alias
 
 
-class ProfilePasswordSourceError(MessageError, ValueError):
-    """A profile's configured password sources are invalid."""
+class StoredPasswordError(MessageError):
+    """A `password` in the configuration, where passwords must not be stored."""
 
 
 def _default_config_file() -> Path:
@@ -147,20 +146,11 @@ class _ConfigValues(BaseModel):
     def validate_profiles(self) -> Self:
         for name in self.profile:
             validate_alias(name)
-            self.resolve_profile(name, validate_password_source=False)
+            self.resolve_profile(name)
         return self
 
-    def resolve_profile(
-        self,
-        profile_name: str | None = None,
-        *,
-        validate_password_source: bool = True,
-    ) -> ResolvedProfileConfig:
+    def resolve_profile(self, profile_name: str | None = None) -> ResolvedProfileConfig:
         """Resolve a profile, or the top-level settings alone when `None`."""
-        if validate_password_source:
-            _validate_password_source(
-                self.connection, subject=t"the top-level {'connection':name} table"
-            )
         top_level = {"connection": self.connection.model_dump(exclude_unset=True)}
         if profile_name is None:
             return ResolvedProfileConfig.model_validate(top_level)
@@ -176,15 +166,28 @@ class _ConfigValues(BaseModel):
                 else:
                     values[key] = value
 
-        profile_config = ResolvedProfileConfig.model_validate(values)
-        if validate_password_source:
-            # The top-level table is valid, so any fault is the profile's.
-            _validate_password_source(
-                profile_config.connection,
-                subject=t"profile {profile_name:name}",
-                prefix="connection.",
-            )
-        return profile_config
+        return ResolvedProfileConfig.model_validate(values)
+
+    def reject_stored_password(self, profile_name: str | None = None) -> None:
+        """
+        Reject a `password` in the top-level `connection` table, or in the profile
+        or a profile it inherits. Not when loading: one profile's mistake mustn't
+        keep the others from running.
+        """
+        tables = {"connection": self.connection}
+        if profile_name is not None:
+            tables |= {
+                f"profile.{name}.connection": self.profile[name].connection
+                for name in self.inheritance_chain(profile_name)
+            }
+        for table, connection in tables.items():
+            if connection.password is not None:
+                raise StoredPasswordError(
+                    t"{f'{table}.password':name} must not be set, because passwords "
+                    t"must not be stored in configuration files; use "
+                    t"{'password_file':name}, {'password_fd':name}, or "
+                    t"{'password_keyring':name} instead"
+                )
 
     def inheritance_chain(self, profile_name: str) -> tuple[str, ...]:
         """Return the profile, then the profile it inherits, and so on."""
@@ -203,20 +206,6 @@ class _ConfigValues(BaseModel):
             chain.append(name)
             name = self.profile[name].inherit
         return tuple(chain)
-
-
-def _validate_password_source(
-    connection: PasswordConfig, *, subject: Template, prefix: str = ""
-) -> None:
-    """Check the password settings of `subject`, whose keys start with `prefix`."""
-    if connection.password is not None:
-        raise ProfilePasswordSourceError(
-            subject
-            + t" must not set {f'{prefix}password':name}, because passwords must "
-            t"not be stored in configuration files; use "
-            t"{f'{prefix}password_file':name}, {f'{prefix}password_fd':name}, or "
-            t"{f'{prefix}password_keyring':name} instead"
-        )
 
 
 # Settings that `EZHPCY_<NAME>` environment variables can't set: they're tables, and

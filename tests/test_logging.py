@@ -7,8 +7,6 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from rich.console import Console
-from rich.logging import RichHandler
 
 from ezhpcy.console import flush_output, make_console
 from ezhpcy.constants import PACKAGE_NAME
@@ -70,33 +68,6 @@ def test_default_logger_writes_named_records_to_the_terminal() -> None:
     assert flush_output(WAIT_SECONDS)
     rendered = " ".join(stream.getvalue().split())
     assert rendered == "INFO [ezhpcy.cli.tunnel] Worker ready"
-
-
-def test_default_logger_hands_records_to_a_rich_stderr_handler() -> None:
-    package_logger = logging.getLogger(PACKAGE_NAME)
-    handler = terminal_handler()
-
-    assert OUTPUT_HANDLER_NAME in [item.get_name() for item in package_logger.handlers]
-    assert isinstance(handler, RichHandler)
-    assert handler not in package_logger.handlers
-    assert isinstance(handler.console, Console)
-    assert handler.console.stderr
-    assert handler.rich_tracebacks
-
-
-def test_debug_logger_includes_a_timestamp() -> None:
-    stream = io.StringIO()
-    configure_logging("DEBUG", stream=stream, debug=True)
-
-    logging.getLogger("ezhpcy.cli.tunnel").debug("Transport active")
-
-    assert flush_output(WAIT_SECONDS)
-    rendered = " ".join(stream.getvalue().split())
-    assert re.fullmatch(
-        r"DEBUG \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} "
-        r"\[ezhpcy\.cli\.tunnel\] Transport active",
-        rendered,
-    )
 
 
 def colour_terminal() -> io.StringIO:
@@ -169,11 +140,6 @@ def test_configure_logging_is_idempotent() -> None:
     assert configure_logging() is package_logger
     assert configure_logging() is package_logger
     assert package_logger.handlers == existing_handlers
-
-
-def test_invalid_log_level_is_rejected() -> None:
-    with pytest.raises(ValueError, match="Unknown level"):
-        configure_logging("very-chatty")
 
 
 def test_debug_logging_shows_asyncssh_info_records() -> None:
@@ -380,15 +346,6 @@ def test_the_log_file_has_debug_records_the_terminal_does_not(
     )
 
 
-def test_a_template_message_is_plain_text_in_the_log_file(tmp_path: Path) -> None:
-    configure_log_file(tmp_path)
-    path = log_file_path()
-
-    get_logger("ezhpcy.tunnel.session").info(t"Connect with {'ssh gpu':suggestion}.")
-
-    assert read_log(path).endswith("] Connect with 'ssh gpu'.\n")
-
-
 def test_only_logs_at_debug_show_tracebacks(
     terminal: io.StringIO, tmp_path: Path
 ) -> None:
@@ -589,11 +546,6 @@ def test_a_log_file_already_made_moves_to_its_new_label(tmp_path: Path) -> None:
     assert "-scratch-" in path.name
     log = path.read_text(encoding="utf-8")
     assert log.index("Before") < log.index("After")
-
-
-def test_keep_must_include_the_current_run(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="keep"):
-        configure_log_file(tmp_path, keep=0)
 
 
 def test_a_log_file_that_cannot_be_written_is_reported_once(

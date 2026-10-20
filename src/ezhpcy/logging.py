@@ -96,13 +96,22 @@ class _OutputHandler(logging.Handler):
     """
     Hands each record to the output thread, which writes it with `handlers`, those
     at its level, as they are when it's logged.
+
+    Below `output_level`, the lowest level a log writes at, only `REPLAY_ON_ERROR`
+    records are handed over, to be kept: the logger makes every record the
+    terminal's replay might keep, and the rest needn't be copied and resolved.
     """
 
     def __init__(self) -> None:
         super().__init__()
         self.handlers: tuple[logging.Handler, ...] = ()
+        self.output_level = logging.NOTSET
 
     def emit(self, record: logging.LogRecord) -> None:
+        if record.levelno < self.output_level and not getattr(
+            record, "replay_on_error", False
+        ):
+            return
         # As every handler does: a record that can't be handled, such as one whose
         # arguments don't fit its message, is reported, not raised to the caller.
         try:
@@ -338,8 +347,6 @@ def configure_log_file(
     The records logged before the call are written first, to the previous file.
     """
     global _file_handler
-    if keep < 1:
-        raise ValueError(f"keep must be at least 1, not {keep}")
     handler = None
     if directory is not None:
         handler = _FileHandler(directory, keep=keep)
@@ -390,6 +397,9 @@ def _update_handlers() -> logging.Logger:
         _output_handler = _OutputHandler()
         _output_handler.set_name(OUTPUT_HANDLER_NAME)
     _output_handler.handlers = tuple(handlers)
+    _output_handler.output_level = min(
+        (output.level for output in outputs), default=logging.NOTSET
+    )
 
     package_logger = logging.getLogger(PACKAGE_NAME)
     # Without a handler, above every level, so that nothing is even handed over.

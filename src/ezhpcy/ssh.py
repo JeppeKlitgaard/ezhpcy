@@ -239,8 +239,7 @@ class RemoteHost:
 class ForwardedPort:
     """
     A loopback port whose connections are forwarded to `destination` (host, port)
-    from the login node (see `RemoteHost.forward_local_port`). `connections` is
-    how many are open.
+    from the login node (see `RemoteHost.forward_local_port`).
 
     Forwarded as asyncssh's own `forward_local_port` does, with its
     `SSHForwarder` at either end, but on a listener of our own, as asyncssh's
@@ -258,7 +257,7 @@ class ForwardedPort:
         self.conn = conn
         self.destination = destination
         self.port = 0
-        self.connections = 0
+        self._connections = 0
         self._on_connections = on_connections
         self._server: asyncio.Server | None = None
         # Kept, as the event loop keeps only weak references to tasks.
@@ -287,11 +286,6 @@ class ForwardedPort:
         if self._server is not None:
             self._server.close()
 
-    async def wait_closed(self) -> None:
-        """Wait until the port is closed, and its connections too."""
-        if self._server is not None:
-            await self._server.wait_closed()
-
     def start_opening(self, opening: Coroutine[object, object, None]) -> None:
         task = asyncio.create_task(opening)
         self._channels_opening.add(task)
@@ -301,14 +295,14 @@ class ForwardedPort:
         self._count(+1)
         logger.debug(
             t"Forwarded connection opened: client={client:endpoint} "
-            t"destination={self._endpoint:endpoint} open={self.connections:detail}"
+            t"destination={self._endpoint:endpoint} open={self._connections:detail}"
         )
 
     def connection_closed(self, client: str) -> None:
         self._count(-1)
         logger.debug(
             t"Forwarded connection closed: client={client:endpoint} "
-            t"open={self.connections:detail}"
+            t"open={self._connections:detail}"
         )
 
     @property
@@ -317,9 +311,9 @@ class ForwardedPort:
         return f"{host}:{port}"
 
     def _count(self, change: int) -> None:
-        self.connections += change
+        self._connections += change
         if self._on_connections is not None:
-            self._on_connections(self.connections)
+            self._on_connections(self._connections)
 
 
 class _Forwarder(asyncssh.SSHForwarder):

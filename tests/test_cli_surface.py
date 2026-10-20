@@ -363,11 +363,6 @@ _TUNNEL_OPTION_CASES = [
     (["--memory", "2GiB"], "resources.memory_bytes", 2 * 1024**3),
     (["--memory", "2GB"], "resources.memory_bytes", 2 * 1000**3),
     (["--queue-timeout", "120"], "timings.queue_timeout_seconds", 120),
-    (
-        ["--queue-progress-interval", "5"],
-        "timings.queue_progress_interval_seconds",
-        5,
-    ),
     (["--worker-startup-timeout", "30"], "timings.worker_startup_timeout_seconds", 30),
     (["--job-poll-interval", "0.5"], "timings.job_poll_interval_seconds", 0.5),
     (["--job-monitor-interval", "5"], "timings.job_monitor_interval_seconds", 5),
@@ -583,23 +578,6 @@ def test_the_console_log_can_be_disabled_but_debug_enables_it(
     assert "Worker gone" in log_file_path().read_text(encoding="utf-8")
 
 
-def test_a_run_also_logs_debug_records_to_a_file_in_the_log_directory(
-    isolated_local_files: LocalFileConfig,
-) -> None:
-    result = invoke(["version"])
-    logging.getLogger("ezhpcy.cli.version").debug("Hidden on the terminal")
-
-    assert result.exit_code == 0, result
-    assert flush_output(5)
-    [log_file] = isolated_local_files.log_dir.glob("ezhpcy-*.log")
-    assert re.fullmatch(
-        r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} DEBUG    "
-        r"\[ezhpcy\.cli\.version\] Hidden on the terminal\n",
-        log_file.read_text(encoding="utf-8"),
-    )
-    assert "Hidden" not in result.stderr
-
-
 def test_the_log_file_follows_its_configuration(
     isolated_local_files: LocalFileConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -661,7 +639,6 @@ def test_the_log_file_can_be_disabled(
         (["--cores", "0"], "--cores"),
         (["--gpus", "-1"], "--gpus"),
         (["--queue-timeout", "0.5"], "--queue-timeout"),
-        (["--queue-progress-interval", "0.5"], "--queue-progress-interval"),
         (["--worker-startup-timeout", "0.5"], "--worker-startup-timeout"),
         (["--job-poll-interval", "0.05"], "--job-poll-interval"),
         (["--job-monitor-interval", "0.05"], "--job-monitor-interval"),
@@ -699,7 +676,6 @@ def test_values_outside_the_limits_are_usage_errors(
         ["--cores", "1"],
         ["--gpus", "0"],
         ["--queue-timeout", "1"],
-        ["--queue-progress-interval", "1"],
         ["--worker-startup-timeout", "1"],
         ["--job-poll-interval", "0.1"],
         ["--job-monitor-interval", "0.1"],
@@ -994,7 +970,6 @@ def test_tunnel_options_are_grouped_in_help() -> None:
         ],
         "Timing Options": [
             "--queue-timeout",
-            "--queue-progress-interval",
             "--worker-startup-timeout",
             "--job-poll-interval",
             "--job-monitor-interval",

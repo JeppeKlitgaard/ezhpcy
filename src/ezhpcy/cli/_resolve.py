@@ -10,7 +10,7 @@ lazy from ezhpcy.cli._options import (
     given_options,
 )
 lazy from ezhpcy.cli._password import resolve_password
-lazy from ezhpcy.config import ProfilePasswordSourceError, config
+lazy from ezhpcy.config import StoredPasswordError, config
 lazy from ezhpcy.logging import label_log_file
 lazy from ezhpcy.types import (
     ConnectionConfig,
@@ -97,8 +97,9 @@ def resolve_profile_config(profile_name: str | None) -> ResolvedProfileConfig:
         # Profile names are safe as file names (`validate_alias`).
         label_log_file(profile_name)
     try:
+        config.reject_stored_password(profile_name)
         return config.resolve_profile(profile_name)
-    except ProfilePasswordSourceError as error:
+    except StoredPasswordError as error:
         raise CliUsageError(sentence(error.message)) from error
     except ValueError as error:
         raise CliUsageError(
@@ -125,7 +126,7 @@ def with_cli_options[SubConfigT: BaseModel](
         raise _validation_usage_error(error, flags) from error
 
 
-def _unless_disabled[T](value: T | Literal[False] | None) -> T | None:
+def unless_disabled[T](value: T | Literal[False] | None) -> T | None:
     """A password setting's value, or `None` if it is unset or `false`."""
     # `is`, since `0 == False`, and 0 is a valid descriptor.
     return None if value is False else value
@@ -166,8 +167,8 @@ def connection_from_cli(
         password_keyring=options.password_keyring,
         user=user,
         host=resolved_host,
-        config_password_file=_unless_disabled(configured.password_file),
-        config_password_fd=_unless_disabled(configured.password_fd),
+        config_password_file=unless_disabled(configured.password_file),
+        config_password_fd=unless_disabled(configured.password_fd),
         config_password_keyring=configured.password_keyring,
         password_prompt=configured.password_prompt,
         config_prefix=config_prefix or "connection",

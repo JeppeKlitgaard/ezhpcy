@@ -2,14 +2,14 @@ from dataclasses import dataclass
 from enum import StrEnum
 lazy import secrets
 lazy from collections.abc import Iterator
-lazy from pathlib import Path
 lazy from shutil import which
 lazy from string.templatelib import Template
 
 lazy from rich.text import Text
 
-from ezhpcy.config import Config, ProfilePasswordSourceError, config
+from ezhpcy.config import Config, StoredPasswordError, config
 lazy from ezhpcy.cli._errors import sentence
+lazy from ezhpcy.cli._resolve import unless_disabled
 lazy from ezhpcy.console import console
 lazy from ezhpcy.constants import LOOPBACK_HOST
 lazy from ezhpcy.messages import rich_text
@@ -60,16 +60,19 @@ def _check_profile(source: Config, profile_name: str | None) -> Check:
         else t"Profile {profile_name:name}"
     )
     try:
-        connection = source.resolve_profile(profile_name).connection
-    except ProfilePasswordSourceError as error:
+        source.reject_stored_password(profile_name)
+    except StoredPasswordError as error:
         return Check(
             Status.FAIL,
             subject + t" is invalid",
             hint=sentence(error.message),
         )
 
-    password_file = connection.password_file
-    if isinstance(password_file, Path) and not password_file.is_file():
+    connection = source.resolve_profile(profile_name).connection
+    password_file = unless_disabled(connection.password_file)
+    # `resolve_password` reads a descriptor first, and then never the file.
+    reads_file = unless_disabled(connection.password_fd) is None
+    if reads_file and password_file is not None and not password_file.is_file():
         return Check(
             Status.FAIL,
             subject + t" is invalid: {'connection.password_file':name} "
@@ -120,9 +123,7 @@ def _profile_aliases(source: Config) -> list[str]:
     """The profiles a tunnel can start from as they are: with a user and a host."""
     aliases = []
     for name in source.profile:
-        connection = source.resolve_profile(
-            name, validate_password_source=False
-        ).connection
+        connection = source.resolve_profile(name).connection
         if connection.user is not None and connection.host is not None:
             aliases.append(name)
     return aliases

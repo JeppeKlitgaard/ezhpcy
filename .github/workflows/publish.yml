@@ -30,9 +30,9 @@ jobs:
 
     # Optional, but recommended: run smoke tests on distributions
     - name: Smoke test (wheel)
-      run: uv run --isolated --no-project --with dist/*.whl tests/smoke_test.py
+      run: uv run --isolated --no-project --with dist/*.whl tests/test_smoke.py
     - name: Smoke test (source distribution)
-      run: uv run --isolated --no-project --with dist/*.tar.gz tests/smoke_test.py
+      run: uv run --isolated --no-project --with dist/*.tar.gz tests/test_smoke.py
 
     - name: Upload distributions as artefacts
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

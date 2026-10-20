@@ -38,7 +38,7 @@ format = [
     "ruff==0.17.1",
 ]
 pre-commit = [
-    "prek==0.5.5", # keep in sync with .github/workflows/pre-commit.yaml
+    "prek==0.5.6", # keep in sync with .github/workflows/pre-commit.yaml
     { include-group = "typecheck" }, # For pyrefly that uses pyrefly from deps
 ]
 test = [

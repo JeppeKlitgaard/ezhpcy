@@ -7,34 +7,59 @@ Technical University of Denmark ([DTU]).
 This allows the user to connect to the compute node using the remote server capabilities
 of their favourite editor.
 
-Key benefits:
-
-- If you use **notebooks**, **debuggers**, and other such editor features, they now run on the compute node instead of login node.
-- Any **terminals** you open in the connected editor are on the compute node.
-- Any LLM extensions now run on the compute not, not login node. This reduces congestion on the login nodes significantly.
-- Works with many editors and other tools (any compliant OpenSSH clients)
-
-It works for networks that have the following properties:
-
-- Compute nodes may or may not have OpenSSH server running
-- User can expose (large, non-root) port on compute nodes
-- Login node can be reached via SSH
-- Login node can reach compute nodes over network
-- Login node and compute node share a filesystem
-
-Both batch jobs and interactive jobs are supported, though you should probably only
-use interactive nodes to avoid invoking the ire of the HPC administrators and
-wasting scarce resources on the shared facility.
-
-Supported schedulers are:
-
-- [IBM Spectrum LSF]: Batch and interactive
-- [PBS Pro/OpenPBS]: Only interactive tested
+![ezhpcy tunnel submitting a worker job and opening an SSH session on the compute node](docs/demo.gif)
 
 **Please use EzHPCy responsibly!**
 If you are not familiar with HPC systems, please familiarise yourself with their
 operation and the guidelines of your local HPC system to avoid accidentally
 abusing the resources that have kindly and generously been made available to you.
+
+## Installation and Setup
+
+Assuming you already have [uv](https://docs.astral.sh/uv/#installation) installed:
+
+```sh
+# Install as a tool using uv
+uv tool install ezhpcy
+```
+
+At any point you can check your installation with:
+
+```sh
+ezhpcy doctor
+```
+
+You should set up a configuration; if you're from [DTU] there is a preset for you,
+otherwise use `generic` as the preset:
+
+```sh
+ezhpcy config load DTU --user YOUR_DTU_USERNAME
+```
+
+Where `YOUR_DTU_USERNAME` could be `s250250` or `fima`, as examples.
+
+You can then see the available profiles:
+
+```sh
+ezhpcy list-profiles
+```
+
+As an example, you can set up a tunnel to the `linuxsh` interactive queue using:
+
+```sh
+ezhpcy t dtu-a100sh
+```
+
+You may want to set up key-based authentication for the login node, if you haven't already.
+There are many guides on this online and if you will be using the HPC,
+you should be able to follow these. _If not, I am sure you can find a friendly colleague to help you out!_
+
+## Key Benefits
+
+- If you use **notebooks**, **debuggers**, and other such editor features, they now run on the compute node instead of login node.
+- Any **terminals** you open in the connected editor are on the compute node.
+- Any LLM extensions now run on the compute not, not login node. This reduces congestion on the login nodes significantly.
+- Works with many editors and other tools (any compliant OpenSSH clients)
 
 ## Coarse Overview
 
@@ -102,11 +127,24 @@ that users have some basic grasp of the terminal._
 
 ## Implementation
 
+It works for networks that have the following properties:
+
+- Compute nodes may or may not have OpenSSH server running
+- User can expose (large, non-root) port on compute nodes
+- Login node can be reached via SSH
+- Login node can reach compute nodes over network
+- Login node and compute node share a filesystem
+
+Both batch jobs and interactive jobs are supported, though you should probably only
+use interactive nodes to avoid invoking the ire of the HPC administrators and
+wasting scarce resources on the shared facility.
+
+Supported schedulers are:
+
+- [IBM Spectrum LSF]: Batch and interactive
+- [PBS Pro/OpenPBS]: Only interactive tested
+
 EzHPCy is unapologetically modern and requires Python 3.15 to run.
-
-## License
-
-EzHPCy is released under the [MIT License](LICENSE).
 
 ## History
 
@@ -128,6 +166,10 @@ for their HPC system, which used OpenSSH's
 The first decent versions of EzHPCy (v0.1, v0.2) also used `ProxyCommand` and
 a local TCP server in combination with a simple IPC protocol,
 which worked quite well, but was overly complex and had a larger attack surface.
+
+## License
+
+EzHPCy is released under the [MIT License](LICENSE).
 
 ## LLM Disclosure
 

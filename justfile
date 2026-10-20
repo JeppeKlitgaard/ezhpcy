@@ -58,10 +58,20 @@ coverage *args:
 check:
     uv run --group typecheck pyrefly check
 
+# Bumps the version (major, minor, patch, stable, alpha, beta, rc, post or dev; several combine) and commits it
+[group: 'release']
+bump +bumps:
+    git diff --exit-code HEAD -- pyproject.toml uv.lock
+    uv version {{ prepend("--bump=", bumps) }}
+    git commit --message "chore(version): release $(uv version --short)" -- pyproject.toml uv.lock
+
 # Tags HEAD on master as v<version in pyproject.toml> and pushes the tag, which publishes it to PyPI
 [group: 'release']
-[confirm("Tag HEAD as a release and push the tag? This publishes it to PyPI.")]
+[confirm("Tag HEAD as a release and push the tag? This publishes it to PyPI. (N/y): ")]
 tag-release:
     {{ if trim(`git branch --show-current`) != "master" { error("Releases are tagged on master.") } else { "" } }}
+    uv lock --check
+    git diff --exit-code HEAD -- uv.lock
+    just pc-all
     git tag --annotate v{{ trim(`uv version --short`) }} --message "v{{ trim(`uv version --short`) }}"
     git push origin v{{ trim(`uv version --short`) }}

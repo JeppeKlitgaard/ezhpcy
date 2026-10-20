@@ -1,7 +1,7 @@
 import re
 from datetime import timedelta
 from enum import StrEnum
-from typing import Annotated, ClassVar
+from typing import Annotated, ClassVar, Literal
 lazy import hashlib
 lazy import json
 lazy from pathlib import Path, PurePosixPath
@@ -25,9 +25,6 @@ lazy from ezhpcy.utils import local_machine_id
 
 _TIME_LIMIT_PATTERN = re.compile(r"^(?P<hours>\d+):(?P<minutes>\d{1,2})$")
 PositiveByteSize = Annotated[ByteSize, Field(gt=0)]
-PASSWORD_SOURCE_FIELDS = frozenset(
-    {"password", "password_file", "password_fd", "password_keyring"}
-)
 
 
 class SubmissionMode(StrEnum):
@@ -82,13 +79,18 @@ class _SubConfig(BaseModel):
 
 
 class PasswordConfig(_SubConfig):
-    """How to get the login-node password."""
+    """How to get the login-node password.
+
+    The sources are tried in this order, skipping those not set or disabled:
+    `password_fd`, `password_file`, `password_keyring`, then `password_prompt`.
+    """
 
     # Accepted only to reject it with a helpful message: passwords must not be
     # stored in configuration files.
     password: str | None = None
-    password_file: Path | None = None
-    password_fd: int | None = Field(default=None, ge=0)
+    # `false` disables an inherited file or descriptor: TOML has no null.
+    password_fd: Annotated[int, Strict(), Field(ge=0)] | Literal[False] | None = None
+    password_file: Path | Literal[False] | None = None
     password_keyring: bool = False
     password_prompt: bool = True
 

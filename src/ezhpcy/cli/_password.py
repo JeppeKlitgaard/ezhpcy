@@ -4,8 +4,11 @@ lazy from pathlib import Path
 lazy import keyring
 lazy from keyring.errors import KeyringError
 
+from ezhpcy.logging import get_logger
 lazy from ezhpcy.cli._errors import CliUsageError
 lazy from ezhpcy.cli._options import KEYRING_SERVICE_NAME
+
+logger = get_logger(__name__)
 
 
 def _without_trailing_line_endings(value: str) -> str:
@@ -38,22 +41,28 @@ def _read_password_fd(fd: int, *, source: str) -> str:
         ) from error
 
 
-def _read_password_keyring(*, user: str, host: str) -> str:
+def _read_password_keyring(
+    *, user: str, host: str, password_prompt: bool
+) -> str | None:
+    """Read the password from the keyring, or `None` to prompt for it instead."""
     account = f"{user}@{host}"
     try:
         password = keyring.get_password(KEYRING_SERVICE_NAME, account)
     except KeyringError as error:
-        raise CliUsageError(
-            t"Could not read the password from the system keyring: {error}."
-        ) from error
-
-    if password is None:
-        raise CliUsageError(
+        message = t"Could not read the password from the system keyring: {error}."
+    else:
+        if password is not None:
+            return password
+        message = (
             t"No password was found in the system keyring for service "
             t"{KEYRING_SERVICE_NAME:name} and account {account:name}. "
             t"Store one with {'ezhpcy keyring set':suggestion}."
         )
-    return password
+
+    if not password_prompt:
+        raise CliUsageError(message)
+    logger.warning(message + t" The password is asked for if needed.")
+    return None
 
 
 def resolve_password(
@@ -67,9 +76,16 @@ def resolve_password(
     config_password_file: Path | None = None,
     config_password_fd: int | None = None,
     config_password_keyring: bool = False,
+    password_prompt: bool = True,
     config_prefix: str = "connection",
 ) -> str | None:
-    """Resolve an explicit password source, then the profile's source.
+    """Resolve the password from the first enabled source that has one.
+
+    A source given on the command line replaces the configured ones, which are
+    tried in order: `password_fd`, `password_file`, then `password_keyring`.
+    The last resort is the prompt, if `password_prompt` allows it, which
+    `connect_interactive` shows only when the server asks for a password. So a
+    keyring without the password is passed over when prompting is allowed.
 
     `config_prefix` is where the profile's settings are, for error messages.
     """
@@ -82,20 +98,20 @@ def resolve_password(
     if password_fd is not None:
         return _read_password_fd(password_fd, source="--password-fd")
     if password_keyring:
-        return _read_password_keyring(user=user, host=host)
-
-    # At most one of password source is set since `Config.resolve_profile`
-    # rejects a profile that sets several.
-    # Thus no need to check again.
-
-    if config_password_file is not None:
-        return _read_password_file(
-            config_password_file, source=f"{config_prefix}.password_file"
+        return _read_password_keyring(
+            user=user, host=host, password_prompt=password_prompt
         )
+
     if config_password_fd is not None:
         return _read_password_fd(
             config_password_fd, source=f"{config_prefix}.password_fd"
         )
+    if config_password_file is not None:
+        return _read_password_file(
+            config_password_file, source=f"{config_prefix}.password_file"
+        )
     if config_password_keyring:
-        return _read_password_keyring(user=user, host=host)
+        return _read_password_keyring(
+            user=user, host=host, password_prompt=password_prompt
+        )
     return None

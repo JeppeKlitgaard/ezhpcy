@@ -27,11 +27,7 @@ lazy from pydantic.fields import FieldInfo
 from ezhpcy.constants import LOGIN_KNOWN_HOSTS_NAME, PACKAGE_NAME, SSH_DIRECTORY_NAME
 from ezhpcy.messages import MessageError
 from ezhpcy.types import PasswordConfig
-lazy from ezhpcy.types import (
-    PASSWORD_SOURCE_FIELDS,
-    ProfileConfig,
-    ResolvedProfileConfig,
-)
+lazy from ezhpcy.types import ProfileConfig, ResolvedProfileConfig
 lazy from ezhpcy.utils import ssh_connection_id
 
 _DIRS = PlatformDirs(PACKAGE_NAME, appauthor=False)
@@ -173,9 +169,6 @@ class _ConfigValues(BaseModel):
         for name in reversed(self.inheritance_chain(profile_name)):
             current = self.profile[name]
             current_values = current.model_dump(exclude={"inherit"}, exclude_unset=True)
-            if current.connection.model_fields_set & PASSWORD_SOURCE_FIELDS:
-                for field in PASSWORD_SOURCE_FIELDS:
-                    values.get("connection", {}).pop(field, None)
             for key, value in current_values.items():
                 # Sub-configs merge field by field; everything else is replaced.
                 if isinstance(value, dict):
@@ -223,21 +216,6 @@ def _validate_password_source(
             t"not be stored in configuration files; use "
             t"{f'{prefix}password_file':name}, {f'{prefix}password_fd':name}, or "
             t"{f'{prefix}password_keyring':name} instead"
-        )
-
-    selected_sources = [
-        f"{prefix}{name}"
-        for name, selected in (
-            ("password_file", connection.password_file is not None),
-            ("password_fd", connection.password_fd is not None),
-            ("password_keyring", connection.password_keyring),
-        )
-        if selected
-    ]
-    if len(selected_sources) > 1:
-        raise ProfilePasswordSourceError(
-            subject + t" has mutually exclusive password source settings: "
-            t"{selected_sources:name}"
         )
 
 

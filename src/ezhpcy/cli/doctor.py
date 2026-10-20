@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 lazy import secrets
 lazy from collections.abc import Iterator
+lazy from pathlib import Path
 lazy from shutil import which
 lazy from string.templatelib import Template
 
@@ -68,7 +69,7 @@ def _check_profile(source: Config, profile_name: str | None) -> Check:
         )
 
     password_file = connection.password_file
-    if password_file is not None and not password_file.is_file():
+    if isinstance(password_file, Path) and not password_file.is_file():
         return Check(
             Status.FAIL,
             subject + t" is invalid: {'connection.password_file':name} "

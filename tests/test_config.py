@@ -210,13 +210,14 @@ def test_profile_password_keyring_can_be_enabled() -> None:
     assert config.resolve_profile("base").connection.password_keyring is True
 
 
-def test_profile_password_sources_are_mutually_exclusive() -> None:
+def test_profile_password_sources_can_be_combined() -> None:
     config = config_module.Config.from_mapping(
         {
             "profile": {
                 "base": {
                     "connection": {
                         "password_file": "password.txt",
+                        "password_fd": 3,
                         "password_keyring": True,
                     }
                 }
@@ -224,11 +225,10 @@ def test_profile_password_sources_are_mutually_exclusive() -> None:
         }
     )
 
-    with pytest.raises(
-        ValueError,
-        match=r"connection\.password_file, connection\.password_keyring",
-    ):
-        config.resolve_profile("base")
+    connection = config.resolve_profile("base").connection
+    assert connection.password_file == Path("password.txt")
+    assert connection.password_fd == 3
+    assert connection.password_keyring is True
 
 
 def test_profile_password_is_rejected_to_keep_secrets_out_of_configuration() -> None:
@@ -242,7 +242,7 @@ def test_profile_password_is_rejected_to_keep_secrets_out_of_configuration() -> 
         config.resolve_profile("base")
 
 
-def test_profile_password_source_overrides_the_inherited_source() -> None:
+def test_profile_password_settings_are_inherited_one_by_one() -> None:
     config = config_module.Config.from_mapping(
         {
             "profile": {
@@ -250,20 +250,24 @@ def test_profile_password_source_overrides_the_inherited_source() -> None:
                     "connection": {
                         "user": "alice",
                         "password_keyring": True,
+                        "password_prompt": False,
                     }
                 },
                 "child": {
                     "inherit": "base",
-                    "connection": {"password_file": "password.txt"},
+                    "connection": {
+                        "password_file": "password.txt",
+                        "password_prompt": True,
+                    },
                 },
             }
         }
     )
 
     connection = config.resolve_profile("child").connection
-    assert connection.password_keyring is False
+    assert connection.password_keyring is True
     assert connection.password_file == Path("password.txt")
-    # Only the password source is replaced; the rest is still inherited.
+    assert connection.password_prompt is True
     assert connection.user == "alice"
 
 
@@ -285,18 +289,57 @@ def test_top_level_password_settings_are_inherited_by_every_profile() -> None:
         assert connection.user == "alice"
 
 
-def test_profile_password_source_overrides_the_top_level_source() -> None:
+def test_false_disables_an_inherited_password_file_or_fd() -> None:
+    config = config_module.Config.from_mapping(
+        {
+            "connection": {"password_file": "password.txt", "password_fd": 3},
+            "profile": {
+                "base": {"connection": {"password_file": False, "password_fd": False}},
+            },
+        }
+    )
+
+    connection = config.resolve_profile("base").connection
+    assert connection.password_file is False
+    assert connection.password_fd is False
+
+
+@pytest.mark.parametrize(
+    "connection",
+    [{"password_file": True}, {"password_fd": True}, {"password_fd": -1}],
+)
+def test_password_file_and_fd_take_false_but_not_true(
+    connection: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError):
+        config_module.Config.from_mapping({"connection": connection})
+
+
+def test_password_fd_zero_is_a_descriptor_not_false() -> None:
+    config = config_module.Config.from_mapping({"connection": {"password_fd": 0}})
+
+    assert config.resolve_profile(None).connection.password_fd == 0
+    assert config.resolve_profile(None).connection.password_fd is not False
+
+
+def test_profile_password_settings_override_the_top_level_ones_one_by_one() -> None:
     config = config_module.Config.from_mapping(
         {
             "connection": {"password_keyring": True, "password_prompt": False},
-            "profile": {"base": {"connection": {"password_file": "password.txt"}}},
+            "profile": {
+                "base": {
+                    "connection": {
+                        "password_file": "password.txt",
+                        "password_keyring": False,
+                    }
+                }
+            },
         }
     )
 
     connection = config.resolve_profile("base").connection
     assert connection.password_keyring is False
     assert connection.password_file == Path("password.txt")
-    # Only the password source is replaced; the prompt setting is still inherited.
     assert connection.password_prompt is False
 
 
@@ -313,38 +356,24 @@ def test_without_a_profile_only_the_top_level_settings_apply() -> None:
     assert connection.user is None
 
 
-@pytest.mark.parametrize(
-    ("connection", "message"),
-    [
-        (
-            {"password": "not-a-secret"},
-            (
-                r"top-level connection table must not set password, because "
-                r"passwords must not be stored"
-            ),
-        ),
-        (
-            {"password_file": "password.txt", "password_fd": 3},
-            (
-                r"top-level connection table has mutually exclusive password source "
-                r"settings: password_file, password_fd"
-            ),
-        ),
-    ],
-)
 @pytest.mark.parametrize("profile_name", [None, "base"])
 def test_invalid_top_level_password_settings_are_reported_as_top_level(
-    connection: dict[str, object], message: str, profile_name: str | None
+    profile_name: str | None,
 ) -> None:
     config = config_module.Config.from_mapping(
         {
-            "connection": connection,
-            # A profile's own source doesn't hide the fault in the top-level table.
+            "connection": {"password": "not-a-secret"},
             "profile": {"base": {"connection": {"password_keyring": True}}},
         }
     )
 
-    with pytest.raises(config_module.ProfilePasswordSourceError, match=message):
+    with pytest.raises(
+        config_module.ProfilePasswordSourceError,
+        match=(
+            r"top-level connection table must not set password, because "
+            r"passwords must not be stored"
+        ),
+    ):
         config.resolve_profile(profile_name)
 
 

@@ -377,8 +377,8 @@ def test_config_show_marks_inherited_and_default_settings(
         'inherit = "base"',
         'connection.user = "alice"  # from base',
         'connection.password_file = "password.txt"',
-        # Its own password source replaces the inherited one.
-        "connection.password_keyring = false  # default",
+        # Password settings are inherited one by one, like any other.
+        "connection.password_keyring = true  # from [connection]",
         "resources.cores = 4",
         "resources.gpus = 0  # default",
     ):

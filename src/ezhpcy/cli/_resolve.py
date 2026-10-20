@@ -1,5 +1,6 @@
 lazy from collections.abc import Mapping
 lazy from string.templatelib import Template
+lazy from typing import Literal
 
 lazy from pydantic import BaseModel, ValidationError
 
@@ -124,6 +125,12 @@ def with_cli_options[SubConfigT: BaseModel](
         raise _validation_usage_error(error, flags) from error
 
 
+def _unless_disabled[T](value: T | Literal[False] | None) -> T | None:
+    """A password setting's value, or `None` if it is unset or `false`."""
+    # `is`, since `0 == False`, and 0 is a valid descriptor.
+    return None if value is False else value
+
+
 def connection_from_cli(
     options: ConnectionOptions,
     configured: ConnectionConfig,
@@ -159,9 +166,10 @@ def connection_from_cli(
         password_keyring=options.password_keyring,
         user=user,
         host=resolved_host,
-        config_password_file=configured.password_file,
-        config_password_fd=configured.password_fd,
+        config_password_file=_unless_disabled(configured.password_file),
+        config_password_fd=_unless_disabled(configured.password_fd),
         config_password_keyring=configured.password_keyring,
+        password_prompt=configured.password_prompt,
         config_prefix=config_prefix or "connection",
     )
     try:

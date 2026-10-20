@@ -1,5 +1,9 @@
 name: Pre-Commit Checks
-on: [pull_request]
+on:
+  pull_request:
+  push:
+    branches:
+      - master
 
 # Note: we use prek (https://github.com/j178/prek) instead of pre-commit
 # prek is fully compatible, faster, and generally a better experience than pre-commit.

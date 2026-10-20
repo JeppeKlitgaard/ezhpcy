@@ -14,7 +14,7 @@ import pytest
 
 from ezhpcy import ssh
 from ezhpcy.constants import EZHPCY_VERSION, LOOPBACK_HOST, PIXI_VERSION
-from ezhpcy.ssh import RemoteHost
+from ezhpcy.ssh import ForwardedPort, RemoteHost
 from ezhpcy.types import ConnectionInfo, RemoteState
 from tests.support.sshserver import Invocation, SSHTestServer, StreamHandler, reply
 
@@ -419,14 +419,12 @@ def _closed_port() -> int:
 
 
 async def _open(
-    listener: asyncssh.SSHListener,
+    listener: ForwardedPort,
 ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
-    return await asyncio.open_connection(LOOPBACK_HOST, listener.get_port())
+    return await asyncio.open_connection(LOOPBACK_HOST, listener.port)
 
 
-async def _round_trip(
-    listener: asyncssh.SSHListener, payload: bytes = b"ping\n"
-) -> bytes:
+async def _round_trip(listener: ForwardedPort, payload: bytes = b"ping\n") -> bytes:
     """Send `payload` and EOF through `listener`, and return everything sent back."""
     reader, writer = await _open(listener)
     writer.write(payload)
@@ -437,7 +435,7 @@ async def _round_trip(
         writer.close()
 
 
-async def _refused(listener: asyncssh.SSHListener) -> bool:
+async def _refused(listener: ForwardedPort) -> bool:
     """
     Whether `listener` closes a connection without forwarding it. The client sees
     EOF, or a reset when the socket was closed before reading what it sent.
@@ -460,30 +458,35 @@ async def test_forward_local_port_listens_on_loopback(ssh_server: SSHTestServer)
         finally:
             writer.close()
 
-    assert listener.get_port() not in {0, port}
+    assert listener.port not in {0, port}
 
 
-async def test_forward_local_port_listens_on_no_other_address() -> None:
+async def test_forward_local_port_listens_on_no_other_address(
+    ssh_server: SSHTestServer, monkeypatch: pytest.MonkeyPatch
+):
     """
-    Connecting through loopback can't tell `127.0.0.1` from `0.0.0.0`, and
-    asyncssh's listener doesn't say what it is bound to, so check what it is asked.
+    Connecting through loopback can't tell `127.0.0.1` from `0.0.0.0`, so check
+    what the listener is asked to bind.
     """
-    asked: list[tuple[object, ...]] = []
+    loop = asyncio.get_running_loop()
+    create_server = loop.create_server
+    asked: list[tuple[object, object]] = []
 
-    class Connection:
-        async def forward_local_port(self, *args: object, **_kwargs: object) -> None:
-            asked.append(args)
+    async def recording_create_server(
+        factory: Any, host: object, port: object, **kwargs: Any
+    ) -> asyncio.Server:
+        asked.append((host, port))
+        return await create_server(factory, host, port, **kwargs)
 
-    host = RemoteHost(
-        cast(asyncssh.SSHClientConnection, Connection()),
-        ConnectionInfo.model_construct(user="alice", host="login.example.com"),
-        asyncio.get_running_loop().create_future(),
-    )
-
-    await host.forward_local_port("n-62-11-19", 2222)
+    monkeypatch.setattr(loop, "create_server", recording_create_server)
+    port = _closed_port()
+    ssh_server.allow_forwarding(port)
+    async with await _connect(ssh_server) as host:
+        listener = await host.forward_local_port(LOOPBACK_HOST, port)
+        listener.close()
 
     # A port the OS picks, on loopback only.
-    assert asked == [("127.0.0.1", 0, "n-62-11-19", 2222)]
+    assert asked == [("127.0.0.1", 0)]
 
 
 async def test_forward_local_port_passes_on_the_clients_eof(
@@ -560,33 +563,54 @@ async def test_forward_local_port_survives_a_refusing_destination(
             assert await _round_trip(listener) == b"ping\n"
 
 
-async def test_forward_local_port_calls_the_accept_handler(
+async def test_forward_local_port_counts_the_open_connections(
     ssh_server: SSHTestServer,
 ):
-    clients: list[tuple[str, int]] = []
+    counts: list[int] = []
+    all_closed = asyncio.Event()
 
-    def accept(client_host: str, client_port: int) -> bool:
-        clients.append((client_host, client_port))
-        return len(clients) == 1
+    def count(connections: int) -> None:
+        counts.append(connections)
+        if connections == 0:
+            all_closed.set()
 
     async with (
         _destination(ssh_server, _echo) as port,
         await _connect(ssh_server) as host,
     ):
         listener = await host.forward_local_port(
-            LOOPBACK_HOST, port, accept_handler=accept
+            LOOPBACK_HOST, port, on_connections=count
         )
-        reader, writer = await _open(listener)
-        client = writer.get_extra_info("sockname")[:2]
-        writer.write(b"ping\n")
-        writer.write_eof()
-        assert await asyncio.wait_for(reader.read(), WAIT_SECONDS) == b"ping\n"
-        writer.close()
-        # Refused by the handler: closed without reaching the destination.
+        first = await _open(listener)
+        second = await _open(listener)
+        for reader, writer in (first, second):
+            writer.write(b"ping\n")
+            assert await asyncio.wait_for(reader.readline(), WAIT_SECONDS) == b"ping\n"
+        assert listener.connections == 2
+
+        for reader, writer in (first, second):
+            writer.write_eof()
+            assert await asyncio.wait_for(reader.read(), WAIT_SECONDS) == b""
+            writer.close()
+        await asyncio.wait_for(all_closed.wait(), WAIT_SECONDS)
+
+    assert counts == [1, 2, 1, 0]
+
+
+async def test_a_connection_that_cannot_be_forwarded_is_not_counted_as_open(
+    ssh_server: SSHTestServer,
+):
+    port = _closed_port()
+    ssh_server.allow_forwarding(port)
+    counts: list[int] = []
+    async with await _connect(ssh_server) as host:
+        listener = await host.forward_local_port(
+            LOOPBACK_HOST, port, on_connections=counts.append
+        )
         assert await _refused(listener)
 
-    assert clients[0] == client
-    assert len(clients) == 2
+    assert counts == [1, 0]
+    assert listener.connections == 0
 
 
 async def test_closing_the_forwarded_port_keeps_open_connections(

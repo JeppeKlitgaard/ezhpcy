@@ -14,8 +14,7 @@ from pathlib import Path
 import pytest
 
 from ezhpcy.cli.utils.prompt import ask
-from ezhpcy.console import make_console
-from ezhpcy.logging import flush_logs
+from ezhpcy.console import flush_output, make_console
 from tests.support.terminal import SlowLogTerminal, terminal_handler
 
 # How long a test waits for something that should happen at once.
@@ -116,7 +115,7 @@ def test_the_records_logged_before_a_prompt_come_before_it(
     logging.getLogger("ezhpcy.cli.utils.ssh").warning("Could not save the host key")
     ask(prompt)
 
-    assert flush_logs(WAIT_SECONDS)
+    assert flush_output(WAIT_SECONDS)
     output = terminal.getvalue()
     assert output.index("Could not save the host key") < output.index("Password: ")
 

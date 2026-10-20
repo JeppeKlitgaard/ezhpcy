@@ -2,7 +2,7 @@ import pytest
 from rich.style import Style
 from rich.text import Text
 
-from ezhpcy.messages import MessageError, plain, rich_text
+from ezhpcy.messages import MessageError, duration, plain, rich_text
 
 
 def styled_runs(text: Text) -> list[tuple[str, str | Style]]:
@@ -78,6 +78,32 @@ def test_an_endpoint_s_host_separator_and_port_are_styled_apart() -> None:
     ]
 
 
+def test_a_target_is_styled_as_a_suggestion_without_quotes() -> None:
+    alias = "dtu-a100sh"
+
+    text = rich_text(t"Connect with {'ssh':detail} {alias:target}")
+
+    assert text.plain == "Connect with ssh dtu-a100sh"
+    assert styled_runs(text) == [("ssh", "bold cyan"), ("dtu-a100sh", "bold green")]
+
+
 def test_an_unknown_kind_is_rejected() -> None:
     with pytest.raises(ValueError, match="unknown message part kind: 'g'"):
         plain(t"{30.0:g}")
+
+
+@pytest.mark.parametrize(
+    ("seconds", "shown"),
+    [
+        (0, "0 s"),
+        (45.4, "45 s"),
+        (59.6, "1 min 0 s"),
+        (150, "2 min 30 s"),
+        (3599.6, "1 h 0 min"),
+        (3600 + 5 * 60 + 29, "1 h 5 min"),
+    ],
+)
+def test_durations_are_shown_in_hours_minutes_and_seconds(
+    seconds: float, shown: str
+) -> None:
+    assert duration(seconds) == shown

@@ -19,7 +19,7 @@ import pytest
 from ezhpcy.config import LocalFileConfig, config
 from ezhpcy.logging import (
     ASYNCSSH_LOGGER_NAME,
-    LOG_QUEUE_HANDLER_NAME,
+    OUTPUT_HANDLER_NAME,
     configure_log_file,
     configure_logging,
 )
@@ -109,5 +109,5 @@ def _detach_asyncssh_logger() -> None:
     logger = logging.getLogger(ASYNCSSH_LOGGER_NAME)
     logger.setLevel(logging.NOTSET)
     for handler in list(logger.handlers):
-        if handler.get_name() == LOG_QUEUE_HANDLER_NAME:
+        if handler.get_name() == OUTPUT_HANDLER_NAME:
             logger.removeHandler(handler)

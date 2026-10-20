@@ -1,16 +1,9 @@
 """
 EzHPCy's terminal log, and each run's log file.
 
-Records go through a queue to a thread that formats and writes them, so that
-logging never blocks the event loop. A terminal can stop taking output: a
-selection in a Windows console window, Ctrl+S in a POSIX terminal, a pager that
-stops reading. Written from the loop, that froze the whole tunnel (FINDINGS.md,
-"Phase 4").
-
-Output written straight to the terminal, such as a prompt, calls `flush_logs`
-first, so that it comes after the records logged before it. The records go
-through the CLI's `error_console` too, whose prints flush the log first; from
-the log's own thread, a flush returns at once.
+Records are handed to the output thread (see `ezhpcy.console`), which formats and
+writes them, so that logging never waits for the terminal, and the event loop
+with it. `ezhpcy.console.flush_output` waits until they are written.
 
 EzHPCy's modules log through `get_logger`, which also takes a message as a
 template (see `ezhpcy.messages`): `logger.info(t"Run {'ssh gpu':suggestion}.")`.
@@ -27,12 +20,9 @@ the last of them, and shows them before the next ERROR record.
 """
 
 import logging
-import threading
-from logging.handlers import QueueHandler, QueueListener
-lazy import atexit
 lazy import copy
+lazy import functools
 lazy import os
-lazy import queue
 lazy import time
 lazy from collections import deque
 lazy from collections.abc import MutableMapping
@@ -44,14 +34,19 @@ lazy from typing import Any, TextIO
 from rich.logging import RichHandler
 lazy from rich.text import Text
 
-lazy from ezhpcy.console import error_console, make_console
+lazy from ezhpcy.console import (
+    error_console,
+    flush_output,
+    make_console,
+    write_later,
+)
 lazy from ezhpcy.constants import PACKAGE_NAME
 lazy from ezhpcy.messages import plain, rich_text
 lazy from ezhpcy.permissions import private_directory
 
 TERMINAL_HANDLER_NAME = "ezhpcy-terminal"
 FILE_HANDLER_NAME = "ezhpcy-file"
-LOG_QUEUE_HANDLER_NAME = "ezhpcy-log-queue"
+OUTPUT_HANDLER_NAME = "ezhpcy-output"
 LOG_FORMAT = "[%(name)s] %(message)s"
 LOG_FILE_FORMAT = "%(asctime)s.%(msecs)03d %(levelname)-8s [%(name)s] %(message)s"
 LOG_FILE_PATTERN = "ezhpcy-*.log"
@@ -67,8 +62,7 @@ REPLAYED_RECORDS = 1000
 _terminal_handler: _TerminalHandler | None = None
 _terminal_replay: _Replay | None = None
 _terminal_enabled = True
-_queue_handler: QueueHandler | None = None
-_listener: _Listener | None = None
+_output_handler: _OutputHandler | None = None
 # Replaced by each `configure_log_file`.
 _file_handler: _FileHandler | None = None
 
@@ -98,41 +92,48 @@ class _LogMessage:
         return plain(self.template)
 
 
-class _Flushed:
-    """Queued after the records to flush; set once the listener gets to it."""
+class _OutputHandler(logging.Handler):
+    """
+    Hands each record to the output thread, which writes it with `handlers`, those
+    at its level, as they are when it's logged.
+    """
 
     def __init__(self) -> None:
-        self.event = threading.Event()
+        super().__init__()
+        self.handlers: tuple[logging.Handler, ...] = ()
+
+    def emit(self, record: logging.LogRecord) -> None:
+        # As every handler does: a record that can't be handled, such as one whose
+        # arguments don't fit its message, is reported, not raised to the caller.
+        try:
+            resolved = _resolved(record)
+        # ruff: ignore[BLE001]  # Reported by `handleError`, as `QueueHandler` does
+        except Exception:
+            self.handleError(record)
+            return
+        write_later(functools.partial(_write, resolved, self.handlers))
 
 
-class _Listener(QueueListener):
-    def handle(self, record: logging.LogRecord | _Flushed) -> None:
-        _in_listener.active = True
-        if isinstance(record, _Flushed):
-            record.event.set()
-        else:
-            super().handle(record)
+def _resolved(record: logging.LogRecord) -> logging.LogRecord:
+    """
+    A copy of `record` with its message resolved, as its arguments may change
+    before the output thread formats it. Its exception stays, for Rich to render
+    as a traceback.
+
+    A template message keeps its template, for the terminal handler to style.
+    """
+    record = copy.copy(record)
+    if isinstance(record.msg, _LogMessage):
+        record.template = record.msg.template
+    record.msg = record.getMessage()
+    record.args = None
+    return record
 
 
-# Set in the listener's thread, where a flush would wait for itself.
-_in_listener = threading.local()
-
-
-class _QueueHandler(QueueHandler):
-    def prepare(self, record: logging.LogRecord) -> logging.LogRecord:
-        """
-        Resolve the message now, as its arguments may change before the listener
-        formats it. The default would also format it, which the terminal handler
-        does, and drop the exception, which Rich renders as a traceback.
-
-        A template message keeps its template, for the terminal handler to style.
-        """
-        record = copy.copy(record)
-        if isinstance(record.msg, _LogMessage):
-            record.template = record.msg.template
-        record.msg = record.getMessage()
-        record.args = None
-        return record
+def _write(record: logging.LogRecord, handlers: tuple[logging.Handler, ...]) -> None:
+    for handler in handlers:
+        if record.levelno >= handler.level:
+            handler.handle(record)
 
 
 class _DebugDetail(logging.Filter):
@@ -222,7 +223,7 @@ class _FileHandler(logging.FileHandler):
     def relabel(self, label: str) -> None:
         """Name the file after `label`, moving it if it's made."""
         path = self._path(label)
-        # Holds off `emit`, in the log's thread.
+        # Holds off `emit`, in the output thread.
         self.acquire()
         try:
             if self.stream is None:
@@ -249,8 +250,8 @@ class _FileHandler(logging.FileHandler):
                 _remove_old_logs(path.parent, keep=self.keep - 1)
                 self.stream = self._open()
             except OSError as error:
-                # Not raised, which would end the log's thread. The warning comes
-                # back here, to be dropped with the rest.
+                # Reported once, rather than raised for every record. The warning
+                # comes back here, to be dropped with the rest.
                 self.failed = True
                 logger.warning(t"Could not write the log file {path:path}: {error}")
                 return
@@ -297,7 +298,7 @@ def configure_logging(
     stream and format. The records it kept to show before an error are dropped.
     """
     global _terminal_handler, _terminal_replay, _terminal_enabled
-    flush_logs()
+    flush_output()
     _terminal_enabled = enabled
 
     if _terminal_handler is None or _terminal_replay is None:
@@ -349,12 +350,12 @@ def configure_log_file(
         )
         handler.detail.asyncssh = handler.level <= logging.DEBUG
 
-    flush_logs()
+    flush_output()
     previous, _file_handler = _file_handler, handler
     _update_handlers()
     if previous is not None:
         # Once it has written what it was handed.
-        flush_logs()
+        flush_output()
         previous.close()
 
 
@@ -374,7 +375,7 @@ def _update_handlers() -> logging.Logger:
 
     asyncssh's INFO records go to them too, if one shows them.
     """
-    global _queue_handler, _listener
+    global _output_handler
     # What writes the records, and the handlers that hand them over: the
     # terminal's go through its replay.
     outputs: list[_TerminalHandler | _FileHandler] = []
@@ -385,50 +386,28 @@ def _update_handlers() -> logging.Logger:
     if _file_handler is not None:
         outputs.append(_file_handler)
         handlers.append(_file_handler)
-    if _queue_handler is None or _listener is None:
-        records: queue.SimpleQueue[logging.LogRecord | _Flushed] = queue.SimpleQueue()
-        _queue_handler = _QueueHandler(records)
-        _queue_handler.set_name(LOG_QUEUE_HANDLER_NAME)
-        _listener = _Listener(records, respect_handler_level=True)
-        # As `logging.config.dictConfig` sets it, so the handlers can be found from
-        # the logger.
-        _queue_handler.listener = _listener
-        _listener.start()
-        # The listener's thread is a daemon: write what is left before exiting.
-        atexit.register(flush_logs)
-    _listener.handlers = tuple(handlers)
+    if _output_handler is None:
+        _output_handler = _OutputHandler()
+        _output_handler.set_name(OUTPUT_HANDLER_NAME)
+    _output_handler.handlers = tuple(handlers)
 
     package_logger = logging.getLogger(PACKAGE_NAME)
-    # Without a handler, above every level, so that nothing is even queued.
+    # Without a handler, above every level, so that nothing is even handed over.
     package_logger.setLevel(
         min((handler.level for handler in handlers), default=logging.CRITICAL + 1)
     )
     package_logger.propagate = False
-    if _queue_handler not in package_logger.handlers:
-        package_logger.addHandler(_queue_handler)
+    if _output_handler not in package_logger.handlers:
+        package_logger.addHandler(_output_handler)
 
     # Only asyncssh's INFO records (connections, authentication, channels): its
     # debug records are packet-level detail, and it never logs above INFO.
     asyncssh_logger = logging.getLogger(ASYNCSSH_LOGGER_NAME)
-    asyncssh_logger.removeHandler(_queue_handler)
+    asyncssh_logger.removeHandler(_output_handler)
     if any(output.detail.asyncssh for output in outputs):
         asyncssh_logger.setLevel(logging.INFO)
-        asyncssh_logger.addHandler(_queue_handler)
+        asyncssh_logger.addHandler(_output_handler)
     else:
         asyncssh_logger.setLevel(logging.NOTSET)
 
     return package_logger
-
-
-def flush_logs(timeout: float | None = None) -> bool:
-    """
-    Wait until the records logged so far are written, for at most `timeout`
-    seconds, and return whether they were. Blocks while the terminal doesn't take
-    output, so call it from the event loop only where that may block it, e.g.
-    before a prompt.
-    """
-    if _listener is None or getattr(_in_listener, "active", False):
-        return True
-    flushed = _Flushed()
-    _listener.queue.put_nowait(flushed)
-    return flushed.event.wait(timeout)

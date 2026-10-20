@@ -20,7 +20,8 @@ from ezhpcy import console as consoles
 lazy from ezhpcy.cli._errors import CliUsageError
 lazy from ezhpcy.cli._options import DEBUG_ENV_VAR
 lazy from ezhpcy.config import config as ezhpcy_config  # To avoid shadowing
-lazy from ezhpcy.logging import configure_log_file, configure_logging, flush_logs
+lazy from ezhpcy.console import flush_output
+lazy from ezhpcy.logging import configure_log_file, configure_logging
 
 
 def _format_error(error: CycloptsError) -> Panel:
@@ -241,4 +242,4 @@ def main(
         error_console.print(CycloptsPanel(error.__rich__()))
         sys.exit(2)
     finally:
-        flush_logs()
+        flush_output()

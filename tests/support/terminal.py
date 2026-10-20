@@ -2,17 +2,20 @@
 
 import io
 import logging
-import logging.handlers
 import threading
 import time
 from pathlib import Path
+from typing import TextIO
 
+import pytest
 from rich.logging import RichHandler
 
+from ezhpcy import console as consoles
+from ezhpcy.console import make_console
 from ezhpcy.constants import PACKAGE_NAME
 from ezhpcy.logging import (
     FILE_HANDLER_NAME,
-    LOG_QUEUE_HANDLER_NAME,
+    OUTPUT_HANDLER_NAME,
     TERMINAL_HANDLER_NAME,
 )
 
@@ -21,17 +24,15 @@ _WAIT_SECONDS = 5
 
 
 def log_handlers() -> dict[str, logging.Handler]:
-    """The handlers that write the queued records, by name."""
-    [queue_handler] = [
+    """The handlers that the output thread writes the records with, by name."""
+    [output_handler] = [
         handler
         for handler in logging.getLogger(PACKAGE_NAME).handlers
-        if handler.get_name() == LOG_QUEUE_HANDLER_NAME
+        if handler.get_name() == OUTPUT_HANDLER_NAME
     ]
-    assert isinstance(queue_handler, logging.handlers.QueueHandler)
-    assert queue_handler.listener is not None
-    return {
-        handler.get_name() or "": handler for handler in queue_handler.listener.handlers
-    }
+    handlers = getattr(output_handler, "handlers", None)
+    assert isinstance(handlers, tuple)
+    return {handler.get_name() or "": handler for handler in handlers}
 
 
 def terminal_handler() -> RichHandler:
@@ -42,6 +43,22 @@ def terminal_handler() -> RichHandler:
     handler = getattr(log_handlers()[TERMINAL_HANDLER_NAME], "target", None)
     assert isinstance(handler, RichHandler)
     return handler
+
+
+def use_terminal(monkeypatch: pytest.MonkeyPatch, stream: TextIO) -> None:
+    """
+    Write the log, and show live displays, on `stream` as on a terminal: one that
+    takes cursor movements, but no colour, so that what it shows can be read off.
+    """
+    terminal = make_console(
+        file=stream,
+        force_terminal=True,
+        color_system=None,
+        width=120,
+        legacy_windows=False,
+    )
+    monkeypatch.setattr(consoles, "error_console", terminal)
+    monkeypatch.setattr(terminal_handler(), "console", terminal)
 
 
 def file_handler() -> logging.FileHandler | None:
@@ -68,7 +85,7 @@ class GatedTerminal(io.StringIO):
 
 class SlowLogTerminal(io.StringIO):
     """
-    Takes a while to take each log record, written from the log's thread, but
+    Takes a while to take each log record, written from the output thread, but
     takes the main thread's output at once. Without a flush, that output would
     come before records logged earlier.
     """

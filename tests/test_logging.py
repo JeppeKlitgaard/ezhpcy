@@ -4,23 +4,21 @@ import os
 import re
 import time
 from collections.abc import Iterator
-from logging.handlers import QueueHandler
 from pathlib import Path
 
 import pytest
 from rich.console import Console
 from rich.logging import RichHandler
 
-from ezhpcy.console import make_console
+from ezhpcy.console import flush_output, make_console
 from ezhpcy.constants import PACKAGE_NAME
 from ezhpcy.logging import (
     ASYNCSSH_LOGGER_NAME,
-    LOG_QUEUE_HANDLER_NAME,
+    OUTPUT_HANDLER_NAME,
     REPLAY_ON_ERROR,
     REPLAYED_RECORDS,
     configure_log_file,
     configure_logging,
-    flush_logs,
     get_logger,
     label_log_file,
 )
@@ -57,9 +55,9 @@ def gated_stream() -> Iterator[GatedTerminal]:
     stream = GatedTerminal()
     configure_logging("INFO", stream=stream)
     yield stream
-    # Never leave the log's thread waiting for the next test.
+    # Never leave the output thread waiting for the next test.
     stream.opened.set()
-    assert flush_logs(WAIT_SECONDS)
+    assert flush_output(WAIT_SECONDS)
 
 
 def test_default_logger_writes_named_records_to_the_terminal() -> None:
@@ -69,21 +67,16 @@ def test_default_logger_writes_named_records_to_the_terminal() -> None:
     logging.getLogger("ezhpcy.cli.tunnel").info("Worker ready")
 
     assert configured is logging.getLogger(PACKAGE_NAME)
-    assert flush_logs(WAIT_SECONDS)
+    assert flush_output(WAIT_SECONDS)
     rendered = " ".join(stream.getvalue().split())
     assert rendered == "INFO [ezhpcy.cli.tunnel] Worker ready"
 
 
-def test_default_logger_queues_records_for_a_rich_stderr_handler() -> None:
+def test_default_logger_hands_records_to_a_rich_stderr_handler() -> None:
     package_logger = logging.getLogger(PACKAGE_NAME)
-    [queue_handler] = [
-        item
-        for item in package_logger.handlers
-        if item.get_name() == LOG_QUEUE_HANDLER_NAME
-    ]
     handler = terminal_handler()
 
-    assert isinstance(queue_handler, QueueHandler)
+    assert OUTPUT_HANDLER_NAME in [item.get_name() for item in package_logger.handlers]
     assert isinstance(handler, RichHandler)
     assert handler not in package_logger.handlers
     assert isinstance(handler.console, Console)
@@ -97,7 +90,7 @@ def test_debug_logger_includes_a_timestamp() -> None:
 
     logging.getLogger("ezhpcy.cli.tunnel").debug("Transport active")
 
-    assert flush_logs(WAIT_SECONDS)
+    assert flush_output(WAIT_SECONDS)
     rendered = " ".join(stream.getvalue().split())
     assert re.fullmatch(
         r"DEBUG \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} "
@@ -128,7 +121,7 @@ def test_a_log_message_is_styled_on_the_terminal() -> None:
         t"Connect with {'ssh scratch':suggestion}."
     )
 
-    assert flush_logs(WAIT_SECONDS)
+    assert flush_output(WAIT_SECONDS)
     output = stream.getvalue()
     assert "\x1b[1;32m'ssh scratch'\x1b[0m" in output
     rendered = " ".join(re.sub(r"\x1b\[[0-9;]*m", "", output).split())
@@ -143,7 +136,7 @@ def test_only_the_marked_parts_of_a_log_message_are_styled() -> None:
     logger.info("Waiting for worker SSH endpoint %s.", "n-62-12-19:58395")
     logger.info(t"Waiting for worker SSH endpoint {'n-62-12-19:58395':endpoint}.")
 
-    assert flush_logs(WAIT_SECONDS)
+    assert flush_output(WAIT_SECONDS)
     unmarked, marked = stream.getvalue().splitlines()
     assert "] Waiting for worker SSH endpoint n-62-12-19:58395. " in unmarked
     assert (
@@ -191,7 +184,7 @@ def test_debug_logging_shows_asyncssh_info_records() -> None:
     asyncssh_logger.info("Opening SSH connection")
     asyncssh_logger.debug("Sending packet")
 
-    assert flush_logs(WAIT_SECONDS)
+    assert flush_output(WAIT_SECONDS)
     rendered = " ".join(stream.getvalue().split())
     assert re.fullmatch(r"INFO \S+ \S+ \[asyncssh\] Opening SSH connection", rendered)
 
@@ -205,7 +198,7 @@ def test_asyncssh_records_are_not_shown_without_debug_logging(level: str) -> Non
 
     logging.getLogger(ASYNCSSH_LOGGER_NAME).info("Opening SSH connection")
 
-    assert flush_logs(WAIT_SECONDS)
+    assert flush_output(WAIT_SECONDS)
     assert stream.getvalue() == ""
     assert logging.getLogger(ASYNCSSH_LOGGER_NAME).handlers == []
 
@@ -218,7 +211,7 @@ def test_records_logged_before_reconfiguring_keep_their_stream_and_format() -> N
     configure_logging("INFO", stream=second)
     logging.getLogger("ezhpcy.cli.tunnel").info("After")
 
-    assert flush_logs(WAIT_SECONDS)
+    assert flush_output(WAIT_SECONDS)
     assert re.fullmatch(
         r"DEBUG \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \[ezhpcy\.cli\.tunnel\] Before",
         " ".join(first.getvalue().split()),
@@ -234,10 +227,37 @@ def test_a_terminal_that_takes_no_output_does_not_block_logging(
         logging.getLogger("ezhpcy.tunnel.session").info("Record %d", number)
 
     assert time.perf_counter() - started < 1
-    assert not flush_logs(0.05)
+    assert not flush_output(0.05)
     gated_stream.opened.set()
-    assert flush_logs(WAIT_SECONDS)
+    assert flush_output(WAIT_SECONDS)
     assert "Record 99" in gated_stream.getvalue()
+
+
+def test_a_record_whose_arguments_do_not_fit_is_reported_not_raised(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """
+    As by the standard library's handlers: logging never fails its caller. Handled
+    directly, as pytest's own handler raises instead.
+    """
+    [output_handler] = [
+        handler
+        for handler in logging.getLogger(PACKAGE_NAME).handlers
+        if handler.get_name() == OUTPUT_HANDLER_NAME
+    ]
+    record = logging.LogRecord(
+        "ezhpcy.tunnel.session",
+        logging.INFO,
+        __file__,
+        1,
+        "count %d",
+        ("not a number",),
+        None,
+    )
+
+    output_handler.handle(record)
+
+    assert "--- Logging error ---" in capsys.readouterr().err
 
 
 def test_the_message_is_the_one_at_the_time_of_logging(
@@ -248,7 +268,7 @@ def test_the_message_is_the_one_at_the_time_of_logging(
     hosts.append("changed later")
 
     gated_stream.opened.set()
-    assert flush_logs(WAIT_SECONDS)
+    assert flush_output(WAIT_SECONDS)
     assert "Hosts: ['n-62-11-19']" in gated_stream.getvalue()
 
 
@@ -261,24 +281,24 @@ def test_console_output_comes_after_the_records_logged_before_it() -> None:
     logging.getLogger("ezhpcy.cli.doctor").warning("Could not read the profile")
     console.print("Error: no tunnel")
 
-    assert flush_logs(WAIT_SECONDS)
+    assert flush_output(WAIT_SECONDS)
     output = terminal.getvalue()
     assert output.index("Could not read the profile") < output.index("Error: no tunnel")
 
 
-def test_a_flush_from_the_logs_own_thread_returns_at_once() -> None:
+def test_a_flush_from_the_output_thread_returns_at_once() -> None:
     """As a print would, through the CLI's consoles, from within a log record."""
     flushed: list[bool] = []
 
     class FlushingTerminal(io.StringIO):
         def write(self, text: str) -> int:
-            flushed.append(flush_logs(WAIT_SECONDS))
+            flushed.append(flush_output(WAIT_SECONDS))
             return super().write(text)
 
     configure_logging("INFO", stream=FlushingTerminal())
     logging.getLogger("ezhpcy.cli.tunnel").info("Worker ready")
 
-    assert flush_logs(WAIT_SECONDS)
+    assert flush_output(WAIT_SECONDS)
     assert flushed
     assert all(flushed)
 
@@ -296,7 +316,7 @@ def test_a_logged_exception_keeps_its_traceback_at_debug() -> None:
 
     log_exception()
 
-    assert flush_logs(WAIT_SECONDS)
+    assert flush_output(WAIT_SECONDS)
     rendered = stream.getvalue()
     assert "Traceback" in rendered
     assert "RuntimeError: worker gone" in rendered
@@ -313,7 +333,7 @@ def terminal() -> io.StringIO:
 
 
 def read_log(path: Path) -> str:
-    assert flush_logs(WAIT_SECONDS)
+    assert flush_output(WAIT_SECONDS)
     return path.read_text(encoding="utf-8")
 
 
@@ -410,7 +430,7 @@ def test_a_log_file_above_debug_has_no_asyncssh_records(tmp_path: Path) -> None:
 
 
 def lines(terminal: io.StringIO) -> list[str]:
-    assert flush_logs(WAIT_SECONDS)
+    assert flush_output(WAIT_SECONDS)
     return [" ".join(line.split()) for line in terminal.getvalue().splitlines()]
 
 
@@ -531,7 +551,7 @@ def test_the_most_recently_written_log_files_are_kept(tmp_path: Path) -> None:
     path = log_file_path()
     logging.getLogger("ezhpcy.cli.tunnel").info("Worker ready")
 
-    assert flush_logs(WAIT_SECONDS)
+    assert flush_output(WAIT_SECONDS)
     assert sorted(item.name for item in tmp_path.iterdir()) == sorted(
         [
             "ezhpcy-20260101-000000-1.log",
@@ -548,7 +568,7 @@ def test_the_log_file_is_named_after_its_label(tmp_path: Path) -> None:
     label_log_file("base")
     logging.getLogger("ezhpcy.cli.tunnel").info("Worker ready")
 
-    assert flush_logs(WAIT_SECONDS)
+    assert flush_output(WAIT_SECONDS)
     [path] = tmp_path.iterdir()
     assert re.fullmatch(rf"ezhpcy-\d{{8}}-\d{{6}}-base-{os.getpid()}\.log", path.name)
 
@@ -557,13 +577,13 @@ def test_a_log_file_already_made_moves_to_its_new_label(tmp_path: Path) -> None:
     configure_log_file(tmp_path)
     logger = logging.getLogger("ezhpcy.cli.tunnel")
     logger.info("Before")
-    assert flush_logs(WAIT_SECONDS)
+    assert flush_output(WAIT_SECONDS)
 
     label_log_file("base")
     label_log_file("scratch")
     logger.info("After")
 
-    assert flush_logs(WAIT_SECONDS)
+    assert flush_output(WAIT_SECONDS)
     [path] = tmp_path.iterdir()
     assert path == log_file_path()
     assert "-scratch-" in path.name
@@ -586,7 +606,7 @@ def test_a_log_file_that_cannot_be_written_is_reported_once(
     logger.info("Worker ready")
     logger.info("Tunnel ready")
 
-    assert flush_logs(WAIT_SECONDS)
+    assert flush_output(WAIT_SECONDS)
     rendered = terminal.getvalue()
     assert rendered.count("Could not write the log file") == 1
     assert "Worker ready" in rendered

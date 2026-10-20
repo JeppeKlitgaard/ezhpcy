@@ -249,7 +249,7 @@ def tunnel_log() -> Generator[LogRecords]:
     handler = LogRecords()
     loggers = [
         logging.getLogger(name)
-        for name in ("ezhpcy.cli.tunnel", "ezhpcy.tunnel.session")
+        for name in ("ezhpcy.cli.tunnel", "ezhpcy.tunnel.session", "ezhpcy.ssh")
     ]
     levels = [logger.level for logger in loggers]
     for logger in loggers:

@@ -26,8 +26,9 @@ from ezhpcy.config import (
     LocalFileConfig,
     config,
 )
+from ezhpcy.console import flush_output
 from ezhpcy.constants import EZHPCY_VERSION, PACKAGE_NAME
-from ezhpcy.logging import TERMINAL_HANDLER_NAME, configure_logging, flush_logs
+from ezhpcy.logging import TERMINAL_HANDLER_NAME, configure_logging
 from ezhpcy.scheduler.types import SchedulerType
 from ezhpcy.types import ProfileConfig, SubmissionMode
 from tests.support.cli import capture, invoke
@@ -576,7 +577,7 @@ def test_the_console_log_can_be_disabled_but_debug_enables_it(
     logging.getLogger("ezhpcy.cli.version").warning("Worker gone")
 
     assert result.exit_code == 0, result
-    assert flush_logs(5)
+    assert flush_output(5)
     assert (log_handlers().get(TERMINAL_HANDLER_NAME) is not None) is shown
     # Still in the log file.
     assert "Worker gone" in log_file_path().read_text(encoding="utf-8")
@@ -589,7 +590,7 @@ def test_a_run_also_logs_debug_records_to_a_file_in_the_log_directory(
     logging.getLogger("ezhpcy.cli.version").debug("Hidden on the terminal")
 
     assert result.exit_code == 0, result
-    assert flush_logs(5)
+    assert flush_output(5)
     [log_file] = isolated_local_files.log_dir.glob("ezhpcy-*.log")
     assert re.fullmatch(
         r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} DEBUG    "
@@ -619,7 +620,7 @@ def test_the_log_file_follows_its_configuration(
     logger.warning("At the file's level")
 
     assert result.exit_code == 0, result
-    assert flush_logs(5)
+    assert flush_output(5)
     [old, current] = sorted(log_dir.iterdir(), key=lambda path: path.stat().st_mtime)
     assert old.name == "ezhpcy-old.log"
     assert current.read_text(encoding="utf-8").endswith("At the file's level\n")
@@ -646,7 +647,7 @@ def test_the_log_file_can_be_disabled(
     logging.getLogger("ezhpcy.cli.version").warning("Not written to a file")
 
     assert result.exit_code == 0, result
-    assert flush_logs(5)
+    assert flush_output(5)
     assert file_handler() is None
     assert not isolated_local_files.log_dir.exists()
 

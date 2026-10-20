@@ -6,6 +6,8 @@ the worker played by the tests. How each failure shuts the tunnel down is in
 
 import asyncio
 import functools
+import io
+import itertools
 import logging
 import re
 import signal
@@ -21,17 +23,18 @@ import pytest
 from ezhpcy.cli import tunnel as tunnel_cli
 from ezhpcy.cli.utils import ssh as cli_ssh
 from ezhpcy.config import LocalFileConfig
-from ezhpcy.console import make_console
+from ezhpcy.console import flush_output, make_console
 from ezhpcy.constants import LOOPBACK_HOST
-from ezhpcy.logging import REPLAY_ON_ERROR, flush_logs
+from ezhpcy.logging import REPLAY_ON_ERROR
 from ezhpcy.scheduler.base import JobInfo, JobState
 from ezhpcy.ssh import RemoteHost
 from ezhpcy.tunnel import lock, session, ssh_config
 from ezhpcy.tunnel.lock import alias_lock, alias_locked
+from ezhpcy.tunnel.status import Phase, TunnelStatus
 from ezhpcy.worker.control import WorkerControl
 from tests.support.cli import invoke
 from tests.support.sshserver import Invocation, SSHTestServer, reply
-from tests.support.terminal import GatedTerminal, terminal_handler
+from tests.support.terminal import GatedTerminal, terminal_handler, use_terminal
 from tests.support.tunnel import (
     BANNER,
     FAST_TIMINGS,
@@ -182,7 +185,7 @@ def test_a_tunnel_forwards_its_port_to_the_worker(
     assert "Job <42> is submitted to queue <normal>." in job_output
     assert "<<Starting on 127.0.0.1>>" in job_output
     # To a log file named after the alias, not the profile.
-    assert flush_logs(5)
+    assert flush_output(5)
     [log_file] = isolated_local_files.log_dir.iterdir()
     assert re.fullmatch(r"ezhpcy-\d{8}-\d{6}-scratch-\d+\.log", log_file.name)
 
@@ -207,13 +210,10 @@ def test_a_tunnel_forwards_its_port_to_the_worker(
         for argv in login.commands_run
     )
 
-    assert len(log.starting("Tunnel client accepted: client=127.0.0.1:")) == 2
+    assert len(log.starting("Forwarded connection opened: client=127.0.0.1:")) == 2
     assert log.starting("Connect with 'ssh scratch' or select 'scratch' in your editor")
-    # And the banner says so on stdout.
-    assert "Tunnel ready" in result.stdout
-    assert (
-        "Connect with 'ssh scratch' or select 'scratch' in your editor" in result.stdout
-    )
+    # Nothing else says so: the log and the status display are on stderr.
+    assert result.stdout == ""
 
     # The Host block was there while serving, the stale one was pruned, and
     # everything is cleaned up.
@@ -224,18 +224,23 @@ def test_a_tunnel_forwards_its_port_to_the_worker(
     assert signal.getsignal(signal.SIGINT) is previous_handler
 
 
+@pytest.mark.parametrize("status_display", [False, True])
 def test_a_terminal_that_takes_no_output_does_not_stop_the_tunnel(
-    login: SSHTestServer, monkeypatch: pytest.MonkeyPatch
+    login: SSHTestServer, monkeypatch: pytest.MonkeyPatch, status_display: bool
 ) -> None:
     """
     With debug logging, each connection logs. Written from the event loop, a
     terminal that took no output froze every session (FINDINGS.md, "Phase 4").
+    Nor does the status display, which the terminal stops taking too.
     """
     worker_port = login.listen(banner_then_echo)
     done = serve_lsf_job(login, monkeypatch, worker_port)
     terminal = GatedTerminal()
     terminal.opened.set()
-    monkeypatch.setattr(terminal_handler(), "console", make_console(file=terminal))
+    if status_display:
+        use_terminal(monkeypatch, terminal)
+    else:
+        monkeypatch.setattr(terminal_handler(), "console", make_console(file=terminal))
     outputs: list[bytes] = []
     blocked_while_serving: list[bool] = []
 
@@ -246,7 +251,7 @@ def test_a_terminal_that_takes_no_output_does_not_stop_the_tunnel(
         try:
             for number in range(10):
                 outputs.append(connect_through(port, b"%d" % number))
-            blocked_while_serving.append(not flush_logs(0))
+            blocked_while_serving.append(not flush_output(0))
         finally:
             # Also if a connection hung, so the test fails rather than hangs.
             terminal.opened.set()
@@ -270,7 +275,95 @@ def test_a_terminal_that_takes_no_output_does_not_stop_the_tunnel(
     assert outputs == [BANNER + b"worker:%d" % number for number in range(10)]
     assert blocked_while_serving == [True]
     # Nothing is lost once the terminal takes output again.
-    assert terminal.getvalue().count("Tunnel client accepted") == 10
+    assert terminal.getvalue().count("Forwarded connection opened") == 10
+
+
+class Recorded:
+    """An instance attribute that keeps every value it is set to, in `values`."""
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.values: list[object] = []
+
+    def __get__(self, instance: object, owner: type | None = None) -> object:
+        return self if instance is None else vars(instance)[self.name]
+
+    def __set__(self, instance: object, value: object) -> None:
+        vars(instance)[self.name] = value
+        self.values.append(value)
+
+
+def test_the_status_follows_the_tunnel_from_connecting_until_it_stops(
+    login: SSHTestServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    worker_port = login.listen(banner_then_echo)
+    done = serve_lsf_job(login, monkeypatch, worker_port)
+    recorded = Recorded("status")
+    monkeypatch.setattr(session.TunnelSession, "status", recorded, raising=False)
+
+    def publish_then_connect(host: ssh_config.WorkerHost, port: int) -> None:
+        ssh_config.publish_host(host, port)
+        connect_through(port, b"hello")
+        done.set()
+
+    monkeypatch.setattr(session, "publish_host", publish_then_connect)
+
+    result = invoke(["tunnel", "base", "--worker-port", str(worker_port)])
+
+    assert result.exit_code == 0, result
+    statuses = [
+        status for status in recorded.values if isinstance(status, TunnelStatus)
+    ]
+    assert len(statuses) == len(recorded.values)
+    assert [phase for phase, _ in itertools.groupby(s.phase for s in statuses)] == [
+        Phase.CONNECTING,
+        Phase.PREPARING,
+        Phase.SUBMITTING,
+        Phase.QUEUED,
+        Phase.STARTING,
+        Phase.SERVING,
+        Phase.STOPPING,
+    ]
+    assert statuses[0].alias == "base"
+    assert statuses[0].login == "alice@login.example.com"
+    serving = next(s for s in statuses if s.phase is Phase.SERVING)
+    assert serving.job_id == JOB_ID
+    assert serving.job is not None
+    assert serving.job.state is JobState.RUNNING
+    assert serving.running_since is not None
+    assert serving.worker == f"127.0.0.1:{worker_port}"
+    # One connection was open, and closed by the end.
+    assert max(s.connections for s in statuses) == 1
+    assert statuses[-1].connections == 0
+    assert any(s.last_heartbeat is not None for s in statuses)
+
+
+def test_on_a_terminal_the_status_display_shows_the_tunnel(
+    login: SSHTestServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With debug logging, so that records are written under it all along."""
+    worker_port = login.listen(banner_then_echo)
+    done = serve_lsf_job(login, monkeypatch, worker_port)
+    terminal = io.StringIO()
+    use_terminal(monkeypatch, terminal)
+
+    def publish_then_serve(host: ssh_config.WorkerHost, port: int) -> None:
+        ssh_config.publish_host(host, port)
+        # Long enough to be redrawn serving.
+        threading.Timer(0.6, done.set).start()
+
+    monkeypatch.setattr(session, "publish_host", publish_then_serve)
+
+    result = invoke(["--debug", "tunnel", "base", "--worker-port", str(worker_port)])
+
+    assert result.exit_code == 0, result
+    assert flush_output(WAIT_SECONDS)
+    output = terminal.getvalue()
+    assert "Connecting to alice@login.example.com" in output
+    assert "Connections" in output
+    assert "Stopping tunnel: worker job 42 ended" in output
+    # Hidden at the end, the terminal has its cursor back.
+    assert output.rindex("\x1b[?25h") > output.rindex("\x1b[?25l")
 
 
 def test_open_sessions_are_cut_when_the_tunnel_stops(
@@ -486,10 +579,11 @@ def test_a_failed_interactive_tunnel_shows_the_end_of_the_job_output(
         invocation.stdout.write(f"Job <{JOB_ID}> is submitted to queue <normal>.\n")
         # As the job's terminal echoes the worker command, then its error.
         invocation.stdout.write(await invocation.stdin.readline())
-        invocation.stdout.write("sshd must resolve to an absolute path\n")
+        # The scheduler says the job failed before its error arrives; then the
+        # submission ends.
         failing.set()
-        while await invocation.stdin.readline():
-            pass
+        await asyncio.sleep(STOP_SECONDS)
+        invocation.stdout.write("sshd must resolve to an absolute path\n")
 
     login.command(f"bash -lc {INTERACTIVE_JOB}", job)
     configure_tunnel(monkeypatch, login)
@@ -623,16 +717,6 @@ def test_a_job_waiting_in_the_queue_says_why_and_for_how_long(
             f"Worker job {JOB_ID} still pending after 0 s (queue timeout in 0 s): "
             "Job slot limit reached: 3 hosts."
         )
-
-
-@pytest.mark.parametrize(
-    ("seconds", "shown"),
-    [(0, "0 s"), (45.4, "45 s"), (59.6, "1 min 0 s"), (150, "2 min 30 s")],
-)
-def test_waiting_times_are_shown_in_minutes_and_seconds(
-    seconds: float, shown: str
-) -> None:
-    assert session._duration(seconds) == shown
 
 
 def test_the_worker_startup_timeout_covers_both_waits(

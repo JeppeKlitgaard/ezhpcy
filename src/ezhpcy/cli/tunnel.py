@@ -1,6 +1,5 @@
 from contextlib import contextmanager
 lazy import asyncio
-lazy import functools
 lazy import os
 lazy import shlex
 lazy import sys
@@ -10,7 +9,6 @@ lazy from typing import Annotated
 
 lazy import asyncssh
 lazy from cyclopts import Parameter, validators
-lazy from rich.panel import Panel
 
 from ezhpcy.cli._options import (
     AliasOpt,
@@ -30,12 +28,12 @@ lazy from ezhpcy.cli._resolve import (
     resolve_profile_config,
     with_cli_options,
 )
+lazy from ezhpcy.cli._tunnel_status import StatusPanel
 lazy from ezhpcy.cli.utils import ssh as cli_ssh
 lazy from ezhpcy.cli.utils.interrupts import interrupts_handled_by
 lazy from ezhpcy.config import config
-lazy from ezhpcy.console import console
-lazy from ezhpcy.logging import flush_logs, label_log_file
-lazy from ezhpcy.messages import rich_text
+lazy from ezhpcy.console import flush_output, hide_live_display, live_display
+lazy from ezhpcy.logging import label_log_file
 lazy from ezhpcy.scheduler.types import SchedulerType
 lazy from ezhpcy.tunnel import TunnelError
 lazy from ezhpcy.tunnel.session import TunnelSession
@@ -52,7 +50,7 @@ lazy from ezhpcy.worker.job import select_ports
 _DEFAULT_WORKER_PORT_RETRIES = 5
 # Far fewer than the 16384 dynamic ports `select_ports` draws from.
 _MAX_WORKER_PORT_RETRIES = 100
-# How long the second Ctrl+C waits for the log to be written before quitting.
+# How long the second Ctrl+C waits for the output to be written before quitting.
 _EXIT_FLUSH_SECONDS = 0.5
 logger = get_logger(__name__)
 
@@ -275,14 +273,11 @@ async def tunnel_cmd(
             resolved=resolved,
             ssh_host=ssh_host,
             connect=cli_ssh.connect_interactive,
-            on_ready=functools.partial(
-                asyncio.to_thread, _print_ready_banner, ssh_host.alias
-            ),
             profile_name=profile,
             worker_ports=worker_ports,
             auto_provision=auto_provision,
         )
-        with _interrupts_stop(session):
+        with live_display(StatusPanel(session)), _interrupts_stop(session):
             await session.run()
     except (RuntimeError, asyncssh.Error, OSError) as error:
         served = session is not None and session.ready
@@ -292,24 +287,6 @@ async def tunnel_cmd(
         )
 
         raise SystemExit(1) from error
-
-
-def _print_ready_banner(alias: str) -> None:
-    """Say how to connect, on stdout, after the log so far."""
-    console.print(
-        Panel(
-            rich_text(
-                t"Connect with {f'ssh {alias}':suggestion} or select "
-                t"{alias:suggestion} in your editor's remote development "
-                t"interface.\n{'Press Ctrl+C to stop.':aside}"
-            ),
-            title="Tunnel ready",
-            title_align="left",
-            border_style="green",
-            expand=False,
-            padding=(1, 2),
-        )
-    )
 
 
 @contextmanager
@@ -338,8 +315,10 @@ def _interrupts_stop(session: TunnelSession) -> Generator[None]:
             "Quitting without cleaning up. The worker job ends by itself once its "
             "heartbeats stop."
         )
-        # Briefly: a terminal that doesn't take output mustn't keep it running.
-        flush_logs(_EXIT_FLUSH_SECONDS)
+        # Hidden, the live display gives the terminal its cursor back. Briefly: a
+        # terminal that doesn't take output mustn't keep it running.
+        hide_live_display()
+        flush_output(_EXIT_FLUSH_SECONDS)
         sys.stdout.flush()
         sys.stderr.flush()
         os._exit(130)

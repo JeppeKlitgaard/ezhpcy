@@ -23,6 +23,7 @@ from ezhpcy.logging import (
     configure_log_file,
     configure_logging,
 )
+from ezhpcy.tunnel import ssh_config
 from tests.support.login import MACHINE_ID, route_login
 from tests.support.sshserver import SSHTestServer
 
@@ -79,6 +80,20 @@ def fixed_machine_id(
     if request.node.get_closest_marker("real_machine_id"):
         return
     monkeypatch.setattr("ezhpcy.utils.machineid.hashed_id", lambda _: MACHINE_ID)
+
+
+@pytest.fixture(autouse=True)
+def no_openssh_resolution(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Answer `ssh -G` as if no OpenSSH client were installed, except in tests
+    marked `real_resolve_alias`: a real one reads the workstation's own
+    ~/.ssh/config, wherever HOME points.
+    """
+    if request.node.get_closest_marker("real_resolve_alias"):
+        return
+    monkeypatch.setattr(ssh_config, "resolve_alias", lambda _alias: None)
 
 
 @pytest.fixture(autouse=True)

@@ -9,6 +9,7 @@ from ezhpcy.tunnel import ssh_config
 from ezhpcy.tunnel.lock import alias_lock
 from ezhpcy.tunnel.ssh_config import (
     PROBE_HOST_NAME,
+    AliasProblem,
     WorkerHost,
     include_directive,
     write_active_host_config,
@@ -16,7 +17,7 @@ from ezhpcy.tunnel.ssh_config import (
 from ezhpcy.types import PasswordConfig, ProfileConfig
 from tests.support.cli import invoke
 
-type Resolver = Callable[[str], dict[str, list[str]] | str | None]
+type Resolver = Callable[[str], dict[str, list[str]] | AliasProblem | None]
 
 
 @pytest.fixture(autouse=True)
@@ -51,11 +52,11 @@ def resolved(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     aliases: list[str] = []
     resolve = resolving_to({})
 
-    def recording(alias: str) -> dict[str, list[str]] | str | None:
+    def recording(alias: str) -> dict[str, list[str]] | AliasProblem | None:
         aliases.append(alias)
         return resolve(alias)
 
-    monkeypatch.setattr(doctor_cli, "resolve_alias", recording)
+    monkeypatch.setattr(ssh_config, "resolve_alias", recording)
     return aliases
 
 
@@ -107,27 +108,28 @@ def test_doctor_passes_when_everything_is_set_up(
 def test_doctor_probes_with_a_file_it_then_removes(
     profiles: None, monkeypatch: pytest.MonkeyPatch, isolated_runtime_dir: Path
 ) -> None:
-    probe = isolated_runtime_dir / "ssh-config" / "doctor-probe.conf"
+    config_dir = isolated_runtime_dir / "ssh-config"
     contents: list[str] = []
 
     def resolve(_alias: str) -> dict[str, list[str]]:
+        [probe] = config_dir.glob("probe-*.conf")
         contents.append(probe.read_text(encoding="utf-8"))
         return {"hostname": [PROBE_HOST_NAME]}
 
-    monkeypatch.setattr(doctor_cli, "resolve_alias", resolve)
+    monkeypatch.setattr(ssh_config, "resolve_alias", resolve)
 
     result = invoke(["doctor"])
 
     assert result.exit_code == 0, result
     assert f"Host cpu\n    HostName {PROBE_HOST_NAME}\n" in contents[0]
     assert "Host base\n" not in contents[0]
-    assert not probe.exists()
+    assert list(config_dir.iterdir()) == []
 
 
 def test_doctor_accepts_a_running_tunnels_block(
     profiles: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(doctor_cli, "resolve_alias", resolving_to({"cpu": "127.0.0.1"}))
+    monkeypatch.setattr(ssh_config, "resolve_alias", resolving_to({"cpu": "127.0.0.1"}))
 
     with alias_lock("cpu"):
         result = invoke(["doctor"])
@@ -140,7 +142,7 @@ def test_doctor_fails_on_a_loopback_block_without_a_tunnel(
     profiles: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # A hand-written block, say, since no tunnel holds the alias.
-    monkeypatch.setattr(doctor_cli, "resolve_alias", resolving_to({"cpu": "127.0.0.1"}))
+    monkeypatch.setattr(ssh_config, "resolve_alias", resolving_to({"cpu": "127.0.0.1"}))
 
     result = invoke(["doctor"])
 
@@ -154,7 +156,7 @@ def test_doctor_fails_when_openssh_resolves_a_host_elsewhere(
     profiles: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
-        doctor_cli, "resolve_alias", resolving_to({"cpu": "cpu.example.com"})
+        ssh_config, "resolve_alias", resolving_to({"cpu": "cpu.example.com"})
     )
 
     result = invoke(["doctor"])
@@ -175,15 +177,20 @@ def test_doctor_reports_ssh_refusing_the_configuration(
     profiles: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
-        doctor_cli, "resolve_alias", lambda _alias: "Bad owner or permissions on x"
+        ssh_config,
+        "resolve_alias",
+        lambda _alias: AliasProblem("Bad owner or permissions on x", ssh_failed=True),
     )
 
     result = invoke(["doctor"])
 
     assert result.exit_code == 1
-    assert "fail  'ssh cpu' bypasses EzHPCy: Bad owner or permissions on x" in (
+    assert "fail  OpenSSH cannot resolve 'ssh cpu': Bad owner or permissions on x" in (
         result.stdout
     )
+    assert "Fix what OpenSSH reports" in result.stdout
+    # The Include lines don't fix that.
+    assert include_directive().splitlines()[-1] not in result.stdout
 
 
 def test_doctor_checks_the_include_without_profiles(
@@ -206,7 +213,7 @@ def test_doctor_fails_without_the_include_and_without_profiles(
 ) -> None:
     monkeypatch.setattr(config, "profile", {})
     monkeypatch.setattr(
-        doctor_cli, "resolve_alias", lambda alias: {"hostname": [alias]}
+        ssh_config, "resolve_alias", lambda alias: {"hostname": [alias]}
     )
 
     result = invoke(["doctor"])

@@ -12,7 +12,13 @@ from ezhpcy import types as types_module
 from ezhpcy.cli import tunnel as tunnel_module
 from ezhpcy.messages import plain
 from ezhpcy.scheduler.types import SchedulerType
-from ezhpcy.tunnel.ssh_config import WorkerHost
+from ezhpcy.tunnel import ssh_config
+from ezhpcy.tunnel.ssh_config import (
+    PROBE_HOST_NAME,
+    AliasProblem,
+    WorkerHost,
+    include_directive,
+)
 from ezhpcy.types import ConnectionInfo, ProfileConfig, ResolvedConfig, ResourcesConfig
 from tests.support.cli import capture, invoke
 from tests.support.tunnel import tunnel_log
@@ -395,8 +401,82 @@ def test_profile_tunnel_alias_defaults_to_the_profile_name(
     ssh_host = captured["ssh_host"]
     assert isinstance(ssh_host, WorkerHost)
     assert (ssh_host.alias, ssh_host.user) == (alias, user)
-    # Idle profiles get no Host block.
-    assert not (isolated_runtime_dir / "ssh-config").exists()
+    # Idle profiles get no Host block, and the probe is gone.
+    assert list((isolated_runtime_dir / "ssh-config").iterdir()) == []
+
+
+@pytest.mark.parametrize("alias", ["gpu", "my-gpu"])
+def test_tunnel_probes_its_alias_before_connecting(
+    monkeypatch: pytest.MonkeyPatch, alias: str
+) -> None:
+    monkeypatch.setattr(tunnel_module.config, "profile", _alias_profiles())
+    probed: list[str] = []
+
+    def resolve(alias: str) -> dict[str, list[str]]:
+        probed.append(alias)
+        return {"hostname": [PROBE_HOST_NAME]}
+
+    monkeypatch.setattr(ssh_config, "resolve_alias", resolve)
+    captured = capture(monkeypatch, "tunnel")
+
+    result = invoke(["tunnel", "gpu", "--alias", alias])
+
+    assert result.exit_code == 0, result
+    assert probed == [alias]
+    assert captured
+
+
+def test_tunnel_that_ssh_would_bypass_fails_before_connecting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(tunnel_module.config, "profile", _alias_profiles())
+    # Without the Include, OpenSSH takes the alias for the host name.
+    monkeypatch.setattr(
+        ssh_config, "resolve_alias", lambda alias: {"hostname": [alias]}
+    )
+    captured = capture(monkeypatch, "tunnel")
+
+    with tunnel_log() as log:
+        result = invoke(["tunnel", "gpu"])
+
+    assert result.exit_code == 1
+    assert captured == {}
+    [error] = log.command_errors()
+    assert error.startswith(
+        "Could not start tunnel: 'ssh gpu' would not reach it: OpenSSH resolves it "
+        "to gpu. If ~/.ssh/config does not include EzHPCy's SSH profiles yet, copy "
+    )
+    # Flush-left and on one line each, ready to copy.
+    stderr_lines = result.stderr.splitlines()
+    for line in include_directive().splitlines():
+        assert line in stderr_lines
+
+
+def test_tunnel_with_a_bad_openssh_configuration_fails_before_connecting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(tunnel_module.config, "profile", _alias_profiles())
+    bad_line = "~/.ssh/config: line 2: Bad configuration option: bogus"
+    monkeypatch.setattr(
+        ssh_config,
+        "resolve_alias",
+        lambda _alias: AliasProblem(bad_line, ssh_failed=True),
+    )
+    captured = capture(monkeypatch, "tunnel")
+
+    with tunnel_log() as log:
+        result = invoke(["tunnel", "gpu"])
+
+    assert result.exit_code == 1
+    assert captured == {}
+    assert log.command_errors() == [
+        (
+            f"Could not start tunnel: 'ssh gpu' would not reach it: {bad_line}. "
+            "Fix what OpenSSH reports, then check with 'ezhpcy doctor'."
+        )
+    ]
+    # The Include lines don't fix that.
+    assert include_directive().splitlines()[-1] not in result.stderr
 
 
 def test_anonymous_tunnel_alias_is_stable_for_identical_options(

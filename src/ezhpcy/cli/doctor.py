@@ -11,21 +11,14 @@ from ezhpcy.config import Config, StoredPasswordError, config
 lazy from ezhpcy.cli._errors import sentence
 lazy from ezhpcy.cli._resolve import unless_disabled
 lazy from ezhpcy.console import console
-lazy from ezhpcy.constants import LOOPBACK_HOST
 lazy from ezhpcy.messages import rich_text
 lazy from ezhpcy.permissions import FilePermissionError
-lazy from ezhpcy.tunnel.lock import alias_locked
 lazy from ezhpcy.tunnel.ssh_config import (
-    PROBE_HOST_NAME,
+    AliasProblem,
     echo_include_directive,
     probe_hosts,
     prune_stale_active_configs,
-    resolve_alias,
-)
-
-_INCLUDE_HINT = (
-    t"If {'~/.ssh/config':path} does not include EzHPCy's SSH profiles yet, copy "
-    t"the two highlighted lines below to its top, before any Host or Match block:"
+    resolution_problem,
 )
 
 
@@ -129,24 +122,6 @@ def _profile_aliases(source: Config) -> list[str]:
     return aliases
 
 
-def _resolves_to_ezhpcy(alias: str) -> str | None:
-    """
-    `None` if `ssh <alias>` gets EzHPCy's block for it, a running tunnel's or
-    the probe's; otherwise what went wrong.
-    """
-    resolved = resolve_alias(alias)
-    if resolved is None:
-        return "`ssh` is no longer on PATH"
-    if isinstance(resolved, str):
-        return resolved
-    hostname = resolved.get("hostname", [""])[0]
-    if hostname == PROBE_HOST_NAME:
-        return None
-    if hostname == LOOPBACK_HOST and alias_locked(alias):
-        return None
-    return f"OpenSSH resolves it to {hostname}"
-
-
 def check_ssh_config(source: Config = config) -> Iterator[Check]:
     """
     Remove stale Host blocks, then check that OpenSSH gives each profile's alias
@@ -178,34 +153,36 @@ def check_ssh_config(source: Config = config) -> Iterator[Check]:
     aliases = _profile_aliases(source)
     # Without profiles, a made-up alias still shows whether the Include works.
     probed = aliases or [f"ezhpcy-doctor-{secrets.token_hex(4)}"]
-    problems: dict[str, str | None] = {}
+    problems: dict[str, AliasProblem | None] = {}
     try:
         with probe_hosts(probed):
-            problems = {alias: _resolves_to_ezhpcy(alias) for alias in probed}
+            problems = {alias: resolution_problem(alias) for alias in probed}
     except (OSError, FilePermissionError) as error:
         yield Check(Status.FAIL, t"Could not write the SSH probe: {error}")
         return
 
-    if not aliases:
-        [problem] = problems.values()
-        if problem is None:
-            yield Check(Status.OK, t"OpenSSH reads EzHPCy's SSH configuration")
-        else:
-            yield Check(
-                Status.FAIL,
-                t"OpenSSH does not read EzHPCy's SSH configuration: {problem}",
-                hint=_INCLUDE_HINT,
-                show_include=True,
-            )
-        return
     for alias, problem in problems.items():
         if problem is None:
-            yield Check(Status.OK, t"{f'ssh {alias}':suggestion} goes through EzHPCy")
+            yield Check(
+                Status.OK,
+                t"{f'ssh {alias}':suggestion} goes through EzHPCy"
+                if aliases
+                else t"OpenSSH reads EzHPCy's SSH configuration",
+            )
+        elif problem.ssh_failed:
+            yield Check(
+                Status.FAIL,
+                t"OpenSSH cannot resolve {f'ssh {alias}':suggestion}: {problem.detail}",
+                hint=problem.hint,
+            )
         else:
             yield Check(
                 Status.FAIL,
-                t"{f'ssh {alias}':suggestion} bypasses EzHPCy: {problem}",
-                hint=_INCLUDE_HINT,
+                t"{f'ssh {alias}':suggestion} bypasses EzHPCy: {problem.detail}"
+                if aliases
+                else t"OpenSSH does not read EzHPCy's SSH configuration: "
+                t"{problem.detail}",
+                hint=problem.hint,
                 show_include=True,
             )
 

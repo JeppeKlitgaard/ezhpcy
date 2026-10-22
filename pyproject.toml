@@ -62,6 +62,7 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 markers = [
     "real_machine_id: read this machine's ID instead of the fixed one tests get",
+    "real_resolve_alias: run `ssh -G` instead of answering as if ssh were missing",
 ]
 
 # Test coverage

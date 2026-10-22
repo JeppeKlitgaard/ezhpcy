@@ -25,6 +25,8 @@ from ezhpcy.cli.utils import ssh as cli_ssh
 from ezhpcy.config import LocalFileConfig
 from ezhpcy.console import flush_output, make_console
 from ezhpcy.constants import LOOPBACK_HOST
+from ezhpcy.job import lifecycle
+from ezhpcy.job.lifecycle import JobLifecycle
 from ezhpcy.logging import REPLAY_ON_ERROR
 from ezhpcy.scheduler.base import JobInfo, JobState
 from ezhpcy.ssh import RemoteHost
@@ -293,7 +295,7 @@ def test_the_status_follows_the_tunnel_from_connecting_until_it_stops(
     worker_port = login.listen(banner_then_echo)
     done = serve_lsf_job(login, monkeypatch, worker_port)
     recorded = Recorded("status")
-    monkeypatch.setattr(session.TunnelSession, "status", recorded, raising=False)
+    monkeypatch.setattr(JobLifecycle, "status", recorded, raising=False)
 
     def publish_then_connect(host: ssh_config.WorkerHost, port: int) -> None:
         ssh_config.publish_host(host, port)
@@ -513,12 +515,12 @@ class _OutputJob:
 async def test_interactive_output_is_logged_line_by_line(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    caplog.set_level(logging.DEBUG, logger=session.__name__)
+    caplog.set_level(logging.DEBUG, logger=lifecycle.__name__)
     # "Velkommen på" with its "å" split and a terminal's line ending, then a
     # cut-off "ø" without one.
     job = _OutputJob(b"Velkommen p\xc3", b"\xa5\r\nHej", b"\n\n\xc3")
 
-    await session._log_job_output(job)  # type: ignore[arg-type]
+    await lifecycle._log_job_output(job)  # type: ignore[arg-type]
 
     # All read, so that the job doesn't stall.
     assert job.drained == list(job.chunks)
@@ -555,9 +557,9 @@ async def test_interactive_output_is_logged_line_by_line(
 async def test_interactive_output_is_logged_as_a_terminal_shows_it(
     caplog: pytest.LogCaptureFixture, output: bytes, shown: str
 ) -> None:
-    caplog.set_level(logging.DEBUG, logger=session.__name__)
+    caplog.set_level(logging.DEBUG, logger=lifecycle.__name__)
 
-    await session._log_job_output(_OutputJob(output))  # type: ignore[arg-type]
+    await lifecycle._log_job_output(_OutputJob(output))  # type: ignore[arg-type]
 
     assert caplog.messages == [shown]
 
@@ -709,7 +711,7 @@ def test_the_worker_startup_timeout_covers_both_waits(
 ) -> None:
     timeout_seconds = 1.0
     # So that the worker's status is seen as soon as it is written.
-    monkeypatch.setattr(session, "_STATUS_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(lifecycle, "_STATUS_POLL_SECONDS", 0.01)
     worker_port = login.listen(banner(b"not an ssh server\n"))
     configure_tunnel(
         monkeypatch,
@@ -811,7 +813,7 @@ def test_a_cleanup_step_that_hangs_is_given_up_on(
     login: SSHTestServer, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     worker_port = login.listen(banner(BANNER))
-    monkeypatch.setattr(session, "_CLEANUP_SECONDS", 0.2)
+    monkeypatch.setattr(lifecycle, "_CLEANUP_SECONDS", 0.2)
 
     async def hang() -> None:
         await asyncio.Event().wait()
@@ -883,7 +885,7 @@ def test_ctrl_c_during_batch_submission_lets_it_finish(
     login: SSHTestServer, monkeypatch: pytest.MonkeyPatch, hangs: bool
 ) -> None:
     """Cancelled midway, `qsub` could queue the job without returning its ID."""
-    monkeypatch.setattr(session, "_CLEANUP_SECONDS", 0.2)
+    monkeypatch.setattr(lifecycle, "_CLEANUP_SECONDS", 0.2)
 
     async def press() -> None:
         signal.raise_signal(signal.SIGINT)

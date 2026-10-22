@@ -13,6 +13,9 @@ lazy from ezhpcy.worker import WorkerError
 logger = get_logger(__name__)
 
 _LEASE_FILE_RETAIN_COUNT = 2
+# The job's record, for a later client to find it by: its ID, scheduler and
+# submission mode, and once ready, its sshd's port (JSON).
+JOB_RECORD_NAME = "job.json"
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,8 +46,9 @@ class WorkerControl:
     """
     The tunnel's side of one worker's control directory.
 
-    `publish_lease` must not run concurrently with itself or with `close`; the
-    other methods only read.
+    `publish_lease` must not run concurrently with itself or with `close`, nor
+    `write_record` with itself for the same file, or with `close`; the other
+    methods only read.
     """
 
     def __init__(
@@ -75,19 +79,8 @@ class WorkerControl:
         """Write the next lease, keeping only the latest few; return its sequence."""
         self._sequence += 1
         name = f"lease.{self._sequence:020d}"
-        temporary = self.directory / f".{name}.tmp"
+        await self.write_record(name, f"{self._token} {self._sequence}\n")
         lease = self.directory / name
-        try:
-            async with self._sftp.open(
-                temporary, "w", attrs=asyncssh.SFTPAttrs(permissions=0o600)
-            ) as file:
-                await file.write(f"{self._token} {self._sequence}\n")
-            # The worker never sees a lease half written.
-            await self._sftp.posix_rename(temporary, lease)
-        except asyncssh.Error, OSError:
-            with contextlib.suppress(asyncssh.Error, OSError):
-                await self._sftp.remove(temporary)
-            raise
         self._leases.append(lease)
         while len(self._leases) > _LEASE_FILE_RETAIN_COUNT:
             stale = self._leases.pop(0)
@@ -98,6 +91,23 @@ class WorkerControl:
                     t"Could not remove stale worker lease {stale:path}: {error!r}"
                 )
         return self._sequence
+
+    async def write_record(self, name: str, content: str) -> None:
+        """
+        Write `content` to the file `name` in the directory, replacing it whole:
+        a reader never sees it half written.
+        """
+        temporary = self.directory / f".{name}.tmp"
+        try:
+            async with self._sftp.open(
+                temporary, "w", attrs=asyncssh.SFTPAttrs(permissions=0o600)
+            ) as file:
+                await file.write(content)
+            await self._sftp.posix_rename(temporary, self.directory / name)
+        except asyncssh.Error, OSError:
+            with contextlib.suppress(asyncssh.Error, OSError):
+                await self._sftp.remove(temporary)
+            raise
 
     async def read_status(self) -> WorkerStatus | None:
         """The worker's latest status, or None until it has written one."""

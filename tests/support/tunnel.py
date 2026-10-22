@@ -18,9 +18,9 @@ import pytest
 
 from ezhpcy.config import config
 from ezhpcy.constants import EZHPCY_VERSION
+from ezhpcy.job import lifecycle
 from ezhpcy.scheduler.base import InteractiveJob, JobInfo, JobSpec, JobState
 from ezhpcy.ssh import RemoteHost
-from ezhpcy.tunnel import session
 from ezhpcy.types import ProfileConfig
 from tests.support.login import STATE, remote_state_json
 from tests.support.sshserver import Handler, Invocation, SSHTestServer, reply
@@ -214,7 +214,7 @@ def use_scheduler(
         made.append(make(host))
         return made[-1]
 
-    monkeypatch.setattr(session, "create_scheduler", create)
+    monkeypatch.setattr(lifecycle, "create_scheduler", create)
     return made
 
 
@@ -251,7 +251,13 @@ def tunnel_log() -> Generator[LogRecords]:
     handler = LogRecords()
     loggers = [
         logging.getLogger(name)
-        for name in ("ezhpcy.cli.tunnel", "ezhpcy.tunnel.session", "ezhpcy.ssh")
+        for name in (
+            "ezhpcy.app.session",
+            "ezhpcy.cli.tunnel",
+            "ezhpcy.job.lifecycle",
+            "ezhpcy.tunnel.session",
+            "ezhpcy.ssh",
+        )
     ]
     levels = [logger.level for logger in loggers]
     for logger in loggers:

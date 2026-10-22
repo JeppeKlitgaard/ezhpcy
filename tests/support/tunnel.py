@@ -139,6 +139,8 @@ class FakeScheduler:
     - `cancel` records the job and then calls `cancelling`.
     """
 
+    cancel_executable = "bkill"
+
     def __init__(
         self,
         host: RemoteHost,

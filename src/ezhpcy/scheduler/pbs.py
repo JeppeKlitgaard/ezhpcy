@@ -84,8 +84,9 @@ class PBSScheduler(Scheduler):
     def _interactive_command(self, spec: JobSpec) -> list[str]:
         return self._qsub_command(spec, interactive=True)
 
-    def _cancel_command(self, job_id: str) -> list[str]:
-        return [self._qdel, job_id]
+    @property
+    def cancel_executable(self) -> str:
+        return self._qdel
 
     def _parse_job_id(self, output: str) -> str:
         job_id = output.strip()

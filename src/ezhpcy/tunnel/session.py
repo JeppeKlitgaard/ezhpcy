@@ -286,6 +286,7 @@ class TunnelSession:
                 heartbeat_token=token,
                 heartbeat_timeout_seconds=timings.worker_heartbeat_timeout_seconds,
                 control_dir=control.directory,
+                cancel_executable=scheduler.cancel_executable,
                 sshd_arguments=sshd_config_arguments(
                     host_key=credentials.remote_host_key(remote_state),
                     remote_username=credentials.login_user,

@@ -176,16 +176,21 @@ class Scheduler(ABC):
 
     async def cancel(self, job_id: str) -> None:
         """Request cancellation of a job."""
-        await self._run(self._cancel_command(job_id), t"cancel job {job_id:detail}")
+        await self._run([self.cancel_executable, job_id], t"cancel job {job_id:detail}")
+
+    @property
+    @abstractmethod
+    def cancel_executable(self) -> str:
+        """
+        The command that cancels the job whose ID follows it, on the login node
+        or on the job's own node: the worker cancels its job with it too.
+        """
 
     # Adapter hooks
 
     @abstractmethod
     def _interactive_command(self, spec: JobSpec) -> list[str]:
         """The command that submits an interactive job and opens its shell."""
-
-    @abstractmethod
-    def _cancel_command(self, job_id: str) -> list[str]: ...
 
     # Shared by adapters
 

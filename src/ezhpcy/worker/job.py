@@ -1,5 +1,6 @@
 """The worker job's command, which runs sshd under the lease watchdog."""
 
+import shlex
 lazy import secrets
 lazy from pathlib import PurePosixPath
 
@@ -12,24 +13,9 @@ _LAST_DYNAMIC_PORT = 65535
 
 _HEARTBEAT_MARKER = "ezhpcy-heartbeat"
 
-# The worker job's shell program. It tries each port in turn until sshd stays up,
-# publishes its status `ready` with that port, then stops sshd once the leases
-# stop.
-WORKER_SCRIPT = f"""{RESOLVE_SSHD}
-ports="$1"
-heartbeat_token="$2"
-heartbeat_timeout="$3"
-heartbeat_log_dir="$4"
-control_dir="$5"
-shift 5
-pid=
-job_id="${{LSB_JOBID:-${{PBS_JOBID:-unknown-$$}}}}"
-safe_job_id="${{job_id//[^A-Za-z0-9_.-]/_}}"
-heartbeat_log="$heartbeat_log_dir/heartbeat-$safe_job_id.log"
-
-umask 077
-mkdir -p "$heartbeat_log_dir" || exit
-
+# Shell functions for both programs below, given `heartbeat_log`, `job_id` and
+# sshd's `pid`.
+_SHARED_FUNCTIONS = f"""\
 log_heartbeat() {{
     level="$1"
     event="$2"
@@ -55,7 +41,94 @@ stop_sshd() {{
     fi
     kill "$pid" 2>/dev/null || true
 }}
+"""
 
+# The lease watchdog, which the worker job starts in a session of its own. Once
+# the client of an interactive job's submission is gone, the scheduler kills the
+# job's terminal session (LSF within a second, sshd with it), but not processes in
+# other sessions, such as those SSH clients started through sshd, and they keep
+# the job running. So once sshd has exited, or no newer lease has appeared within
+# the heartbeat timeout, the watchdog cancels the job through the scheduler, which
+# ends every process in it; failing that, it stops sshd.
+WATCHDOG_SCRIPT = f"""{_SHARED_FUNCTIONS}
+heartbeat_token="$1"
+heartbeat_timeout="$2"
+heartbeat_log="$3"
+control_dir="$4"
+job_id="$5"
+cancel_executable="$6"
+pid="$7"
+
+latest_lease_sequence() {{
+    latest=
+    for lease in "$control_dir"/lease.*; do
+        [ -f "$lease" ] || continue
+        IFS=' ' read -r token sequence extra < "$lease" || continue
+        case "$sequence" in
+            ''|*[!0-9]*) continue ;;
+        esac
+        if [ "$token" != "$heartbeat_token" ] || [ -n "$extra" ]; then
+            continue
+        fi
+        if [ -z "$latest" ] || [ "$sequence" -gt "$latest" ]; then
+            latest="$sequence"
+        fi
+    done
+    printf '%s' "$latest"
+}}
+
+reason=sshd_exited
+last_sequence="$(latest_lease_sequence)"
+last_seen=$SECONDS
+while kill -0 "$pid" 2>/dev/null; do
+    sequence="$(latest_lease_sequence)"
+    if [ -n "$sequence" ] && {{ [ -z "$last_sequence" ] || [ "$sequence" -gt "$last_sequence" ]; }}; then
+        last_sequence="$sequence"
+        last_seen=$SECONDS
+        log_heartbeat DEBUG heartbeat_received sequence="$sequence"
+    fi
+    if [ $((SECONDS - last_seen)) -ge "$heartbeat_timeout" ]; then
+        reason=heartbeat_timeout
+        log_heartbeat ERROR heartbeat_timeout last_sequence="$last_sequence" \
+            timeout_seconds="$heartbeat_timeout"
+        break
+    fi
+    sleep 1
+done
+
+output="$("$cancel_executable" "$job_id" 2>&1)"
+status=$?
+if [ "$status" -eq 0 ]; then
+    log_heartbeat INFO job_cancelled reason="$reason" output="${{output//$'\n'/ }}"
+else
+    log_heartbeat ERROR job_cancel_failed reason="$reason" exit_status="$status" \
+        output="${{output//$'\n'/ }}"
+    if [ "$reason" = heartbeat_timeout ]; then
+        stop_sshd
+    fi
+fi
+"""
+
+# The worker job's shell program. It tries each port in turn until sshd stays up,
+# publishes its status `ready` with that port, then starts the lease watchdog.
+WORKER_SCRIPT = f"""{RESOLVE_SSHD}
+ports="$1"
+heartbeat_token="$2"
+heartbeat_timeout="$3"
+heartbeat_log_dir="$4"
+control_dir="$5"
+cancel_executable="$6"
+shift 6
+pid=
+job_id="${{LSB_JOBID:-${{PBS_JOBID:-unknown-$$}}}}"
+safe_job_id="${{job_id//[^A-Za-z0-9_.-]/_}}"
+heartbeat_log="$heartbeat_log_dir/heartbeat-$safe_job_id.log"
+watchdog_script={shlex.quote(WATCHDOG_SCRIPT)}
+
+umask 077
+mkdir -p "$heartbeat_log_dir" || exit
+
+{_SHARED_FUNCTIONS}
 stop_children() {{
     if [ -n "$pid" ]; then
         stop_sshd
@@ -81,24 +154,6 @@ publish_state() {{
     mv -f "$temporary" "$control_dir/status"
 }}
 
-latest_lease_sequence() {{
-    latest=
-    for lease in "$control_dir"/lease.*; do
-        [ -f "$lease" ] || continue
-        IFS=' ' read -r token sequence extra < "$lease" || continue
-        case "$sequence" in
-            ''|*[!0-9]*) continue ;;
-        esac
-        if [ "$token" != "$heartbeat_token" ] || [ -n "$extra" ]; then
-            continue
-        fi
-        if [ -z "$latest" ] || [ "$sequence" -gt "$latest" ]; then
-            latest="$sequence"
-        fi
-    done
-    printf '%s' "$latest"
-}}
-
 trap handle_signal HUP INT TERM
 
 while [ -n "$ports" ]; do
@@ -122,37 +177,22 @@ while [ -n "$ports" ]; do
         wait "$pid" 2>/dev/null || true
         exit 77
     }}
+    # Forked by setsid rather than started with `&`, which would have it ignore
+    # SIGINT, the first signal a cancelled LSF job gets. Without the job's
+    # terminal, so that it neither holds it open nor can block on it.
+    setsid -f "$BASH" -c "$watchdog_script" watchdog "$heartbeat_token" \
+        "$heartbeat_timeout" "$heartbeat_log" "$control_dir" "$job_id" \
+        "$cancel_executable" "$pid" < /dev/null > /dev/null 2>&1 || {{
+        log_heartbeat ERROR watchdog_start_failed
+        stop_children
+        publish_state failed watchdog_start_failed || true
+        exit 1
+    }}
     log_heartbeat INFO watchdog_armed timeout_seconds="$heartbeat_timeout" port="$port"
-
-    last_sequence="$(latest_lease_sequence)"
-    last_seen=$SECONDS
-    lease_exit_status=
-    while kill -0 "$pid" 2>/dev/null; do
-        sequence="$(latest_lease_sequence)"
-        if [ -n "$sequence" ] && {{ [ -z "$last_sequence" ] || [ "$sequence" -gt "$last_sequence" ]; }}; then
-            last_sequence="$sequence"
-            last_seen=$SECONDS
-            log_heartbeat DEBUG heartbeat_received sequence="$sequence"
-        fi
-        if [ $((SECONDS - last_seen)) -ge "$heartbeat_timeout" ]; then
-            lease_exit_status=75
-            log_heartbeat ERROR heartbeat_timeout last_sequence="$last_sequence" \
-                timeout_seconds="$heartbeat_timeout"
-            stop_sshd
-            break
-        fi
-        sleep 1
-    done
 
     wait "$pid"
     sshd_status=$?
     pid=
-    if [ -n "$lease_exit_status" ]; then
-        log_heartbeat INFO worker_stopped sshd_status="$sshd_status" \
-            exit_status="$lease_exit_status"
-        publish_state stopped "$lease_exit_status" || true
-        exit "$lease_exit_status"
-    fi
     log_heartbeat INFO worker_stopped sshd_status="$sshd_status" \
         exit_status="$sshd_status"
     publish_state stopped "$sshd_status" || true
@@ -183,11 +223,13 @@ def sshd_command(
     heartbeat_token: str,
     heartbeat_timeout_seconds: int,
     control_dir: PurePosixPath,
+    cancel_executable: str,
     sshd_arguments: list[str],
 ) -> tuple[str, ...]:
     """
     The worker job's command: `WORKER_SCRIPT` in the cached Pixi environment,
     which runs foreground sshd, retrying immediate startup failures by port.
+    Its watchdog cancels the job with `cancel_executable`.
     """
     if not ports:
         raise ValueError("at least one worker SSH port is required")
@@ -203,5 +245,6 @@ def sshd_command(
         str(heartbeat_timeout_seconds),
         str(remote_state.worker_logs_dir()),
         str(control_dir),
+        cancel_executable,
         *sshd_arguments,
     )

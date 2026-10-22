@@ -1,9 +1,14 @@
-"""The worker job's command, and its control directory over real SFTP."""
+"""
+The worker job's command, its lease watchdog, and its control directory over
+real SFTP.
+"""
 
 import asyncio
-from collections.abc import AsyncGenerator
+import subprocess
+import sys
+from collections.abc import AsyncGenerator, Iterator
 from contextlib import asynccontextmanager
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from unittest.mock import patch
 
 import pytest
@@ -19,7 +24,12 @@ from ezhpcy.worker.control import (
     WorkerStatus,
     WorkerStopped,
 )
-from ezhpcy.worker.job import WORKER_SCRIPT, select_ports, sshd_command
+from ezhpcy.worker.job import (
+    WATCHDOG_SCRIPT,
+    WORKER_SCRIPT,
+    select_ports,
+    sshd_command,
+)
 from ezhpcy.worker.sshd import client_alive, sshd_config_arguments
 from tests.support.sshserver import SSHTestServer
 
@@ -37,6 +47,7 @@ def test_sshd_command_retries_ports_through_pixi() -> None:
         heartbeat_token="LEASETOKEN",
         heartbeat_timeout_seconds=90,
         control_dir=PurePosixPath("/home/alice/.cache/ezhpcy/control/test"),
+        cancel_executable="/opt/pbspro/bin/qdel",
         sshd_arguments=sshd_config_arguments(
             host_key=PurePosixPath("/remote/ssh_host_ed25519_key"),
             remote_username="alice",
@@ -56,17 +67,18 @@ def test_sshd_command_retries_ports_through_pixi() -> None:
         f"--spec={OPENSSH_MATCHSPEC}",
     )
     assert command[6:10] == ("bash", "-c", WORKER_SCRIPT, "sshd")
-    assert command[10:15] == (
+    assert command[10:16] == (
         "54321:54322",
         "LEASETOKEN",
         "90",
         f"/home/alice/.local/state/ezhpcy/{EZHPCY_VERSION}/logs/worker",
         "/home/alice/.cache/ezhpcy/control/test",
+        "/opt/pbspro/bin/qdel",
     )
     worker_script = WORKER_SCRIPT
     assert "command -v sshd" in worker_script
     assert 'ports="$1"' in worker_script
-    assert "shift 5" in worker_script
+    assert "shift 6" in worker_script
     assert 'port="${ports%%:*}"' in worker_script
     assert '"$sshd_path" -D -e -p "$port" "$@"' in worker_script
     assert 'publish_state ready "$port"' in worker_script
@@ -99,6 +111,89 @@ def test_select_ports_returns_unique_dynamic_ports() -> None:
         ports = select_ports(5)
 
     assert ports == (49152, 49153, 49154, 49155, 49156)
+
+
+# The lease watchdog, run by bash with a stand-in for sshd and for the scheduler's
+# cancel command
+
+requires_bash = pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell")
+
+
+@pytest.fixture
+def sshd() -> Iterator[subprocess.Popen[bytes]]:
+    process = subprocess.Popen(["sleep", "60"])
+    yield process
+    process.kill()
+    process.wait()
+
+
+def run_watchdog(
+    tmp_path: Path, sshd_pid: int, *, cancel_status: int = 0
+) -> tuple[str, str]:
+    """
+    Run the watchdog to its end, with a heartbeat timeout of a second and one
+    lease; return what the cancel command was called with, and the heartbeat log.
+    """
+    control_dir = tmp_path / "control"
+    control_dir.mkdir()
+    (control_dir / "lease.00000000000000000001").write_text("LEASETOKEN 1\n")
+    cancel = tmp_path / "cancel"
+    cancel.write_text(
+        f'#!/bin/sh\necho "$@" >> "{tmp_path}/cancelled"\n'
+        f"echo 'Job <42> is being terminated'\nexit {cancel_status}\n"
+    )
+    cancel.chmod(0o755)
+    log = tmp_path / "heartbeat.log"
+    subprocess.run(
+        ["bash", "-c", WATCHDOG_SCRIPT, "watchdog", "LEASETOKEN", "1", str(log)]
+        + [str(control_dir), "42", str(cancel), str(sshd_pid)],
+        check=True,
+        timeout=30,
+    )
+    return (tmp_path / "cancelled").read_text(), log.read_text()
+
+
+@requires_bash
+def test_watchdog_cancels_the_job_once_sshd_has_exited(
+    tmp_path: Path, sshd: subprocess.Popen[bytes]
+) -> None:
+    # As when the scheduler has killed the job's terminal session.
+    sshd.kill()
+    sshd.wait()
+
+    cancelled, log = run_watchdog(tmp_path, sshd.pid)
+
+    assert cancelled == "42\n"
+    assert (
+        "event=job_cancelled job=42 reason=sshd_exited "
+        "output=Job <42> is being terminated\n"
+    ) in log
+
+
+@requires_bash
+def test_watchdog_cancels_the_job_once_the_leases_stop(
+    tmp_path: Path, sshd: subprocess.Popen[bytes]
+) -> None:
+    cancelled, log = run_watchdog(tmp_path, sshd.pid)
+
+    assert cancelled == "42\n"
+    assert "event=heartbeat_timeout job=42 last_sequence=1" in log
+    assert "event=job_cancelled job=42 reason=heartbeat_timeout" in log
+    # It leaves stopping sshd to the scheduler.
+    assert sshd.poll() is None
+
+
+@requires_bash
+def test_watchdog_stops_sshd_when_it_cannot_cancel_the_job(
+    tmp_path: Path, sshd: subprocess.Popen[bytes]
+) -> None:
+    cancelled, log = run_watchdog(tmp_path, sshd.pid, cancel_status=1)
+
+    assert cancelled == "42\n"
+    assert (
+        "event=job_cancel_failed job=42 reason=heartbeat_timeout exit_status=1"
+    ) in log
+    assert sshd.wait(timeout=5) == -15
 
 
 # WorkerControl, over SFTP to the in-process server

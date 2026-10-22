@@ -1,5 +1,5 @@
 import pytest
-from keyring.errors import KeyringError
+from keyring.errors import KeyringError, PasswordDeleteError
 from rich.text import Text
 
 from ezhpcy.cli import keyring as keyring_cli
@@ -83,3 +83,64 @@ def test_keyring_set_reports_backend_errors(monkeypatch: pytest.MonkeyPatch) -> 
     assert result.exit_code == 1
     assert "backend unavailable" in result.stderr
     assert "secret" not in result.stdout + result.stderr
+
+
+def test_keyring_unset_removes_password_for_user_at_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        keyring_cli.keyring,
+        "delete_password",
+        lambda service, account: calls.append((service, account)),
+    )
+
+    result = invoke(
+        ["keyring", "unset", "-h", "login.example.com"],
+        env={"EZHPCY_USER": "alice"},
+    )
+
+    assert result.exit_code == 0, result
+    assert calls == [("ezhpcy", "alice@login.example.com")]
+    assert "alice@login.example.com" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("error", "message"),
+    [
+        (PasswordDeleteError("Password not found"), "No password is stored"),
+        (KeyringError("backend unavailable"), "backend unavailable"),
+    ],
+)
+def test_keyring_unset_reports_backend_errors(
+    monkeypatch: pytest.MonkeyPatch, error: KeyringError, message: str
+) -> None:
+    def fail(*_args: str) -> None:
+        raise error
+
+    monkeypatch.setattr(keyring_cli.keyring, "delete_password", fail)
+
+    result = invoke(
+        ["keyring", "unset", "--user", "alice", "--host", "login.example.com"],
+    )
+
+    assert result.exit_code == 1
+    assert message in result.stderr
+
+
+def test_keyring_unset_takes_no_password_options() -> None:
+    result = invoke(
+        [
+            "keyring",
+            "unset",
+            "--user",
+            "alice",
+            "--host",
+            "login.example.com",
+            "--password",
+            "secret",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "--password" in result.stderr

@@ -1,6 +1,7 @@
 import os
 import shutil
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,13 +14,18 @@ from ezhpcy.tunnel import ssh_config
 from ezhpcy.tunnel.lock import alias_lock
 from ezhpcy.tunnel.ssh_config import (
     PROBE_HOST_NAME,
+    AliasProblem,
     WorkerHost,
     check_host_resolution,
     include_directive,
+    probe_alias,
     probe_hosts,
     prune_stale_active_configs,
     write_active_host_config,
 )
+
+# These tests fake `subprocess.run` or run OpenSSH with a configuration of their own.
+pytestmark = pytest.mark.real_resolve_alias
 
 PORT = 50022
 
@@ -222,7 +228,11 @@ def test_host_shadowed_by_other_configuration_is_reported(
     host = worker_host()
     fake_ssh(monkeypatch, stdout=ssh_g_output(host, **overrides))
 
-    assert problem in (check_host_resolution(host, PORT) or "")
+    resolved = check_host_resolution(host, PORT)
+
+    assert resolved is not None
+    assert problem in resolved.detail
+    assert not resolved.ssh_failed
 
 
 def test_ssh_refusing_the_configuration_is_reported_verbatim(
@@ -234,8 +244,8 @@ def test_ssh_refusing_the_configuration_is_reported_verbatim(
         stderr="Bad owner or permissions on\n  /x/active-gpu.conf\n",
     )
 
-    assert check_host_resolution(worker_host(), PORT) == (
-        "Bad owner or permissions on /x/active-gpu.conf"
+    assert check_host_resolution(worker_host(), PORT) == AliasProblem(
+        "Bad owner or permissions on /x/active-gpu.conf", ssh_failed=True
     )
 
 
@@ -248,9 +258,11 @@ def test_missing_ssh_skips_the_check(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_hanging_ssh_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
     fake_ssh(monkeypatch, error=subprocess.TimeoutExpired(["ssh"], 10))
 
-    assert "could not run `ssh -G gpu`" in (
-        check_host_resolution(worker_host(), PORT) or ""
-    )
+    resolved = check_host_resolution(worker_host(), PORT)
+
+    assert resolved is not None
+    assert resolved.ssh_failed
+    assert "could not run `ssh -G gpu`" in resolved.detail
 
 
 def test_publish_writes_the_block_and_withdraw_removes_it(
@@ -292,7 +304,9 @@ def test_publish_explains_how_to_include_the_configuration(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setattr(
-        ssh_config, "check_host_resolution", lambda _host, _port: "not ours"
+        ssh_config,
+        "check_host_resolution",
+        lambda _host, _port: AliasProblem("not ours"),
     )
     warnings: list[str] = []
     monkeypatch.setattr(
@@ -306,6 +320,32 @@ def test_publish_explains_how_to_include_the_configuration(
     assert warnings and "'ssh gpu' will not reach this tunnel: not ours" in warnings[0]
     stderr_lines = capsys.readouterr().err.splitlines()
     assert stderr_lines[1:3] == include_directive().splitlines()
+
+
+def test_publish_leaves_out_the_include_when_ssh_fails(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(
+        ssh_config,
+        "check_host_resolution",
+        lambda _host, _port: AliasProblem("line 2: Bad option", ssh_failed=True),
+    )
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        ssh_config.logger,
+        "warning",
+        lambda message: warnings.append(plain(message)),
+    )
+
+    ssh_config.publish_host(worker_host(), PORT)
+
+    assert warnings == [
+        (
+            "'ssh gpu' will not reach this tunnel: line 2: Bad option. Fix what "
+            "OpenSSH reports, then check with 'ezhpcy doctor'."
+        )
+    ]
+    assert capsys.readouterr().err == ""
 
 
 def test_publish_failure_is_a_warning_not_an_error(
@@ -330,14 +370,72 @@ def test_publish_failure_is_a_warning_not_an_error(
 
 
 def test_probe_hosts_exist_only_for_the_block(isolated_runtime_dir: Path) -> None:
-    probe = config_dir(isolated_runtime_dir) / "doctor-probe.conf"
-
     with probe_hosts(["cpu", "gpu"]):
+        [probe] = config_dir(isolated_runtime_dir).iterdir()
         content = probe.read_text(encoding="utf-8")
 
+    assert probe.name.startswith("probe-")
     assert f"Host cpu\n    HostName {PROBE_HOST_NAME}\n" in content
     assert f"Host gpu\n    HostName {PROBE_HOST_NAME}\n" in content
     assert not probe.exists()
+
+
+def test_probes_at_once_keep_their_own_files(isolated_runtime_dir: Path) -> None:
+    with probe_hosts(["cpu"]), probe_hosts(["gpu"]):
+        probes = list(config_dir(isolated_runtime_dir).iterdir())
+
+    assert len(probes) == 2
+    assert list(config_dir(isolated_runtime_dir).iterdir()) == []
+
+
+def resolving_to(hostname: str) -> Callable[[str], dict[str, list[str]]]:
+    return lambda _alias: {"hostname": [hostname]}
+
+
+@pytest.mark.parametrize(
+    ("resolved", "problem"),
+    [
+        (resolving_to(PROBE_HOST_NAME), None),
+        # As without the Include: OpenSSH takes the alias for the host name.
+        (resolving_to("gpu"), AliasProblem("OpenSSH resolves it to gpu")),
+        # A hand-written block, say, since no tunnel holds the alias.
+        (resolving_to("127.0.0.1"), AliasProblem("OpenSSH resolves it to 127.0.0.1")),
+        (
+            lambda _alias: AliasProblem("line 2: Bad option", ssh_failed=True),
+            AliasProblem("line 2: Bad option", ssh_failed=True),
+        ),
+        # `ssh` is not on PATH: nothing to check.
+        (lambda _alias: None, None),
+    ],
+)
+def test_probe_alias_reports_whether_ssh_gets_the_tunnels_block(
+    monkeypatch: pytest.MonkeyPatch,
+    isolated_runtime_dir: Path,
+    resolved: Callable[[str], dict[str, list[str]] | AliasProblem | None],
+    problem: AliasProblem | None,
+) -> None:
+    probed: list[str] = []
+
+    def resolve(alias: str) -> dict[str, list[str]] | AliasProblem | None:
+        # While the probe's block is there.
+        assert any(config_dir(isolated_runtime_dir).iterdir())
+        probed.append(alias)
+        return resolved(alias)
+
+    monkeypatch.setattr(ssh_config, "resolve_alias", resolve)
+
+    assert probe_alias("gpu") == problem
+    assert probed == ["gpu"]
+    assert list(config_dir(isolated_runtime_dir).iterdir()) == []
+
+
+def test_probe_alias_accepts_a_running_tunnels_block(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ssh_config, "resolve_alias", resolving_to("127.0.0.1"))
+
+    with alias_lock("gpu"):
+        assert probe_alias("gpu") is None
 
 
 requires_openssh = pytest.mark.skipif(

@@ -20,6 +20,7 @@ lazy import os
 lazy import subprocess
 lazy import uuid
 lazy from collections.abc import Generator, Iterable
+lazy from string.templatelib import Template
 
 lazy from rich.text import Text
 
@@ -45,10 +46,45 @@ logger = get_logger(__name__)
 SSH_CONFIG_DIRECTORY_NAME = "ssh-config"
 ACTIVE_FILE_PREFIX = "active-"
 # Sorts after every `active-*.conf`, so a running tunnel's block comes first.
-_PROBE_FILE_NAME = "doctor-probe.conf"
+_PROBE_FILE_PREFIX = "probe-"
 # Where `probe_hosts`' blocks point; `.invalid` never resolves.
 PROBE_HOST_NAME = "ezhpcy-doctor-probe.invalid"
 _SSH_RESOLVE_TIMEOUT_SECONDS = 10
+
+INCLUDE_HINT = (
+    t"If {'~/.ssh/config':path} does not include EzHPCy's SSH profiles yet, copy "
+    t"the two highlighted lines below to its top, before any Host or Match block:"
+)
+
+
+@dataclass(frozen=True)
+class AliasProblem:
+    """Why `ssh <alias>` would not get EzHPCy's Host block for the alias."""
+
+    detail: str
+    # `ssh -G` itself failed, e.g. on a bad line in the user's configuration,
+    # rather than resolving the alias elsewhere. The Include lines won't fix it.
+    ssh_failed: bool = False
+
+    @property
+    def hint(self) -> Template:
+        if self.ssh_failed:
+            return (
+                t"Fix what OpenSSH reports, then check with "
+                t"{'ezhpcy doctor':suggestion}."
+            )
+        return INCLUDE_HINT
+
+    @property
+    def explanation(self) -> Template:
+        """The problem and its fix; follow it with `print_include_lines`."""
+        return t"{self.detail}. {self.hint}"
+
+    def print_include_lines(self) -> None:
+        """Print the Include lines to stderr, after a blank line, if they are the fix."""
+        if not self.ssh_failed:
+            error_console.print()
+            echo_include_directive(err=True)
 
 
 def _config_path(path: Path) -> str:
@@ -169,12 +205,9 @@ def publish_host(host: WorkerHost, port: int) -> None:
     if problem is not None:
         logger.warning(
             t"{f'ssh {host.alias}':suggestion} will not reach this tunnel: "
-            t"{problem}. If {'~/.ssh/config':path} does not include EzHPCy's SSH "
-            t"profiles yet, copy the two highlighted lines below to its top, "
-            t"before any Host or Match block:"
+            t"{problem.explanation}"
         )
-        error_console.print()
-        echo_include_directive(err=True)
+        problem.print_include_lines()
 
 
 def withdraw_host(host: WorkerHost) -> None:
@@ -213,13 +246,15 @@ def probe_hosts(aliases: Iterable[str]) -> Generator[None]:
     then resolves elsewhere is shadowed by other configuration, or the Include
     line is missing or misplaced.
     """
-    path = ssh_config_dir() / _PROBE_FILE_NAME
+    # Its own file, so that probes running at once (`ezhpcy doctor`, tunnels
+    # starting) don't replace or remove each other's.
+    path = ssh_config_dir() / f"{_PROBE_FILE_PREFIX}{uuid.uuid4().hex}.conf"
     blocks = "".join(
         f"Host {validate_alias(alias)}\n    HostName {PROBE_HOST_NAME}\n"
         for alias in aliases
     )
     _write_private(
-        path, f"# Written by `ezhpcy doctor` while it checks, then removed.\n{blocks}"
+        path, f"# Written by EzHPCy while it checks `ssh`, then removed.\n{blocks}"
     )
     try:
         yield
@@ -227,7 +262,33 @@ def probe_hosts(aliases: Iterable[str]) -> Generator[None]:
         path.unlink(missing_ok=True)
 
 
-def resolve_alias(alias: str) -> dict[str, list[str]] | str | None:
+def resolution_problem(alias: str) -> AliasProblem | None:
+    """
+    Within `probe_hosts`: `None` if `ssh <alias>` gets EzHPCy's block for it, a
+    running tunnel's or the probe's, or if `ssh` is not on PATH; otherwise what
+    went wrong.
+    """
+    resolved = resolve_alias(alias)
+    if resolved is None or isinstance(resolved, AliasProblem):
+        return resolved
+    hostname = resolved.get("hostname", [""])[0]
+    if hostname == PROBE_HOST_NAME:
+        return None
+    if hostname == LOOPBACK_HOST and alias_locked(alias):
+        return None
+    return AliasProblem(f"OpenSSH resolves it to {hostname}")
+
+
+def probe_alias(alias: str) -> AliasProblem | None:
+    """
+    Check, before a tunnel for `alias` starts, that `ssh <alias>` will get the
+    Host block the tunnel writes once it serves (see `resolution_problem`).
+    """
+    with probe_hosts([alias]):
+        return resolution_problem(alias)
+
+
+def resolve_alias(alias: str) -> dict[str, list[str]] | AliasProblem | None:
     """
     Ask OpenSSH how it resolves `alias` (`ssh -G`): its options, lower-case,
     with every value in order; or the problem running it; or `None` when `ssh`
@@ -243,13 +304,19 @@ def resolve_alias(alias: str) -> dict[str, list[str]] | str | None:
             creationflags=WINDOWS_CREATION_FLAGS,
         )
     except FileNotFoundError:
+        logger.debug(
+            t"Skipping SSH configuration check: {'ssh':suggestion} is not on PATH."
+        )
         return None
     except (OSError, subprocess.TimeoutExpired) as error:
-        return f"could not run `ssh -G {alias}`: {error}"
+        return AliasProblem(f"could not run `ssh -G {alias}`: {error}", ssh_failed=True)
 
     if result.returncode != 0:
         detail = " ".join(result.stderr.split())
-        return detail or f"`ssh -G {alias}` exited with {result.returncode}"
+        return AliasProblem(
+            detail or f"`ssh -G {alias}` exited with {result.returncode}",
+            ssh_failed=True,
+        )
 
     ssh_options: dict[str, list[str]] = {}
     for line in result.stdout.splitlines():
@@ -258,7 +325,7 @@ def resolve_alias(alias: str) -> dict[str, list[str]] | str | None:
     return ssh_options
 
 
-def check_host_resolution(host: WorkerHost, port: int) -> str | None:
+def check_host_resolution(host: WorkerHost, port: int) -> AliasProblem | None:
     """
     Ask OpenSSH how it resolves a tunnel's alias and describe any mismatch.
 
@@ -267,24 +334,25 @@ def check_host_resolution(host: WorkerHost, port: int) -> str | None:
     and included files with permissions OpenSSH refuses.
     """
     ssh_options = resolve_alias(host.alias)
-    if ssh_options is None:
-        logger.debug(
-            t"Skipping SSH configuration check: {'ssh':suggestion} is not on PATH."
-        )
-        return None
-    if isinstance(ssh_options, str):
+    if ssh_options is None or isinstance(ssh_options, AliasProblem):
         return ssh_options
 
     endpoint = ssh_options.get("hostname"), ssh_options.get("port")
     if endpoint != ([LOOPBACK_HOST], [str(port)]):
-        return "OpenSSH does not resolve it to the ezhpcy-generated configuration"
+        return AliasProblem(
+            "OpenSSH does not resolve it to the ezhpcy-generated configuration"
+        )
     # `ssh -G` prints no `proxycommand` for `ProxyCommand none`.
     if ssh_options.get("proxycommand", ["none"]) != ["none"]:
-        return f"OpenSSH resolves a ProxyCommand: {ssh_options['proxycommand'][0]}"
+        return AliasProblem(
+            f"OpenSSH resolves a ProxyCommand: {ssh_options['proxycommand'][0]}"
+        )
     if ssh_options.get("user") != [host.user]:
-        return f"OpenSSH resolves a different user: {ssh_options.get('user')}"
+        return AliasProblem(
+            f"OpenSSH resolves a different user: {ssh_options.get('user')}"
+        )
     identity_files = ssh_options.get("identityfile", [])
     expected_identity = os.path.normcase(host.identity_file.resolve().as_posix())
     if not identity_files or os.path.normcase(identity_files[0]) != expected_identity:
-        return "OpenSSH resolves a different IdentityFile"
+        return AliasProblem("OpenSSH resolves a different IdentityFile")
     return None

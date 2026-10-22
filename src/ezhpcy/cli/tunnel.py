@@ -37,7 +37,7 @@ lazy from ezhpcy.logging import label_log_file
 lazy from ezhpcy.scheduler.types import SchedulerType
 lazy from ezhpcy.tunnel import TunnelError
 lazy from ezhpcy.tunnel.session import TunnelSession
-lazy from ezhpcy.tunnel.ssh_config import WorkerHost
+lazy from ezhpcy.tunnel.ssh_config import WorkerHost, probe_alias
 lazy from ezhpcy.types import (
     ResolvedConfig,
     ResolvedProfileConfig,
@@ -264,6 +264,15 @@ async def tunnel_cmd(
                 t"worker SSH credentials are missing; run "
                 t"{'ezhpcy provision':suggestion} first (missing: {missing:path})"
             )
+        # Before connecting too: a tunnel that `ssh <alias>` won't reach is of no
+        # use, and the job may queue for long before it would tell.
+        if (problem := probe_alias(ssh_host.alias)) is not None:
+            logger.error(
+                t"Could not start tunnel: {f'ssh {ssh_host.alias}':suggestion} "
+                t"would not reach it: {problem.explanation}"
+            )
+            problem.print_include_lines()
+            raise SystemExit(1)
         worker_ports = (
             (worker_port,)
             if worker_port is not None

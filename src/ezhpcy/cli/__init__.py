@@ -183,6 +183,12 @@ keyring_app = App(
 keyring_app.command(
     "ezhpcy.cli.keyring:set_cmd", name="set", help="Store a login-node password."
 )
+# ezhpcy keyring unset
+keyring_app.command(
+    "ezhpcy.cli.keyring:unset_cmd",
+    name="unset",
+    help="Remove a stored login-node password.",
+)
 app.command(keyring_app)
 
 # ezhpcy info

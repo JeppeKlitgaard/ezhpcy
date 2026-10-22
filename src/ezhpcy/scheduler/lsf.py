@@ -101,8 +101,10 @@ class LSFScheduler(Scheduler):
             ]
         return command
 
-    def _cancel_command(self, job_id: str) -> list[str]:
-        return ["bkill", job_id]
+    @property
+    def cancel_executable(self) -> str:
+        # LSF puts its commands on a job's PATH too.
+        return "bkill"
 
     def _parse_job_id(self, output: str) -> str:
         match = _SUBMITTED_JOB_PATTERN.search(output)

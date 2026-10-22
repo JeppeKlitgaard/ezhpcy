@@ -18,7 +18,7 @@ WINDOWS_CREATION_FLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 # Vendor software
 # See versions: https://github.com/prefix-dev/pixi
-PIXI_VERSION = "0.82.0"
+PIXI_VERSION = "0.82.1"
 PIXI_INSTALLER_URL = "https://pixi.sh/install.sh"
 
 # See versions: https://anaconda.org/channels/conda-forge/packages/openssh/files

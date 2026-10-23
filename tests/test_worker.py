@@ -214,7 +214,9 @@ async def control(
         ) as host,
         host.sftp() as sftp,
     ):
-        yield WorkerControl(sftp, _CONTROL_DIR, "LEASETOKEN", ports=ports)
+        yield WorkerControl(
+            sftp, _CONTROL_DIR, "LEASETOKEN", ports=ports, app_ports=(60001,)
+        )
 
 
 def write_file(server: SSHTestServer, name: str, content: str) -> None:
@@ -264,7 +266,10 @@ async def test_worker_control_reads_no_status_until_the_worker_writes_one(
         ("LEASETOKEN ready 54322\n", WorkerReady(54322)),
         ("LEASETOKEN failed no_ports\n", WorkerFailed("no_ports")),
         ("LEASETOKEN failed\n", WorkerFailed("worker startup failed")),
-        ("LEASETOKEN stopped 75\n", WorkerStopped(75)),
+        ("LEASETOKEN stopped sshd 75\n", WorkerStopped("sshd", 75)),
+        ("LEASETOKEN stopped app 3\n", WorkerStopped("app", 3)),
+        ("LEASETOKEN ready 54322 socket\n", WorkerReady(54322, "socket")),
+        ("LEASETOKEN ready 54322 60001\n", WorkerReady(54322, 60001)),
     ],
 )
 async def test_worker_control_reads_the_status(
@@ -285,6 +290,12 @@ async def test_worker_control_reads_the_status(
         ("LEASETOKEN ready", "invalid status record"),
         ("LEASETOKEN stopped", "invalid status record"),
         ("LEASETOKEN stopped -", "invalid status record"),
+        # Without which process stopped, as before apps.
+        ("LEASETOKEN stopped 75", "invalid status record"),
+        ("LEASETOKEN stopped sshd -", "invalid status record"),
+        ("LEASETOKEN stopped kernel 1", "invalid status record"),
+        ("LEASETOKEN ready 54321 1234", "unexpected app port 1234"),
+        ("LEASETOKEN ready 54321 sock", "non-numeric app port"),
         ("LEASETOKEN paused", "invalid status record"),
         ("OTHERTOKEN ready 54321", "invalid status record"),
         # Bytes that aren't UTF-8.
@@ -307,7 +318,7 @@ async def test_worker_control_close_removes_the_directory(
     async with control(ssh_server) as worker_control:
         await worker_control.create()
         await worker_control.publish_lease()
-        await asyncio.to_thread(write_status, ssh_server, "LEASETOKEN stopped 0\n")
+        await asyncio.to_thread(write_status, ssh_server, "LEASETOKEN stopped sshd 0\n")
         # Left by heartbeats cancelled mid-write: a temporary lease, and a lease
         # renamed but not yet tracked.
         for name in (".lease.00000000000000000002.tmp", "lease.00000000000000000002"):

@@ -56,6 +56,8 @@ lazy from typing import Self
 
 lazy from pydantic import SecretStr
 
+from ezhpcy.app import ManifestError
+from ezhpcy.app.manifest import App, Manifest
 from ezhpcy.config import Config, Profile
 from ezhpcy.forward import Forward, ForwardStatus
 from ezhpcy.job import JobEnd, JobEnded, JobFailed
@@ -98,6 +100,7 @@ __all__ = [
     "AliasProblem",
     "AliasReservation",
     "AliasUnreachable",
+    "App",
     "CommandFailed",
     "Config",
     "ConfigError",
@@ -116,6 +119,8 @@ __all__ = [
     "JobStatus",
     "LSFOptions",
     "Login",
+    "Manifest",
+    "ManifestError",
     "MessageError",
     "MissingCredentials",
     "PBSOptions",

@@ -92,6 +92,10 @@ type Handler = Callable[[Invocation], Awaitable[int | None] | int | None]
 type StreamHandler = Callable[
     [asyncio.StreamReader, asyncio.StreamWriter], Awaitable[None]
 ]
+# Serves one channel to a Unix socket, inside the server.
+type SocketHandler = Callable[
+    [asyncssh.SSHReader[bytes], asyncssh.SSHWriter[bytes]], Awaitable[None]
+]
 
 
 def reply(*, stdout: str = "", stderr: str = "", exit_status: int = 0) -> Handler:
@@ -117,6 +121,8 @@ class SSHTestServer:
       with relative paths starting at `home`.
     - `direct-tcpip`: only to ports allowed with `allow_forwarding`, such as those
       of the stand-ins `listen` starts.
+    - `direct-streamlocal@openssh.com`: only to paths allowed with `allow_socket`,
+      served inside the server, so it works where Unix sockets don't (Windows).
     - `tcpip-forward` (remote forwards): on this machine, at the address asked
       for, recorded in `remote_listens`.
     - Connection loss: `blackhole` and `drop`.
@@ -142,6 +148,7 @@ class SSHTestServer:
         self.errors: list[Exception] = []
         self._commands: dict[tuple[str, ...], Handler] = {}
         self._forwardable: set[tuple[str, int]] = set()
+        self._sockets: dict[str, SocketHandler] = {}
         self._listeners: list[asyncio.Server] = []
         self._connections: set[asyncssh.SSHServerConnection] = set()
         self._links: set[tuple[asyncio.StreamWriter, asyncio.StreamWriter]] = set()
@@ -168,13 +175,27 @@ class SSHTestServer:
         """Let clients open `direct-tcpip` channels to `host:port`."""
         self._forwardable.add((host, port))
 
-    def listen(self, handler: StreamHandler) -> int:
+    def allow_socket(
+        self, path: str | PurePosixPath, handler: SocketHandler | None
+    ) -> None:
         """
-        Serve TCP connections to a port on 127.0.0.1 with `handler`, on the server's
-        thread, as a stand-in for something only the login node can reach (such as
-        the worker's sshd). Forwarding to it is allowed. Returns the port.
+        Serve channels to the Unix socket at `path` with `handler`, on the server's
+        thread, as a stand-in for an app listening there; `None` refuses them
+        again, as if nothing listened.
         """
-        listener = self._run(asyncio.start_server(handler, _HOST, 0))
+        if handler is None:
+            self._sockets.pop(str(path), None)
+        else:
+            self._sockets[str(path)] = handler
+
+    def listen(self, handler: StreamHandler, port: int = 0) -> int:
+        """
+        Serve TCP connections to `port` (by default a free one) on 127.0.0.1 with
+        `handler`, on the server's thread, as a stand-in for something only the
+        login node can reach (such as the worker's sshd). Forwarding to it is
+        allowed. Returns the port.
+        """
+        listener = self._run(asyncio.start_server(handler, _HOST, port))
         self._listeners.append(listener)
         port = listener.sockets[0].getsockname()[1]
         self.allow_forwarding(port)
@@ -438,6 +459,15 @@ class _Server(asyncssh.SSHServer):
         # asyncssh listens there, on this machine, and forwards to the client.
         self._test_server.remote_listens.append((listen_host, listen_port))
         return True
+
+    def unix_connection_requested(self, dest_path: str) -> SocketHandler:
+        handler = self._test_server._sockets.get(dest_path)
+        if handler is None:
+            # As OpenSSH's sshd says when nothing listens there.
+            raise asyncssh.ChannelOpenError(
+                asyncssh.OPEN_CONNECT_FAILED, f"connect {dest_path}: No such file"
+            )
+        return handler
 
 
 class _SFTPServer(asyncssh.SFTPServer):

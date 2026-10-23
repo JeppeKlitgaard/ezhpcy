@@ -1,0 +1,44 @@
+# JupyterLab and TensorBoard, sharing one environment.
+#
+#   ezhpcy tunnel PROFILE --manifest examples/apps/notebooks --app lab --app tensorboard
+
+[ezhpcy]
+schema = 1
+
+[ezhpcy.app.lab."v1.0"]
+description = "JupyterLab with the project's environment"
+
+[ezhpcy.app.lab."v1.0".environment]
+pixi = "pixi.toml"       # pixi.lock is read from beside it
+environment = "default"
+
+[ezhpcy.app.lab."v1.0".resources]   # what the app needs; the profile says which queue
+cores = 2
+time_limit = "4:00"
+
+[ezhpcy.app.lab."v1.0".run]
+command = [
+    "jupyter", "lab", "--no-browser",
+    "--ServerApp.sock={socket}",
+    "--KernelManager.transport=ipc",
+]
+env = { JUPYTER_TOKEN = "{token}", JUPYTER_RUNTIME_DIR = "{run_dir}/jupyter" }
+
+[ezhpcy.app.lab."v1.0".endpoint]
+transport = "socket"
+authenticates = true
+
+[ezhpcy.app.lab."v1.0".ready]
+check = "http"
+path = "/api"
+timeout_seconds = 180
+
+[ezhpcy.app.lab."v1.0".access]
+url = "http://127.0.0.1:{local_port}/lab?token={token}"
+
+[ezhpcy.app.tensorboard."v2.18"]
+description = "TensorBoard over the runs in the workdir"
+environment.pixi = "pixi.toml"   # the same environment as `lab`: installed once
+run.command = ["tensorboard", "--logdir", "{workdir}/runs", "--host", "127.0.0.1", "--port", "{port}"]
+endpoint.transport = "tcp"
+ready = { check = "http", path = "/" }

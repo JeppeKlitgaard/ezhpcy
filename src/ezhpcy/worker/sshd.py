@@ -75,6 +75,7 @@ def _sshd_config_settings(
         # Restrictions
         ("PermitUserEnvironment", "no"),
         ("AllowTcpForwarding", "yes"),
+        ("AllowStreamLocalForwarding", "yes"),
         ("GatewayPorts", "no"),
         ("AllowAgentForwarding", "no"),
         ("X11Forwarding", "no"),

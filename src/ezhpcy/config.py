@@ -3,7 +3,7 @@ import re
 from typing import Annotated
 lazy import os
 lazy import tomllib
-lazy from collections.abc import Mapping
+lazy from collections.abc import Mapping, Sequence
 lazy from datetime import timedelta
 lazy from pathlib import Path
 lazy from typing import Any, Literal, Self
@@ -15,6 +15,7 @@ from pydantic import (
     ConfigDict,
     Field,
     PlainSerializer,
+    PrivateAttr,
     model_validator,
 )
 from pydantic_settings import (
@@ -29,6 +30,7 @@ lazy from pydantic.fields import FieldInfo
 
 from ezhpcy.constants import LOGIN_KNOWN_HOSTS_NAME, PACKAGE_NAME, SSH_DIRECTORY_NAME
 from ezhpcy.types import ConfigError, PasswordConfig
+lazy from ezhpcy.app.manifest import App, Manifest, choose_app, collect_apps
 lazy from ezhpcy.logging import get_logger
 lazy from ezhpcy.types import (
     JobConfig,
@@ -378,6 +380,7 @@ class Config(BaseSettings, _ConfigValues):
         toml_file=_default_config_file(),
         env_prefix="EZHPCY_",
     )
+    _apps: dict[str, dict[str, App]] = PrivateAttr(default_factory=dict)
 
     @classmethod
     def settings_customise_sources(
@@ -417,14 +420,46 @@ class Config(BaseSettings, _ConfigValues):
         )
 
     @classmethod
-    def load(cls, path: Path | None = None) -> Self:
+    def load(
+        cls,
+        path: Path | None = None,
+        *,
+        manifests: Sequence[Path] = (),
+        default_manifests: Sequence[Path] = (),
+    ) -> Self:
         """
         Read the configuration file `path`, by default the one the CLI reads
-        (`default_path`). Unlike `Config()`, the environment (`EZHPCY_*`) is
-        not read. A value: loading one changes nothing global, and several may
-        be used at once. Raises `ConfigError`.
+        (`default_path`), and the apps of `manifests` (`Manifest.load`). Unlike
+        `Config()`, the environment (`EZHPCY_*`) is not read. A value: loading
+        one changes nothing global, and several may be used at once.
+
+        `default_manifests` are a front end's own: a version of an app in one of
+        `manifests` replaces the same version there. Raises `ConfigError`, and
+        `ManifestError` for an invalid manifest, or the same version of an app
+        in two of `manifests` (or two of `default_manifests`).
         """
-        return cls.from_file(path or cls.default_path())
+        loaded = cls.from_file(path or cls.default_path())
+        loaded._apps = collect_apps(
+            [Manifest.load(manifest) for manifest in manifests],
+            [Manifest.load(manifest) for manifest in default_manifests],
+        )
+        return loaded
+
+    @property
+    def apps(self) -> Mapping[str, Mapping[str, App]]:
+        """
+        The apps of the manifests it was loaded with, by normalised name
+        (`My_App` is `my-app`), then by version as the manifest spells it.
+        """
+        return self._apps
+
+    def app(self, name: str, version: str | None = None) -> App:
+        """
+        The app called `name`, compared normalised, at `version` (`v1.2`, the
+        same as `v1.2.0`), or by default its newest version that isn't a
+        pre-release. Raises `ManifestError`, listing the choices.
+        """
+        return choose_app(self._apps, name, version)
 
     @staticmethod
     def default_path() -> Path:

@@ -26,6 +26,7 @@ from ezhpcy.logging import (
 from ezhpcy.tunnel import ssh_config
 from tests.support.login import MACHINE_ID, route_login
 from tests.support.sshserver import SSHTestServer
+from tests.support.worker import worker_credentials, worker_sshd
 
 # As the CLI does, so every test sees the same `ezhpcy` logger: one that has the
 # terminal handler and doesn't propagate.
@@ -46,6 +47,17 @@ def login(
     """`ssh_server`, which commands connect to as their login node."""
     route_login(ssh_server, monkeypatch, tmp_path / "home")
     return ssh_server
+
+
+@pytest.fixture
+def worker(login: SSHTestServer, tmp_path: Path) -> Iterator[SSHTestServer]:
+    """
+    The worker's sshd for jobs on `login`: a second in-process SSH server that
+    `login` forwards to, with the worker's credentials as `ezhpcy provision`
+    leaves them (see `tests.support.worker`).
+    """
+    with worker_sshd(login, tmp_path / "worker", worker_credentials()) as server:
+        yield server
 
 
 @pytest.fixture(autouse=True)

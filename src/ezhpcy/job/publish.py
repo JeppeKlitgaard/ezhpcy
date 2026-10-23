@@ -3,17 +3,19 @@ A job published under an alias: `ssh <alias>` reaches the job's sshd.
 
 `publish` forwards a loopback port to the worker's sshd, through the login
 connection, and writes the Host block that points OpenSSH there (see
-`ezhpcy.tunnel.ssh_config`). It is an attachment of the job: the block is
-withdrawn before the port closes, so that a Host block never outlives the port
-it points at, when `Published.withdraw` is called or the job is left.
+`ezhpcy.tunnel.ssh_config`). It is an attachment of the job itself, not of its
+node's connection: the block is withdrawn before the port closes, so that a
+Host block never outlives the port it points at, when `Published.withdraw` is
+called or the job is left.
 """
 
 lazy import asyncio
 lazy from dataclasses import replace
 
 from ezhpcy.logging import get_logger
-lazy from ezhpcy.job.attachments import Attachment
-lazy from ezhpcy.job.lifecycle import JobLifecycle, finish
+lazy from ezhpcy.attachments import Attachment
+lazy from ezhpcy.cleanup import finish
+lazy from ezhpcy.job.lifecycle import JobLifecycle
 lazy from ezhpcy.job.status import PublishedStatus
 lazy from ezhpcy.tunnel.lock import AliasReservation
 lazy from ezhpcy.tunnel.ssh_config import (
@@ -64,7 +66,7 @@ async def publish(job: JobLifecycle, reservation: AliasReservation) -> Published
     worker = job.worker
     assert worker is not None
     worker_host = WorkerHost(reservation.alias, job.credentials)
-    endpoint = worker.endpoint
+    endpoint = str(worker.sshd)
     attachment = job.attach()
     reservation.published = True
 
@@ -80,7 +82,7 @@ async def publish(job: JobLifecycle, reservation: AliasReservation) -> Published
             attachment.report(replace(status, connections=count))
 
     forwarded = await job.host.forward_local_port(
-        worker.node, worker.port, on_connections=on_connections
+        worker.sshd, on_connections=on_connections
     )
 
     async def close_forwarded_port() -> None:

@@ -219,7 +219,7 @@ class Job:
     @property
     def node(self) -> str:
         """The node the job runs on, as the login node reaches it, once entered."""
-        return self._worker().node
+        return self._worker().sshd.host
 
     async def __aenter__(self) -> Self:
         await self._lifecycle.__aenter__()

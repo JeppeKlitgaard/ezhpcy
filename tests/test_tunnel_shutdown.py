@@ -21,10 +21,11 @@ import re
 import signal
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Literal
 
 import pytest
 
+from ezhpcy.cli import tunnel as tunnel_cli
 from ezhpcy.job import publish
 from ezhpcy.scheduler.base import JobInfo, JobSpec, JobState, SchedulerError
 from ezhpcy.ssh import RemoteHost
@@ -33,7 +34,6 @@ from ezhpcy.worker.control import WorkerControl
 from tests.support.cli import invoke
 from tests.support.sshserver import SSHTestServer
 from tests.support.tunnel import (
-    BANNER,
     FAST_TIMINGS,
     JOB_ID,
     RUNNING,
@@ -54,17 +54,32 @@ PENDING = snapshot(JobState.PENDING, "PEND")
 class Rig:
     """The fakes of one scenario, and the flag its steps set."""
 
-    def __init__(self, scenario: Scenario, server: SSHTestServer) -> None:
+    def __init__(
+        self,
+        scenario: Scenario,
+        server: SSHTestServer,
+        worker: SSHTestServer,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         self.scenario = scenario
         self.server = server
         self.heartbeats_fail = scenario.heartbeats == "fail_from_start"
         self.published: list[str] = []
         self.withdrawn: list[str] = []
-        self.worker_port = (
-            unused_port()
-            if scenario.endpoint_refuses
-            else server.listen(banner(scenario.banner))
-        )
+        if scenario.endpoint_refuses:
+            self.worker_port = unused_port()
+        elif scenario.banner is not None:
+            self.worker_port = server.listen(banner(scenario.banner))
+        else:
+            self.worker_port = worker.port
+        self.runs: list[tunnel_cli.TunnelRun] = []
+        init = tunnel_cli.TunnelRun.__init__
+
+        def recording_init(run: tunnel_cli.TunnelRun, *args: Any) -> None:
+            init(run, *args)
+            self.runs.append(run)
+
+        monkeypatch.setattr(tunnel_cli.TunnelRun, "__init__", recording_init)
 
     def scheduler(self, host: RemoteHost) -> FakeScheduler:
         inspections = [
@@ -72,13 +87,16 @@ class Rig:
             for entry in self.scenario.inspections
         ]
         # A scenario that publishes its Host block plays the job monitor's polls
-        # once it has: its 10 ms interval could otherwise beat publishing.
+        # once the tunnel serves: its 10 ms interval could otherwise beat it.
         return FakeScheduler(
             host,
             inspections,
             submitted=self.start_worker,
-            held=lambda: self.scenario.withdrawn and not self.published,
+            held=lambda: self.scenario.withdrawn and not self.serving(),
         )
+
+    def serving(self) -> bool:
+        return any(run.served for run in self.runs)
 
     def start_worker(self, _spec: JobSpec) -> None:
         status = self.scenario.worker_status
@@ -147,7 +165,8 @@ class Scenario:
     worker_status: str | None = "ready"
     heartbeats: Literal["ok", "fail_from_start"] = "ok"
     endpoint_refuses: bool = False
-    banner: bytes = BANNER
+    # What the worker's port sends, if it isn't the worker's sshd.
+    banner: bytes | None = None
     timings: dict[str, float] = field(default_factory=dict)
 
 
@@ -320,9 +339,12 @@ SCENARIOS = [
 
 @pytest.mark.parametrize("scenario", SCENARIOS, ids=lambda scenario: scenario.id)
 def test_tunnel_shutdown(
-    scenario: Scenario, login: SSHTestServer, monkeypatch: pytest.MonkeyPatch
+    scenario: Scenario,
+    login: SSHTestServer,
+    worker: SSHTestServer,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    rig = Rig(scenario, login)
+    rig = Rig(scenario, login, worker, monkeypatch)
     configure_tunnel(monkeypatch, login, timings=FAST_TIMINGS | scenario.timings)
     serve_interactive_job(login)
     schedulers = use_scheduler(monkeypatch, rig.scheduler)

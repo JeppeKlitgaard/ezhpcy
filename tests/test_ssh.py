@@ -15,7 +15,7 @@ import pytest
 
 from ezhpcy import ssh
 from ezhpcy.constants import EZHPCY_VERSION, LOOPBACK_HOST, PIXI_VERSION
-from ezhpcy.ssh import CommandFailed, ForwardedPort, RemoteHost
+from ezhpcy.ssh import CommandFailed, ForwardedPort, RemoteHost, TCPDestination
 from ezhpcy.types import Login, RemoteState
 from tests.support.sshserver import Invocation, SSHTestServer, StreamHandler, reply
 
@@ -451,7 +451,7 @@ async def test_forward_local_port_listens_on_loopback(ssh_server: SSHTestServer)
         _destination(ssh_server, _echo) as port,
         await _connect(ssh_server) as host,
     ):
-        listener = await host.forward_local_port(LOOPBACK_HOST, port)
+        listener = await host.forward_local_port(TCPDestination(LOOPBACK_HOST, port))
         _reader, writer = await _open(listener)
         try:
             assert writer.get_extra_info("peername")[0] == LOOPBACK_HOST
@@ -482,7 +482,7 @@ async def test_forward_local_port_listens_on_no_other_address(
     port = _closed_port()
     ssh_server.allow_forwarding(port)
     async with await _connect(ssh_server) as host:
-        listener = await host.forward_local_port(LOOPBACK_HOST, port)
+        listener = await host.forward_local_port(TCPDestination(LOOPBACK_HOST, port))
         listener.close()
 
     # A port the OS picks, on loopback only.
@@ -497,7 +497,7 @@ async def test_forward_local_port_passes_on_the_clients_eof(
         _destination(ssh_server, _echo) as port,
         await _connect(ssh_server) as host,
     ):
-        listener = await host.forward_local_port(LOOPBACK_HOST, port)
+        listener = await host.forward_local_port(TCPDestination(LOOPBACK_HOST, port))
         # The destination only replies in full, and closes, after the client's EOF.
         assert await _round_trip(listener, payload) == payload
 
@@ -519,7 +519,7 @@ async def test_forward_local_port_passes_on_the_destinations_eof(
         _destination(ssh_server, banner_then_read) as port,
         await _connect(ssh_server) as host,
     ):
-        listener = await host.forward_local_port(LOOPBACK_HOST, port)
+        listener = await host.forward_local_port(TCPDestination(LOOPBACK_HOST, port))
         reader, writer = await _open(listener)
         try:
             assert await asyncio.wait_for(reader.read(), WAIT_SECONDS) == (
@@ -541,7 +541,7 @@ async def test_forward_local_port_serves_concurrent_connections(
         _destination(ssh_server, _echo) as port,
         await _connect(ssh_server) as host,
     ):
-        listener = await host.forward_local_port(LOOPBACK_HOST, port)
+        listener = await host.forward_local_port(TCPDestination(LOOPBACK_HOST, port))
         replies = await asyncio.gather(
             *(_round_trip(listener, payload) for payload in payloads)
         )
@@ -555,7 +555,7 @@ async def test_forward_local_port_survives_a_refusing_destination(
     port = _closed_port()
     ssh_server.allow_forwarding(port)
     async with await _connect(ssh_server) as host:
-        listener = await host.forward_local_port(LOOPBACK_HOST, port)
+        listener = await host.forward_local_port(TCPDestination(LOOPBACK_HOST, port))
         # The channel can't be opened, so the local connection is closed.
         assert await _refused(listener)
 
@@ -579,7 +579,7 @@ async def test_forward_local_port_counts_the_open_connections(
         await _connect(ssh_server) as host,
     ):
         listener = await host.forward_local_port(
-            LOOPBACK_HOST, port, on_connections=count
+            TCPDestination(LOOPBACK_HOST, port), on_connections=count
         )
         first = await _open(listener)
         second = await _open(listener)
@@ -604,7 +604,7 @@ async def test_a_connection_that_cannot_be_forwarded_is_not_counted_as_open(
     counts: list[int] = []
     async with await _connect(ssh_server) as host:
         listener = await host.forward_local_port(
-            LOOPBACK_HOST, port, on_connections=counts.append
+            TCPDestination(LOOPBACK_HOST, port), on_connections=counts.append
         )
         assert await _refused(listener)
 
@@ -618,7 +618,7 @@ async def test_closing_the_forwarded_port_keeps_open_connections(
         _destination(ssh_server, _echo) as port,
         await _connect(ssh_server) as host,
     ):
-        listener = await host.forward_local_port(LOOPBACK_HOST, port)
+        listener = await host.forward_local_port(TCPDestination(LOOPBACK_HOST, port))
         reader, writer = await _open(listener)
         writer.write(b"before\n")
         assert await asyncio.wait_for(reader.readline(), WAIT_SECONDS) == b"before\n"
@@ -639,7 +639,7 @@ async def test_losing_the_login_connection_closes_the_forwarded_port(
         _destination(ssh_server, _echo) as port,
         await _connect(ssh_server) as host,
     ):
-        listener = await host.forward_local_port(LOOPBACK_HOST, port)
+        listener = await host.forward_local_port(TCPDestination(LOOPBACK_HOST, port))
         reader, writer = await _open(listener)
         writer.write(b"before\n")
         assert await asyncio.wait_for(reader.readline(), WAIT_SECONDS) == b"before\n"

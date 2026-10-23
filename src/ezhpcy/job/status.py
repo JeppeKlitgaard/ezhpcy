@@ -77,5 +77,6 @@ class JobStatus:
     # The worker's sshd, as `host:port`, once it has said which port.
     worker: str | None = None
     last_heartbeat: float | None = None
-    # What is attached to the job, oldest first.
+    # What is attached to the job (its Host blocks), then to its node's host,
+    # each oldest first.
     attachments: tuple[AttachmentStatus, ...] = ()

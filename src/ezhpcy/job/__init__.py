@@ -3,10 +3,10 @@ A worker job: a node running the worker's sshd, reached through the login
 connection, with things attached to it while it runs.
 
 - `lifecycle` runs one job, from submitting it until everything is cleaned up,
-  as an async context manager: entering returns once the job is ready, leaving
-  cleans up.
-- `attachments` registers what is attached to a running job, so that it is
-  closed once, early or when the job is left.
+  as an async context manager: entering returns once the job is ready, with the
+  connection to its node open, leaving cleans up.
+- `publish` attaches Host blocks to a running job (see `ezhpcy.attachments`);
+  what runs on its node is attached to the node's connection instead.
 
 How a job's end shows to the code that uses it (see `JobLifecycle`): when the
 job ends or fails while that code runs, the code is cancelled, and leaving the

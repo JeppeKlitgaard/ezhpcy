@@ -1,27 +1,28 @@
-"""The tunnel's status panel, as `ezhpcy tunnel` shows it on a terminal."""
+"""A job's status panel, as `ezhpcy tunnel` shows it on a terminal."""
 
 import io
 from dataclasses import replace
 
 import pytest
 from rich.console import Console
+from rich.panel import Panel
 
 from ezhpcy.cli._tunnel_status import status_panel
+from ezhpcy.job.status import AppStatus, JobStatus, Phase, PublishedStatus
 from ezhpcy.scheduler.base import JobInfo, JobState
-from ezhpcy.tunnel.status import Phase, TunnelStatus
-from ezhpcy.types import ResourcesConfig
+from ezhpcy.types import Resources
 
 NOW = 10_000.0
-STARTING = TunnelStatus(alias="scratch", login="alice@login.example.com", since=NOW)
-SERVING = TunnelStatus(
-    alias="scratch",
-    login="alice@login.example.com",
-    phase=Phase.SERVING,
+TITLE = t"Tunnel {'scratch':name}"
+LOGIN = "alice@login.example.com"
+STARTING = JobStatus(phase=Phase.CONNECTING, since=NOW)
+SERVING = JobStatus(
+    phase=Phase.READY,
     since=NOW - 30,
     job_id="42",
     job=JobInfo(state=JobState.RUNNING, raw_state="RUN", host="n-62-11-19"),
     running_since=NOW - 3725,
-    resources=ResourcesConfig.model_validate(
+    resources=Resources.model_validate(
         {
             "queue": "gpua100",
             "cores": 4,
@@ -32,16 +33,18 @@ SERVING = TunnelStatus(
     ),
     worker="n-62-11-19:40123",
     last_heartbeat=NOW - 3,
-    connections=2,
+    attachments=(PublishedStatus(alias="scratch", port=50123, connections=2),),
 )
 
 
-def shown(status: TunnelStatus, *, width: int = 120) -> list[str]:
+def panel(status: JobStatus) -> Panel:
+    return status_panel(status, title=TITLE, login=LOGIN, now=NOW)
+
+
+def shown(status: JobStatus, *, width: int = 120) -> list[str]:
     """The panel's lines, without its border, each space between words one."""
     stream = io.StringIO()
-    Console(file=stream, width=width, color_system=None).print(
-        status_panel(status, now=NOW)
-    )
+    Console(file=stream, width=width, color_system=None).print(panel(status))
     return [
         " ".join(line.strip("│|").split()) for line in stream.getvalue().splitlines()
     ]
@@ -66,9 +69,7 @@ def test_while_connecting_it_says_where_to() -> None:
 def test_while_queued_it_says_what_the_job_waits_on(
     pending_reason: str, waiting_on: str
 ) -> None:
-    status = TunnelStatus(
-        alias="scratch",
-        login="alice@login.example.com",
+    status = JobStatus(
         phase=Phase.QUEUED,
         since=NOW - 65,
         job_id="42",
@@ -129,16 +130,36 @@ def test_an_interactive_submission_command_is_shown_instead_of_the_resources() -
 
 
 def test_while_stopping_it_says_how_to_force_quit_in_red() -> None:
-    status = TunnelStatus(
-        alias="scratch",
-        login="alice@login.example.com",
-        phase=Phase.STOPPING,
-        since=NOW - 2,
-    )
+    status = JobStatus(phase=Phase.STOPPING, since=NOW - 2)
 
     lines = shown(status)
 
     assert "Stopping (2 s)" in lines
     assert "(press Ctrl+C again to force quit)" in lines
     assert "Press Ctrl+C to stop." not in lines
-    assert status_panel(status, now=NOW).border_style == "red"
+    assert panel(status).border_style == "red"
+
+
+def test_the_first_attachment_says_how_to_reach_it_and_all_count() -> None:
+    status = replace(
+        SERVING,
+        attachments=(
+            AppStatus(name="lab", url="http://127.0.0.1:8888/lab", connections=1),
+            PublishedStatus(alias="scratch", port=50123, connections=2),
+        ),
+    )
+
+    lines = shown(status)
+
+    assert "Open http://127.0.0.1:8888/lab" in lines
+    assert any(line.startswith("Connections 3") for line in lines)
+
+
+def test_ready_with_nothing_attached_is_not_yet_serving() -> None:
+    status = replace(SERVING, attachments=())
+
+    lines = shown(status)
+
+    assert "Ready (30 s)" in lines
+    assert not any(line.startswith("Connections") for line in lines)
+    assert panel(status).border_style == "yellow"

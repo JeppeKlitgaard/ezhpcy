@@ -1,10 +1,10 @@
 """
-One worker job, from connecting to the login node until everything is cleaned
-up, as an async context manager.
+One worker job, on a login connection, from submitting it until everything is
+cleaned up, as an async context manager.
 
-Entering `JobLifecycle` connects, provisions (or checks) the worker
-infrastructure, submits the worker job, waits for it to say it is ready, starts
-the heartbeats, and waits for the worker's sshd to answer. Each step registers
+Entering `JobLifecycle` provisions (or checks) the worker infrastructure,
+submits the worker job, waits for it to say it is ready, starts the heartbeats,
+and waits for the worker's sshd to answer. Each step registers
 its cleanup on an `AsyncExitStack` as soon as it has acquired something, so
 cleanup covers exactly what was started, in reverse order. Each cleanup step has
 a timeout, and one that fails only logs a warning. What serves through the job
@@ -13,8 +13,9 @@ is attached once it is entered (`attach`), and closed first when it is left.
 The job stops when `stop` is called (the CLI calls it on Ctrl+C), when the
 scheduler says the job has ended, or when something fails: a startup step, or a
 background task (the connection watcher, the heartbeats, the job monitor). The
-first of these wins: it is logged as `Stopping tunnel: <why>` (or `app`), and
-decides what leaving the job raises, if anything.
+first of these wins: it is logged as `Stopping job: <why>`, and decides what
+leaving the job raises, if anything. Losing the login connection fails the job;
+closing it is its owner's (the cluster's), after the job is left.
 
 How the end shows to the task that entered the job, its host task, as
 `asyncio.timeout` does: when the job stops while that task runs the block's
@@ -25,7 +26,8 @@ waits in `wait`, it isn't cancelled: `wait` returns a `JobEnd`, or raises
 `JobFailed`, instead. Entering raises the same when the job stops before it is
 ready, `JobEnded` after `stop` too, as there is no block to skip.
 
-All along, `status` says where the job is, for the CLI's display.
+All along, `status` says where the job is, and what is attached to it, for
+the CLI's display.
 """
 
 from dataclasses import dataclass
@@ -48,14 +50,16 @@ lazy import asyncssh
 lazy from rich.text import Text
 
 from ezhpcy.logging import REPLAY_ON_ERROR, get_logger
+lazy from ezhpcy.constants import DEFAULT_WORKER_PORTS
 lazy from ezhpcy.job import JobEnd, JobEnded, JobFailed
 lazy from ezhpcy.job.attachments import Attachment
+lazy from ezhpcy.job.status import JobStatus, Phase
 lazy from ezhpcy.messages import plain
 lazy from ezhpcy.provision_host import (
     provision_worker_infrastructure,
     validate_worker_infrastructure,
 )
-lazy from ezhpcy.provision_local import WorkerCredentials
+lazy from ezhpcy.provision_local import MissingCredentials, WorkerCredentials
 lazy from ezhpcy.scheduler import create_scheduler
 lazy from ezhpcy.scheduler.base import (
     InteractiveJob,
@@ -65,15 +69,10 @@ lazy from ezhpcy.scheduler.base import (
     Scheduler,
     SchedulerError,
 )
-lazy from ezhpcy.ssh import RemoteHost, TCPDestination, ensure_directory
+lazy from ezhpcy.ssh import RemoteHost, ensure_directory
 lazy from ezhpcy.tunnel import TunnelError
-lazy from ezhpcy.tunnel.status import Phase, TunnelStatus
-lazy from ezhpcy.types import (
-    ConnectionInfo,
-    RemoteState,
-    ResolvedConfig,
-    SubmissionMode,
-)
+lazy from ezhpcy.types import JobConfig, RemoteState, SubmissionMode
+lazy from ezhpcy.utils import local_machine_id
 lazy from ezhpcy.worker.control import (
     JOB_RECORD_NAME,
     WorkerControl,
@@ -82,7 +81,7 @@ lazy from ezhpcy.worker.control import (
     WorkerStatus,
     WorkerStopped,
 )
-lazy from ezhpcy.worker.job import sshd_command
+lazy from ezhpcy.worker.job import select_ports, sshd_command
 lazy from ezhpcy.worker.sshd import (
     client_alive,
     sshd_config_arguments,
@@ -113,44 +112,39 @@ type Prepare = Callable[
 
 class JobLifecycle:
     """
-    Runs one worker job, from connecting to cleaning up; see the module.
-    `connect` opens the login connection; the CLI's asks for passwords and host
-    keys as needed. `prepare`, if given, prepares more before the job is
-    submitted. `job_name` is the job's name, as the scheduler shows it, and
-    `what` names what the job runs in its log ("Stopping tunnel: …").
+    Runs one worker job on the login connection `host`, from submitting it to
+    cleaning up; see the module. `worker_ports` are the ports its sshd tries, by
+    default a few random ones. `prepare`, if given, prepares more before the job
+    is submitted. `job_name` is the job's name, as the scheduler shows it, and
+    `what` names what the job runs in its log ("Stopping job: …").
 
-    Once entered: `host` is the login connection, and `worker` the running
-    worker.
+    Once entered, `credentials` are the worker's SSH credentials for `host`'s
+    login node, and `worker` is the running worker. Entered once.
     """
 
     def __init__(
         self,
         *,
-        resolved: ResolvedConfig,
-        credentials: WorkerCredentials,
-        status: TunnelStatus,
-        connect: Callable[[ConnectionInfo], Awaitable[RemoteHost]],
-        worker_ports: tuple[int, ...],
-        auto_provision: bool,
-        profile_name: str | None = None,
-        app_ports: tuple[int, ...] = (),
+        host: RemoteHost,
+        config: JobConfig,
+        worker_ports: tuple[int, ...] = (),
         prepare: Prepare | None = None,
         job_name: str = "ezhpcy-worker",
-        what: str = "tunnel",
+        what: str = "job",
     ) -> None:
-        self.resolved = resolved
-        self.credentials = credentials
-        self._connect = connect
-        self._worker_ports = worker_ports
-        self._app_ports = app_ports
-        self._auto_provision = auto_provision
-        self._profile_name = profile_name
+        self.host = host
+        self.config = config
+        self.credentials: WorkerCredentials
+        self._worker_ports = worker_ports or select_ports(DEFAULT_WORKER_PORTS)
         self._prepare = prepare
         self._job_name = job_name
         self._what = what
-        self.status = status
-        self.host: RemoteHost | None = None
+        self.status = JobStatus(
+            resources=config.resources,
+            submission_command=config.scheduler.interactive_submission_command,
+        )
         self.worker: RunningWorker | None = None
+        self._attachments: list[Attachment] = []
         self._stack = AsyncExitStack()
         # Set once the scheduler has said the job ended, so it isn't cancelled,
         # with what it said.
@@ -171,9 +165,9 @@ class JobLifecycle:
         self._error: Exception | None = None
         self._stopped = asyncio.Event()
 
-    # Entering and leaving
-
     async def __aenter__(self) -> Self:
+        if self._host_task is not None:
+            raise RuntimeError("a job is entered once")
         task = asyncio.current_task()
         assert task is not None
         self._host_task = task
@@ -187,6 +181,7 @@ class JobLifecycle:
             raise
         if self._why is not None:
             await self._leave(None, entering=True)
+        self.report(Phase.READY)
         return self
 
     async def __aexit__(
@@ -235,8 +230,6 @@ class JobLifecycle:
             # Not chained to the job's own cancellation.
             raise JobEnded(self._why, self._end()) from None
         return ours
-
-    # Stopping
 
     async def wait(self) -> JobEnd:
         """
@@ -316,7 +309,7 @@ class JobLifecycle:
         every remote operation fails, so report the loss rather than the operation
         that happened to notice it first.
         """
-        if self.host is None or not self.host.closed.done():
+        if not self.host.closed.done():
             return error
         lost = self.host.closed.result()
         if lost is None:
@@ -325,8 +318,6 @@ class JobLifecycle:
         connection_error.__cause__ = error
         return connection_error
 
-    # Attachments
-
     def attach(self) -> Attachment:
         """
         Register a new attachment, closed when the job is left unless it was
@@ -334,42 +325,47 @@ class JobLifecycle:
         """
         if self._leaving:
             raise RuntimeError("the job is being left")
-        attachment = Attachment()
+        attachment = Attachment(on_change=self._report_attachments)
+        self._attachments.append(attachment)
         self._stack.push_async_callback(attachment.close)
         return attachment
 
-    # Starting
+    def _report_attachments(self) -> None:
+        self.report(
+            attachments=tuple(
+                attachment.status
+                for attachment in self._attachments
+                if attachment.status is not None and not attachment.closed
+            )
+        )
 
     async def _start(self) -> None:
         stack = self._stack
-        resolved = self.resolved
-        resources, timings = resolved.resources, resolved.timings
+        config, host = self.config, self.host
+        resources, timings = config.resources, config.timings
+        heartbeat_interval = timings.worker_heartbeat_interval_seconds.total_seconds()
+        heartbeat_timeout = timings.worker_heartbeat_timeout_seconds.total_seconds()
+        startup_timeout = timings.worker_startup_timeout_seconds.total_seconds()
 
-        host = self.host = await self._connect(resolved.connection)
-        stack.push_async_callback(cleanup, "close the login connection", host.close)
         self.start_task(self._watch_connection(host), name="connection watcher")
-
         self.report(Phase.PREPARING)
+        credentials = self.credentials = WorkerCredentials.for_login(
+            host.login, machine_id=await asyncio.to_thread(local_machine_id)
+        )
+        if not config.auto_provision and (
+            missing := await asyncio.to_thread(credentials.missing_tunnel_files)
+        ):
+            # Before anything remote.
+            raise MissingCredentials(missing)
         remote_state = await host.remote_state()
-        credentials = self.credentials
-        if self._auto_provision:
+        if config.auto_provision:
             authorized_key = await provision_worker_infrastructure(
                 host, remote_state, credentials
             )
         else:
             await validate_worker_infrastructure(host, remote_state, credentials)
             authorized_key = await asyncio.to_thread(credentials.authorized_key)
-        scheduler = create_scheduler(resolved, host)
-        if self._profile_name is None:
-            logger.info(
-                t"Using anonymous configuration with "
-                t"{resolved.scheduler.type:detail} scheduler."
-            )
-        else:
-            logger.info(
-                t"Using profile {self._profile_name:name} with "
-                t"{resolved.scheduler.type:detail} scheduler."
-            )
+        scheduler = create_scheduler(config, host)
         logger.debug(
             t"Worker request: queue={resources.queue!r:detail} "
             t"cores={resources.cores:detail} gpus={resources.gpus:detail} "
@@ -377,8 +373,8 @@ class JobLifecycle:
             t"time_limit={resources.time_limit:detail} "
             t"memory_bytes={resources.memory_bytes:detail} "
             t"ports={self._worker_ports!s:detail} "
-            t"heartbeat_interval={timings.worker_heartbeat_interval_seconds:detail:g} "
-            t"heartbeat_timeout={timings.worker_heartbeat_timeout_seconds:detail:g}"
+            t"heartbeat_interval={heartbeat_interval:detail:g} "
+            t"heartbeat_timeout={heartbeat_timeout:detail:g}"
         )
 
         # The worker's control directory, with its first lease.
@@ -389,7 +385,6 @@ class JobLifecycle:
             remote_state.worker_control_root() / token,
             token,
             ports=self._worker_ports,
-            app_ports=self._app_ports,
         )
         # Registered first: `close` also copes with a directory never created.
         stack.push_async_callback(
@@ -411,7 +406,7 @@ class JobLifecycle:
                 remote_state,
                 ports=self._worker_ports,
                 heartbeat_token=token,
-                heartbeat_timeout_seconds=timings.worker_heartbeat_timeout_seconds,
+                heartbeat_timeout_seconds=int(heartbeat_timeout),
                 control_dir=control.directory,
                 cancel_executable=scheduler.cancel_executable,
                 sshd_arguments=sshd_config_arguments(
@@ -419,8 +414,7 @@ class JobLifecycle:
                     remote_username=credentials.login_user,
                     authorized_key=authorized_key,
                     client_alive=client_alive(
-                        timings.worker_heartbeat_interval_seconds,
-                        timings.worker_heartbeat_timeout_seconds,
+                        heartbeat_interval, int(heartbeat_timeout)
                     ),
                 ),
             ),
@@ -446,10 +440,10 @@ class JobLifecycle:
 
         self.report(Phase.SUBMITTING)
         interactive_job: InteractiveJob | None = None
-        if resolved.scheduler.submission_mode is SubmissionMode.INTERACTIVE:
+        if config.scheduler.submission_mode is SubmissionMode.INTERACTIVE:
             # Safe to cancel: the scheduler then closes the job.
             interactive_job = job = await scheduler.submit_interactive(
-                spec, startup_timeout=timings.worker_startup_timeout_seconds
+                spec, startup_timeout=startup_timeout
             )
             job_id = job.job_id
 
@@ -476,8 +470,8 @@ class JobLifecycle:
         logger.info(t"Submitted worker job {job_id:detail}.")
         logger.info(
             t"Worker heartbeat enabled for job {job_id:detail}: "
-            t"interval={timings.worker_heartbeat_interval_seconds:detail:g} seconds, "
-            t"timeout={timings.worker_heartbeat_timeout_seconds:detail:g} seconds."
+            t"interval={heartbeat_interval:detail:g} seconds, "
+            t"timeout={heartbeat_timeout:detail:g} seconds."
         )
         logger.info(
             t"Worker heartbeat log: {logs_dir / f'heartbeat-{job_id}.log':path}."
@@ -494,17 +488,15 @@ class JobLifecycle:
         # For a later client to find the job by (decision 14 of PLAN_API.md).
         record: dict[str, object] = {
             "job_id": job_id,
-            "scheduler": resolved.scheduler.type,
-            "submission_mode": resolved.scheduler.submission_mode,
+            "scheduler": config.scheduler.type,
+            "submission_mode": config.scheduler.submission_mode,
         }
         await control.write_record(JOB_RECORD_NAME, json.dumps(record))
 
         worker_host = await self._wait_for_running_job(scheduler, job_id)
         self.report(Phase.STARTING)
         # From allocation, one budget for the worker's sshd to start and answer.
-        deadline = (
-            asyncio.get_running_loop().time() + timings.worker_startup_timeout_seconds
-        )
+        deadline = asyncio.get_running_loop().time() + startup_timeout
         ready = await self._wait_for_ready(control, scheduler, job_id, deadline)
         record["sshd_port"] = ready.port
         await control.write_record(JOB_RECORD_NAME, json.dumps(record))
@@ -516,10 +508,10 @@ class JobLifecycle:
             name="worker heartbeats",
             stop=stopping.set,
         )
-        sshd = TCPDestination(worker_host, ready.port)
-        self.report(worker=str(sshd))
+        self.report(worker=f"{worker_host}:{ready.port}")
         worker = self.worker = RunningWorker(
-            sshd=sshd,
+            node=worker_host,
+            port=ready.port,
             ready=ready,
             control=control,
             scheduler=scheduler,
@@ -547,7 +539,7 @@ class JobLifecycle:
         job still runs.
         """
         loop = asyncio.get_running_loop()
-        poll_interval = self.resolved.timings.job_poll_interval_seconds
+        poll_interval = self.config.timings.job_poll_interval_seconds.total_seconds()
         next_job_check = loop.time() + poll_interval
         try:
             async with asyncio.timeout_at(deadline):
@@ -563,7 +555,7 @@ class JobLifecycle:
                         next_job_check = loop.time() + poll_interval
                     await asyncio.sleep(_STATUS_POLL_SECONDS)
         except TimeoutError:
-            timeout = self.resolved.timings.worker_startup_timeout_seconds
+            timeout = self.config.timings.worker_startup_timeout_seconds.total_seconds()
             raise TunnelError(
                 t"worker SSH daemon did not bind a candidate port within "
                 t"{timeout:detail:g} seconds"
@@ -575,10 +567,10 @@ class JobLifecycle:
         the login connection, checking after each failed attempt that sshd and
         its job still run.
         """
-        timeout = self.resolved.timings.worker_startup_timeout_seconds
-        poll_interval = self.resolved.timings.job_poll_interval_seconds
-        destination = worker.sshd
-        endpoint = str(destination)
+        timings = self.config.timings
+        timeout = timings.worker_startup_timeout_seconds.total_seconds()
+        poll_interval = timings.job_poll_interval_seconds.total_seconds()
+        endpoint = worker.endpoint
         logger.info(t"Waiting for worker SSH endpoint {endpoint:endpoint}.")
         last_error: Exception | None = None
         try:
@@ -586,7 +578,7 @@ class JobLifecycle:
                 while True:
                     try:
                         async with asyncio.timeout(_BANNER_READ_SECONDS):
-                            banner = await self._read_banner(destination)
+                            banner = await self._read_banner(worker)
                     except TimeoutError:
                         last_error = TunnelError(
                             t"no SSH banner within "
@@ -617,9 +609,8 @@ class JobLifecycle:
                 t"become ready within {timeout:detail:g} seconds{detail}"
             ) from None
 
-    async def _read_banner(self, destination: TCPDestination) -> bytes:
-        assert self.host is not None
-        reader, writer = await self.host.open(destination)
+    async def _read_banner(self, worker: RunningWorker) -> bytes:
+        reader, writer = await self.host.open_tcp(worker.node, worker.port)
         try:
             banner = bytearray()
             while len(banner) < _SSH_BANNER_LIMIT and b"\n" not in banner:
@@ -636,10 +627,11 @@ class JobLifecycle:
         Poll the scheduler until the job runs, and return its host. Says so when
         the job's state changes, and why the job waits, if the scheduler does.
         """
-        timings = self.resolved.timings
+        timings = self.config.timings
+        queue_timeout = timings.queue_timeout_seconds.total_seconds()
         previous_state: tuple[JobState, str] | None = None
         try:
-            async with asyncio.timeout(timings.queue_timeout_seconds):
+            async with asyncio.timeout(queue_timeout):
                 while True:
                     info = await scheduler.inspect(job_id)
                     self._report_job(info)
@@ -657,11 +649,13 @@ class JobLifecycle:
                         return info.host
                     if ended := self._job_ended(job_id, info):
                         raise TunnelError(ended)
-                    await asyncio.sleep(timings.job_poll_interval_seconds)
+                    await asyncio.sleep(
+                        timings.job_poll_interval_seconds.total_seconds()
+                    )
         except TimeoutError:
             raise TunnelError(
                 t"worker job {job_id:detail} did not start within "
-                t"{timings.queue_timeout_seconds:detail:g} seconds"
+                t"{queue_timeout:detail:g} seconds"
             ) from None
 
     def _report_job(self, info: JobInfo) -> None:
@@ -697,8 +691,6 @@ class JobLifecycle:
         self._report_job(info)
         if ended := self._job_ended(job_id, info):
             raise TunnelError(ended)
-
-    # Background tasks
 
     def start_task(
         self,
@@ -736,7 +728,8 @@ class JobLifecycle:
         self, control: WorkerControl, job_id: str, stopping: asyncio.Event
     ) -> None:
         """Renew the worker's lease every heartbeat interval, until `stopping`."""
-        interval_seconds = self.resolved.timings.worker_heartbeat_interval_seconds
+        timings = self.config.timings
+        interval_seconds = timings.worker_heartbeat_interval_seconds.total_seconds()
         sequence = 0
         logger.debug(
             t"Worker heartbeat sender started: job={job_id:detail} "
@@ -772,7 +765,9 @@ class JobLifecycle:
 
     async def _monitor_job(self, scheduler: Scheduler, job_id: str) -> None:
         """Stop the job when the scheduler says it has ended."""
-        interval_seconds = self.resolved.timings.job_monitor_interval_seconds
+        interval_seconds = (
+            self.config.timings.job_monitor_interval_seconds.total_seconds()
+        )
         polls = 0
         while True:
             await asyncio.sleep(interval_seconds)
@@ -793,8 +788,6 @@ class JobLifecycle:
             if ended := self._job_ended(job_id, info):
                 self._stop(None, ended)
                 return
-
-    # Cleanup
 
     async def _cancel_job(self, scheduler: Scheduler, job_id: str) -> None:
         """Cancel the job, unless the scheduler said it had ended."""
@@ -817,8 +810,9 @@ class JobLifecycle:
 class RunningWorker:
     """The worker job, once it has said it is ready."""
 
-    # Its sshd, as the login node reaches it.
-    sshd: TCPDestination
+    # Its node, as the login node reaches it, and its sshd's port.
+    node: str
+    port: int
     ready: WorkerReady
     control: WorkerControl
     scheduler: Scheduler
@@ -826,6 +820,11 @@ class RunningWorker:
     # When sshd must answer by (loop time).
     deadline: float
     logs_dir: PurePosixPath
+
+    @property
+    def endpoint(self) -> str:
+        """Its sshd, as `host:port`."""
+        return f"{self.node}:{self.port}"
 
 
 async def finish[T](
@@ -944,11 +943,11 @@ async def _stop_task(
 def _worker_gone(status: WorkerStatus | None) -> TunnelError | None:
     """The error to stop with if `status` says sshd won't serve, else None."""
     match status:
-        case WorkerFailed(reason) as failed:
-            return TunnelError(t"{failed.what} failed to start: {reason}")
-        case WorkerStopped(exit_status=exit_status) as stopped:
+        case WorkerFailed(reason):
+            return TunnelError(t"worker SSH daemon failed to start: {reason}")
+        case WorkerStopped(exit_status):
             return TunnelError(
-                t"{stopped.what} exited with status {exit_status:detail}"
+                t"worker SSH daemon exited with status {exit_status:detail}"
             )
         case _:
             return None

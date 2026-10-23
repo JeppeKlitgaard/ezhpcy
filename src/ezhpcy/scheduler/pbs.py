@@ -9,7 +9,7 @@ lazy import asyncssh
 from ezhpcy.scheduler.base import JobInfo, JobSpec, JobState, Scheduler, SchedulerError
 from ezhpcy.scheduler.types import SchedulerType
 lazy from ezhpcy.ssh import RemoteHost
-lazy from ezhpcy.types import PBSConfig
+lazy from ezhpcy.types import PBSOptions
 
 _JOB_ID_PATTERN = re.compile(r"\d+(?:\.[A-Za-z0-9_.-]+)?")
 _JOB_NOT_FOUND_PATTERN = re.compile(r"unknown\s+job\s+id", re.IGNORECASE)
@@ -32,7 +32,7 @@ class PBSScheduler(Scheduler):
     def __init__(
         self,
         host: RemoteHost,
-        pbs: PBSConfig,
+        pbs: PBSOptions,
         *,
         interactive_submission_command: Sequence[str] | None = None,
     ) -> None:

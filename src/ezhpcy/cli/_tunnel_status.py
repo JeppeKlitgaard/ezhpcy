@@ -1,10 +1,11 @@
 """
-The tunnel's status as a panel, for `ezhpcy.console.live_display`: what the
-tunnel is doing, and once it serves, how to connect to it.
+A job's status as a panel, for `ezhpcy.console.live_display`: what the job is
+doing, what is attached to it, and once it serves, how to connect to it.
 """
 
 lazy import shlex
 lazy import time
+lazy from collections.abc import Callable
 lazy from string.templatelib import Template
 
 lazy from rich.console import (
@@ -20,34 +21,52 @@ lazy from rich.spinner import Spinner
 lazy from rich.table import Table
 lazy from rich.text import Text
 
+lazy from ezhpcy.job.status import (
+    AppStatus,
+    JobStatus,
+    Phase,
+    PublishedStatus,
+)
 lazy from ezhpcy.messages import duration, rich_text
-lazy from ezhpcy.tunnel.session import TunnelSession
-lazy from ezhpcy.tunnel.status import Phase, TunnelStatus
 
 
 class StatusPanel:
     """
-    Draws the session's status, afresh on each call. A spinner turns while the
-    tunnel starts or stops: kept from one call to the next, as it turns by the
-    time since it was first drawn.
+    Draws the status that `status` returns, afresh on each call, under `title`;
+    `login` is the login node's `user@host`. A spinner turns while the job
+    starts or stops: kept from one call to the next, as it turns by the time
+    since it was first drawn.
     """
 
-    def __init__(self, session: TunnelSession) -> None:
-        self._session = session
+    def __init__(
+        self, status: Callable[[], JobStatus], *, title: Template, login: str
+    ) -> None:
+        self._status = status
+        self._title = title
+        self._login = login
         self._spinner = Spinner("dots", style="cyan")
 
     def __call__(self) -> RenderableType:
         return status_panel(
-            self._session.status, now=time.monotonic(), spinner=self._spinner
+            self._status(),
+            title=self._title,
+            login=self._login,
+            now=time.monotonic(),
+            spinner=self._spinner,
         )
 
 
 def status_panel(
-    status: TunnelStatus, *, now: float, spinner: Spinner | None = None
+    status: JobStatus,
+    *,
+    title: Template,
+    login: str,
+    now: float,
+    spinner: Spinner | None = None,
 ) -> Panel:
     """`status` at `now` (a `time.monotonic()` reading), as a panel."""
-    serving = status.phase is Phase.SERVING
-    headline = rich_text(_headline(status))
+    serving = _serving(status)
+    headline = rich_text(_headline(status, login))
     if not serving:
         headline += rich_text(t" {f'({duration(now - status.since)})':aside}")
     if spinner is not None and not serving:
@@ -66,19 +85,27 @@ def status_panel(
     parts.extend([Text(), rich_text(t"{hint:aside}")])
     return Panel(
         Group(*parts),
-        title=rich_text(t"Tunnel {status.alias:name}"),
+        title=rich_text(title),
         title_align="left",
-        border_style=_border_style(status),
+        border_style=_border_style(status, serving),
         expand=False,
         padding=(0, 1),
     )
 
 
-def _headline(status: TunnelStatus) -> Template:
-    alias = status.alias
+def _serving(status: JobStatus) -> bool:
+    """Whether the job is ready, and something attached to it serves."""
+    return status.phase is Phase.READY and any(
+        isinstance(attachment, PublishedStatus)
+        or (isinstance(attachment, AppStatus) and attachment.url is not None)
+        for attachment in status.attachments
+    )
+
+
+def _headline(status: JobStatus, login: str) -> Template:
     match status.phase:
         case Phase.CONNECTING:
-            return t"Connecting to {status.login:detail}"
+            return t"Connecting to {login:detail}"
         case Phase.PREPARING:
             return t"Preparing the worker infrastructure"
         case Phase.SUBMITTING:
@@ -87,16 +114,29 @@ def _headline(status: TunnelStatus) -> Template:
             return t"Waiting for the worker job to start"
         case Phase.STARTING:
             return t"Starting the worker's SSH server"
-        case Phase.SERVING:
-            return t"Connect with {'ssh':detail} {alias:target}"
+        case Phase.READY:
+            return _serving_headline(status)
         case Phase.STOPPING:
             return t"Stopping"
+
+
+def _serving_headline(status: JobStatus) -> Template:
+    """How to reach what the first attachment serves, or that it starts."""
+    for attachment in status.attachments:
+        match attachment:
+            case PublishedStatus(alias=alias):
+                return t"Connect with {'ssh':detail} {alias:target}"
+            case AppStatus(url=str(url)):
+                return t"Open {url:target}"
+            case AppStatus():
+                return t"Starting the app"
+    return t"Ready"
 
 
 type _Rows = list[tuple[str, Template]]
 
 
-def _details(status: TunnelStatus, now: float) -> _Details | None:
+def _details(status: JobStatus, now: float) -> _Details | None:
     columns = [rows for rows in (_progress(status, now), _requested(status)) if rows]
     return _Details([_grid(rows) for rows in columns]) if columns else None
 
@@ -138,8 +178,11 @@ class _Details:
         return Group(*stacked)
 
 
-def _progress(status: TunnelStatus, now: float) -> _Rows:
-    """The job, and once it runs, the worker, a row each."""
+def _progress(status: JobStatus, now: float) -> _Rows:
+    """
+    The job, and once it runs, the worker, a row each; once serving, the
+    connections open through what is attached.
+    """
     rows: _Rows = []
     if status.job_id is not None:
         job = t"{status.job_id:detail}"
@@ -159,8 +202,9 @@ def _progress(status: TunnelStatus, now: float) -> _Rows:
     if status.last_heartbeat is not None:
         ago = duration(now - status.last_heartbeat)
         rows.append(("Heartbeat", t"{ago:detail} ago"))
-    if status.phase is Phase.SERVING:
-        rows.append(("Connections", t"{status.connections:detail}"))
+    if _serving(status):
+        connections = sum(attachment.connections for attachment in status.attachments)
+        rows.append(("Connections", t"{connections:detail}"))
     return rows
 
 
@@ -170,7 +214,7 @@ _TERSE_PENDING_REASONS = {
 }
 
 
-def _requested(status: TunnelStatus) -> _Rows:
+def _requested(status: JobStatus) -> _Rows:
     """
     What the job requests, a row each, or the interactive submission command,
     which decides instead.
@@ -195,7 +239,7 @@ def _requested(status: TunnelStatus) -> _Rows:
     return rows
 
 
-def _time_limit(status: TunnelStatus) -> str | None:
+def _time_limit(status: JobStatus) -> str | None:
     """The job's time limit, if it requests one."""
     if status.submission_command is not None or status.resources is None:
         return None
@@ -212,11 +256,7 @@ def _grid(rows: _Rows) -> Table:
     return grid
 
 
-def _border_style(status: TunnelStatus) -> str:
-    match status.phase:
-        case Phase.SERVING:
-            return "green"
-        case Phase.STOPPING:
-            return "red"
-        case _:
-            return "yellow"
+def _border_style(status: JobStatus, serving: bool) -> str:
+    if status.phase is Phase.STOPPING:
+        return "red"
+    return "green" if serving else "yellow"

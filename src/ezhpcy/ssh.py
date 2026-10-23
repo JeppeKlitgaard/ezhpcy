@@ -16,7 +16,7 @@ import asyncssh
 
 from ezhpcy.logging import get_logger
 lazy from ezhpcy.constants import LOOPBACK_HOST
-lazy from ezhpcy.types import ConnectionInfo, RemoteState
+lazy from ezhpcy.types import Login, RemoteState
 
 logger = get_logger(__name__)
 
@@ -41,26 +41,27 @@ class SSHClient(asyncssh.SSHClient):
 
 
 async def connect(
-    conn_info: ConnectionInfo, *, client: SSHClient | None = None, **options: object
+    login: Login, *, client: SSHClient | None = None, **options: object
 ) -> RemoteHost:
     """
-    Connect to the login node. Keepalive follows `conn_info`, and ~/.ssh/config
-    is never read. `options` are passed on to `asyncssh.connect`, overriding
-    these defaults.
+    Connect to the login node. Keepalive follows `login`, and ~/.ssh/config is
+    never read. `options` are passed on to `asyncssh.connect`, overriding these
+    defaults. See `ezhpcy.login` for passwords and host keys.
     """
     client = client or SSHClient()
     defaults: dict[str, object] = {
-        "username": conn_info.user,
+        "username": login.user,
+        "port": login.port,
         # Never apply the user's OpenSSH configuration to the login connection:
         # it may hold EzHPCy's own Host blocks, which point at running tunnels.
         "config": None,
-        "keepalive_interval": conn_info.ssh_keepalive_interval_seconds,
+        "keepalive_interval": login.keepalive_interval.total_seconds(),
         "keepalive_count_max": SERVER_ALIVE_COUNT_MAX,
     }
     conn = await asyncssh.connect(
-        str(conn_info.host), client_factory=lambda: client, **(defaults | options)
+        login.host, client_factory=lambda: client, **(defaults | options)
     )
-    return RemoteHost(conn, conn_info, client.closed)
+    return RemoteHost(conn, login, client.closed)
 
 
 async def ensure_directory(sftp: asyncssh.SFTPClient, path: PurePosixPath) -> None:
@@ -105,10 +106,11 @@ class RemoteHost:
     def __init__(
         self,
         conn: asyncssh.SSHClientConnection,
-        conn_info: ConnectionInfo,
+        login: Login,
         closed: asyncio.Future[Exception | None],
     ) -> None:
-        self.conn_info = conn_info
+        # The login node this connection is to.
+        self.login = login
         self._conn = conn
         self._closed = closed
 

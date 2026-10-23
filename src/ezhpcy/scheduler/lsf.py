@@ -6,7 +6,7 @@ lazy from collections.abc import Sequence
 from ezhpcy.scheduler.base import JobInfo, JobSpec, JobState, Scheduler, SchedulerError
 from ezhpcy.scheduler.types import SchedulerType
 lazy from ezhpcy.ssh import RemoteHost
-lazy from ezhpcy.types import LSFConfig
+lazy from ezhpcy.types import LSFOptions
 
 _SUBMITTED_JOB_PATTERN = re.compile(r"Job <(?P<job_id>\d+)> is submitted")
 # `pend_reason` last: it is free text. LSF 10.1 prints one reason per job, on its
@@ -40,7 +40,7 @@ class LSFScheduler(Scheduler):
     def __init__(
         self,
         host: RemoteHost,
-        lsf: LSFConfig,
+        lsf: LSFOptions,
         *,
         interactive_submission_command: Sequence[str] | None = None,
     ) -> None:

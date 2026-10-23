@@ -7,15 +7,14 @@ lazy from string.templatelib import Template
 
 lazy from rich.text import Text
 
-from ezhpcy.config import Config, StoredPasswordError, config
+from ezhpcy.config import Config, StoredPasswordError, config, unless_disabled
+lazy from ezhpcy.cli import _include as include
 lazy from ezhpcy.cli._errors import sentence
-lazy from ezhpcy.cli._resolve import unless_disabled
 lazy from ezhpcy.console import console
 lazy from ezhpcy.messages import rich_text
 lazy from ezhpcy.permissions import FilePermissionError
 lazy from ezhpcy.tunnel.ssh_config import (
     AliasProblem,
-    echo_include_directive,
     probe_hosts,
     prune_stale_active_configs,
     resolution_problem,
@@ -182,7 +181,7 @@ def check_ssh_config(source: Config = config) -> Iterator[Check]:
                 if aliases
                 else t"OpenSSH does not read EzHPCy's SSH configuration: "
                 t"{problem.detail}",
-                hint=problem.hint,
+                hint=include.hint(problem),
                 show_include=True,
             )
 
@@ -199,7 +198,7 @@ def _print_check(check: Check, printed_hints: set[str]) -> None:
         console.print(Text("        ") + hint, style="dim")
         if check.show_include:
             console.print()
-            echo_include_directive()
+            include.echo_include_directive()
 
 
 def doctor_cmd() -> None:

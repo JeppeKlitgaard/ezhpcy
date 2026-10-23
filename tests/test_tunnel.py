@@ -3,23 +3,20 @@
 import re
 from datetime import timedelta
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 from pydantic import ValidationError
 
 from ezhpcy import types as types_module
 from ezhpcy.cli import tunnel as tunnel_module
-from ezhpcy.messages import plain
 from ezhpcy.scheduler.types import SchedulerType
 from ezhpcy.tunnel import ssh_config
 from ezhpcy.tunnel.ssh_config import (
     PROBE_HOST_NAME,
     AliasProblem,
-    WorkerHost,
     include_directive,
 )
-from ezhpcy.types import ConnectionInfo, ProfileConfig, ResolvedConfig, ResourcesConfig
+from ezhpcy.types import JobConfig, Login, ProfileConfig, Resources, alias_digest
 from tests.support.cli import capture, invoke
 from tests.support.tunnel import tunnel_log
 
@@ -39,14 +36,14 @@ from tests.support.tunnel import tunnel_log
 def test_parse_memory_normalizes_sizes_to_bytes(
     value: str | None, expected_bytes: int | None
 ) -> None:
-    memory = ResourcesConfig(memory=value).memory
+    memory = Resources(memory=value).memory
     assert (int(memory) if memory is not None else None) == expected_bytes
 
 
 @pytest.mark.parametrize("value", ["0", "-1GB", "GB", "12QQ", "lots"])
 def test_parse_memory_rejects_invalid_sizes(value: str) -> None:
     with pytest.raises(ValidationError, match="memory"):
-        ResourcesConfig(memory=value)
+        Resources(memory=value)
 
 
 @pytest.mark.parametrize(
@@ -61,7 +58,7 @@ def test_parse_memory_rejects_invalid_sizes(value: str) -> None:
     ],
 )
 def test_parse_time_limit(value: str | None, expected: timedelta | None) -> None:
-    assert ResourcesConfig(time_limit=value).time_limit == expected
+    assert Resources(time_limit=value).time_limit == expected
 
 
 @pytest.mark.parametrize(
@@ -80,7 +77,7 @@ def test_parse_time_limit(value: str | None, expected: timedelta | None) -> None
 )
 def test_parse_time_limit_rejects_invalid_limits(value: object, message: str) -> None:
     with pytest.raises(ValidationError, match=message):
-        ResourcesConfig.model_validate({"time_limit": value})
+        Resources.model_validate({"time_limit": value})
 
 
 @pytest.mark.parametrize(
@@ -97,11 +94,11 @@ def test_parse_time_limit_rejects_invalid_limits(value: object, message: str) ->
     ],
 )
 def test_time_limit_is_dumped_as_h_mm(value: str, dumped: str) -> None:
-    resources = ResourcesConfig(time_limit=value)
+    resources = Resources(time_limit=value)
 
     assert resources.model_dump(mode="json")["time_limit"] == dumped
     # Profile inheritance and the CLI options re-validate Python dumps.
-    assert ResourcesConfig.model_validate(resources.model_dump()) == resources
+    assert Resources.model_validate(resources.model_dump()) == resources
 
 
 def test_tunnel_command_accepts_anonymous_cli_configuration(
@@ -112,13 +109,12 @@ def test_tunnel_command_accepts_anonymous_cli_configuration(
     result = invoke(_ANONYMOUS_TUNNEL_ARGS)
 
     assert result.exit_code == 0, result
-    assert captured["profile_name"] is None
-    resolved = captured["resolved"]
-    assert resolved.scheduler.type is SchedulerType.LSF
-    assert resolved.resources.cores == 1
-    assert resolved.timings.job_poll_interval_seconds == 2.5
-    assert resolved.timings.job_monitor_interval_seconds == 60
-    assert resolved.connection == ConnectionInfo(host="login.example.com", user="alice")
+    job = captured["job"]
+    assert job.scheduler.type is SchedulerType.LSF
+    assert job.resources.cores == 1
+    assert job.timings.job_poll_interval_seconds == timedelta(seconds=2.5)
+    assert job.timings.job_monitor_interval_seconds == timedelta(seconds=60)
+    assert captured["login"] == Login(host="login.example.com", user="alice")
 
 
 def test_tunnel_command_resolves_profile_and_applies_cli_overrides(
@@ -176,25 +172,24 @@ def test_tunnel_command_resolves_profile_and_applies_cli_overrides(
     )
 
     assert result.exit_code == 0, result
-    assert captured["profile_name"] == "gpu"
-    resolved = captured["resolved"]
-    assert resolved.scheduler.type is SchedulerType.LSF
-    assert resolved.resources.queue == "gpu"
-    assert resolved.resources.cores == 12
-    assert resolved.resources.gpus == 1
-    assert resolved.resources.exclusive is False
-    assert resolved.resources.memory_bytes == 64_000_000_000
-    assert resolved.resources.time_limit == timedelta(hours=1)
-    assert resolved.connection == ConnectionInfo(
+    job = captured["job"]
+    assert job.scheduler.type is SchedulerType.LSF
+    assert job.resources.queue == "gpu"
+    assert job.resources.cores == 12
+    assert job.resources.gpus == 1
+    assert job.resources.exclusive is False
+    assert job.resources.memory_bytes == 64_000_000_000
+    assert job.resources.time_limit == timedelta(hours=1)
+    assert captured["login"] == Login(
         host="login.example.com",
         user="alice",
-        ssh_keepalive_interval_seconds=75,
+        keepalive_interval=timedelta(seconds=75),
     )
-    assert captured["auto_provision"] is True
-    assert resolved.timings.worker_heartbeat_interval_seconds == 12
-    assert resolved.timings.worker_heartbeat_timeout_seconds == 60
-    assert resolved.timings.job_poll_interval_seconds == 1.5
-    assert resolved.timings.job_monitor_interval_seconds == 120
+    assert job.auto_provision is True
+    assert job.timings.worker_heartbeat_interval_seconds == timedelta(seconds=12)
+    assert job.timings.worker_heartbeat_timeout_seconds == timedelta(seconds=60)
+    assert job.timings.job_poll_interval_seconds == timedelta(seconds=1.5)
+    assert job.timings.job_monitor_interval_seconds == timedelta(seconds=120)
     worker_ports = captured["worker_ports"]
     assert isinstance(worker_ports, tuple)
     assert len(set(worker_ports)) == 6
@@ -238,14 +233,14 @@ def test_tunnel_command_allows_wrapper_with_implicit_resource_defaults(
     result = invoke(["tunnel", "base"])
 
     assert result.exit_code == 0, result
-    resolved = captured["resolved"]
-    assert resolved.resources.queue is None
-    assert resolved.resources.cores == 1
-    assert resolved.resources.gpus == 0
-    assert resolved.resources.exclusive is False
-    assert resolved.scheduler.interactive_submission_command == [
-        "/site/bin/interactive-lsf"
-    ]
+    job = captured["job"]
+    assert job.resources.queue is None
+    assert job.resources.cores == 1
+    assert job.resources.gpus == 0
+    assert job.resources.exclusive is False
+    assert job.scheduler.interactive_submission_command == (
+        "/site/bin/interactive-lsf",
+    )
 
 
 def test_tunnel_command_logs_inherited_submission_options_ignored_by_wrapper(
@@ -275,17 +270,16 @@ def test_tunnel_command_logs_inherited_submission_options_ignored_by_wrapper(
     )
     capture(monkeypatch, "tunnel")
 
-    with patch("ezhpcy.cli.tunnel.logger") as logger:
+    with tunnel_log() as log:
         result = invoke(["tunnel", "wrapper"])
 
     assert result.exit_code == 0, result
-    [[message], _] = logger.info.call_args
-    assert plain(message) == (
+    [message] = log.starting("Ignoring inherited")
+    assert message == (
         "Ignoring inherited scheduler submission options for "
         "scheduler.interactive_submission_command: "
         "lsf.application_profile, resources.queue"
     )
-    logger.info.assert_called_once()
 
 
 @pytest.mark.parametrize(
@@ -332,6 +326,41 @@ def test_tunnel_command_rejects_configured_submission_options_with_wrapper(
     assert result.exit_code == 2
     assert "cannot be combined with submission options" in result.stderr
     assert f"profile.base.{section}.{field}" in result.stderr
+
+
+def test_tunnel_command_rejects_a_cli_option_over_an_inherited_one_with_wrapper(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only what the profile inherits is ignored: the CLI's own options are refused."""
+    monkeypatch.setattr(
+        tunnel_module.config,
+        "profile",
+        {
+            "base": ProfileConfig.model_validate(
+                {
+                    "connection": {"host": "login.example.com", "user": "alice"},
+                    "scheduler": {"type": "LSF", "submission_mode": "interactive"},
+                    "resources": {"cores": 8},
+                }
+            ),
+            "wrapper": ProfileConfig.model_validate(
+                {
+                    "inherit": "base",
+                    "scheduler": {
+                        "interactive_submission_command": ["/site/bin/interactive-lsf"]
+                    },
+                }
+            ),
+        },
+    )
+    captured = capture(monkeypatch, "tunnel")
+
+    result = invoke(["tunnel", "wrapper", "--cores", "4"])
+
+    assert result.exit_code == 2, result
+    assert "cannot be combined with submission options" in result.stderr
+    assert "--cores=4" in result.stderr
+    assert captured == {}
 
 
 def _alias_profiles() -> dict[str, ProfileConfig]:
@@ -398,9 +427,7 @@ def test_profile_tunnel_alias_defaults_to_the_profile_name(
     result = invoke(["tunnel", "gpu", *arguments])
 
     assert result.exit_code == 0, result
-    ssh_host = captured["ssh_host"]
-    assert isinstance(ssh_host, WorkerHost)
-    assert (ssh_host.alias, ssh_host.user) == (alias, user)
+    assert (captured["alias"], captured["login"].user) == (alias, user)
     # Idle profiles get no Host block, and the probe is gone.
     assert list((isolated_runtime_dir / "ssh-config").iterdir()) == []
 
@@ -487,9 +514,7 @@ def test_anonymous_tunnel_alias_is_stable_for_identical_options(
     def alias_for(*extra: str) -> str:
         result = invoke([*_ANONYMOUS_TUNNEL_ARGS, *extra])
         assert result.exit_code == 0, result
-        ssh_host = captured["ssh_host"]
-        assert isinstance(ssh_host, WorkerHost)
-        return ssh_host.alias
+        return captured["alias"]
 
     first = alias_for("--queue", "gpu")
 
@@ -501,15 +526,25 @@ def test_anonymous_tunnel_alias_is_stable_for_identical_options(
 SCHEDULER = {"type": "LSF", "submission_mode": "batch"}
 
 
+def digest(values: dict[str, object]) -> str:
+    """The digest of a login (`connection`) and a job (the other sections)."""
+    job = {
+        section: value for section, value in values.items() if section != "connection"
+    }
+    return alias_digest(
+        Login.model_validate(values["connection"]), JobConfig.model_validate(job)
+    )
+
+
 def test_anonymous_alias_digest_is_order_independent() -> None:
-    first = ResolvedConfig.model_validate(
+    first = digest(
         {
             "connection": {"user": "alice", "host": "login.example.com"},
             "scheduler": SCHEDULER,
             "lsf": {"submission_environment": {"A": "first", "Z": "last"}},
         }
     )
-    second = ResolvedConfig.model_validate(
+    second = digest(
         {
             "connection": {"host": "login.example.com", "user": "alice"},
             "scheduler": SCHEDULER,
@@ -517,45 +552,44 @@ def test_anonymous_alias_digest_is_order_independent() -> None:
         }
     )
 
-    assert first.alias_digest() == second.alias_digest()
+    assert first == second
 
 
 def test_anonymous_alias_digest_excludes_password_sources() -> None:
-    without_password = ResolvedConfig.model_validate(
+    without_password = digest(
         {
             "connection": {"user": "alice", "host": "login.example.com"},
             "scheduler": SCHEDULER,
         }
     )
-    password = ResolvedConfig.model_validate(
+    password = digest(
         {
             "connection": {
                 "user": "alice",
                 "host": "login.example.com",
-                "password": "secret",
+                "password_file": "password.txt",
+                "password_keyring": True,
                 "password_prompt": False,
             },
             "scheduler": SCHEDULER,
         }
     )
 
-    assert password.alias_digest() == without_password.alias_digest()
+    assert password == without_password
 
 
 def test_anonymous_alias_digest_excludes_timings() -> None:
     connection = {"user": "alice", "host": "login.example.com"}
-    default = ResolvedConfig.model_validate(
-        {"connection": connection, "scheduler": SCHEDULER}
-    )
-    changed = ResolvedConfig.model_validate(
+    default = digest({"connection": connection, "scheduler": SCHEDULER})
+    changed = digest(
         {
-            "connection": {**connection, "ssh_keepalive_interval_seconds": 75},
+            "connection": {**connection, "keepalive_interval": 75, "port": 2222},
             "scheduler": SCHEDULER,
             "timings": {"queue_timeout_seconds": 60},
         }
     )
 
-    assert default.alias_digest() == changed.alias_digest()
+    assert default == changed
 
 
 def test_anonymous_alias_digest_is_stable(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -564,7 +598,7 @@ def test_anonymous_alias_digest_is_stable(monkeypatch: pytest.MonkeyPatch) -> No
     Pinned from before `time_limit` became a `timedelta`.
     """
     monkeypatch.setattr(types_module, "local_machine_id", lambda: "test-machine")
-    resolved = ResolvedConfig.model_validate(
+    resolved = digest(
         {
             "connection": {"user": "alice", "host": "login.example.com"},
             "scheduler": SCHEDULER,
@@ -578,7 +612,7 @@ def test_anonymous_alias_digest_is_stable(monkeypatch: pytest.MonkeyPatch) -> No
         }
     )
 
-    assert resolved.alias_digest() == (
+    assert resolved == (
         "9a8261e14d47a7b754e2d99f08e637a816f77cbc8a9e177c10804875f6f6e18a"
     )
 
@@ -592,7 +626,6 @@ def test_anonymous_alias_digest_is_stable(monkeypatch: pytest.MonkeyPatch) -> No
         ("resources", "cores", 16),
         ("scheduler", "type", "PBS"),
         ("scheduler", "submission_mode", "interactive"),
-        ("scheduler", "interactive_submission_command", ["/site/bin/interactive"]),
         ("pbs", "command_directory", "/opt/pbspro/bin"),
     ],
 )
@@ -609,10 +642,25 @@ def test_anonymous_alias_digest_includes_job_configuration(
         section: {**base_values.get(section, {}), field: value},
     }
 
-    assert (
-        ResolvedConfig.model_validate(base_values).alias_digest()
-        != ResolvedConfig.model_validate(changed_values).alias_digest()
-    )
+    assert digest(base_values) != digest(changed_values)
+
+
+def test_anonymous_alias_digest_includes_the_interactive_submission_command() -> None:
+    # A command decides the resources, so it can't be combined with them.
+    values: dict[str, object] = {
+        "connection": {"user": "alice", "host": "login.example.com"},
+        "scheduler": {"type": "LSF", "submission_mode": "interactive"},
+    }
+    with_command = {
+        **values,
+        "scheduler": {
+            "type": "LSF",
+            "submission_mode": "interactive",
+            "interactive_submission_command": ["/site/bin/interactive"],
+        },
+    }
+
+    assert digest(values) != digest(with_command)
 
 
 def test_anonymous_tunnel_accepts_an_explicit_alias(
@@ -623,9 +671,7 @@ def test_anonymous_tunnel_accepts_an_explicit_alias(
     result = invoke([*_ANONYMOUS_TUNNEL_ARGS, "--alias", "scratch"])
 
     assert result.exit_code == 0, result
-    ssh_host = captured["ssh_host"]
-    assert isinstance(ssh_host, WorkerHost)
-    assert ssh_host.alias == "scratch"
+    assert captured["alias"] == "scratch"
 
 
 @pytest.mark.parametrize(

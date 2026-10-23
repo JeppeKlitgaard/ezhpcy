@@ -4,7 +4,7 @@ lazy from cyclopts import Parameter
 lazy from rich.prompt import Confirm
 
 from ezhpcy.cli._options import ConnectionOptions, OptionalProfileArg
-lazy from ezhpcy.cli._resolve import connection_from_cli, resolve_profile_config
+lazy from ezhpcy.cli._resolve import login_from_cli, select_profile
 lazy from ezhpcy.cli.utils.prompt import ask
 lazy from ezhpcy.cli.utils.ssh import connect_or_exit
 lazy from ezhpcy.console import error_console
@@ -34,18 +34,17 @@ async def prune_cmd(
     ] = False,
 ) -> None:
     """Prune stale installations and Pixi data."""
-    conn_info = connection_from_cli(
-        connection_options,
-        resolve_profile_config(profile).connection,
-        profile_name=profile,
-    )
+    select_profile(profile)
+    login, password = login_from_cli(connection_options, profile_name=profile)
     if not all_data:
-        async with await connect_or_exit(conn_info) as login:
-            await prune_stale_data(login, await login.remote_state())
+        async with await connect_or_exit(
+            login, password, connection_options, profile_name=profile
+        ) as host:
+            await prune_stale_data(host, await host.remote_state())
         return
 
     # Asked before connecting (see `ask`).
-    target = f"{conn_info.user}@{conn_info.host}"
+    target = f"{login.user}@{login.host}"
     user_accepts = yes or ask(
         Confirm.ask,
         rich_text(
@@ -60,6 +59,8 @@ async def prune_cmd(
         print_aborted(t"Prune cancelled.")
         raise SystemExit(1)
 
-    async with await connect_or_exit(conn_info) as login:
-        await prune_all_remote_data(login, await login.remote_state())
+    async with await connect_or_exit(
+        login, password, connection_options, profile_name=profile
+    ) as host:
+        await prune_all_remote_data(host, await host.remote_state())
     print_success(t"All managed remote data removed.")

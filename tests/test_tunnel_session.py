@@ -1,6 +1,6 @@
 """
-`ezhpcy tunnel` end to end: the session against the in-process SSH server, with
-the worker played by the tests. How each failure shuts the tunnel down is in
+`ezhpcy tunnel` end to end: the command, through `ezhpcy.api`, against the
+in-process SSH server, with the worker played by the tests. How each failure shuts the tunnel down is in
 `test_tunnel_shutdown.py`.
 """
 
@@ -20,19 +20,19 @@ from pathlib import Path
 
 import pytest
 
+from ezhpcy import login as login_module
 from ezhpcy.cli import tunnel as tunnel_cli
-from ezhpcy.cli.utils import ssh as cli_ssh
 from ezhpcy.config import LocalFileConfig
 from ezhpcy.console import flush_output, make_console
 from ezhpcy.constants import LOOPBACK_HOST
-from ezhpcy.job import lifecycle
+from ezhpcy.job import lifecycle, publish
 from ezhpcy.job.lifecycle import JobLifecycle
+from ezhpcy.job.status import JobStatus, Phase, PublishedStatus
 from ezhpcy.logging import REPLAY_ON_ERROR
 from ezhpcy.scheduler.base import JobInfo, JobState
 from ezhpcy.ssh import RemoteHost
-from ezhpcy.tunnel import lock, session, ssh_config
+from ezhpcy.tunnel import lock, ssh_config
 from ezhpcy.tunnel.lock import alias_lock, alias_locked
-from ezhpcy.tunnel.status import Phase, TunnelStatus
 from ezhpcy.worker.control import WorkerControl
 from tests.support.cli import invoke
 from tests.support.sshserver import Invocation, SSHTestServer, reply
@@ -172,7 +172,7 @@ def test_a_tunnel_forwards_its_port_to_the_worker(
         # Then the job ends.
         done.set()
 
-    monkeypatch.setattr(session, "publish_host", publish_then_connect)
+    monkeypatch.setattr(publish, "publish_host", publish_then_connect)
     previous_handler = signal.getsignal(signal.SIGINT)
 
     with tunnel_log() as log:
@@ -202,7 +202,7 @@ def test_a_tunnel_forwards_its_port_to_the_worker(
 
     assert (
         log.messages(logging.INFO).count(
-            "Stopping tunnel: worker job 42 ended in scheduler state DONE with exit code 0"
+            "Stopping job: worker job 42 ended in scheduler state DONE with exit code 0"
         )
         == 1
     )
@@ -253,7 +253,7 @@ def test_a_terminal_that_takes_no_output_does_not_stop_the_tunnel(
             terminal.opened.set()
             done.set()
 
-    monkeypatch.setattr(session, "publish_host", publish_then_connect)
+    monkeypatch.setattr(publish, "publish_host", publish_then_connect)
 
     result = invoke(
         [
@@ -289,7 +289,7 @@ class Recorded:
         self.values.append(value)
 
 
-def test_the_status_follows_the_tunnel_from_connecting_until_it_stops(
+def test_the_status_follows_the_job_from_preparing_until_it_stops(
     login: SSHTestServer, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     worker_port = login.listen(banner_then_echo)
@@ -302,35 +302,39 @@ def test_the_status_follows_the_tunnel_from_connecting_until_it_stops(
         connect_through(port, b"hello")
         done.set()
 
-    monkeypatch.setattr(session, "publish_host", publish_then_connect)
+    monkeypatch.setattr(publish, "publish_host", publish_then_connect)
 
     result = invoke(["tunnel", "base", "--worker-port", str(worker_port)])
 
     assert result.exit_code == 0, result
-    statuses = [
-        status for status in recorded.values if isinstance(status, TunnelStatus)
-    ]
+    statuses = [status for status in recorded.values if isinstance(status, JobStatus)]
     assert len(statuses) == len(recorded.values)
+    # Connecting is before the job, which the command shows itself.
     assert [phase for phase, _ in itertools.groupby(s.phase for s in statuses)] == [
-        Phase.CONNECTING,
         Phase.PREPARING,
         Phase.SUBMITTING,
         Phase.QUEUED,
         Phase.STARTING,
-        Phase.SERVING,
+        Phase.READY,
         Phase.STOPPING,
     ]
-    assert statuses[0].alias == "base"
-    assert statuses[0].login == "alice@login.example.com"
-    serving = next(s for s in statuses if s.phase is Phase.SERVING)
+    serving = next(s for s in statuses if s.attachments)
+    assert serving.phase is Phase.READY
     assert serving.job_id == JOB_ID
     assert serving.job is not None
     assert serving.job.state is JobState.RUNNING
     assert serving.running_since is not None
     assert serving.worker == f"127.0.0.1:{worker_port}"
-    # One connection was open, and closed by the end.
-    assert max(s.connections for s in statuses) == 1
-    assert statuses[-1].connections == 0
+    [published] = serving.attachments
+    assert isinstance(published, PublishedStatus)
+    assert published.alias == "base"
+    # One connection was open, and closed by the end, when the block was
+    # withdrawn.
+    connections = [
+        sum(attachment.connections for attachment in s.attachments) for s in statuses
+    ]
+    assert max(connections) == 1
+    assert statuses[-1].attachments == ()
     assert any(s.last_heartbeat is not None for s in statuses)
 
 
@@ -348,16 +352,15 @@ def test_on_a_terminal_the_status_display_shows_the_tunnel(
         # Long enough to be redrawn serving.
         threading.Timer(0.6, done.set).start()
 
-    monkeypatch.setattr(session, "publish_host", publish_then_serve)
+    monkeypatch.setattr(publish, "publish_host", publish_then_serve)
 
     result = invoke(["--debug", "tunnel", "base", "--worker-port", str(worker_port)])
 
     assert result.exit_code == 0, result
     assert flush_output(WAIT_SECONDS)
     output = terminal.getvalue()
-    assert "Connecting to alice@login.example.com" in output
     assert "Connections" in output
-    assert "Stopping tunnel: worker job 42 ended" in output
+    assert "Stopping job: worker job 42 ended" in output
 
 
 def test_open_sessions_are_cut_when_the_tunnel_stops(
@@ -389,7 +392,7 @@ def test_open_sessions_are_cut_when_the_tunnel_stops(
         # Then the job ends, and the tunnel stops.
         done.set()
 
-    monkeypatch.setattr(session, "publish_host", publish_then_open_a_session)
+    monkeypatch.setattr(publish, "publish_host", publish_then_open_a_session)
 
     result = invoke(["tunnel", "base", "--worker-port", str(worker_port)])
 
@@ -425,12 +428,12 @@ def test_shutdown_withdraws_the_block_before_closing_the_port(
 
     @contextmanager
     def recording_lock(alias: str) -> Generator[None]:
-        with lock.alias_lock(alias):
+        with alias_lock(alias):
             events.append("take the lock")
             yield
         events.append("release the lock")
 
-    connect = cli_ssh.connect_interactive
+    connect = login_module.connect
 
     async def recording_connect(*args: object, **kwargs: object) -> RemoteHost:
         events.append("connect")
@@ -471,15 +474,15 @@ def test_shutdown_withdraws_the_block_before_closing_the_port(
             ),
         ),
     )
-    monkeypatch.setattr(session, "alias_lock", recording_lock)
-    monkeypatch.setattr(cli_ssh, "connect_interactive", recording_connect)
+    monkeypatch.setattr(lock, "alias_lock", recording_lock)
+    monkeypatch.setattr(login_module, "connect", recording_connect)
     monkeypatch.setattr(RemoteHost, "forward_local_port", recording_forward)
     monkeypatch.setattr(RemoteHost, "close", recording_close_login)
     monkeypatch.setattr(
-        session, "publish_host", lambda _host, _port: events.append("publish")
+        publish, "publish_host", lambda _host, _port: events.append("publish")
     )
     monkeypatch.setattr(
-        session, "withdraw_host", lambda _host: events.append("withdraw")
+        publish, "withdraw_host", lambda _host: events.append("withdraw")
     )
 
     result = invoke(["tunnel", "base", "--worker-port", str(worker_port)])
@@ -621,7 +624,7 @@ def test_an_lsf_batch_tunnel_sends_the_worker_script_to_bsub(
     configure_tunnel(
         monkeypatch, login, scheduler={"type": "LSF", "submission_mode": "batch"}
     )
-    monkeypatch.setattr(session, "publish_host", lambda *_args, **_kwargs: done.set())
+    monkeypatch.setattr(publish, "publish_host", lambda *_args, **_kwargs: done.set())
 
     with tunnel_log() as log:
         result = invoke(["tunnel", "base", "--worker-port", str(worker_port)])
@@ -639,10 +642,10 @@ def test_keepalive_loss_while_serving_stops_the_tunnel(
 ) -> None:
     worker_port = login.listen(banner(BANNER))
     monkeypatch.setattr(
-        cli_ssh,
-        "connect_interactive",
+        login_module,
+        "connect",
         functools.partial(
-            cli_ssh.connect_interactive, keepalive_interval=0.1, keepalive_count_max=2
+            login_module.connect, keepalive_interval=0.1, keepalive_count_max=2
         ),
     )
 
@@ -662,7 +665,7 @@ def test_keepalive_loss_while_serving_stops_the_tunnel(
             ),
         ),
     )
-    monkeypatch.setattr(session, "publish_host", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(publish, "publish_host", lambda *_args, **_kwargs: None)
 
     with tunnel_log() as log:
         result = invoke(["tunnel", "base", "--worker-port", str(worker_port)])
@@ -746,7 +749,7 @@ def test_the_worker_startup_timeout_covers_both_waits(
     [stopping] = [
         record
         for record in log.records
-        if record.getMessage().startswith("Stopping tunnel: ")
+        if record.getMessage().startswith("Stopping job: ")
     ]
     # Two budgets would take 1.7 seconds.
     assert stopping.created - allocated.created < 1.4 * timeout_seconds
@@ -796,7 +799,7 @@ def test_a_second_interrupt_quits_without_cleaning_up(
             cancelling=press_again,
         ),
     )
-    monkeypatch.setattr(session, "publish_host", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(publish, "publish_host", lambda *_args, **_kwargs: None)
     previous_handler = signal.getsignal(interrupt)
 
     with tunnel_log() as log:
@@ -804,7 +807,7 @@ def test_a_second_interrupt_quits_without_cleaning_up(
 
     assert result.exit_code == 0, result
     assert exits == [130]
-    assert "Stopping tunnel: Ctrl+C" in log.messages()
+    assert "Stopping job: Ctrl+C" in log.messages()
     assert log.starting("Quitting without cleaning up.")
     assert signal.getsignal(interrupt) is previous_handler
 
@@ -831,7 +834,7 @@ def test_a_cleanup_step_that_hangs_is_given_up_on(
             cancelling=hang,
         ),
     )
-    monkeypatch.setattr(session, "publish_host", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(publish, "publish_host", lambda *_args, **_kwargs: None)
 
     with tunnel_log() as log:
         result = invoke(["tunnel", "base", "--worker-port", str(worker_port)])
@@ -846,11 +849,11 @@ def test_a_lock_release_that_hangs_is_given_up_on(
     login: SSHTestServer, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     worker_port = login.listen(banner(BANNER))
-    monkeypatch.setattr(session, "_LOCK_RELEASE_SECONDS", 0.1)
+    monkeypatch.setattr(lock, "_LOCK_RELEASE_SECONDS", 0.1)
 
     @contextmanager
     def slow_lock(alias: str) -> Generator[None]:
-        with lock.alias_lock(alias):
+        with alias_lock(alias):
             try:
                 yield
             finally:
@@ -868,8 +871,8 @@ def test_a_lock_release_that_hangs_is_given_up_on(
             ),
         ),
     )
-    monkeypatch.setattr(session, "alias_lock", slow_lock)
-    monkeypatch.setattr(session, "publish_host", lambda _host, _port: None)
+    monkeypatch.setattr(lock, "alias_lock", slow_lock)
+    monkeypatch.setattr(publish, "publish_host", lambda _host, _port: None)
 
     with tunnel_log() as log:
         result = invoke(["tunnel", "base", "--worker-port", str(worker_port)])
@@ -902,7 +905,7 @@ def test_ctrl_c_during_batch_submission_lets_it_finish(
         result = invoke(["tunnel", "base"])
 
     assert result.exit_code == 0, result
-    assert "Stopping tunnel: Ctrl+C" in log.messages()
+    assert "Stopping job: Ctrl+C" in log.messages()
     [scheduler] = schedulers
     if hangs:
         # Given up on, with a warning.
@@ -941,7 +944,7 @@ def _stop_before_publishing_the_host_block(
         _stop_from_thread()
         published.append(host.alias)
 
-    monkeypatch.setattr(session, "publish_host", stop_then_publish)
+    monkeypatch.setattr(publish, "publish_host", stop_then_publish)
 
 
 @pytest.mark.parametrize(
@@ -974,10 +977,10 @@ def test_ctrl_c_during_a_step_still_cleans_up_after_it(
     published: list[str] = []
     withdrawn: list[str] = []
     monkeypatch.setattr(
-        session, "publish_host", lambda host, _port: published.append(host.alias)
+        publish, "publish_host", lambda host, _port: published.append(host.alias)
     )
     monkeypatch.setattr(
-        session, "withdraw_host", lambda host: withdrawn.append(host.alias)
+        publish, "withdraw_host", lambda host: withdrawn.append(host.alias)
     )
     stop_during_step(monkeypatch, published)
 
@@ -985,7 +988,7 @@ def test_ctrl_c_during_a_step_still_cleans_up_after_it(
         result = invoke(["tunnel", "base", "--worker-port", str(worker_port)])
 
     assert result.exit_code == 0, result
-    assert "Stopping tunnel: Ctrl+C" in log.messages()
+    assert "Stopping job: Ctrl+C" in log.messages()
     assert control_dirs(login) == []
     assert published == withdrawn
     assert not alias_locked("base")
@@ -998,7 +1001,7 @@ def test_ctrl_c_at_a_prompt_exits_130(
         raise KeyboardInterrupt
 
     configure_tunnel(monkeypatch, login)
-    monkeypatch.setattr(cli_ssh, "connect_interactive", interrupted)
+    monkeypatch.setattr(login_module, "connect", interrupted)
 
     result = invoke(["tunnel", "base"])
 

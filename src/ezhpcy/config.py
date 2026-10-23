@@ -2,8 +2,11 @@ import logging
 import re
 from typing import Annotated
 lazy import os
+lazy import tomllib
+lazy from collections.abc import Mapping
+lazy from datetime import timedelta
 lazy from pathlib import Path
-lazy from typing import Any, Self
+lazy from typing import Any, Literal, Self
 
 from platformdirs import PlatformDirs
 from pydantic import (
@@ -21,18 +24,34 @@ from pydantic_settings import (
     SettingsConfigDict,
     TomlConfigSettingsSource,
 )
+lazy from pydantic import ValidationError
 lazy from pydantic.fields import FieldInfo
 
 from ezhpcy.constants import LOGIN_KNOWN_HOSTS_NAME, PACKAGE_NAME, SSH_DIRECTORY_NAME
-from ezhpcy.messages import MessageError
-from ezhpcy.types import PasswordConfig
-lazy from ezhpcy.types import ProfileConfig, ResolvedProfileConfig
+from ezhpcy.types import ConfigError, PasswordConfig
+lazy from ezhpcy.logging import get_logger
+lazy from ezhpcy.types import (
+    JobConfig,
+    Login,
+    MissingSetting,
+    ProfileConfig,
+    ResolvedProfileConfig,
+    config_error,
+    submission_sections,
+    validated,
+)
 lazy from ezhpcy.utils import ssh_connection_id
 
 _DIRS = PlatformDirs(PACKAGE_NAME, appauthor=False)
 # Profile names double as OpenSSH Host aliases, so they exclude whitespace and the
 # pattern characters `*`, `?`, `!` and `,`.
 _ALIAS_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+
+
+def unless_disabled[T](value: T | Literal[False] | None) -> T | None:
+    """A password setting's value, or `None` if it is unset or `false`."""
+    # `is`, since `0 == False`, and 0 is a valid descriptor.
+    return None if value is False else value
 
 
 def validate_alias(alias: str) -> str:
@@ -46,7 +65,7 @@ def validate_alias(alias: str) -> str:
     return alias
 
 
-class StoredPasswordError(MessageError):
+class StoredPasswordError(ConfigError):
     """A `password` in the configuration, where passwords must not be stored."""
 
 
@@ -168,6 +187,134 @@ class _ConfigValues(BaseModel):
 
         return ResolvedProfileConfig.model_validate(values)
 
+    @property
+    def profiles(self) -> Mapping[str, Profile]:
+        """The profiles, by name, each with its inheritance applied when read."""
+        return {name: Profile(self, name) for name in self.profile}
+
+    def resolve_login(
+        self, profile_name: str | None = None, **changes: object
+    ) -> Login:
+        """
+        The login node of a profile, or of the top-level settings alone when
+        `None`, with `changes` to its fields (those of `Login`) on top.
+
+        Raises `ConfigError`, such as `MissingSetting` for a host or user that
+        neither gives, or `StoredPasswordError`.
+        """
+        self.reject_stored_password(profile_name)
+        connection = self.resolve_profile(profile_name).connection
+        values = {
+            "host": connection.host,
+            "user": connection.user,
+            "keepalive_interval": timedelta(
+                seconds=connection.ssh_keepalive_interval_seconds
+            ),
+            "password_fd": unless_disabled(connection.password_fd),
+            "password_file": unless_disabled(connection.password_file),
+            "password_keyring": connection.password_keyring,
+            "password_prompt": connection.password_prompt,
+        } | changes
+        for name in ("user", "host"):
+            if values[name] is None:
+                raise self._missing(profile_name, name, f"connection.{name}")
+        return validated(Login, values)
+
+    def resolve_job(
+        self,
+        profile_name: str | None = None,
+        *,
+        scheduler: Mapping[str, object] | None = None,
+        resources: Mapping[str, object] | None = None,
+        timings: Mapping[str, object] | None = None,
+        auto_provision: bool | None = None,
+    ) -> JobConfig:
+        """
+        The worker job of a profile, or of the top-level settings alone when
+        `None`, with changes to its `scheduler`, `resources` and `timings` on top,
+        and `auto_provision` if given, else the top-level setting.
+
+        With an interactive submission command, the submission options (see
+        `JobConfig`) that the profile only inherits are logged and dropped:
+        profiles for a site's wrapper typically inherit from a base profile that
+        sets them. Those set in the profile itself, or in the changes, are an
+        error.
+
+        Raises `ConfigError`, such as `MissingSetting` for a scheduler type or
+        submission mode that neither gives, or `SubmissionCommandError`.
+        """
+        profile = self.resolve_profile(profile_name)
+        changes = {
+            "scheduler": scheduler or {},
+            "resources": resources or {},
+            "timings": timings or {},
+        }
+        values: dict[str, Any] = {
+            section: {
+                **getattr(profile, section).model_dump(exclude_unset=True),
+                **changes.get(section, {}),
+            }
+            for section in ("scheduler", "resources", "timings", "lsf", "pbs")
+        }
+        values["auto_provision"] = (
+            self.auto_provision if auto_provision is None else auto_provision
+        )
+        if values["scheduler"].get("interactive_submission_command") is not None:
+            self._drop_inherited_submission_options(
+                profile_name, profile, values, changes
+            )
+        try:
+            return validated(JobConfig, values)
+        except ConfigError as error:
+            for name in ("type", "submission_mode"):
+                if values["scheduler"].get(name) is None:
+                    setting = f"scheduler.{name}"
+                    raise self._missing(profile_name, setting, setting) from error
+            raise
+
+    def _drop_inherited_submission_options(
+        self,
+        profile_name: str | None,
+        profile: ResolvedProfileConfig,
+        values: dict[str, Any],
+        changes: Mapping[str, Mapping[str, object]],
+    ) -> None:
+        """
+        Drop from `values` the submission options that `profile_name` only
+        inherits, for its interactive submission command (see `resolve_job`):
+        not those `changes` give, which stay to be refused.
+        """
+        own = self.profile[profile_name] if profile_name is not None else None
+        try:
+            scheduler_type = validated(
+                type(profile.scheduler), values["scheduler"]
+            ).type
+        except ConfigError:
+            scheduler_type = None
+        if scheduler_type is None:
+            # Validating the job reports it.
+            return
+        inherited: list[str] = []
+        for section in submission_sections(scheduler_type):
+            configured = getattr(profile, section).model_fields_set
+            directly = getattr(own, section).model_fields_set if own else set()
+            for name in configured - directly - set(changes.get(section, {})):
+                values[section].pop(name, None)
+                inherited.append(f"{section}.{name}")
+        if inherited:
+            get_logger(__name__).info(
+                t"Ignoring inherited scheduler submission options for "
+                t"{'scheduler.interactive_submission_command':name}: "
+                t"{sorted(inherited):name}"
+            )
+
+    @staticmethod
+    def _missing(profile_name: str | None, setting: str, key: str) -> MissingSetting:
+        """`setting` is missing; `key` is its path in a profile."""
+        if profile_name is not None:
+            key = f"profile.{profile_name}.{key}"
+        return MissingSetting(setting, key=key)
+
     def reject_stored_password(self, profile_name: str | None = None) -> None:
         """
         Reject a `password` in the top-level `connection` table, or in the profile
@@ -268,6 +415,74 @@ class Config(BaseSettings, _ConfigValues):
         return cls.model_construct(
             _fields_set=validated.model_fields_set, **validated.__dict__
         )
+
+    @classmethod
+    def load(cls, path: Path | None = None) -> Self:
+        """
+        Read the configuration file `path`, by default the one the CLI reads
+        (`default_path`). Unlike `Config()`, the environment (`EZHPCY_*`) is
+        not read. A value: loading one changes nothing global, and several may
+        be used at once. Raises `ConfigError`.
+        """
+        return cls.from_file(path or cls.default_path())
+
+    @staticmethod
+    def default_path() -> Path:
+        """
+        The configuration file the CLI reads: `EZHPCY_CONFIG_FILE`, or
+        `ezhpcy.toml` in the platform's configuration directory.
+        """
+        return _default_config_file()
+
+    @classmethod
+    def from_file(cls, path: Path) -> Self:
+        """
+        Read and validate the configuration file `path`, without the environment
+        or any other source. Raises `ConfigError`.
+        """
+        try:
+            with path.open("rb") as file:
+                values = tomllib.load(file)
+        except (OSError, tomllib.TOMLDecodeError) as error:
+            raise ConfigError(
+                t"Could not read the configuration file {path:path}: {error}"
+            ) from error
+        try:
+            return cls.from_mapping(values)
+        except ValidationError as error:
+            raise ConfigError(
+                t"Invalid configuration file {path:path}: {config_error(error)}"
+            ) from error
+
+
+class Profile:
+    """
+    A profile of a configuration: its `login` and its `job`, each built and
+    checked when read. A profile without a setting it needs (a host, a
+    scheduler type) is still listed; reading `login` or `job` then raises
+    `ConfigError` naming it.
+    """
+
+    def __init__(self, config: _ConfigValues, name: str) -> None:
+        self._config = config
+        self.name = name
+
+    @property
+    def description(self) -> str | None:
+        return self._config.resolve_profile(self.name).description
+
+    @property
+    def login(self) -> Login:
+        """The login node, and where its password comes from."""
+        return self._config.resolve_login(self.name)
+
+    @property
+    def job(self) -> JobConfig:
+        """The worker job."""
+        return self._config.resolve_job(self.name)
+
+    def __repr__(self) -> str:
+        return f"Profile({self.name!r})"
 
 
 config = Config()

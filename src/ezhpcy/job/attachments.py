@@ -6,6 +6,8 @@ job's exit stack. As it acquires things, it pushes the cleanup step for each, so
 that its cleanup covers exactly what it acquired, in reverse order, each step
 with a timeout. It is closed once: early, by `close`, or when the job is left,
 whichever comes first; the other then finds it closed, or waits for it.
+
+Its `status`, if it reports one, is in the job's, until it closes.
 """
 
 lazy import asyncio
@@ -13,14 +15,25 @@ lazy from collections.abc import Awaitable, Callable
 lazy from contextlib import AsyncExitStack
 
 lazy from ezhpcy.job.lifecycle import cleanup
+lazy from ezhpcy.job.status import AttachmentStatus
 
 
 class Attachment:
-    """Something attached to a job, with its cleanup steps."""
+    """
+    Something attached to a job, with its cleanup steps. `on_change` is called
+    when its status changes, and when it closes.
+    """
 
-    def __init__(self) -> None:
+    def __init__(self, on_change: Callable[[], object]) -> None:
         self._stack = AsyncExitStack()
         self._closing: asyncio.Task[None] | None = None
+        self._on_change = on_change
+        self.status: AttachmentStatus | None = None
+
+    def report(self, status: AttachmentStatus) -> None:
+        """Replace the attachment's status."""
+        self.status = status
+        self._on_change()
 
     def push(
         self,
@@ -49,4 +62,5 @@ class Attachment:
         """
         if self._closing is None:
             self._closing = asyncio.ensure_future(self._stack.aclose())
+            self._on_change()
         await asyncio.shield(self._closing)

@@ -8,7 +8,7 @@ from ezhpcy.cli._options import (
     HostOpt,
     UserOpt,
 )
-lazy from ezhpcy.cli._resolve import direct_connection_from_cli
+lazy from ezhpcy.cli._resolve import direct_login_from_cli
 lazy from ezhpcy.console import console, error_console
 lazy from ezhpcy.messages import print_error, rich_text
 
@@ -16,10 +16,11 @@ lazy from ezhpcy.messages import print_error, rich_text
 # ruff: ignore[B008]  # See the comment above the option dataclasses in _options.py
 def set_cmd(*, connection_options: ConnectionOptions = ConnectionOptions()) -> None:
     """Store the login-node password in the system keyring."""
-    conn_info = direct_connection_from_cli(connection_options)
-    account = f"{conn_info.user}@{conn_info.host}"
-    password = conn_info.password
-    if password is None:
+    login, given = direct_login_from_cli(connection_options)
+    account = f"{login.user}@{login.host}"
+    if given is not None:
+        password = given.get_secret_value()
+    else:
         password = Prompt.ask(
             rich_text(t"Enter password for {account}"),
             password=True,
@@ -38,8 +39,8 @@ def set_cmd(*, connection_options: ConnectionOptions = ConnectionOptions()) -> N
 def unset_cmd(*, host: HostOpt = None, user: UserOpt = None) -> None:
     """Remove the login-node password from the system keyring."""
     # Validates the user and host like `set`; without password options it reads none.
-    conn_info = direct_connection_from_cli(ConnectionOptions(host=host, user=user))
-    account = f"{conn_info.user}@{conn_info.host}"
+    login, _ = direct_login_from_cli(ConnectionOptions(host=host, user=user))
+    account = f"{login.user}@{login.host}"
 
     try:
         keyring.delete_password(KEYRING_SERVICE_NAME, account)

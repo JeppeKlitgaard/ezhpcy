@@ -15,7 +15,7 @@ import pytest
 
 from ezhpcy import ssh
 from ezhpcy.constants import EZHPCY_VERSION, OPENSSH_MATCHSPEC, PIXI_VERSION
-from ezhpcy.types import ConnectionInfo, RemoteState
+from ezhpcy.types import Login, RemoteState
 from ezhpcy.worker import WorkerError
 from ezhpcy.worker.control import (
     WorkerControl,
@@ -203,7 +203,7 @@ def test_watchdog_stops_sshd_when_it_cannot_cancel_the_job(
 async def control(
     server: SSHTestServer, ports: tuple[int, ...] = (54321,)
 ) -> AsyncGenerator[WorkerControl]:
-    conn_info = ConnectionInfo.model_construct(user=server.user, host=server.host)
+    conn_info = Login(user=server.user, host=server.host)
     async with (
         await ssh.connect(
             conn_info,

@@ -252,10 +252,10 @@ def test_config_load_creates_dtu_config_case_insensitively(
     assert gpul40s.scheduler.submission_mode is SubmissionMode.BATCH
     a100sh = loaded_config.resolve_profile("dtu-a100sh")
     assert a100sh.scheduler.submission_mode is SubmissionMode.INTERACTIVE
-    assert a100sh.scheduler.interactive_submission_command == ["/lsf/local/bin/a100sh"]
+    assert a100sh.scheduler.interactive_submission_command == ("/lsf/local/bin/a100sh",)
     assert a100sh.lsf.application_profile == "qrsh"
     assert a100sh.lsf.submission_environment == {}
-    assert a100sh.lsf.export_environment == []
+    assert a100sh.lsf.export_environment == ()
     assert not loaded_config.profile["dtu-a100sh"].lsf.model_fields_set
     dtu_base_pbs = loaded_config.resolve_profile("dtu-base-pbs")
     assert str(dtu_base_pbs.pbs.command_directory) == "/opt/pbspro/bin"

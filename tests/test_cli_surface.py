@@ -106,8 +106,8 @@ def test_tunnel_and_its_alias_start_a_tunnel_for_a_profile(
     result = invoke([name, "base"])
 
     assert result.exit_code == 0, result
-    assert captured["resolved"].connection.user == "alice"
-    assert captured["ssh_host"].alias == "base"
+    assert captured["login"].user == "alice"
+    assert captured["alias"] == "base"
 
 
 def test_provision_with_yes_starts_provisioning_without_asking(
@@ -117,7 +117,7 @@ def test_provision_with_yes_starts_provisioning_without_asking(
 
     result = invoke(["provision", "base", "--yes"])
 
-    assert captured["conn_info"].user == "alice", result
+    assert captured["login"].user == "alice", result
     assert "remote_operation" in captured
     assert "Proceed?" not in result.stderr
 
@@ -133,7 +133,7 @@ def test_provision_asks_first_and_can_be_cancelled(
     assert "Proceed?" in result.stderr
     assert "Aborted: Provisioning cancelled." in result.stderr
     # Asked before connecting, so the connection can't drop while it waits.
-    assert "conn_info" not in captured
+    assert "login" not in captured
 
 
 def _removes_cache_root(captured: dict[str, object]) -> bool:
@@ -174,7 +174,7 @@ def test_prune_all_asks_first_and_defaults_to_no(
     assert result.exit_code == 1, result
     assert "Proceed?" in result.stderr
     assert "Aborted: Prune cancelled." in result.stderr
-    assert "conn_info" not in captured
+    assert "login" not in captured
 
 
 @pytest.mark.parametrize("arguments", [[], ["--json"]])
@@ -281,8 +281,11 @@ def test_connection_options_reach_the_login_connection(
         env=env,
     )
 
-    assert "conn_info" in captured, result
-    assert getattr(captured["conn_info"], field) == expected
+    assert "login" in captured, result
+    if field == "password":
+        assert captured["password"].get_secret_value() == expected
+    else:
+        assert getattr(captured["login"], field) == expected
 
 
 @_PIPED_PASSWORD_PROMPT
@@ -301,7 +304,7 @@ def test_connection_options_reach_keyring_set(monkeypatch: pytest.MonkeyPatch) -
 
 
 @pytest.mark.parametrize("command", _LOGIN_COMMANDS)
-def test_connection_options_reach_each_command_and_resolve_the_profile_once(
+def test_connection_options_reach_each_command_and_resolve_only_its_profile(
     monkeypatch: pytest.MonkeyPatch, command: str
 ) -> None:
     captured = capture(monkeypatch, command)
@@ -321,14 +324,12 @@ def test_connection_options_reach_each_command_and_resolve_the_profile_once(
     yes = ["--yes"] if command == "provision" else []
     result = invoke([command, "base", "--user", "bob", *yes])
 
-    conn_info = (
-        captured["resolved"].connection
-        if command == "tunnel"
-        else captured.get("conn_info")
-    )
-    assert conn_info is not None, result
-    assert conn_info.user == "bob"
-    assert resolved_profiles == ["base"]
+    login = captured.get("login")
+    assert login is not None, result
+    assert login.user == "bob"
+    # Resolving reads no password, so `tunnel` may resolve it for its login and
+    # for its job.
+    assert set(resolved_profiles) == {"base"}
 
 
 def test_profile_argument_can_come_from_the_environment(
@@ -339,8 +340,8 @@ def test_profile_argument_can_come_from_the_environment(
     result = invoke(["tunnel"], env={"EZHPCY_PROFILE": "base"})
 
     assert result.exit_code == 0, result
-    assert captured["resolved"].connection.user == "alice"
-    assert captured["ssh_host"].alias == "base"
+    assert captured["login"].user == "alice"
+    assert captured["alias"] == "base"
 
 
 # (arguments, attribute of the resolved configuration, expected value)
@@ -352,7 +353,7 @@ _TUNNEL_OPTION_CASES = [
     (
         ["--interactive-submission-command", "a100sh --gpu 'two words'"],
         "scheduler.interactive_submission_command",
-        ["a100sh", "--gpu", "two words"],
+        ("a100sh", "--gpu", "two words"),
     ),
     (["--queue", "gpu"], "resources.queue", "gpu"),
     (["-q", "gpu"], "resources.queue", "gpu"),
@@ -362,19 +363,35 @@ _TUNNEL_OPTION_CASES = [
     (["--time-limit", "1:30"], "resources.time_limit", timedelta(minutes=90)),
     (["--memory", "2GiB"], "resources.memory_bytes", 2 * 1024**3),
     (["--memory", "2GB"], "resources.memory_bytes", 2 * 1000**3),
-    (["--queue-timeout", "120"], "timings.queue_timeout_seconds", 120),
-    (["--worker-startup-timeout", "30"], "timings.worker_startup_timeout_seconds", 30),
-    (["--job-poll-interval", "0.5"], "timings.job_poll_interval_seconds", 0.5),
-    (["--job-monitor-interval", "5"], "timings.job_monitor_interval_seconds", 5),
+    (
+        ["--queue-timeout", "120"],
+        "timings.queue_timeout_seconds",
+        timedelta(seconds=120),
+    ),
+    (
+        ["--worker-startup-timeout", "30"],
+        "timings.worker_startup_timeout_seconds",
+        timedelta(seconds=30),
+    ),
+    (
+        ["--job-poll-interval", "0.5"],
+        "timings.job_poll_interval_seconds",
+        timedelta(seconds=0.5),
+    ),
+    (
+        ["--job-monitor-interval", "5"],
+        "timings.job_monitor_interval_seconds",
+        timedelta(seconds=5),
+    ),
     (
         ["--worker-heartbeat-interval", "10"],
         "timings.worker_heartbeat_interval_seconds",
-        10,
+        timedelta(seconds=10),
     ),
     (
         ["--worker-heartbeat-timeout", "40"],
         "timings.worker_heartbeat_timeout_seconds",
-        40,
+        timedelta(seconds=40),
     ),
 ]
 
@@ -391,7 +408,7 @@ def test_tunnel_options_reach_the_resolved_configuration(
     result = invoke(["tunnel", "base", *arguments])
 
     assert result.exit_code == 0, result
-    assert attrgetter(attribute)(captured["resolved"]) == expected
+    assert attrgetter(attribute)(captured["job"]) == expected
 
 
 def test_tunnel_worker_port_is_the_only_port_tried(
@@ -429,7 +446,7 @@ def test_tunnel_auto_provisions_when_configured_or_asked(
     result = invoke(["tunnel", "base", *arguments])
 
     assert result.exit_code == 0, result
-    assert captured["auto_provision"] is True
+    assert captured["job"].auto_provision is True
 
 
 @pytest.mark.parametrize(
@@ -480,7 +497,7 @@ def test_exclusive_and_shared_override_the_profile_only_when_given(
     result = invoke(["tunnel", profile, *arguments])
 
     assert result.exit_code == 0, result
-    assert captured["resolved"].resources.exclusive is expected
+    assert captured["job"].resources.exclusive is expected
 
 
 @pytest.mark.parametrize(
@@ -694,7 +711,7 @@ def test_values_at_the_limits_are_accepted(
     result = invoke(["tunnel", "base", *arguments])
 
     assert result.exit_code == 0, result
-    assert "resolved" in captured
+    assert "job" in captured
 
 
 @pytest.mark.parametrize(

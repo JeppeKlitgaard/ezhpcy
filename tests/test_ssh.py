@@ -6,6 +6,7 @@ import socket
 import threading
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
@@ -15,7 +16,7 @@ import pytest
 from ezhpcy import ssh
 from ezhpcy.constants import EZHPCY_VERSION, LOOPBACK_HOST, PIXI_VERSION
 from ezhpcy.ssh import ForwardedPort, RemoteHost
-from ezhpcy.types import ConnectionInfo, RemoteState
+from ezhpcy.types import Login, RemoteState
 from tests.support.sshserver import Invocation, SSHTestServer, StreamHandler, reply
 
 LARGE_OUTPUT_BYTES = 5_000_000
@@ -23,12 +24,12 @@ LARGE_OUTPUT_BYTES = 5_000_000
 WAIT_SECONDS = 5
 
 
-def _conn_info(server: SSHTestServer, keepalive_seconds: int = 30) -> ConnectionInfo:
-    # `model_construct`, because `ConnectionInfo.host` accepts domain names only.
-    return ConnectionInfo.model_construct(
+def _login(server: SSHTestServer, keepalive_seconds: int = 30) -> Login:
+    return Login(
         user=server.user,
         host=server.host,
-        ssh_keepalive_interval_seconds=keepalive_seconds,
+        port=server.port,
+        keepalive_interval=timedelta(seconds=keepalive_seconds),
     )
 
 
@@ -40,7 +41,7 @@ async def _connect(server: SSHTestServer, **options: Any) -> RemoteHost:
         "client_keys": [server.client_key],
         "agent_path": None,
     }
-    return await ssh.connect(_conn_info(server), **(defaults | options))
+    return await ssh.connect(_login(server), **(defaults | options))
 
 
 async def _wait_for(event: threading.Event) -> bool:
@@ -69,7 +70,7 @@ async def test_connect_keeps_alive_as_configured(
     monkeypatch.setattr(asyncssh, "connect", recording_connect)
 
     async with await ssh.connect(
-        _conn_info(ssh_server, keepalive_seconds=75),
+        _login(ssh_server, keepalive_seconds=75),
         port=ssh_server.port,
         known_hosts=ssh_server.known_hosts,
         client_keys=[ssh_server.client_key],

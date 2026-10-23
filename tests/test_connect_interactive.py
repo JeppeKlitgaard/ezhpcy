@@ -1,4 +1,7 @@
-"""Tests for `ezhpcy.cli.utils.ssh.connect_interactive`, against the in-process SSH server."""
+"""
+Connecting to the login node (`ezhpcy.login.connect`) with the CLI's prompts
+(`ezhpcy.cli.utils.ssh.cli_prompts`), against the in-process SSH server.
+"""
 
 import asyncio
 import logging
@@ -10,11 +13,14 @@ from pathlib import Path
 
 import asyncssh
 import pytest
+from pydantic import SecretStr
 from rich.prompt import Confirm, Prompt
 
-from ezhpcy.cli.utils.ssh import connect_interactive
+from ezhpcy import login as login_module
+from ezhpcy.cli.utils.ssh import cli_prompts
+from ezhpcy.login import ConnectionFailed
 from ezhpcy.ssh import RemoteHost
-from ezhpcy.types import ConnectionInfo
+from ezhpcy.types import Login
 from tests.support.sshserver import KbdintPrompt, SSHTestServer, reply
 
 WAIT_SECONDS = 5
@@ -64,12 +70,12 @@ def known_hosts_file(tmp_path: Path, system_known_hosts: Path) -> Path:
 
 @pytest.fixture
 def warnings() -> Iterator[list[str]]:
-    """Warnings logged by `ezhpcy.cli.utils.ssh` (the `ezhpcy` logger doesn't
+    """Warnings logged by `ezhpcy.login` (the `ezhpcy` logger doesn't
     propagate, so `caplog` doesn't see them)."""
     messages: list[str] = []
     handler = logging.Handler(logging.WARNING)
     handler.emit = lambda record: messages.append(record.getMessage())
-    logger = logging.getLogger("ezhpcy.cli.utils.ssh")
+    logger = logging.getLogger("ezhpcy.login")
     logger.addHandler(handler)
     yield messages
     logger.removeHandler(handler)
@@ -84,21 +90,34 @@ async def _connect(
     password_prompt: bool = True,
     **options: object,
 ) -> RemoteHost:
-    # `model_construct`, because `ConnectionInfo.host` accepts domain names only.
-    conn_info = ConnectionInfo.model_construct(
+    """
+    Connect with the CLI's prompts. Raises what made connecting fail, rather
+    than the `ConnectionFailed` around it.
+    """
+    login = Login(
         user=server.user,
-        host=host or server.host,
-        password=password,
+        host=server.host,
+        port=server.port,
         password_prompt=password_prompt,
     )
+    if host is not None:
+        # `Login.host` accepts no single-label name, such as `localhost`.
+        login = login.model_copy(update={"host": host})
     defaults: dict[str, object] = {
-        "port": server.port,
         "client_keys": [server.client_key],
         "agent_path": None,
     }
-    return await connect_interactive(
-        conn_info, known_hosts_file=known_hosts_file, **(defaults | options)
-    )
+    try:
+        return await login_module.connect(
+            login,
+            prompts=cli_prompts(),
+            password=SecretStr(password) if password is not None else None,
+            known_hosts_file=known_hosts_file,
+            **(defaults | options),
+        )
+    except ConnectionFailed as error:
+        assert error.__cause__ is not None
+        raise error.__cause__ from None
 
 
 def _trust(server: SSHTestServer, file: Path) -> None:

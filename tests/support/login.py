@@ -5,10 +5,9 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
-from ezhpcy import ssh
-from ezhpcy.cli.utils import ssh as cli_ssh
+from ezhpcy import login as login_module, ssh
 from ezhpcy.config import config
-from ezhpcy.types import ConnectionInfo, RemoteState
+from ezhpcy.types import Login, RemoteState
 from tests.support.sshserver import SSHTestServer, reply
 
 MACHINE_ID = "machine-id"
@@ -21,9 +20,9 @@ def route_login(
     server: SSHTestServer, monkeypatch: pytest.MonkeyPatch, home: Path
 ) -> None:
     """
-    Send the commands' login connection to the test server, whose host key is
-    trusted, and give it a fake for `remote_state`'s command. The replacement
-    `connect_interactive` passes further options on, so a test can wrap it.
+    Send every login connection to the test server, whose host key is trusted,
+    and give it a fake for `remote_state`'s command. The replacement
+    `ezhpcy.login.connect` passes further options on, so a test can wrap it.
     """
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
@@ -31,23 +30,41 @@ def route_login(
     known_hosts.parent.mkdir(parents=True, exist_ok=True)
     known_hosts.write_text(server.known_hosts_line, encoding="utf-8")
 
-    connect_interactive = cli_ssh.connect_interactive
+    connect = login_module.connect
 
-    async def connect_to_server(
-        conn_info: ConnectionInfo, **options: object
-    ) -> ssh.RemoteHost:
-        # `ConnectionInfo.host` accepts domain names only.
-        conn_info = conn_info.model_copy(update={"host": server.host})
-        return await connect_interactive(
-            conn_info,
-            port=server.port,
-            client_keys=[server.client_key],
-            agent_path=None,
-            **options,
+    async def connect_to_server(login: Login, **options: object) -> ssh.RemoteHost:
+        # Profiles' hosts are domain names.
+        routed = login.model_copy(update={"host": server.host, "port": server.port})
+        host = await connect(
+            routed, client_keys=[server.client_key], agent_path=None, **options
+        )
+        # As connected to the login node configured, whose worker credentials
+        # those are.
+        host.login = login
+        return host
+
+    monkeypatch.setattr(login_module, "connect", connect_to_server)
+    server.command("bash -lc", reply(stdout=remote_state_json()))
+
+
+def offer_client_key(
+    server: SSHTestServer, monkeypatch: pytest.MonkeyPatch, home: Path
+) -> None:
+    """
+    Have every connection offer only the test server's client key, from a home
+    directory of its own (so an empty ~/.ssh/known_hosts), without trusting the
+    server's host key: for tests of the login flow itself.
+    """
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    connect = ssh.connect
+
+    async def connect_with_key(login: Login, **options: object) -> ssh.RemoteHost:
+        return await connect(
+            login, client_keys=[server.client_key], agent_path=None, **options
         )
 
-    monkeypatch.setattr(cli_ssh, "connect_interactive", connect_to_server)
-    server.command("bash -lc", reply(stdout=remote_state_json()))
+    monkeypatch.setattr(ssh, "connect", connect_with_key)
 
 
 def remote_state_json() -> str:

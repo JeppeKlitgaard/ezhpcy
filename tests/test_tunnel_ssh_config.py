@@ -301,7 +301,7 @@ def test_publish_prunes_stale_blocks_but_not_its_own(
 
 
 def test_publish_explains_how_to_include_the_configuration(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
         ssh_config,
@@ -315,11 +315,11 @@ def test_publish_explains_how_to_include_the_configuration(
         lambda message: warnings.append(plain(message)),
     )
 
-    ssh_config.publish_host(worker_host(), PORT)
+    problem = ssh_config.publish_host(worker_host(), PORT)
 
     assert warnings and "'ssh gpu' will not reach this tunnel: not ours" in warnings[0]
-    stderr_lines = capsys.readouterr().err.splitlines()
-    assert stderr_lines[1:3] == include_directive().splitlines()
+    assert problem is not None
+    assert problem.include_lines == include_directive()
 
 
 def test_publish_leaves_out_the_include_when_ssh_fails(
@@ -337,7 +337,7 @@ def test_publish_leaves_out_the_include_when_ssh_fails(
         lambda message: warnings.append(plain(message)),
     )
 
-    ssh_config.publish_host(worker_host(), PORT)
+    problem = ssh_config.publish_host(worker_host(), PORT)
 
     assert warnings == [
         (
@@ -345,6 +345,8 @@ def test_publish_leaves_out_the_include_when_ssh_fails(
             "OpenSSH reports, then check with 'ezhpcy doctor'."
         )
     ]
+    assert problem is not None
+    assert problem.include_lines is None
     assert capsys.readouterr().err == ""
 
 

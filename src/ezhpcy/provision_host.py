@@ -115,11 +115,13 @@ def _prepare_local_keys(credentials: WorkerCredentials) -> tuple[str, str]:
     """
     Create the local worker keys if they don't exist, pin the worker's host key,
     and return the client key for the worker's sshd to authorize. All local file
-    work, so it runs in one thread.
+    work, so it runs in one thread; locked, as jobs starting at once, in this
+    process or others, would otherwise create the keys at once.
     """
-    credentials.ensure_local_keys()
-    credentials.pin_host_key()
-    return credentials.authorized_key()
+    with credentials.local_files_locked():
+        credentials.ensure_local_keys()
+        credentials.pin_host_key()
+        return credentials.authorized_key()
 
 
 async def provision_worker_infrastructure(

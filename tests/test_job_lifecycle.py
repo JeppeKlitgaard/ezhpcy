@@ -6,30 +6,31 @@ shows to the code that uses it, and its attachments.
 
 import asyncio
 import json
-from collections.abc import Callable
+from collections.abc import AsyncGenerator, Callable
+from contextlib import AsyncExitStack
 from typing import Any
 
 import pytest
 
-from ezhpcy.cli.utils import ssh as cli_ssh
+from ezhpcy import login as login_module
 from ezhpcy.job import JobEnd, JobEnded, JobFailed
 from ezhpcy.job.lifecycle import JobLifecycle
+from ezhpcy.job.status import Phase
 from ezhpcy.scheduler.base import JobInfo, JobSpec, JobState, SchedulerError
 from ezhpcy.scheduler.types import SchedulerType
 from ezhpcy.tunnel import TunnelError
-from ezhpcy.tunnel.ssh_config import WorkerHost
-from ezhpcy.tunnel.status import Phase, TunnelStatus
 from ezhpcy.types import (
-    ConnectionInfo,
-    ResolvedConfig,
-    ResolvedSchedulerConfig,
+    JobConfig,
+    Login,
+    SchedulerSettings,
     SubmissionMode,
-    TimingsConfig,
+    Timings,
 )
 from ezhpcy.worker.control import WorkerControl
 from tests.support.sshserver import SSHTestServer
 from tests.support.tunnel import (
     BANNER,
+    CONTROL_ROOT,
     FAST_TIMINGS,
     JOB_ID,
     RUNNING,
@@ -50,16 +51,27 @@ WAIT_SECONDS = 5
 
 
 class Rig:
-    """Makes jobs against the login server, and keeps their schedulers."""
+    """
+    Makes jobs against the login server, each on a login connection of its own,
+    closed after the test, and keeps their schedulers.
+    """
 
-    def __init__(self, login: SSHTestServer, monkeypatch: pytest.MonkeyPatch) -> None:
+    def __init__(
+        self,
+        login: SSHTestServer,
+        monkeypatch: pytest.MonkeyPatch,
+        connections: AsyncExitStack,
+    ) -> None:
         self.login = login
         self.monkeypatch = monkeypatch
+        self.connections = connections
         self.worker_port = login.listen(banner(BANNER))
         self.schedulers: list[FakeScheduler] = []
         configure_tunnel(monkeypatch, login)
 
-    def job(self, inspections: list[Inspection], **scheduler: Any) -> JobLifecycle:
+    async def job(
+        self, inspections: list[Inspection], **scheduler: Any
+    ) -> JobLifecycle:
         """A batch job whose scheduler reports `inspections`, as `FakeScheduler`."""
 
         def make(host: Any) -> FakeScheduler:
@@ -68,22 +80,18 @@ class Rig:
             )
 
         self.schedulers = use_scheduler(self.monkeypatch, make)
-        conn_info = ConnectionInfo(user="alice", host="login.example.com")
+        host = await self.connections.enter_async_context(
+            await login_module.connect(Login(user="alice", host="login.example.com"))
+        )
         return JobLifecycle(
-            resolved=ResolvedConfig(
-                connection=conn_info,
-                scheduler=ResolvedSchedulerConfig(
+            host=host,
+            config=JobConfig(
+                scheduler=SchedulerSettings(
                     type=SchedulerType.LSF, submission_mode=SubmissionMode.BATCH
                 ),
-                timings=TimingsConfig.model_validate(FAST_TIMINGS),
+                timings=Timings.model_validate(FAST_TIMINGS),
             ),
-            credentials=WorkerHost.for_endpoint(
-                "base", user="alice", host="login.example.com"
-            ).credentials,
-            status=TunnelStatus(alias="base", login="alice@login.example.com"),
-            connect=cli_ssh.connect_interactive,
             worker_ports=(self.worker_port,),
-            auto_provision=True,
         )
 
     def start_worker(self, _spec: JobSpec) -> None:
@@ -96,8 +104,11 @@ class Rig:
 
 
 @pytest.fixture
-def rig(login: SSHTestServer, monkeypatch: pytest.MonkeyPatch) -> Rig:
-    return Rig(login, monkeypatch)
+async def rig(
+    login: SSHTestServer, monkeypatch: pytest.MonkeyPatch
+) -> AsyncGenerator[Rig]:
+    async with AsyncExitStack() as connections:
+        yield Rig(login, monkeypatch, connections)
 
 
 async def forever() -> None:
@@ -111,13 +122,13 @@ def cancellations() -> int:
 
 
 async def test_entering_returns_once_the_worker_answers(rig: Rig) -> None:
-    job = rig.job([RUNNING])
+    job = await rig.job([RUNNING])
 
     with tunnel_log() as log:
         async with job:
             assert job.worker is not None
-            assert job.worker.sshd.port == rig.worker_port
-            assert job.status.phase is Phase.STARTING
+            assert job.worker.port == rig.worker_port
+            assert job.status.phase is Phase.READY
             [control] = control_dirs(rig.login)
             record = json.loads((control / "job.json").read_text(encoding="utf-8"))
 
@@ -128,7 +139,7 @@ async def test_entering_returns_once_the_worker_answers(rig: Rig) -> None:
         "submission_mode": "batch",
         "sshd_port": rig.worker_port,
     }
-    assert "Stopping tunnel: its block was left" in log.messages()
+    assert "Stopping job: its block was left" in log.messages()
     assert rig.cancelled == [JOB_ID]
     assert control_dirs(rig.login) == []
 
@@ -136,7 +147,7 @@ async def test_entering_returns_once_the_worker_answers(rig: Rig) -> None:
 async def test_a_failure_while_the_block_runs_cancels_it_and_raises_job_failed(
     rig: Rig,
 ) -> None:
-    job = rig.job([RUNNING, SchedulerError("bjobs failed")])
+    job = await rig.job([RUNNING, SchedulerError("bjobs failed")])
     cancelled: list[bool] = []
 
     async def use() -> None:
@@ -162,7 +173,7 @@ async def test_a_failure_while_the_block_runs_cancels_it_and_raises_job_failed(
 async def test_the_job_ending_while_the_block_runs_raises_job_ended(
     rig: Rig,
 ) -> None:
-    job = rig.job([RUNNING, DONE])
+    job = await rig.job([RUNNING, DONE])
 
     with pytest.raises(JobEnded) as ended:
         async with job:
@@ -178,7 +189,7 @@ async def test_the_job_ending_while_the_block_runs_raises_job_ended(
 
 
 async def test_the_job_ending_during_wait_returns_how_it_ended(rig: Rig) -> None:
-    job = rig.job([RUNNING, JobInfo(JobState.SUCCEEDED, "DONE", exit_code=0)])
+    job = await rig.job([RUNNING, JobInfo(JobState.SUCCEEDED, "DONE", exit_code=0)])
 
     async with job:
         end = await job.wait()
@@ -192,7 +203,7 @@ async def test_the_job_ending_during_wait_returns_how_it_ended(rig: Rig) -> None
 
 
 async def test_a_failure_during_wait_is_raised_by_wait(rig: Rig) -> None:
-    job = rig.job([RUNNING, SchedulerError("bjobs failed")])
+    job = await rig.job([RUNNING, SchedulerError("bjobs failed")])
     from_wait: list[JobFailed] = []
 
     async def use() -> None:
@@ -213,7 +224,7 @@ async def test_a_failure_during_wait_is_raised_by_wait(rig: Rig) -> None:
 async def test_stop_from_another_task_ends_the_block_without_an_error(
     rig: Rig,
 ) -> None:
-    job = rig.job([RUNNING])
+    job = await rig.job([RUNNING])
     cancelled: list[bool] = []
 
     with tunnel_log() as log:
@@ -227,13 +238,13 @@ async def test_stop_from_another_task_ends_the_block_without_an_error(
 
     assert cancelled == [True]
     assert cancellations() == 0
-    assert "Stopping tunnel: enough" in log.messages()
+    assert "Stopping job: enough" in log.messages()
     assert rig.cancelled == [JOB_ID]
     assert control_dirs(rig.login) == []
 
 
 async def test_stop_during_wait_returns_from_wait(rig: Rig) -> None:
-    job = rig.job([RUNNING])
+    job = await rig.job([RUNNING])
 
     async with job:
         asyncio.get_running_loop().call_soon(job.stop, t"enough")
@@ -246,7 +257,7 @@ async def test_stop_during_wait_returns_from_wait(rig: Rig) -> None:
 async def test_another_task_waiting_too_doesnt_get_the_host_cancelled(
     rig: Rig,
 ) -> None:
-    job = rig.job([RUNNING])
+    job = await rig.job([RUNNING])
     others: list[asyncio.Task[JobEnd]] = []
     ends: list[JobEnd] = []
 
@@ -264,7 +275,7 @@ async def test_another_task_waiting_too_doesnt_get_the_host_cancelled(
 @pytest.mark.parametrize("also_stopped", [False, True], ids=["alone", "with-stop"])
 async def test_an_outer_cancellation_is_passed_on(rig: Rig, also_stopped: bool) -> None:
     """Even when the job stops at the same moment: it isn't the job's to take."""
-    job = rig.job([RUNNING])
+    job = await rig.job([RUNNING])
     entered = asyncio.Event()
 
     async def use() -> None:
@@ -286,8 +297,8 @@ async def test_an_outer_cancellation_is_passed_on(rig: Rig, also_stopped: bool) 
     assert control_dirs(rig.login) == []
 
 
-async def test_stop_before_entering_connects_to_nothing(rig: Rig) -> None:
-    job = rig.job([RUNNING])
+async def test_stop_before_entering_does_nothing_on_the_cluster(rig: Rig) -> None:
+    job = await rig.job([RUNNING])
     job.stop(t"never mind")
 
     with pytest.raises(JobEnded) as ended:
@@ -295,7 +306,9 @@ async def test_stop_before_entering_connects_to_nothing(rig: Rig) -> None:
             pytest.fail("entered")
 
     assert ended.value.end == JobEnd(reason="never mind", by_scheduler=False)
-    assert rig.login.auth_attempts == []
+    # No scheduler was made, and no control directory.
+    assert rig.schedulers == []
+    assert not rig.login.local_path(CONTROL_ROOT).exists()
 
 
 def _stop_after_creating_the_control_directory(
@@ -334,7 +347,7 @@ async def test_stop_during_a_step_still_cleans_up_after_it(
     """Cancelled midway, the step would still take effect, with no cleanup for it."""
     jobs: list[JobLifecycle] = []
     scheduler = stop_during_step(rig, lambda: jobs[0])
-    jobs.append(rig.job([RUNNING], **scheduler))
+    jobs.append(await rig.job([RUNNING], **scheduler))
 
     with pytest.raises(JobEnded) as ended:
         async with jobs[0]:
@@ -353,7 +366,7 @@ async def test_an_attachment_closed_early_is_not_closed_again(rig: Rig) -> None:
     async def cancelling() -> None:
         events.append("cancel the job")
 
-    job = rig.job([RUNNING], cancelling=cancelling)
+    job = await rig.job([RUNNING], cancelling=cancelling)
 
     def step(name: str) -> Callable[[], Any]:
         async def run() -> None:
@@ -377,7 +390,7 @@ async def test_an_attachment_closed_early_is_not_closed_again(rig: Rig) -> None:
 
 
 async def test_a_cancelled_close_still_closes(rig: Rig) -> None:
-    job = rig.job([RUNNING])
+    job = await rig.job([RUNNING])
     closed = asyncio.Event()
     started = asyncio.Event()
 

@@ -9,6 +9,9 @@ closed once: early, by `close`, or when its owner closes them all, newest first,
 whichever comes first; the other then finds it closed, or waits for it.
 
 Its `status`, if it reports one, is in its owner's `statuses`, until it closes.
+An attachment may have parts, attachments of its own (`Attachment.attach`),
+closed with it: an app is one attachment, and its process and its forwarded
+port are its parts.
 """
 
 lazy import asyncio
@@ -50,6 +53,20 @@ class Attachment:
         if self._closing is not None:
             raise RuntimeError("the attachment is closed")
         self._stack.push_async_callback(cleanup, description, step, seconds=seconds)
+
+    def attach(self, on_change: Callable[[], object] | None = None) -> Attachment:
+        """
+        A part of this attachment, such as an app's process: closed when this
+        one is, before the steps pushed before it, unless it was closed before.
+        Its status isn't among its owner's statuses; `on_change` (by default
+        this one's) is called when it changes.
+        """
+        if self._closing is not None:
+            raise RuntimeError("the attachment is closed")
+        part = Attachment(on_change=on_change or self._on_change)
+        # Each of its own steps has a timeout.
+        self._stack.push_async_callback(part.close)
+        return part
 
     @property
     def closed(self) -> bool:

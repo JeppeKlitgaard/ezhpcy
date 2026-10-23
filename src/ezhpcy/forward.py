@@ -72,13 +72,21 @@ class Forward:
 
 
 async def forward(
-    host: RemoteHost, destination: Destination, *, local_port: int = 0
+    host: RemoteHost,
+    destination: Destination,
+    *,
+    local_port: int = 0,
+    attachment: Attachment | None = None,
 ) -> Forward:
     """
     Listen on loopback port `local_port` here (0: a free one), and forward each
-    connection to `destination` from `host`.
+    connection to `destination` from `host`. Made in `attachment`, by
+    default a new one of the host's.
     """
-    return await _attach(host, destination, local_port=local_port, reverse=False)
+    attachment = attachment or host.attachments.attach()
+    return await _attach(
+        host, attachment, destination, local_port=local_port, reverse=False
+    )
 
 
 async def reverse_forward(
@@ -88,14 +96,20 @@ async def reverse_forward(
     Have `host` listen on its loopback port `remote_port` (0: a free one), and
     forward each connection to `destination` from this machine.
     """
-    return await _attach(host, destination, local_port=remote_port, reverse=True)
+    attachment = host.attachments.attach()
+    return await _attach(
+        host, attachment, destination, local_port=remote_port, reverse=True
+    )
 
 
 async def _attach(
-    host: RemoteHost, destination: Destination, *, local_port: int, reverse: bool
+    host: RemoteHost,
+    attachment: Attachment,
+    destination: Destination,
+    *,
+    local_port: int,
+    reverse: bool,
 ) -> Forward:
-    attachment = host.attachments.attach()
-
     def on_connections(count: int) -> None:
         if isinstance(status := attachment.status, ForwardStatus):
             attachment.report(replace(status, connections=count))

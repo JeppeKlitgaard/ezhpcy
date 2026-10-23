@@ -15,6 +15,8 @@ import asyncssh
 import pytest
 
 from ezhpcy import ssh
+from ezhpcy.app.manifest import Ready
+from ezhpcy.app.run import check_ready
 from ezhpcy.constants import LOOPBACK_HOST
 from ezhpcy.ssh import (
     Destination,
@@ -348,3 +350,36 @@ async def test_losing_the_inner_connection_closes_its_forwarded_port(
                 await asyncio.wait_for(_open(listener), WAIT_SECONDS)
             # The login connection is another matter.
             assert not host.closed.done()
+
+
+# The app's readiness check, through either destination
+
+
+async def test_check_ready_by_banner_tcp_and_http(
+    ssh_server: SSHTestServer, serve: Serve
+) -> None:
+    async def greeter(reader: Any, writer: Any) -> None:
+        writer.write(b"SSH-2.0-app\r\n")
+        await writer.drain()
+        await reader.read()
+        writer.close()
+
+    def ready(**fields: object) -> Ready:
+        return Ready.model_validate(fields)
+
+    async with (
+        serve(ssh_server, greeter) as destination,
+        await _connect(ssh_server) as host,
+    ):
+        assert await check_ready(host, destination, ready()) is None
+        assert (
+            await check_ready(host, destination, ready(check="banner", prefix="SSH-"))
+            is None
+        )
+        assert (
+            await check_ready(host, destination, ready(check="banner", prefix="HTTP"))
+            == "the app sent b'SSH-', not b'HTTP'"
+        )
+        assert await check_ready(host, destination, ready(check="http")) == (
+            "not an HTTP response: b'SSH-2.0-app\\r\\n'"
+        )

@@ -24,12 +24,22 @@ login node, and a host of its own once it runs (`Job.host`).
 
 Every host has the same operations: commands (`Host.run`), files (`Host.put`,
 `Host.get`), processes started detached (`Host.start`), forwarded ports
-(`Host.forward`, `Host.reverse_forward`), and jobs (`Host.job`). Processes and
-ports are attached to the host they were made on, and closed, newest first, when
-its connection closes, unless they were closed before. A host can run several
-jobs at once. Leaving a job's block closes its host, and with it what is
-attached there, withdraws its Host blocks, cancels the job unless it ended, and
-cleans up; leaving a connection's block closes it.
+(`Host.forward`, `Host.reverse_forward`), apps (`Host.run_app`), and jobs
+(`Host.job`). Processes, ports and apps are attached to the host they were made
+on, and closed, newest first, when its connection closes, unless they were
+closed before. A host can run several jobs at once. Leaving a job's block
+closes its host, and with it what is attached there, withdraws its Host blocks,
+cancels the job unless it ended, and cleans up; leaving a connection's block
+closes it.
+
+Apps, such as JupyterLab, are described by manifests (`Manifest`), which a
+configuration loads (`Config.load(manifests=…)`, `Config.app`). An app runs as
+a process on its host, through EzHPCy's own Pixi, in an environment installed
+there, and is forwarded to a loopback port here:
+
+    config = api.Config.load(manifests=[Path("examples/apps/notebooks")])
+    lab = await job.host.run_app(config.app("lab"))
+    print(lab.url)
 
 When the job ends or fails while its block's code runs, as `asyncio.timeout`
 does, that code is cancelled, and leaving the block raises `JobEnded` (the
@@ -56,8 +66,9 @@ lazy from typing import Self
 
 lazy from pydantic import SecretStr
 
-from ezhpcy.app import ManifestError
+from ezhpcy.app import AppFailed, ManifestError
 from ezhpcy.app.manifest import App, Manifest
+from ezhpcy.app.run import AppState, AppStatus, RunningApp
 from ezhpcy.config import Config, Profile
 from ezhpcy.forward import Forward, ForwardStatus
 from ezhpcy.job import JobEnd, JobEnded, JobFailed
@@ -90,6 +101,7 @@ from ezhpcy.types import (
     Timings,
 )
 lazy from ezhpcy import forward as _forward, login as _login, process as _process
+lazy from ezhpcy.app import run as _app_run
 lazy from ezhpcy.job import publish as _publish
 lazy from ezhpcy.job.lifecycle import JobLifecycle, RunningWorker
 lazy from ezhpcy.job.status import AttachmentStatus
@@ -101,6 +113,9 @@ __all__ = [
     "AliasReservation",
     "AliasUnreachable",
     "App",
+    "AppFailed",
+    "AppState",
+    "AppStatus",
     "CommandFailed",
     "Config",
     "ConfigError",
@@ -133,6 +148,7 @@ __all__ = [
     "Published",
     "PublishedStatus",
     "Resources",
+    "RunningApp",
     "SchedulerSettings",
     "SchedulerType",
     "SocketDestination",
@@ -254,7 +270,9 @@ class Host:
         It runs in a private run directory of its own on the host,
         `/tmp/ezhpcy-<run ID>/`, with `env` added to its environment (names
         of shell variables), in `cwd` (by default the user's home directory),
-        and not through a login shell. Its output goes to the run directory.
+        and not through a login shell: the host's profile, and so its
+        modules, aren't read (start `["bash", "-lc", …]` for them). Its output
+        goes to the run directory.
         Nothing about it is on a command line but the run directory's path.
 
         On a job's node, the job's end ends the process too. On another host,
@@ -285,6 +303,48 @@ class Host:
         `asyncssh.ChannelListenError` if the host refuses to listen.
         """
         return await _forward.reverse_forward(self._host, remote_port, destination)
+
+    async def run_app(
+        self,
+        app: App,
+        *,
+        local_port: int | None = None,
+        provision: bool = True,
+        apps_root: PurePosixPath | None = None,
+    ) -> RunningApp:
+        """
+        Run an app from a manifest (`Config.app`, `Manifest`) on the host, and
+        return once it is ready and forwarded to `local_port` here (by default
+        its `access.local_port`, by default a free one). Attached to the host
+        until stopped. See `RunningApp`.
+
+        In order:
+
+        1. with `provision`, its environment and assets, and EzHPCy's own Pixi,
+           are installed on the host unless they are; without, they are only
+           checked. They live under `apps_root`, by default `ezhpcy-apps` in
+           the host's XDG cache directory; on a cluster, on the filesystem its
+           nodes share.
+        2. It starts as a process (`start`), through EzHPCy's Pixi, in its
+           workdir: not through a login shell, so the host's profile and
+           modules aren't read.
+        3. Its readiness check runs through the host's connection, until it
+           passes, the app exits, or `ready.timeout_seconds` pass.
+        4. A loopback port here is forwarded to it (`forward`): to its socket
+           in the process's run directory, or to `127.0.0.1` on the host.
+
+        Several runs of one app may run at once; they share its workdir.
+        Raises `ProvisioningError`, and `AppFailed` (with its stderr's last
+        lines) if it exits before it is ready or isn't ready in time, once it
+        has been stopped.
+        """
+        return await _app_run.run_app(
+            self._host,
+            app,
+            local_port=local_port,
+            provision=provision,
+            apps_root=apps_root,
+        )
 
 
 class Job:

@@ -14,27 +14,11 @@ from typing import Any
 import pytest
 
 from ezhpcy import api
+from tests.support.api import LOGIN, JobRig
 from tests.support.sshserver import Invocation, SSHTestServer, reply
-from tests.support.tunnel import (
-    FAST_TIMINGS,
-    JOB_ID,
-    RUNNING,
-    FakeScheduler,
-    configure_tunnel,
-    control_dirs,
-    unused_port,
-    use_scheduler,
-    worker_ready_on,
-)
+from tests.support.tunnel import JOB_ID, control_dirs, unused_port
 from tests.support.worker import NODE, FakeProcess, FakeProcesses, quick_processes
 
-LOGIN = api.Login(host="login.example.com", user="alice")
-JOB = api.JobConfig(
-    scheduler=api.SchedulerSettings(
-        type=api.SchedulerType.LSF, submission_mode=api.SubmissionMode.BATCH
-    ),
-    timings=api.Timings.model_validate(FAST_TIMINGS),
-)
 WAIT_SECONDS = 5
 
 
@@ -313,38 +297,6 @@ async def test_leaving_a_hosts_block_closes_its_attachments_newest_first(
 
 
 # A job's node
-
-
-class JobRig:
-    """The login node, the worker's sshd, and a job's scheduler."""
-
-    def __init__(
-        self,
-        login: SSHTestServer,
-        worker: SSHTestServer,
-        monkeypatch: pytest.MonkeyPatch,
-        runtime: Path,
-    ) -> None:
-        self.login = login
-        self.worker = worker
-        self.runtime = runtime
-        configure_tunnel(monkeypatch, login)
-        quick_processes(monkeypatch)
-        self.jobs: list[api.Job] = []
-        self.schedulers = use_scheduler(
-            monkeypatch,
-            lambda host: FakeScheduler(
-                host,
-                [RUNNING],
-                submitted=worker_ready_on(login, worker.port),
-            ),
-        )
-
-    def job(self, host: api.Host) -> api.Job:
-        return host.job(JOB, worker_ports=[self.worker.port])
-
-    def host_block(self, alias: str) -> Path:
-        return self.runtime / "ssh-config" / f"active-{alias}.conf"
 
 
 @pytest.fixture

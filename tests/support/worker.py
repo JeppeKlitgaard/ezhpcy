@@ -95,10 +95,15 @@ def quick_processes(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @dataclass
 class FakeProcess:
-    """A process `FakeProcesses` started: its run directory, and its group."""
+    """
+    A process `FakeProcesses` started: its run directory, here and on the
+    server, its group, and the port it was given, if its script picks one.
+    """
 
     run_dir: Path
+    remote_run_dir: PurePosixPath
     pgid: int
+    port: int | None = None
     # The signals sent to its group, in order.
     signals: list[str] = field(default_factory=list)
 
@@ -118,24 +123,29 @@ class FakeProcess:
 class FakeProcesses:
     """
     Plays processes started on `server`: `setsid -f bash <run dir>/launch.sh`
-    says the next process group, as the launch script does, and the stop
-    script (`ezhpcy.process.STOP_SCRIPT`) creates `stop`, records the signal
-    and, unless the process ignores it (`ignore`), makes it exit as bash
+    says the next process group, as the launch script does, and, if the script
+    picks a port, the next of `ports` (by default 1, where nothing listens);
+    the stop script (`ezhpcy.process.STOP_SCRIPT`) creates `stop`, records the
+    signal and, unless the process ignores it (`ignore`), makes it exit as bash
     reports a death by that signal; KILL kills the launch script too, so no
-    status is written. `started` is set at each start, and `on_signal` is
-    called at each signal, on the server's thread.
+    status is written. `started` is set at each start, and `on_start` (e.g. to
+    serve an app's socket) and `on_signal` are called at each start and each
+    signal, on the server's thread.
     """
 
     def __init__(
         self,
         server: SSHTestServer,
         *,
+        on_start: Callable[[FakeProcess], object] = lambda _process: None,
         on_signal: Callable[[FakeProcess, str], object] = lambda _process, _name: None,
     ) -> None:
         self.server = server
         self.processes: list[FakeProcess] = []
         self.ignore: set[str] = set()
+        self.ports: list[int] = []
         self.started = threading.Event()
+        self._on_start = on_start
         self._on_signal = on_signal
         self._next_pgid = 4000
         # Where run directories go.
@@ -148,13 +158,19 @@ class FakeProcesses:
     def _start(self, invocation: Invocation) -> None:
         [launch] = invocation.argv[3:]
         self._next_pgid += 1
+        remote_run_dir = PurePosixPath(launch).parent
         process = FakeProcess(
-            self.server.local_path(PurePosixPath(launch).parent), self._next_pgid
+            self.server.local_path(remote_run_dir), remote_run_dir, self._next_pgid
         )
+        if "port=$((" in process.launch_script:
+            process.port = self.ports.pop(0) if self.ports else 1
         (process.run_dir / "out").touch()
         (process.run_dir / "err").touch()
         self.processes.append(process)
+        self._on_start(process)
         invocation.stdout.write(f"{process.pgid}\n")
+        if process.port is not None:
+            invocation.stdout.write(f"{process.port}\n")
         self.started.set()
 
     def _kill(self, invocation: Invocation) -> int:

@@ -1,7 +1,6 @@
 """
 The worker job running an app beside a stand-in sshd, under bash (Linux and
-macOS only). The worker script's app part goes in PLAN.md's Phase 4, task 5;
-until then, these check what it does.
+macOS only).
 """
 
 import os

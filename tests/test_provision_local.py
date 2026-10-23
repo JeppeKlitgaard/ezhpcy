@@ -23,7 +23,7 @@ def _key_files(credentials: WorkerCredentials) -> list[Path]:
 
 
 def test_worker_credentials_stay_where_earlier_versions_put_them() -> None:
-    # Local keys must keep being found where they are (PLAN.md, "Compatibility").
+    # Local keys must keep being found where earlier versions put them.
     local_dir = (
         config.local_file.config_dir / "ssh" / "machine-id" / "alice@login.example.com"
     )

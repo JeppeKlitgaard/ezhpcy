@@ -495,7 +495,7 @@ class JobLifecycle:
                 t"{shlex.join(interactive_job.submission_command):detail}"
             )
             await interactive_job.start_command()
-        # For a later client to find the job by (decision 14 of PLAN_API.md).
+        # For a later client to find the job by.
         record: dict[str, object] = {
             "job_id": job_id,
             "scheduler": config.scheduler.type,

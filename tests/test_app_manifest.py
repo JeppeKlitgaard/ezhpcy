@@ -30,7 +30,7 @@ EXAMPLES = Path(__file__).parent.parent / "examples" / "apps"
 EXAMPLE_MANIFESTS = sorted(EXAMPLES.glob("*/ezhpcy-apps.toml"))
 LAB = 'ezhpcy.app.lab."v1.0"'
 
-# PLAN.md's JupyterLab example, written with sub-tables and with dotted keys.
+# JupyterLab, written with sub-tables and with dotted keys.
 LAB_SUB_TABLES = """\
 [ezhpcy]
 schema = 1
@@ -269,7 +269,7 @@ def test_an_unknown_key_in_an_app_names_its_path(
 
 
 def test_an_unversioned_app_table_says_to_add_a_version(tmp_path: Path) -> None:
-    """The draft's layout, `[ezhpcy.app.lab]` with the app's fields."""
+    """An app's fields straight in `[ezhpcy.app.lab]`, with no version."""
     manifest = MINIMAL_APP.replace('[ezhpcy.app.lab."v1.0"]', "[ezhpcy.app.lab]")
 
     message = problems(tmp_path, manifest)

@@ -1,12 +1,9 @@
 """
-Characterization of how `ezhpcy tunnel` shuts down in each failure scenario.
+Characterization of how `ezhpcy tunnel` shuts down in each failure scenario,
+against the in-process SSH server and a scheduler fake. Among the outcomes:
 
-Phase 0 pinned these outcomes on the threaded tunnel. Phase 7 ported the table to
-`TunnelSession`, against the in-process SSH server and a scheduler fake, with
-these deliberate differences (see FINDINGS.md, "Phase 7"):
-
-- Shutdown reasons are gone. The table checks the one `Stopping job: <why>`
-  line each way of stopping logs instead.
+- Each way of stopping logs one `Stopping job: <why>` line, which the table
+  checks.
 - A failure after the tunnel was ready reads `Tunnel stopped: …`, not `Could not
   start tunnel: …`.
 - When the login connection is lost while waiting for the job, the user sees that
@@ -189,8 +186,7 @@ SCENARIOS = [
         withdrawn=True,
     ),
     Scenario(
-        # Phase 0: the failed scheduler query raised first, so the user saw its
-        # error instead.
+        # The loss is reported, not the failed scheduler query that noticed it.
         id="login_connection_lost_while_waiting_for_the_job",
         inspections=[lose_connection_while(PENDING), PENDING],
         exit_code=1,
@@ -226,7 +222,7 @@ SCENARIOS = [
         withdrawn=True,
     ),
     Scenario(
-        # New in Phase 7: PBS no longer lists the job (FINDINGS.md, "Phase 5").
+        # PBS no longer lists the job: it has ended.
         id="job_monitor_sees_that_pbs_dropped_the_job",
         inspections=[RUNNING, snapshot(JobState.ENDED, "")],
         exit_code=0,
@@ -325,8 +321,7 @@ SCENARIOS = [
         withdrawn=False,
     ),
     Scenario(
-        # Phase 0: the connection error won and the monitor's reached only the
-        # log. Now the first failure wins.
+        # The first failure wins: the monitor's, not the connection's.
         id="monitor_error_then_connection_lost",
         inspections=[RUNNING, fail_then_lose_connection],
         exit_code=1,

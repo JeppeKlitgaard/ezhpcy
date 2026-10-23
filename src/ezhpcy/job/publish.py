@@ -87,8 +87,7 @@ async def publish(job: JobLifecycle, reservation: AliasReservation) -> Published
 
     async def close_forwarded_port() -> None:
         # New connections are refused at once. Open ones end when the login
-        # connection closes; waiting for them could take forever (FINDINGS.md,
-        # "Phase 1").
+        # connection closes; waiting for them could take forever.
         forwarded.close()
 
     attachment.push("close the forwarded port", close_forwarded_port)

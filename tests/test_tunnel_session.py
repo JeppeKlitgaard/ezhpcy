@@ -218,7 +218,7 @@ def test_a_terminal_that_takes_no_output_does_not_stop_the_tunnel(
 ) -> None:
     """
     With debug logging, each connection logs. Written from the event loop, a
-    terminal that took no output froze every session (FINDINGS.md, "Phase 4").
+    terminal that took no output would freeze every session.
     """
     worker_port = worker.port
     done = serve_lsf_job(login, monkeypatch, worker_port)

@@ -224,9 +224,20 @@ class RemoteHost:
             raise _command_failed(result)
         return str(result.stdout)
 
-    async def run_pixi(self, args: list[str], remote_state: RemoteState) -> str:
-        """Run the pinned private Pixi with EzHPCy's XDG-resolved cache."""
-        return await self.run(list(remote_state.pixi_command(*args)))
+    async def run_pixi(
+        self,
+        args: list[str],
+        remote_state: RemoteState,
+        *,
+        cache_dir: PurePosixPath | None = None,
+    ) -> str:
+        """
+        Run the pinned private Pixi with `cache_dir` as its cache, by default
+        EzHPCy's XDG-resolved one.
+        """
+        return await self.run(
+            list(remote_state.pixi_command(*args, cache_dir=cache_dir))
+        )
 
     async def run_login_shell(
         self, args: list[str], *, stdin: str | None = None

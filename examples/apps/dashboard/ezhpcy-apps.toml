@@ -1,0 +1,14 @@
+# A NiceGUI dashboard, served on a Unix socket.
+#
+#   ezhpcy tunnel PROFILE --manifest examples/apps/dashboard --app dashboard
+
+[ezhpcy]
+schema = 1
+
+[ezhpcy.app.dashboard."v0.1.0"]
+description = "A NiceGUI dashboard"
+environment.pixi = "pixi.toml"
+assets.include = ["main.py"]
+run.command = ["python", "{assets}/main.py"]
+endpoint.transport = "socket"
+ready = { check = "http", path = "/" }

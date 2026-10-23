@@ -26,7 +26,12 @@ from pydantic import (
 lazy from pydantic_extra_types.domain import DomainStr
 
 from ezhpcy.messages import MessageError
-lazy from ezhpcy.constants import EZHPCY_VERSION, PACKAGE_NAME, PIXI_VERSION
+lazy from ezhpcy.constants import (
+    APPS_DIRECTORY_NAME,
+    EZHPCY_VERSION,
+    PACKAGE_NAME,
+    PIXI_VERSION,
+)
 lazy from ezhpcy.scheduler.types import SchedulerType
 lazy from ezhpcy.utils import local_machine_id
 
@@ -227,6 +232,21 @@ class PBSOptions(_SubConfig):
     command_directory: PurePosixPath | None = None
 
 
+class AppsConfig(_SubConfig):
+    """Where apps keep their environments, assets and workdirs on their host."""
+
+    # Default: `ezhpcy-apps` under the host's XDG cache directory. Environments
+    # run to gigabytes, so a site may want them off a small home.
+    root: PurePosixPath | None = None
+
+    @field_validator("root")
+    @classmethod
+    def validate_root(cls, value: PurePosixPath | None) -> PurePosixPath | None:
+        if value is not None and not value.is_absolute():
+            raise ValueError("root must be an absolute path on the host")
+        return value
+
+
 class _ProfileSettings(BaseModel):
     """The settings a profile holds, grouped into sub-configs."""
 
@@ -239,6 +259,7 @@ class _ProfileSettings(BaseModel):
     timings: Timings = Field(default_factory=Timings)
     lsf: LSFOptions = Field(default_factory=LSFOptions)
     pbs: PBSOptions = Field(default_factory=PBSOptions)
+    apps: AppsConfig = Field(default_factory=AppsConfig)
 
 
 class ProfileConfig(_ProfileSettings):
@@ -279,15 +300,28 @@ class RemoteState(BaseModel):
     def pixi_cache_dir(self) -> PurePosixPath:
         return self.package_cache_dir() / "pixi_cache" / PIXI_VERSION
 
-    def pixi_command(self, *args: str) -> tuple[str, ...]:
-        """Run the pinned private Pixi with EzHPCy's XDG-resolved cache."""
+    def pixi_command(
+        self, *args: str, cache_dir: PurePosixPath | None = None
+    ) -> tuple[str, ...]:
+        """
+        Run the pinned private Pixi with `cache_dir` as its cache, by default
+        EzHPCy's XDG-resolved one.
+        """
         return (
             "env",
             f"PIXI_HOME={self.pixi_home()}",
-            f"PIXI_CACHE_DIR={self.pixi_cache_dir()}",
+            f"PIXI_CACHE_DIR={cache_dir or self.pixi_cache_dir()}",
             str(self.pixi_executable()),
             *args,
         )
+
+    def apps_root(self, configured: PurePosixPath | None = None) -> PurePosixPath:
+        """
+        Where app environments, assets and workdirs live: `configured` (the
+        profile's `apps.root`), or by default a sibling of the package cache root,
+        so that pruning stale versions never sees it.
+        """
+        return configured or self.cache_dir / APPS_DIRECTORY_NAME
 
     def worker_cwd_dir(self) -> PurePosixPath:
         return self.package_cache_dir() / "worker_cwd"

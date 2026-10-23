@@ -5,6 +5,9 @@ from ezhpcy.utils import ezhpcy_version
 PACKAGE_NAME = "ezhpcy"
 # The system keyring service that login passwords are stored under, by `user@host`.
 KEYRING_SERVICE_NAME = PACKAGE_NAME
+# Apps' environments, assets and workdirs on the cluster: a sibling of the
+# package's cache directory, so that pruning stale versions never touches it.
+APPS_DIRECTORY_NAME = "ezhpcy-apps"
 EZHPCY_VERSION = ezhpcy_version()
 SSH_DIRECTORY_NAME = "ssh"
 LOGIN_KNOWN_HOSTS_NAME = "known_hosts"

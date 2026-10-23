@@ -133,7 +133,7 @@ def fail_heartbeats(rig: Rig) -> JobInfo:
 
 
 def stop_sshd(rig: Rig) -> JobInfo:
-    write_worker_status(rig.server, "stopped", "255")
+    write_worker_status(rig.server, "stopped", "sshd", "255")
     return RUNNING
 
 

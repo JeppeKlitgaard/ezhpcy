@@ -208,9 +208,19 @@ async def _stale_siblings(
     return stale
 
 
-async def prune_all_remote_data(login: RemoteHost, remote_state: RemoteState) -> None:
-    """Remove the complete EzHPCy-managed remote footprint."""
-    roots = (remote_state.package_cache_root(), remote_state.package_state_root())
-    logger.info(t"Removing {roots[0]:path} and {roots[1]:path}.")
-
-    await login.run(["rm", "-rf", "--", *map(str, roots)])
+async def prune_all_remote_data(
+    login: RemoteHost, remote_state: RemoteState, apps_root: PurePosixPath
+) -> None:
+    """
+    Remove the complete EzHPCy-managed remote footprint: its cache and state, and
+    `apps_root`, apps' environments, assets and workdirs.
+    """
+    roots = (
+        remote_state.package_cache_root(),
+        remote_state.package_state_root(),
+        apps_root,
+    )
+    logger.info(t"Removing {list(roots):path}.")
+    # Assets are read-only, directories included.
+    script = 'chmod -R u+w -- "$@" 2>/dev/null; rm -rf -- "$@"'
+    await login.run(["sh", "-c", script, "prune", *map(str, roots)])

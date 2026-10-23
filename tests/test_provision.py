@@ -235,16 +235,44 @@ def test_prune_with_nothing_on_the_server_removes_nothing(
     assert _commands(login, "rm") == []
 
 
-def test_prune_all_removes_the_package_cache_and_state(login: SSHTestServer) -> None:
-    login.command("rm", reply())
+def test_prune_all_removes_the_package_cache_and_state_and_the_apps_root(
+    login: SSHTestServer,
+) -> None:
+    login.command("sh", reply())
 
     result = invoke(["prune", *_LOGIN, "--all", "--yes"])
 
     assert result.exit_code == 0, result
-    assert _commands(login, "rm") == [
-        ["rm", "-rf", "--", f"{CACHE}/ezhpcy", f"{STATE}/ezhpcy"]
+    [command] = _commands(login, "sh")
+    # Read-only assets are made writable first.
+    assert command[:2] == ["sh", "-c"]
+    assert "chmod -R u+w" in command[2]
+    assert command[3:] == [
+        "prune",
+        f"{CACHE}/ezhpcy",
+        f"{STATE}/ezhpcy",
+        f"{CACHE}/ezhpcy-apps",
     ]
     assert "Success: All managed remote data removed." in result.stdout
+
+
+def test_prune_all_says_it_removes_the_apps_workdirs(login: SSHTestServer) -> None:
+    result = invoke(["prune", *_LOGIN, "--all"], stdin="n\n")
+
+    assert result.exit_code == 1, result
+    assert "workdirs" in result.stderr
+    assert "ezhpcy-apps" in result.stderr
+
+
+def test_prune_never_touches_the_apps_root(login: SSHTestServer) -> None:
+    login.command("rm", reply())
+    # A sibling of the package cache root, not inside it.
+    _make_remote_dirs(login, _PACKAGE_CACHE, CACHE / "ezhpcy-apps" / "envs")
+
+    result = invoke(["prune", *_LOGIN])
+
+    assert result.exit_code == 0, result
+    assert _commands(login, "rm") == []
 
 
 # validate_worker_infrastructure

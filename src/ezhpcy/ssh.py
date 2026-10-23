@@ -15,6 +15,7 @@ lazy from typing import Self, cast
 import asyncssh
 
 from ezhpcy.logging import get_logger
+from ezhpcy.messages import MessageError
 lazy from ezhpcy.constants import LOOPBACK_HOST
 lazy from ezhpcy.types import Login, RemoteState
 
@@ -73,31 +74,48 @@ async def ensure_directory(sftp: asyncssh.SFTPClient, path: PurePosixPath) -> No
         await sftp.makedirs(path, exist_ok=True)
 
 
-def _command_failed(result: asyncssh.SSHCompletedProcess) -> asyncssh.ProcessError:
+class CommandFailed(MessageError, RuntimeError):
+    """
+    A remote command didn't exit with status 0: it failed, a signal ended it, or
+    the connection was lost before it said how it ended. The message ends with
+    its stderr, which says why, e.g. when the Pixi install fails.
+    """
+
+    def __init__(
+        self,
+        command: str,
+        *,
+        exit_status: int | None,
+        exit_signal: str | None,
+        stdout: str,
+        stderr: str,
+    ) -> None:
+        if exit_signal is not None:
+            status = f"signal {exit_signal}"
+        elif exit_status is None:
+            status = "connection lost"
+        else:
+            status = str(exit_status)
+        super().__init__(t"Remote command failed ({status:detail}): {stderr.strip()}")
+        # As run, quoted.
+        self.command = command
+        # None if a signal ended it, or the connection was lost first.
+        self.exit_status = exit_status
+        # The signal's name, if one ended it.
+        self.exit_signal = exit_signal
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def _command_failed(result: asyncssh.SSHCompletedProcess) -> CommandFailed:
     """The error for a command that didn't exit with status 0."""
-    stderr = str(result.stderr or "").strip()
-    if result.exit_signal:
-        status = f"signal {result.exit_signal[0]}"
-    elif result.exit_status is None:
-        # The connection went away before the command reported how it ended.
-        status = "connection lost"
-    else:
-        status = str(result.exit_status)
-    error = asyncssh.ProcessError(
-        result.env,
-        result.command,
-        result.subsystem,
-        result.exit_status,
-        result.exit_signal,
-        result.returncode,
-        result.stdout or "",
-        result.stderr or "",
+    return CommandFailed(
+        str(result.command),
+        exit_status=result.exit_status,
+        exit_signal=result.exit_signal[0] if result.exit_signal else None,
+        stdout=str(result.stdout or ""),
+        stderr=str(result.stderr or ""),
     )
-    # asyncssh replaces any reason given to ProcessError with its own, which
-    # leaves out stderr. Users need stderr, e.g. when the Pixi install fails.
-    error.reason = f"Remote command failed ({status}): {stderr}"
-    error.args = (error.reason,)
-    return error
 
 
 class RemoteHost:
@@ -142,8 +160,8 @@ class RemoteHost:
         Run a command, safely quoted, and return its stdout. `stdin` is sent to
         the command, followed by end-of-file.
 
-        Raises `asyncssh.ProcessError`, carrying stderr, unless the command exits
-        with status 0; also when the connection is lost or a signal kills it.
+        Raises `CommandFailed`, carrying stderr, unless the command exits with
+        status 0; also when the connection is lost or a signal kills it.
         If the command can't be started, asyncssh's own error (such as
         `ConnectionLost` or `ChannelOpenError`) propagates.
 

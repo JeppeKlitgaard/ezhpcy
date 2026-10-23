@@ -15,7 +15,7 @@ import pytest
 
 from ezhpcy import ssh
 from ezhpcy.constants import EZHPCY_VERSION, LOOPBACK_HOST, PIXI_VERSION
-from ezhpcy.ssh import ForwardedPort, RemoteHost
+from ezhpcy.ssh import CommandFailed, ForwardedPort, RemoteHost
 from ezhpcy.types import Login, RemoteState
 from tests.support.sshserver import Invocation, SSHTestServer, StreamHandler, reply
 
@@ -155,19 +155,18 @@ async def test_run_replaces_output_that_is_not_utf8(ssh_server: SSHTestServer):
         assert await host.run(["true"]) == ""
 
 
-async def test_run_raises_process_error_with_stderr(ssh_server: SSHTestServer):
+async def test_run_raises_command_failed_with_stderr(ssh_server: SSHTestServer):
     ssh_server.command(
         "bjobs",
         reply(stdout="partial\n", stderr="  Job <42> is not found\n", exit_status=255),
     )
 
     async with await _connect(ssh_server) as host:
-        with pytest.raises(asyncssh.ProcessError) as raised:
+        with pytest.raises(CommandFailed) as raised:
             await host.run(["bjobs", "42"])
 
     # The schedulers match on this message.
     assert str(raised.value) == "Remote command failed (255): Job <42> is not found"
-    assert raised.value.reason == str(raised.value)
     assert raised.value.exit_status == 255
     assert raised.value.stdout == "partial\n"
     assert raised.value.stderr == "  Job <42> is not found\n"
@@ -182,11 +181,11 @@ async def test_run_raises_when_a_signal_ends_the_command(ssh_server: SSHTestServ
     ssh_server.command("worker", killed)
 
     async with await _connect(ssh_server) as host:
-        with pytest.raises(asyncssh.ProcessError) as raised:
+        with pytest.raises(CommandFailed) as raised:
             await host.run(["worker"])
 
     assert str(raised.value) == "Remote command failed (signal KILL): going down"
-    assert raised.value.exit_signal is not None
+    assert raised.value.exit_signal == "KILL"
 
 
 async def test_run_raises_when_the_connection_is_lost(ssh_server: SSHTestServer):
@@ -208,7 +207,7 @@ async def test_run_raises_when_the_connection_is_lost(ssh_server: SSHTestServer)
         await host.run(["true"])
         ssh_server.drop()
 
-        with pytest.raises(asyncssh.ProcessError) as raised:
+        with pytest.raises(CommandFailed) as raised:
             await asyncio.wait_for(running, WAIT_SECONDS)
 
     assert str(raised.value) == "Remote command failed (connection lost): "

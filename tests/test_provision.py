@@ -20,6 +20,7 @@ from ezhpcy.constants import (
 )
 from ezhpcy.provision_host import ProvisioningError, validate_worker_infrastructure
 from ezhpcy.provision_local import WorkerCredentials
+from ezhpcy.ssh import CommandFailed
 from ezhpcy.types import Login
 from tests.support.cli import invoke
 from tests.support.login import CACHE, MACHINE_ID, REMOTE_STATE, STATE
@@ -114,7 +115,7 @@ def test_provision_fails_with_the_remote_command_s_error(
     result = invoke(["provision", *_LOGIN, "--yes"])
 
     assert result.exit_code == 1, result
-    assert isinstance(result.exception, asyncssh.ProcessError)
+    assert isinstance(result.exception, CommandFailed)
     assert str(result.exception) == (
         "Remote command failed (1): curl: (6) Could not resolve host"
     )

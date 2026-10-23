@@ -19,7 +19,7 @@ from ezhpcy.scheduler.base import JobSpec, JobState, Scheduler, SchedulerError
 from ezhpcy.scheduler.lsf import LSFScheduler
 from ezhpcy.scheduler.pbs import PBSScheduler
 from ezhpcy.scheduler.types import SchedulerType
-from ezhpcy.ssh import RemoteHost
+from ezhpcy.ssh import CommandFailed, RemoteHost
 from ezhpcy.types import (
     JobConfig,
     Login,
@@ -125,9 +125,11 @@ class FakeHost:
         return self.process
 
 
-def _failed(stderr: str) -> asyncssh.ProcessError:
+def _failed(stderr: str) -> CommandFailed:
     """A remote command's failure, as `RemoteHost.run` raises it."""
-    return asyncssh.ProcessError(None, "command", None, 255, None, 255, "", stderr)
+    return CommandFailed(
+        "command", exit_status=255, exit_signal=None, stdout="", stderr=stderr
+    )
 
 
 def _lsf(host: Any, **lsf: Any) -> LSFScheduler:

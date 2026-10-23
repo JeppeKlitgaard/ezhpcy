@@ -4,11 +4,9 @@ lazy import math
 lazy from collections.abc import Sequence
 lazy from pathlib import PurePosixPath
 
-lazy import asyncssh
-
 from ezhpcy.scheduler.base import JobInfo, JobSpec, JobState, Scheduler, SchedulerError
 from ezhpcy.scheduler.types import SchedulerType
-lazy from ezhpcy.ssh import RemoteHost
+lazy from ezhpcy.ssh import CommandFailed, RemoteHost
 lazy from ezhpcy.types import PBSOptions
 
 _JOB_ID_PATTERN = re.compile(r"\d+(?:\.[A-Za-z0-9_.-]+)?")
@@ -128,7 +126,7 @@ def _executable(directory: PurePosixPath | None, name: str) -> str:
 def _job_not_found(error: SchedulerError) -> bool:
     """Whether `qstat` failed because the job isn't (or is no longer) queued."""
     cause = error.__cause__
-    return isinstance(cause, asyncssh.ProcessError) and bool(
+    return isinstance(cause, CommandFailed) and bool(
         _JOB_NOT_FOUND_PATTERN.search(str(cause.stderr))
     )
 

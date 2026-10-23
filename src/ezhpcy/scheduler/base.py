@@ -14,7 +14,7 @@ lazy import asyncssh
 
 from ezhpcy.messages import MessageError
 lazy from ezhpcy.scheduler.types import SchedulerType
-lazy from ezhpcy.ssh import RemoteHost
+lazy from ezhpcy.ssh import CommandFailed, RemoteHost
 
 # How much output to read from an interactive submission at a time.
 _READ_BYTES = 64 * 1024
@@ -199,11 +199,11 @@ class Scheduler(ABC):
     ) -> str:
         """
         Run a command in the login shell and return its stdout. A failure's
-        `__cause__` is asyncssh's error.
+        `__cause__` is the command's (`CommandFailed`), or asyncssh's error.
         """
         try:
             return await self._host.run_login_shell(command, stdin=stdin)
-        except (asyncssh.Error, OSError) as error:
+        except (CommandFailed, asyncssh.Error, OSError) as error:
             raise SchedulerError(
                 t"{self.scheduler_type} failed to {operation}: {error}"
             ) from error

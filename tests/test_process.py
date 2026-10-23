@@ -72,6 +72,13 @@ def _start(run_dir: Path, argv: list[str], **options: object) -> tuple[int, floa
     Run the launch script as `start` does, and return the process group it
     printed, and how long the launch took.
     """
+    began = time.monotonic()
+    printed = _launch(run_dir, argv, **options)
+    return int(printed[0]), time.monotonic() - began
+
+
+def _launch(run_dir: Path, argv: list[str], **options: object) -> list[str]:
+    """Run the launch script as `start` does, and return the lines it printed."""
     run_dir.mkdir(mode=0o700, exist_ok=bool(options.get("exist_ok")))
     (run_dir / "launch.sh").write_text(
         launch_script(
@@ -79,10 +86,10 @@ def _start(run_dir: Path, argv: list[str], **options: object) -> tuple[int, floa
             argv,
             env=options.get("env", {}),  # type: ignore[arg-type]
             cwd=options.get("cwd"),  # type: ignore[arg-type]
+            pick_port=bool(options.get("pick_port")),
         ),
         encoding="utf-8",
     )
-    began = time.monotonic()
     launched = subprocess.run(
         ["setsid", "-f", "bash", str(run_dir / "launch.sh")],
         capture_output=True,
@@ -90,7 +97,7 @@ def _start(run_dir: Path, argv: list[str], **options: object) -> tuple[int, floa
         check=True,
         timeout=WAIT_SECONDS,
     )
-    return int(launched.stdout), time.monotonic() - began
+    return launched.stdout.splitlines()
 
 
 def _status(run_dir: Path) -> int:
@@ -194,3 +201,36 @@ def test_a_failed_cd_is_the_status(tmp_path: Path) -> None:
 
     assert _status(run_dir) == 1
     assert "missing" in (run_dir / "err").read_text(encoding="utf-8")
+
+
+@requires_bash
+def test_the_run_directory_and_the_picked_port_are_the_scripts_own(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "ezhpcy-run"
+
+    printed = _launch(
+        run_dir,
+        [
+            "sh",
+            "-c",
+            'printf "%s|" "$@" "$DIR" "$PORT"',
+            "sh",
+            f"--sock={process.RUN_DIR}/app.sock",
+            f"--port={process.PORT}",
+            process.RUN_DIR,
+        ],
+        env={"DIR": process.RUN_DIR, "PORT": process.PORT},
+        pick_port=True,
+    )
+
+    [_pgid, port] = printed
+    assert 49152 <= int(port) <= 65535
+    assert _status(run_dir) == 0
+    assert (run_dir / "out").read_text(encoding="utf-8").split("|")[:-1] == [
+        f"--sock={run_dir}/app.sock",
+        f"--port={port}",
+        str(run_dir),
+        str(run_dir),
+        port,
+    ]

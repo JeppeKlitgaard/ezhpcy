@@ -1,6 +1,6 @@
 """
 Processes started detached on a host: they outlive the connection that started
-them, and their exit status can be read later (decision 41 of PLAN.md).
+them, and their exit status can be read later.
 
 `start` creates a private run directory on the host, `/tmp/ezhpcy-<run ID>/`,
 over SFTP (mode 0700, failing if the path exists), writes the launch script into
@@ -8,7 +8,8 @@ it, and runs `setsid -f bash <run dir>/launch.sh`. The script, leading a session
 and process group of its own:
 
 1. traps HUP, INT and TERM with `true`, so that it outlives a signal to its
-   group, and prints its PID, which is the group's;
+   group, and prints its PID, which is the group's; and, if asked to, picks a
+   loopback TCP port that nothing listens on, and prints it too;
 2. gives up the session's stdin, stdout and stderr, so that the session ends
    (`out` and `err` in the run directory take the output);
 3. runs the command in the foreground, then writes the status bash reports for
@@ -27,11 +28,14 @@ started, exits with 143 instead if it is there, as if TERM had killed it.
 
 Nothing secret goes on a command line: the command and its environment are in
 the launch script, and only the run directory's path is on `setsid`'s, once the
-directory exists and is the user's alone.
+directory exists and is the user's alone. The command and its environment may
+refer to the run directory and the picked port, which only the host knows
+before the start, as `RUN_DIR` and `PORT`.
 
-A process is attached to its host (`RemoteHost.attachments`): it is stopped when
-the host's connection closes, unless it was stopped before. On a job's node,
-the job's end ends it too. Elsewhere, nothing stops it if the client dies.
+A process is attached to its host (`RemoteHost.attachments`), or is a part of
+another attachment, such as an app: it is stopped when the host's connection
+closes, unless it was stopped before. On a job's node, the job's end ends it
+too. Elsewhere, nothing stops it if the client dies.
 """
 
 import re
@@ -76,6 +80,16 @@ _ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 # Signals a process group from a session of its own: `bash -c STOP_SCRIPT stop
 # <run dir> <signal> <pgid>`. `stop` comes first: see the module.
 STOP_SCRIPT = f'touch -- "$1/{_STOP_NAME}"; kill -s "$2" -- "-$3"'
+# Stand for the run directory's path, and for the picked port, in a command and
+# its environment, and become `"$run_dir"` and `"$port"` in the launch script.
+# Bash can't pass NUL in an argument, so neither is in one otherwise.
+RUN_DIR = "\0run_dir\0"
+PORT = "\0port\0"
+_VARIABLES = {RUN_DIR: '"$run_dir"', PORT: '"$port"'}
+_VARIABLE = re.compile(f"({'|'.join(map(re.escape, _VARIABLES))})")
+# Where the launch script picks a port: the dynamic range, at random, until it
+# finds one that nothing listens on, or for at most this many tries.
+_PORT_TRIES = 100
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,12 +117,15 @@ class Process:
         exited: asyncio.Future[int],
         host: RemoteHost,
         attachment: Attachment,
+        port: int | None = None,
     ) -> None:
         # Use `Host.start`.
         self.run_dir = run_dir
         self.run_id = run_dir.name.removeprefix(_RUN_PREFIX)
         # Its process group's ID on the host, which is the launch script's PID.
         self.pgid = pgid
+        # The loopback port the launch script picked for it, if asked to.
+        self.port = port
         self._exited = exited
         self._host = host
         self._attachment = attachment
@@ -153,37 +170,55 @@ async def start(
     *,
     env: Mapping[str, str] | None = None,
     cwd: PurePosixPath | None = None,
+    attachment: Attachment | None = None,
+    pick_port: bool = False,
+    record: Mapping[str, object] | None = None,
 ) -> Process:
     """
     Start `argv` detached on `host` (see the module), with `env` added to its
     environment, in `cwd` (by default the user's home directory). Not through a
-    login shell: as `RemoteHost.run` runs commands. Attached to the host until
-    stopped. Raises `ValueError` for an empty `argv` or a name in `env` that
-    isn't a shell variable's.
+    login shell: as `RemoteHost.run` runs commands. Made in `attachment`, by
+    default a new one of the host's, until stopped. Raises `ValueError` for an
+    empty `argv` or a name in `env` that isn't a shell variable's.
+
+    With `pick_port`, the launch script picks a loopback port first (see the
+    module), which `PORT` stands for, and `Process.port` says. `record` adds
+    fields to the process's record.
     """
     if not argv:
         raise ValueError("a process needs a command")
     env = dict(env or {})
     if invalid := [name for name in env if not _ENV_NAME.fullmatch(name)]:
         raise ValueError(f"not names of environment variables: {invalid!r}")
-    watcher = host.process_watcher or ProcessWatcher(host)
-    attachment = host.attachments.attach()
+    host_watcher = watcher(host)
+    attachment = attachment or host.attachments.attach()
+    launch = _Launch(list(argv), env, cwd, pick_port, dict(record or {}))
     try:
-        return await _start(host, watcher, attachment, list(argv), env, cwd)
+        return await _start(host, host_watcher, attachment, launch)
     except BaseException:
         # Before raising: nothing else holds the process to stop it.
         await attachment.close()
         raise
 
 
+@dataclass(frozen=True, slots=True)
+class _Launch:
+    """What `start` was asked to start."""
+
+    argv: list[str]
+    env: dict[str, str]
+    cwd: PurePosixPath | None
+    pick_port: bool
+    record: dict[str, object]
+
+
 async def _start(
     host: RemoteHost,
     watcher: ProcessWatcher,
     attachment: Attachment,
-    argv: list[str],
-    env: dict[str, str],
-    cwd: PurePosixPath | None,
+    launch: _Launch,
 ) -> Process:
+    argv = launch.argv
     sftp = await watcher.sftp()
     run_id = secrets.token_hex(8)
     run_dir = _RUN_ROOT / f"{_RUN_PREFIX}{run_id}"
@@ -206,14 +241,15 @@ async def _start(
         watcher.forget(status_path)
 
     attachment.push("stop watching the process", forget)
-    await _write(
-        sftp, run_dir / _LAUNCH_NAME, launch_script(run_dir, argv, env=env, cwd=cwd)
+    script = launch_script(
+        run_dir, argv, env=launch.env, cwd=launch.cwd, pick_port=launch.pick_port
     )
+    await _write(sftp, run_dir / _LAUNCH_NAME, script)
 
     pgids: list[int] = []
 
     def started(output: str) -> None:
-        if (pgid := _process_group(output)) is None:
+        if (pgid := _printed(output, 0)) is None:
             return
         pgids.append(pgid)
         attachment.push(
@@ -230,22 +266,28 @@ async def _start(
             f"the launch script didn't say which process it started: {output!r}"
         )
     [pgid] = pgids
+    port = None
+    if launch.pick_port and (port := _printed(output, 1)) is None:
+        raise RuntimeError(f"the launch script didn't say which port: {output!r}")
     record = {
+        **launch.record,
         "run_id": run_id,
         "pgid": pgid,
         "executable": argv[0],
         "started": datetime.now(UTC).isoformat(),
         "status_file": str(status_path),
     }
+    if port is not None:
+        record["port"] = port
     await _write(sftp, run_dir / _RECORD_NAME, json.dumps(record))
     status = ProcessStatus(run_id=run_id, executable=argv[0])
     attachment.report(status)
     exited.add_done_callback(functools.partial(_report_exit, attachment, status))
     logger.debug(
         t"Process started: run_id={run_id:detail} pgid={pgid:detail} "
-        t"executable={argv[0]:detail} run_dir={run_dir:path}"
+        t"executable={argv[0]:detail} run_dir={run_dir:path} port={port:detail}"
     )
-    return Process(run_dir, pgid, exited, host, attachment)
+    return Process(run_dir, pgid, exited, host, attachment, port)
 
 
 def launch_script(
@@ -254,11 +296,20 @@ def launch_script(
     *,
     env: Mapping[str, str],
     cwd: PurePosixPath | None,
+    pick_port: bool = False,
 ) -> str:
     """The bash script that runs `argv` detached in `run_dir` (see the module)."""
-    command = f"exec {shlex.join(argv)}"
+    command = f"exec {' '.join(map(_quote, argv))}"
     if cwd is not None:
         command = f"cd -- {shlex.quote(str(cwd))} && {command}"
+    port = [
+        # A port that refuses a connection: nothing listens on it.
+        f"for _ in $(seq {_PORT_TRIES}); do",
+        "    port=$((49152 + RANDOM % 16384))",
+        '    (: <"/dev/tcp/127.0.0.1/$port") 2>/dev/null || break',
+        "done",
+        "printf '%s\\n' \"$port\"",
+    ]
     return "\n".join(
         [
             "# Written by EzHPCy: runs one process detached (see ezhpcy.process).",
@@ -268,9 +319,10 @@ def launch_script(
             "trap true HUP INT TERM",
             # Its PID is its process group's: `setsid` made it lead one.
             "printf '%s\\n' \"$$\"",
+            *(port if pick_port else []),
             # Gives up the session's output, so that the session ends.
             'exec </dev/null >"$run_dir/out" 2>"$run_dir/err"',
-            *(f"export {name}={shlex.quote(value)}" for name, value in env.items()),
+            *(f"export {name}={_quote(value)}" for name, value in env.items()),
             # In the foreground, not with `exec`, to report how it ended; in a
             # subshell that is stopped already if it was stopped before it began.
             "(",
@@ -377,13 +429,21 @@ class ProcessWatcher:
         self._pending.clear()
 
 
+def watcher(host: RemoteHost) -> ProcessWatcher:
+    """
+    The host's `ProcessWatcher`, made now if it has none. Whatever is made of
+    processes on the host makes it first, so that it is closed after them.
+    """
+    return host.process_watcher or ProcessWatcher(host)
+
+
 async def list_runs(host: RemoteHost) -> dict[PurePosixPath, dict[str, Any]]:
     """
     The records of the processes on `host` whose run directories the user can
     read, by run directory: running or not, from this client or another. Run
     directories without a readable record are left out.
     """
-    sftp = await (host.process_watcher or ProcessWatcher(host)).sftp()
+    sftp = await watcher(host).sftp()
     runs: dict[PurePosixPath, dict[str, Any]] = {}
     for name in await sftp.listdir(_RUN_ROOT):
         if not name.startswith(_RUN_PREFIX):
@@ -397,6 +457,19 @@ async def list_runs(host: RemoteHost) -> dict[PurePosixPath, dict[str, Any]]:
     return runs
 
 
+async def live_runs(host: RemoteHost) -> dict[PurePosixPath, dict[str, Any]]:
+    """
+    The records of `list_runs` whose processes haven't said how they ended:
+    running, unless something killed them with KILL.
+    """
+    sftp = await watcher(host).sftp()
+    return {
+        run_dir: record
+        for run_dir, record in (await list_runs(host)).items()
+        if not await sftp.exists(record.get("status_file", run_dir / _STATUS_NAME))
+    }
+
+
 async def _write(sftp: asyncssh.SFTPClient, path: PurePosixPath, content: str) -> None:
     """Write a file only the user can read."""
     async with sftp.open(
@@ -405,10 +478,24 @@ async def _write(sftp: asyncssh.SFTPClient, path: PurePosixPath, content: str) -
         await file.write(content)
 
 
-def _process_group(output: str) -> int | None:
-    """The process group the launch script printed, if it printed one."""
-    first, _, _ = output.partition("\n")
-    return int(first) if first.strip().isdigit() else None
+def _quote(value: str) -> str:
+    """`value` quoted for bash, with `RUN_DIR` and `PORT` as its variables."""
+    quoted = "".join(
+        _VARIABLES.get(part) or (shlex.quote(part) if part else "")
+        for part in _VARIABLE.split(value)
+    )
+    return quoted or "''"
+
+
+def _printed(output: str, line: int) -> int | None:
+    """
+    The number the launch script printed on `line`: the process group's on the
+    first, the picked port on the second.
+    """
+    lines = output.split("\n")
+    if line >= len(lines) or not lines[line].strip().isdigit():
+        return None
+    return int(lines[line])
 
 
 async def _stop(

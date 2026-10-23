@@ -15,6 +15,7 @@ import time
 from dataclasses import dataclass, field
 from enum import Enum, auto
 
+lazy from ezhpcy.app.run import AppStatus
 lazy from ezhpcy.forward import ForwardStatus
 lazy from ezhpcy.process import ProcessStatus
 lazy from ezhpcy.scheduler.base import JobInfo
@@ -46,16 +47,6 @@ class PublishedStatus:
     alias: str
     port: int
     # Connections open through the port.
-    connections: int = 0
-
-
-@dataclass(frozen=True, slots=True)
-class AppStatus:
-    """An app, served on this machine at `url`, once it is."""
-
-    name: str
-    url: str | None = None
-    # Connections open through its forwarded port.
     connections: int = 0
 
 

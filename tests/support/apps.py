@@ -9,7 +9,12 @@ import shutil
 import stat
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
+from typing import Any
 
+import asyncssh
+import pytest
+
+from ezhpcy.app import run as app_run
 from tests.support.sshserver import Invocation, SSHTestServer, reply
 
 PIXI_TOML = """\
@@ -153,6 +158,32 @@ class FakePixi:
                 self.pixi_installs += 1
                 executable.parent.mkdir(parents=True, exist_ok=True)
                 executable.write_text("#!/bin/sh\n", encoding="utf-8")
+
+
+def quick_apps(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Check apps' readiness every 10 ms."""
+    monkeypatch.setattr(app_run, "_READY_POLL_SECONDS", 0.01)
+
+
+def http_app(status: int = 200, body: bytes = b"hello") -> Callable[..., Any]:
+    """
+    A stand-in app, for a socket (`allow_socket`) or a TCP port (`listen`): it
+    answers every request with `status` and `body`, and closes.
+    """
+
+    async def serve(reader: Any, writer: Any) -> None:
+        # The client may close first, e.g. a readiness check that timed out; an
+        # error here would make asyncssh drop the whole connection, which an
+        # app doesn't do to sshd.
+        try:
+            while await reader.readline() not in (b"\r\n", b"\n", b""):
+                pass
+            writer.write(f"HTTP/1.0 {status} Status\r\n\r\n".encode() + body)
+        except OSError, asyncssh.Error:
+            pass
+        writer.close()
+
+    return serve
 
 
 def serve_shell_tools(server: SSHTestServer, *, free_kib: int = 1_048_576) -> None:

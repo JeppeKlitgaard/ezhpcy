@@ -21,13 +21,9 @@ lazy from rich.spinner import Spinner
 lazy from rich.table import Table
 lazy from rich.text import Text
 
+lazy from ezhpcy.app.run import AppStatus
 lazy from ezhpcy.forward import ForwardStatus
-lazy from ezhpcy.job.status import (
-    AppStatus,
-    JobStatus,
-    Phase,
-    PublishedStatus,
-)
+lazy from ezhpcy.job.status import JobStatus, Phase, PublishedStatus
 lazy from ezhpcy.messages import duration, rich_text
 
 

@@ -7,8 +7,9 @@ import pytest
 from rich.console import Console
 from rich.panel import Panel
 
+from ezhpcy.app.run import AppState, AppStatus
 from ezhpcy.cli._tunnel_status import status_panel
-from ezhpcy.job.status import AppStatus, JobStatus, Phase, PublishedStatus
+from ezhpcy.job.status import JobStatus, Phase, PublishedStatus
 from ezhpcy.scheduler.base import JobInfo, JobState
 from ezhpcy.types import Resources
 
@@ -144,7 +145,13 @@ def test_the_first_attachment_says_how_to_reach_it_and_all_count() -> None:
     status = replace(
         SERVING,
         attachments=(
-            AppStatus(name="lab", url="http://127.0.0.1:8888/lab", connections=1),
+            AppStatus(
+                name="lab",
+                version="v1.0",
+                state=AppState.READY,
+                url="http://127.0.0.1:8888/lab",
+                connections=1,
+            ),
             PublishedStatus(alias="scratch", port=50123, connections=2),
         ),
     )

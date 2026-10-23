@@ -1,7 +1,7 @@
 """
-`ezhpcy.api`'s jobs: entering and leaving one, several on one cluster, Host
-blocks attached to them, and how their end shows. Uses `ezhpcy.api` alone, with
-the in-process SSH servers as the login node and the worker's sshd, and the
+`ezhpcy.api`'s jobs: entering and leaving one, several on one host, Host blocks
+attached to them, and how their end shows. Uses `ezhpcy.api` alone, with the
+in-process SSH servers as the login node and the worker's sshd, and the
 scheduler fake.
 """
 
@@ -85,7 +85,7 @@ class Rig:
     def starting(self) -> bool:
         return any(job.status.phase in STARTING_PHASES for job in self.jobs)
 
-    def job(self, host: api.Cluster, config: api.JobConfig = JOB) -> api.Job:
+    def job(self, host: api.Host, config: api.JobConfig = JOB) -> api.Job:
         self.jobs.append(host.job(config, worker_ports=[self.worker_port]))
         return self.jobs[-1]
 
@@ -126,18 +126,18 @@ async def test_a_published_job_serves_then_cleans_up_in_order(rig: Rig) -> None:
 
     async def cancelling() -> None:
         # The Host block goes first, the job next, its control directory last,
-        # and the login connection stays the cluster's.
+        # and the login connection stays its block's.
         seen_when_cancelled.update(
             host_block=rig.host_block("gpu").exists(),
             control_dirs=len(control_dirs(rig.login)),
-            connected=not cluster_closed.done(),
+            connected=not login_closed.done(),
         )
 
     rig.scheduling([RUNNING], cancelling=cancelling)
 
-    async with api.reserve_alias("gpu") as gpu, api.connect(LOGIN) as cluster:
-        cluster_closed = asyncio.ensure_future(cluster.closed)
-        async with rig.job(cluster) as job:
+    async with api.reserve_alias("gpu") as gpu, api.connect(LOGIN) as login_node:
+        login_closed = asyncio.ensure_future(login_node.closed)
+        async with rig.job(login_node) as job:
             assert (job.id, job.node) == (JOB_ID, "127.0.0.1")
             assert job.status.phase is api.Phase.READY
             published = await job.publish(gpu)
@@ -148,7 +148,7 @@ async def test_a_published_job_serves_then_cleans_up_in_order(rig: Rig) -> None:
             [status] = job.status.attachments
             assert isinstance(status, api.PublishedStatus)
             assert (status.alias, status.port) == ("gpu", published.port)
-        assert not cluster_closed.done()
+        assert not login_closed.done()
 
     assert seen_when_cancelled == {
         "host_block": False,
@@ -162,18 +162,18 @@ async def test_a_published_job_serves_then_cleans_up_in_order(rig: Rig) -> None:
         pass
 
 
-async def test_a_cluster_runs_several_jobs_at_once(rig: Rig) -> None:
+async def test_a_host_runs_several_jobs_at_once(rig: Rig) -> None:
     rig.scheduling([RUNNING])
     entered = asyncio.Barrier(2)
 
-    async def run_job(cluster: api.Cluster) -> str:
-        async with rig.job(cluster) as job:
+    async def run_job(login_node: api.Host) -> str:
+        async with rig.job(login_node) as job:
             await entered.wait()
             return job.id
 
-    async with api.connect(LOGIN) as cluster, asyncio.TaskGroup() as tasks:
-        first = tasks.create_task(run_job(cluster))
-        second = tasks.create_task(run_job(cluster))
+    async with api.connect(LOGIN) as login_node, asyncio.TaskGroup() as tasks:
+        first = tasks.create_task(run_job(login_node))
+        second = tasks.create_task(run_job(login_node))
 
     assert (first.result(), second.result()) == (JOB_ID, JOB_ID)
     assert len(rig.schedulers) == 2
@@ -186,8 +186,8 @@ async def test_an_alias_has_one_host_block_at_a_time(rig: Rig) -> None:
 
     async with (
         api.reserve_alias("gpu") as gpu,
-        api.connect(LOGIN) as cluster,
-        rig.job(cluster) as job,
+        api.connect(LOGIN) as login_node,
+        rig.job(login_node) as job,
     ):
         published = await job.publish(gpu)
         with pytest.raises(ValueError, match="published under 'gpu' already"):
@@ -207,8 +207,8 @@ async def test_a_job_published_under_two_aliases_withdraws_each(rig: Rig) -> Non
     async with (
         api.reserve_alias("gpu") as gpu,
         api.reserve_alias("cpu") as cpu,
-        api.connect(LOGIN) as cluster,
-        rig.job(cluster) as job,
+        api.connect(LOGIN) as login_node,
+        rig.job(login_node) as job,
     ):
         first = await job.publish(gpu)
         second = await job.publish(cpu)
@@ -231,9 +231,9 @@ async def test_the_scheduler_ending_the_job_ends_its_block_with_job_ended(
 ) -> None:
     rig.scheduling([RUNNING, DONE])
 
-    async with api.connect(LOGIN) as cluster:
+    async with api.connect(LOGIN) as login_node:
         with pytest.raises(api.JobEnded) as ended:
-            await run_until_it_ends(rig.job(cluster))
+            await run_until_it_ends(rig.job(login_node))
 
     assert ended.value.end.by_scheduler
     assert "ended in scheduler state DONE" in ended.value.end.reason
@@ -244,7 +244,7 @@ async def test_the_scheduler_ending_the_job_ends_its_block_with_job_ended(
 async def test_wait_returns_how_the_job_ended(rig: Rig) -> None:
     rig.scheduling([RUNNING, api.JobInfo(api.JobState.SUCCEEDED, "DONE", exit_code=0)])
 
-    async with api.connect(LOGIN) as cluster, rig.job(cluster) as job:
+    async with api.connect(LOGIN) as login_node, rig.job(login_node) as job:
         async with asyncio.timeout(WAIT_SECONDS):
             end = await job.wait()
 
@@ -255,7 +255,7 @@ async def test_wait_returns_how_the_job_ended(rig: Rig) -> None:
 async def test_stop_from_another_task_leaves_the_block_quietly(rig: Rig) -> None:
     rig.scheduling([RUNNING])
 
-    async with api.connect(LOGIN) as cluster, rig.job(cluster) as job:
+    async with api.connect(LOGIN) as login_node, rig.job(login_node) as job:
         asyncio.get_running_loop().call_later(0.05, job.stop, "enough")
         async with asyncio.timeout(WAIT_SECONDS):
             await forever()
@@ -266,7 +266,7 @@ async def test_stop_from_another_task_leaves_the_block_quietly(rig: Rig) -> None
 async def test_stop_while_waiting_returns_the_reason(rig: Rig) -> None:
     rig.scheduling([RUNNING])
 
-    async with api.connect(LOGIN) as cluster, rig.job(cluster) as job:
+    async with api.connect(LOGIN) as login_node, rig.job(login_node) as job:
         asyncio.get_running_loop().call_later(0.05, job.stop, "enough")
         async with asyncio.timeout(WAIT_SECONDS):
             end = await job.wait()
@@ -277,8 +277,8 @@ async def test_stop_while_waiting_returns_the_reason(rig: Rig) -> None:
 async def test_stop_before_entering_ends_entering(rig: Rig) -> None:
     rig.scheduling([RUNNING])
 
-    async with api.connect(LOGIN) as cluster:
-        job = rig.job(cluster)
+    async with api.connect(LOGIN) as login_node:
+        job = rig.job(login_node)
         job.stop("never mind")
         with pytest.raises(api.JobEnded):
             async with job:
@@ -290,8 +290,8 @@ async def test_stop_before_entering_ends_entering(rig: Rig) -> None:
 async def test_before_entering_the_status_stays_put(rig: Rig) -> None:
     rig.scheduling([RUNNING])
 
-    async with api.connect(LOGIN) as cluster:
-        job = rig.job(cluster)
+    async with api.connect(LOGIN) as login_node:
+        job = rig.job(login_node)
         before = job.status
         assert job.status is before
         assert before.phase is api.Phase.PREPARING
@@ -303,9 +303,9 @@ async def test_before_entering_the_status_stays_put(rig: Rig) -> None:
 async def test_losing_the_login_connection_fails_the_job(rig: Rig) -> None:
     rig.scheduling([RUNNING])
 
-    async with api.connect(LOGIN) as cluster:
+    async with api.connect(LOGIN) as login_node:
         with pytest.raises(api.JobFailed, match="login-node SSH connection lost"):
-            await run_until_it_ends(rig.job(cluster), then=rig.login.drop)
+            await run_until_it_ends(rig.job(login_node), then=rig.login.drop)
 
 
 async def test_a_job_without_provisioning_needs_the_worker_credentials(
@@ -315,9 +315,9 @@ async def test_a_job_without_provisioning_needs_the_worker_credentials(
     config = JOB.model_copy(update={"auto_provision": False})
     remove_worker_credentials()
 
-    async with api.connect(LOGIN) as cluster:
+    async with api.connect(LOGIN) as login_node:
         with pytest.raises(api.JobFailed, match="ezhpcy provision") as failed:
-            async with rig.job(cluster, config):
+            async with rig.job(login_node, config):
                 pytest.fail("entered")
 
     assert isinstance(failed.value.__cause__, api.MissingCredentials)
@@ -330,9 +330,9 @@ async def test_a_job_that_never_starts_fails_entering(rig: Rig) -> None:
     rig.scheduling([snapshot(api.JobState.PENDING, "PEND")])
     config = JOB.with_timings(queue_timeout_seconds=timedelta(seconds=0.1))
 
-    async with api.connect(LOGIN) as cluster:
+    async with api.connect(LOGIN) as login_node:
         with pytest.raises(api.JobFailed, match=r"did not start within 0\.1 seconds"):
-            async with rig.job(cluster, config):
+            async with rig.job(login_node, config):
                 pytest.fail("entered")
 
     assert rig.cancelled == [JOB_ID]

@@ -21,6 +21,7 @@ lazy from rich.spinner import Spinner
 lazy from rich.table import Table
 lazy from rich.text import Text
 
+lazy from ezhpcy.forward import ForwardStatus
 lazy from ezhpcy.job.status import (
     AppStatus,
     JobStatus,
@@ -203,7 +204,11 @@ def _progress(status: JobStatus, now: float) -> _Rows:
         ago = duration(now - status.last_heartbeat)
         rows.append(("Heartbeat", t"{ago:detail} ago"))
     if _serving(status):
-        connections = sum(attachment.connections for attachment in status.attachments)
+        connections = sum(
+            attachment.connections
+            for attachment in status.attachments
+            if isinstance(attachment, PublishedStatus | AppStatus | ForwardStatus)
+        )
         rows.append(("Connections", t"{connections:detail}"))
     return rows
 

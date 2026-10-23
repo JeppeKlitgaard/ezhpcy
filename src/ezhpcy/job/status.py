@@ -15,6 +15,8 @@ import time
 from dataclasses import dataclass, field
 from enum import Enum, auto
 
+lazy from ezhpcy.forward import ForwardStatus
+lazy from ezhpcy.process import ProcessStatus
 lazy from ezhpcy.scheduler.base import JobInfo
 lazy from ezhpcy.types import Resources
 
@@ -57,7 +59,7 @@ class AppStatus:
     connections: int = 0
 
 
-type AttachmentStatus = PublishedStatus | AppStatus
+type AttachmentStatus = PublishedStatus | AppStatus | ForwardStatus | ProcessStatus
 
 
 @dataclass(frozen=True, slots=True)

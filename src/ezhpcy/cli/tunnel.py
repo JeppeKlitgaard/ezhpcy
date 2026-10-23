@@ -260,8 +260,8 @@ async def serve(
     with live_display(panel), _interrupts_stop(run.stop):
         async with api.connect(
             login, prompts=cli_prompts(), password=password
-        ) as cluster:
-            job = run.job = cluster.job(run.config, worker_ports=worker_ports)
+        ) as login_node:
+            job = run.job = login_node.job(run.config, worker_ports=worker_ports)
             try:
                 async with job:
                     published = await job.publish(reservation)

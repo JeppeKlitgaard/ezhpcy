@@ -117,6 +117,8 @@ class SSHTestServer:
       with relative paths starting at `home`.
     - `direct-tcpip`: only to ports allowed with `allow_forwarding`, such as those
       of the stand-ins `listen` starts.
+    - `tcpip-forward` (remote forwards): on this machine, at the address asked
+      for, recorded in `remote_listens`.
     - Connection loss: `blackhole` and `drop`.
 
     Use it as a context manager (or `start` and `stop`). Stopping raises the first
@@ -135,6 +137,8 @@ class SSHTestServer:
         self.auth = Auth(client_keys=[self.client_key])
         self.auth_attempts: list[tuple[str, bool]] = []
         self.commands_run: list[list[str]] = []
+        # The `(host, port)` of each remote forward asked for (`tcpip-forward`).
+        self.remote_listens: list[tuple[str, int]] = []
         self.errors: list[Exception] = []
         self._commands: dict[tuple[str, ...], Handler] = {}
         self._forwardable: set[tuple[str, int]] = set()
@@ -428,6 +432,11 @@ class _Server(asyncssh.SSHServer):
                 f"{dest_host}:{dest_port} is not allowed by the test",
             )
         # asyncssh opens the TCP connection and forwards it.
+        return True
+
+    def server_requested(self, listen_host: str, listen_port: int) -> bool:
+        # asyncssh listens there, on this machine, and forwards to the client.
+        self._test_server.remote_listens.append((listen_host, listen_port))
         return True
 
 

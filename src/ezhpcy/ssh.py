@@ -2,9 +2,9 @@
 SSH connections to hosts: the login node's, and the worker's made through it.
 
 Covers connecting to the login node, quoting remote commands, login shells and
-pixi helpers, and forwarding loopback ports to destinations that the
-connection's far end reaches. What is attached to a connection is closed
-before it (`RemoteHost.attachments`).
+pixi helpers, forwarding loopback ports to destinations that the connection's
+far end reaches, and remote loopback ports to destinations on this machine.
+What is attached to a connection is closed before it (`RemoteHost.attachments`).
 """
 
 from contextlib import asynccontextmanager
@@ -22,6 +22,7 @@ from ezhpcy.logging import get_logger
 from ezhpcy.messages import MessageError
 lazy from ezhpcy.attachments import Attachments
 lazy from ezhpcy.constants import LOOPBACK_HOST, WORKER_HOST_ALIAS
+lazy from ezhpcy.process import ProcessWatcher
 lazy from ezhpcy.provision_local import WorkerCredentials
 lazy from ezhpcy.types import Login, RemoteState
 
@@ -152,8 +153,8 @@ class RemoteHost:
     """
     A connection to a host: the login node, or the worker's sshd through it.
 
-    What is attached to it (`attachments`) is closed, newest first, when it is
-    closed, before the connection.
+    What is attached to it (`attachments`: processes, forwarded ports) is closed,
+    newest first, when it is closed, before the connection.
     """
 
     def __init__(
@@ -167,6 +168,9 @@ class RemoteHost:
         self._conn = conn
         self._closed = closed
         self.attachments = Attachments()
+        # Watches the processes started on the host, once one is (see
+        # `ezhpcy.process`).
+        self.process_watcher: ProcessWatcher | None = None
 
     @property
     def closed(self) -> asyncio.Future[Exception | None]:
@@ -299,6 +303,27 @@ class RemoteHost:
             login_closed=self._closed,
         )
 
+    async def forward_remote_port(
+        self,
+        remote_port: int,
+        destination: Destination,
+        *,
+        on_connections: Callable[[int], object] | None = None,
+    ) -> RemoteForwardedPort:
+        """
+        Have the remote host listen on its loopback port `remote_port` (0: a free
+        one), and forward each connection to it to `destination` from this
+        machine, over a channel of its own. `on_connections` is called with the
+        number of open connections whenever it changes.
+
+        Raises `asyncssh.ChannelListenError` if the host refuses to listen.
+        Closing the port refuses new connections, and leaves open ones to end by
+        themselves, or with the connection, which also closes the port.
+        """
+        return await RemoteForwardedPort.open(
+            self._conn, remote_port, destination, on_connections
+        )
+
     async def connect_worker(
         self, host: str, port: int, credentials: WorkerCredentials
     ) -> RemoteHost:
@@ -410,6 +435,74 @@ class ForwardedPort:
         self.connections.closed(client)
 
 
+class RemoteForwardedPort:
+    """
+    A loopback port on the remote host whose connections are forwarded to
+    `destination` from this machine (see `RemoteHost.forward_remote_port`).
+
+    Forwarded as asyncssh's own `forward_remote_port` does, with its
+    `SSHForwarder` at either end, but counting the open connections.
+    """
+
+    def __init__(
+        self, destination: Destination, on_connections: Callable[[int], object] | None
+    ) -> None:
+        self.destination = destination
+        self.port = 0
+        self.connections = _Connections(on_connections)
+        self._listener: asyncssh.SSHListener | None = None
+
+    @classmethod
+    async def open(
+        cls,
+        conn: asyncssh.SSHClientConnection,
+        remote_port: int,
+        destination: Destination,
+        on_connections: Callable[[int], object] | None,
+    ) -> RemoteForwardedPort:
+        forwarded = cls(destination, on_connections)
+        # Loopback, explicitly: OpenSSH's sshd binds every address for "" (with
+        # `GatewayPorts yes`), and the worker's binds loopback anyway.
+        listener = forwarded._listener = await conn.create_server(
+            forwarded._accept, LOOPBACK_HOST, remote_port
+        )
+        forwarded.port = listener.get_port()
+        return forwarded
+
+    def close(self) -> None:
+        """Refuse new connections; open ones stay open."""
+        if self._listener is not None:
+            self._listener.close()
+
+    async def _accept(
+        self, client_host: str, client_port: int
+    ) -> asyncssh.SSHTCPSession[bytes]:
+        """Connect to the destination for a new connection on the remote port."""
+        client = f"{client_host}:{client_port}"
+        loop = asyncio.get_running_loop()
+        try:
+            match self.destination:
+                case TCPDestination(host=host, port=port):
+                    _, local_end = await loop.create_connection(
+                        lambda: _CountedForwarder(self.connections, client), host, port
+                    )
+                case SocketDestination(path=path):
+                    _, local_end = await loop.create_unix_connection(
+                        lambda: _CountedForwarder(self.connections, client), str(path)
+                    )
+        except OSError as error:
+            logger.debug(
+                t"Could not forward connection: client={client:endpoint} "
+                t"destination={self.destination!s:endpoint} error={error!r}"
+            )
+            raise asyncssh.ChannelOpenError(
+                asyncssh.OPEN_CONNECT_FAILED, str(error)
+            ) from None
+        self.connections.opened(client, self.destination)
+        # The channel's end, as asyncssh's own `forward_connection` makes it.
+        return cast(asyncssh.SSHTCPSession[bytes], asyncssh.SSHForwarder(local_end))
+
+
 class _Connections:
     """
     How many connections are open through a forwarded port, logged and passed
@@ -438,6 +531,25 @@ class _Connections:
         self.count += change
         if self._on_change is not None:
             self._on_change(self.count)
+
+
+class _CountedForwarder(asyncssh.SSHForwarder):
+    """
+    This machine's end of one connection to a remote forwarded port, which
+    counts it closed when it closes.
+    """
+
+    def __init__(self, connections: _Connections, client: str) -> None:
+        super().__init__()
+        self._connections = connections
+        self._client = client
+        self._closed = False
+
+    def close(self) -> None:
+        if not self._closed:
+            self._closed = True
+            self._connections.closed(self._client)
+        super().close()
 
 
 class _Forwarder(asyncssh.SSHForwarder):

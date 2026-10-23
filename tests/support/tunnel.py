@@ -297,9 +297,11 @@ def tunnel_log() -> Generator[LogRecords]:
             "ezhpcy.cleanup",
             "ezhpcy.cli.tunnel",
             "ezhpcy.config",
+            "ezhpcy.forward",
             "ezhpcy.job.lifecycle",
             "ezhpcy.job.publish",
             "ezhpcy.login",
+            "ezhpcy.process",
             "ezhpcy.ssh",
         )
     ]

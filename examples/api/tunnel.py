@@ -32,8 +32,8 @@ async def main() -> None:
 
     async with (
         api.reserve_alias(alias) as reservation,
-        api.connect(profile.login, prompts=api.terminal_prompts()) as cluster,
-        cluster.job(job_config) as job,
+        api.connect(profile.login, prompts=api.terminal_prompts()) as login_node,
+        login_node.job(job_config) as job,
     ):
         # Ctrl+C ends the job, and `wait` returns; leaving the block cleans up.
         loop = asyncio.get_running_loop()

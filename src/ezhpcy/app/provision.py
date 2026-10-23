@@ -12,9 +12,8 @@ An app's environment and assets on the host it runs on, under the apps root
       pixi-cache/              Pixi's cache for app environments
       work/<normalised name>/  the default workdir: the user's, never pruned
 
-**Environments** are installed by EzHPCy's own Pixi, in place (decision 42 of
-PLAN.md, and FINDINGS.md's "Phase 4"): Pixi detects and repairs an install
-that was interrupted, and an environment keyed by its Pixi files never goes out
+**Environments** are installed by EzHPCy's own Pixi, in place: Pixi detects
+and repairs an install that was interrupted, and an environment keyed by its Pixi files never goes out
 of date. An install holds the apps root's one lock, as file locks don't hold
 across a cluster's nodes, so that Pixi's shared cache is never written by two
 installs at once; on success it writes `.ezhpcy-installed`. A run uses only an

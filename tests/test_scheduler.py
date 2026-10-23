@@ -1106,7 +1106,7 @@ async def test_pbs_on_the_login_node(ssh_server: SSHTestServer):
 
 
 async def test_pbs_without_job_history_on_the_login_node(ssh_server: SSHTestServer):
-    # As DTU's server answered when probed (see FINDINGS.md).
+    # As DTU's server answered when probed.
     envelope = '{\n    "timestamp":1792065543,\n    "pbs_version":"20.0.0"\n}'
 
     def qstat(invocation: Invocation) -> int:

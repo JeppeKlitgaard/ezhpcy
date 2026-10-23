@@ -9,7 +9,7 @@ from pydantic_settings import SettingsConfigDict
 
 from ezhpcy import config as config_module
 from ezhpcy.scheduler.types import SchedulerType
-from ezhpcy.types import PasswordConfig, ResolvedConfig
+from ezhpcy.types import JobConfig, Login, PasswordConfig
 
 
 def test_logging_is_configured_in_its_tables() -> None:
@@ -375,27 +375,17 @@ def test_invalid_profile_graphs_are_rejected(
         {"host": "login.example.com", "user": ""},
     ],
 )
-def test_resolved_config_requires_host_and_user(connection: dict[str, object]) -> None:
+def test_login_requires_host_and_user(connection: dict[str, object]) -> None:
     with pytest.raises(ValidationError):
-        ResolvedConfig.model_validate(
-            {
-                "connection": connection,
-                "scheduler": {"type": "LSF", "submission_mode": "batch"},
-            }
-        )
+        Login.model_validate(connection)
 
 
 @pytest.mark.parametrize(
     "scheduler",
     [{}, {"type": "LSF"}, {"submission_mode": "batch"}],
 )
-def test_resolved_config_requires_scheduler_type_and_submission_mode(
+def test_job_config_requires_scheduler_type_and_submission_mode(
     scheduler: dict[str, object],
 ) -> None:
     with pytest.raises(ValidationError):
-        ResolvedConfig.model_validate(
-            {
-                "connection": {"host": "login.example.com", "user": "alice"},
-                "scheduler": scheduler,
-            }
-        )
+        JobConfig.model_validate({"scheduler": scheduler})

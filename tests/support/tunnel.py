@@ -18,9 +18,10 @@ import pytest
 
 from ezhpcy.config import config
 from ezhpcy.constants import EZHPCY_VERSION
+from ezhpcy.job import lifecycle
 from ezhpcy.scheduler.base import InteractiveJob, JobInfo, JobSpec, JobState
 from ezhpcy.ssh import RemoteHost
-from ezhpcy.tunnel import session
+from ezhpcy.tunnel import ssh_config
 from ezhpcy.types import ProfileConfig
 from tests.support.login import STATE, remote_state_json
 from tests.support.sshserver import Handler, Invocation, SSHTestServer, reply
@@ -137,6 +138,9 @@ class FakeScheduler:
       the worker's `ready` status.
     - `submit` (batch) then awaits `submitting` before it returns the job's ID.
     - `cancel` records the job and then calls `cancelling`.
+    - After the first inspection, while `held()` is true, `inspect` reports
+      the first one again instead of moving on: e.g. until the job is published,
+      as the job monitor's 60 s interval would make sure outside tests.
     """
 
     cancel_executable = "bkill"
@@ -149,9 +153,12 @@ class FakeScheduler:
         submitted: Callable[[JobSpec], None] = lambda _spec: None,
         submitting: Callable[[], Awaitable[None]] | None = None,
         cancelling: Callable[[], Awaitable[None]] | None = None,
+        held: Callable[[], bool] = lambda: False,
     ) -> None:
         self._host = host
         self._inspections = list(inspections)
+        self._first: Inspection | None = None
+        self._held = held
         self._submitted = submitted
         self._submitting = submitting
         self._cancelling = cancelling
@@ -176,11 +183,16 @@ class FakeScheduler:
         return JOB_ID
 
     async def inspect(self, _job_id: str) -> JobInfo:
-        entry = (
-            self._inspections.pop(0)
-            if len(self._inspections) > 1
-            else self._inspections[0]
-        )
+        if self._first is not None and self._held():
+            entry = self._first
+        else:
+            entry = (
+                self._inspections.pop(0)
+                if len(self._inspections) > 1
+                else self._inspections[0]
+            )
+            if self._first is None:
+                self._first = entry
         if isinstance(entry, Exception):
             raise entry
         return entry() if callable(entry) else entry
@@ -210,11 +222,11 @@ def use_scheduler(
     """Give the tunnel `make(host)` as its scheduler; returns those it made."""
     made: list[FakeScheduler] = []
 
-    def create(_resolved: object, host: RemoteHost) -> FakeScheduler:
+    def create(_config: object, host: RemoteHost) -> FakeScheduler:
         made.append(make(host))
         return made[-1]
 
-    monkeypatch.setattr(session, "create_scheduler", create)
+    monkeypatch.setattr(lifecycle, "create_scheduler", create)
     return made
 
 
@@ -251,7 +263,15 @@ def tunnel_log() -> Generator[LogRecords]:
     handler = LogRecords()
     loggers = [
         logging.getLogger(name)
-        for name in ("ezhpcy.cli.tunnel", "ezhpcy.tunnel.session", "ezhpcy.ssh")
+        for name in (
+            "ezhpcy.app.session",
+            "ezhpcy.cli.tunnel",
+            "ezhpcy.config",
+            "ezhpcy.job.lifecycle",
+            "ezhpcy.job.publish",
+            "ezhpcy.login",
+            "ezhpcy.ssh",
+        )
     ]
     levels = [logger.level for logger in loggers]
     for logger in loggers:
@@ -263,3 +283,26 @@ def tunnel_log() -> Generator[LogRecords]:
         for logger, level in zip(loggers, levels, strict=True):
             logger.removeHandler(handler)
             logger.setLevel(level)
+
+
+def openssh_resolves(
+    monkeypatch: pytest.MonkeyPatch, resolve: Callable[[str], dict[str, list[str]]]
+) -> None:
+    """Answer `ssh -G <alias>` with `resolve(alias)`, OpenSSH's options by name."""
+    monkeypatch.setattr(ssh_config, "resolve_alias", resolve)
+
+
+def worker_ready_on(server: SSHTestServer, port: int) -> Callable[[JobSpec], None]:
+    """
+    For `FakeScheduler`'s `submitted`: each submitted job's worker says it is
+    ready, its sshd on `port`, in its own control directory (named by the token
+    in its log files' names).
+    """
+
+    def submitted(spec: JobSpec) -> None:
+        assert spec.stdout_path is not None
+        token = spec.stdout_path.name.removeprefix("worker-").removesuffix(".out")
+        status = server.local_path(CONTROL_ROOT / token / "status")
+        status.write_text(f"{token} ready {port}\n", encoding="utf-8")
+
+    return submitted

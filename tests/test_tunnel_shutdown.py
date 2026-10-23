@@ -5,7 +5,7 @@ Phase 0 pinned these outcomes on the threaded tunnel. Phase 7 ported the table t
 `TunnelSession`, against the in-process SSH server and a scheduler fake, with
 these deliberate differences (see FINDINGS.md, "Phase 7"):
 
-- Shutdown reasons are gone. The table checks the one `Stopping tunnel: <why>`
+- Shutdown reasons are gone. The table checks the one `Stopping job: <why>`
   line each way of stopping logs instead.
 - A failure after the tunnel was ready reads `Tunnel stopped: …`, not `Could not
   start tunnel: …`.
@@ -25,9 +25,9 @@ from typing import Literal
 
 import pytest
 
+from ezhpcy.job import publish
 from ezhpcy.scheduler.base import JobInfo, JobSpec, JobState, SchedulerError
 from ezhpcy.ssh import RemoteHost
-from ezhpcy.tunnel import session
 from ezhpcy.tunnel.lock import alias_locked
 from ezhpcy.worker.control import WorkerControl
 from tests.support.cli import invoke
@@ -71,7 +71,14 @@ class Rig:
             functools.partial(entry, self) if callable(entry) else entry
             for entry in self.scenario.inspections
         ]
-        return FakeScheduler(host, inspections, submitted=self.start_worker)
+        # A scenario that publishes its Host block plays the job monitor's polls
+        # once it has: its 10 ms interval could otherwise beat publishing.
+        return FakeScheduler(
+            host,
+            inspections,
+            submitted=self.start_worker,
+            held=lambda: self.scenario.withdrawn and not self.published,
+        )
 
     def start_worker(self, _spec: JobSpec) -> None:
         status = self.scenario.worker_status
@@ -132,7 +139,7 @@ class Scenario:
     message: str | None
     cancelled: bool
     withdrawn: bool
-    # Why the tunnel stopped, in its `Stopping tunnel: <why>` line, if it didn't
+    # Why the tunnel stopped, in its `Stopping job: <why>` line, if it didn't
     # fail; a failure's `why` is its error.
     why: str | None = None
     # The status the worker writes once submitted: "ready" (with the worker's
@@ -320,10 +327,10 @@ def test_tunnel_shutdown(
     serve_interactive_job(login)
     schedulers = use_scheduler(monkeypatch, rig.scheduler)
     monkeypatch.setattr(
-        session, "publish_host", lambda host, _port: rig.published.append(host.alias)
+        publish, "publish_host", lambda host, _port: rig.published.append(host.alias)
     )
     monkeypatch.setattr(
-        session, "withdraw_host", lambda host: rig.withdrawn.append(host.alias)
+        publish, "withdraw_host", lambda host: rig.withdrawn.append(host.alias)
     )
 
     publish_lease = WorkerControl.publish_lease
@@ -345,8 +352,8 @@ def test_tunnel_shutdown(
     assert result.exit_code == scenario.exit_code, result
     assert result.exception is None, result
     errors = log.command_errors()
-    [stopping] = log.starting("Stopping tunnel: ")
-    why = stopping.removeprefix("Stopping tunnel: ")
+    [stopping] = log.starting("Stopping job: ")
+    why = stopping.removeprefix("Stopping job: ")
     if scenario.message is None:
         assert errors == []
         assert why == scenario.why

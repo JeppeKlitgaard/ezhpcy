@@ -10,12 +10,10 @@ lazy from typing import get_type_hints
 from cyclopts import Group, Parameter, validators
 lazy from cyclopts import Token
 
-from ezhpcy.constants import PACKAGE_NAME
+from ezhpcy.constants import KEYRING_SERVICE_NAME
 from ezhpcy.scheduler.types import SchedulerType
 from ezhpcy.types import SubmissionMode
 lazy from ezhpcy.config import config
-
-KEYRING_SERVICE_NAME = PACKAGE_NAME
 
 DEBUG_ENV_VAR = "EZHPCY_DEBUG"
 HOST_ENV_VAR = "EZHPCY_HOST"

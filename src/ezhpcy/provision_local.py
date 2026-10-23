@@ -1,13 +1,17 @@
 """The worker's SSH credentials on this machine, and where they go on the login node."""
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 lazy import base64
 lazy import os
+lazy from collections.abc import Generator
 lazy from pathlib import Path, PurePosixPath
 lazy from typing import Self
 
 lazy import asyncssh
+lazy from filelock import FileLock, Timeout
 
+from ezhpcy.provision_host import ProvisioningError
 lazy from ezhpcy.config import config
 lazy from ezhpcy.constants import (
     SSH_DIRECTORY_NAME,
@@ -17,9 +21,11 @@ lazy from ezhpcy.constants import (
     WORKER_KNOWN_HOSTS_NAME,
 )
 lazy from ezhpcy.permissions import private_directory, restrict_to_current_user
-lazy from ezhpcy.provision_host import ProvisioningError
-lazy from ezhpcy.types import ConnectionInfo, RemoteState
-lazy from ezhpcy.utils import ssh_connection_id
+lazy from ezhpcy.types import Login, RemoteState
+lazy from ezhpcy.utils import local_machine_id, ssh_connection_id
+
+# Creating the keys takes a moment; another job that does it holds the lock.
+_LOCAL_LOCK_SECONDS = 30.0
 
 
 @dataclass(frozen=True)
@@ -36,8 +42,8 @@ class WorkerCredentials:
     login_host: str
 
     @classmethod
-    def for_login(cls, conn_info: ConnectionInfo, *, machine_id: str) -> Self:
-        return cls(machine_id, conn_info.user, str(conn_info.host))
+    def for_login(cls, login: Login, *, machine_id: str) -> Self:
+        return cls(machine_id, login.user, login.host)
 
     @property
     def local_dir(self) -> Path:
@@ -87,6 +93,26 @@ class WorkerCredentials:
 
     def remote_host_public_key(self, remote_state: RemoteState) -> PurePosixPath:
         return self.remote_dir(remote_state) / f"{WORKER_HOST_KEY_NAME}.pub"
+
+    @contextmanager
+    def local_files_locked(self) -> Generator[None]:
+        """
+        Hold the lock on this machine's files for the login endpoint, waiting
+        for it at most `_LOCAL_LOCK_SECONDS`.
+        """
+        private_directory(self.local_dir)
+        lock = FileLock(self.local_dir / ".lock", timeout=_LOCAL_LOCK_SECONDS)
+        try:
+            lock.acquire()
+        except Timeout:
+            raise ProvisioningError(
+                t"Could not lock the worker's SSH credentials in "
+                t"{self.local_dir:path} within {_LOCAL_LOCK_SECONDS:detail:g} seconds."
+            ) from None
+        try:
+            yield
+        finally:
+            lock.release()
 
     def ensure_local_keys(self) -> None:
         """Create the client and host key pairs if they don't exist."""
@@ -142,6 +168,28 @@ class WorkerCredentials:
         ]
         known_hosts.write_text("".join(retained) + replacement, encoding="utf-8")
         known_hosts.chmod(0o600)
+
+
+class MissingCredentials(ProvisioningError):
+    """The worker's SSH credentials on this machine lack `missing`."""
+
+    def __init__(self, missing: list[Path]) -> None:
+        super().__init__(
+            t"worker SSH credentials are missing; run "
+            t"{'ezhpcy provision':suggestion} first (missing: {missing:path})"
+        )
+        self.missing = missing
+
+
+def missing_credentials(login: Login) -> list[Path]:
+    """
+    The worker's SSH credentials on this machine that a job on `login`'s node
+    needs and doesn't have. `ezhpcy provision` creates them, as does a job with
+    `JobConfig.auto_provision`; entering a job without fails with
+    `MissingCredentials`, before submitting.
+    """
+    credentials = WorkerCredentials.for_login(login, machine_id=local_machine_id())
+    return credentials.missing_tunnel_files()
 
 
 def _ensure_key_pair(private_key: Path, public_key: Path, *, comment: str) -> None:

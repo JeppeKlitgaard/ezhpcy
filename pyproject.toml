@@ -108,6 +108,10 @@ isort.combine-as-imports = true
 "scripts/**" = [
     "INP", # no-pep420, scripts are standalone and not part of a package
 ]
+# Examples, run on their own, not part of a package
+"examples/**" = [
+    "INP", # no-pep420
+]
 
 # Pyrefly - Type checking
 [tool.pyrefly]

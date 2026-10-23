@@ -20,7 +20,7 @@ from ezhpcy.constants import (
 )
 from ezhpcy.provision_host import ProvisioningError, validate_worker_infrastructure
 from ezhpcy.provision_local import WorkerCredentials
-from ezhpcy.types import ConnectionInfo
+from ezhpcy.types import Login
 from tests.support.cli import invoke
 from tests.support.login import CACHE, MACHINE_ID, REMOTE_STATE, STATE
 from tests.support.sshserver import SSHTestServer, reply
@@ -250,7 +250,7 @@ def test_prune_all_removes_the_package_cache_and_state(login: SSHTestServer) -> 
 
 
 async def _validate(server: SSHTestServer) -> None:
-    conn_info = ConnectionInfo.model_construct(user=server.user, host=server.host)
+    conn_info = Login(user=server.user, host=server.host)
     async with await ssh.connect(
         conn_info,
         port=server.port,

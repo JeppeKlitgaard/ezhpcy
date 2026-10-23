@@ -4,18 +4,21 @@ cleaned up, as an async context manager.
 
 Entering `JobLifecycle` provisions (or checks) the worker infrastructure,
 submits the worker job, waits for it to say it is ready, starts the heartbeats,
-and waits for the worker's sshd to answer. Each step registers
-its cleanup on an `AsyncExitStack` as soon as it has acquired something, so
-cleanup covers exactly what was started, in reverse order. Each cleanup step has
-a timeout, and one that fails only logs a warning. What serves through the job
-is attached once it is entered (`attach`), and closed first when it is left.
+and connects to the worker's sshd through the login connection: `node_host`, the
+connection to the job's node. Each step registers its cleanup on an
+`AsyncExitStack` as soon as it has acquired something, so cleanup covers exactly
+what was started, in reverse order. Each cleanup step has a timeout, and one
+that fails only logs a warning. Once it is entered, what runs on the node is
+attached to `node_host`, and the job's Host blocks to the job itself (`attach`);
+leaving closes them in that order, first.
 
 The job stops when `stop` is called (the CLI calls it on Ctrl+C), when the
 scheduler says the job has ended, or when something fails: a startup step, or a
-background task (the connection watcher, the heartbeats, the job monitor). The
+background task (the connection watchers, the heartbeats, the job monitor). The
 first of these wins: it is logged as `Stopping job: <why>`, and decides what
-leaving the job raises, if anything. Losing the login connection fails the job;
-closing it is its owner's (the cluster's), after the job is left.
+leaving the job raises, if anything. Losing the login connection, or the
+connection to the node, fails the job; closing the login connection is its
+owner's, after the job is left.
 
 How the end shows to the task that entered the job, its host task, as
 `asyncio.timeout` does: when the job stops while that task runs the block's
@@ -50,9 +53,10 @@ lazy import asyncssh
 lazy from rich.text import Text
 
 from ezhpcy.logging import REPLAY_ON_ERROR, get_logger
+lazy from ezhpcy.attachments import Attachment, Attachments
+lazy from ezhpcy.cleanup import cleanup, finish
 lazy from ezhpcy.constants import DEFAULT_WORKER_PORTS
 lazy from ezhpcy.job import JobEnd, JobEnded, JobFailed
-lazy from ezhpcy.job.attachments import Attachment
 lazy from ezhpcy.job.status import JobStatus, Phase
 lazy from ezhpcy.messages import plain
 lazy from ezhpcy.provision_host import (
@@ -69,7 +73,7 @@ lazy from ezhpcy.scheduler.base import (
     Scheduler,
     SchedulerError,
 )
-lazy from ezhpcy.ssh import RemoteHost, ensure_directory
+lazy from ezhpcy.ssh import RemoteHost, TCPDestination, ensure_directory
 lazy from ezhpcy.tunnel import TunnelError
 lazy from ezhpcy.types import JobConfig, RemoteState, SubmissionMode
 lazy from ezhpcy.utils import local_machine_id
@@ -90,17 +94,18 @@ lazy from ezhpcy.worker.sshd import (
 logger = get_logger(__name__)
 _job_output_logger = get_logger(f"{__name__}.job_output")
 
-_SSH_BANNER_LIMIT = 255
-# How long one attempt to read the worker's SSH banner may take.
-_BANNER_READ_SECONDS = 5.0
+# How long one attempt to connect to the worker's sshd may take.
+_CONNECT_ATTEMPT_SECONDS = 10.0
 # How often to look for the worker's status while it starts. More often buys
 # little: the worker takes seconds to start sshd, and each look is a file open
 # on the cluster's shared filesystem.
 _STATUS_POLL_SECONDS = 1.0
-# How long each cleanup step may take, so that a dead connection can't hang it.
-_CLEANUP_SECONDS = 10.0
-# How long a background task asked to stop may take to end by itself.
+# How long reading the worker's status may take, once its sshd is lost.
+_STATUS_READ_SECONDS = 10.0
+# How long a background task asked to stop may take to end by itself, and then
+# once cancelled.
 _STOP_GRACE_SECONDS = 1.0
+_TASK_STOP_SECONDS = 10.0
 
 # Prepares more for the job once its control directory exists, before its first
 # lease and its submission: the login connection, its remote state, the control
@@ -119,7 +124,8 @@ class JobLifecycle:
     `what` names what the job runs in its log ("Stopping job: …").
 
     Once entered, `credentials` are the worker's SSH credentials for `host`'s
-    login node, and `worker` is the running worker. Entered once.
+    login node, `worker` is the running worker, and `node_host` the connection
+    to its sshd. Entered once.
     """
 
     def __init__(
@@ -144,7 +150,10 @@ class JobLifecycle:
             submission_command=config.scheduler.interactive_submission_command,
         )
         self.worker: RunningWorker | None = None
-        self._attachments: list[Attachment] = []
+        self.node_host: RemoteHost | None = None
+        # The job's own: its Host blocks.
+        self.attachments = Attachments()
+        self.attachments.on_change(self._report_attachments)
         self._stack = AsyncExitStack()
         # Set once the scheduler has said the job ended, so it isn't cancelled,
         # with what it said.
@@ -158,6 +167,8 @@ class JobLifecycle:
         self._host_waiting = False
         self._cancelled_host_task = False
         self._end_delivered = False
+        # Set once the job is ready, which its end no longer fails.
+        self._entered = False
         # Set once leaving has begun: from then on, nothing cancels the host task.
         self._leaving = False
         # Why the job stops, once it does, and the error that stops it, if any.
@@ -181,6 +192,7 @@ class JobLifecycle:
             raise
         if self._why is not None:
             await self._leave(None, entering=True)
+        self._entered = True
         self.report(Phase.READY)
         return self
 
@@ -320,24 +332,19 @@ class JobLifecycle:
 
     def attach(self) -> Attachment:
         """
-        Register a new attachment, closed when the job is left unless it was
-        closed before; then push its cleanup steps onto it as it acquires things.
+        Register a new attachment of the entered job, such as a Host block,
+        closed when the job is left unless it was closed before, after what
+        runs on its node; then push its cleanup steps onto it as it acquires
+        things.
         """
         if self._leaving:
             raise RuntimeError("the job is being left")
-        attachment = Attachment(on_change=self._report_attachments)
-        self._attachments.append(attachment)
-        self._stack.push_async_callback(attachment.close)
-        return attachment
+        return self.attachments.attach()
 
     def _report_attachments(self) -> None:
-        self.report(
-            attachments=tuple(
-                attachment.status
-                for attachment in self._attachments
-                if attachment.status is not None and not attachment.closed
-            )
-        )
+        node_host = self.node_host
+        node = node_host.attachments.statuses if node_host is not None else ()
+        self.report(attachments=self.attachments.statuses + node)
 
     async def _start(self) -> None:
         stack = self._stack
@@ -508,10 +515,10 @@ class JobLifecycle:
             name="worker heartbeats",
             stop=stopping.set,
         )
-        self.report(worker=f"{worker_host}:{ready.port}")
+        sshd = TCPDestination(worker_host, ready.port)
+        self.report(worker=str(sshd))
         worker = self.worker = RunningWorker(
-            node=worker_host,
-            port=ready.port,
+            sshd=sshd,
             ready=ready,
             control=control,
             scheduler=scheduler,
@@ -519,8 +526,20 @@ class JobLifecycle:
             deadline=deadline,
             logs_dir=logs_dir,
         )
-        await self._wait_for_sshd(worker)
         self.start_task(self._monitor_job(scheduler, job_id), name="job monitor")
+        # The Host blocks, once attached, are closed here: after what runs on
+        # the node, and before the job's end. Each step has its own timeout.
+        stack.push_async_callback(self.attachments.close)
+        node_host = self.node_host = await self._connect_node(worker)
+        stack.push_async_callback(
+            cleanup, "close the worker SSH connection", node_host.close
+        )
+        # What runs on the node, first.
+        stack.push_async_callback(node_host.attachments.close)
+        node_host.attachments.on_change(self._report_attachments)
+        self.start_task(
+            self._watch_node(node_host, worker), name="worker connection watcher"
+        )
 
     async def check_worker(self) -> None:
         """Raise if the worker has said it stopped, or its job has ended."""
@@ -561,44 +580,41 @@ class JobLifecycle:
                 t"{timeout:detail:g} seconds"
             ) from None
 
-    async def _wait_for_sshd(self, worker: RunningWorker) -> None:
+    async def _connect_node(self, worker: RunningWorker) -> RemoteHost:
         """
-        Wait until the worker's deadline for its sshd to send its banner through
-        the login connection, checking after each failed attempt that sshd and
-        its job still run.
+        Connect to the worker's sshd through the login connection, as `ssh
+        <alias>` does through a tunnel, trying again until the worker's deadline,
+        and checking after each failed attempt that sshd and its job still run.
+        A host key or client key the worker refuses fails at once: that won't
+        come right by waiting.
         """
         timings = self.config.timings
         timeout = timings.worker_startup_timeout_seconds.total_seconds()
         poll_interval = timings.job_poll_interval_seconds.total_seconds()
-        endpoint = worker.endpoint
+        destination = worker.sshd
+        endpoint = str(destination)
         logger.info(t"Waiting for worker SSH endpoint {endpoint:endpoint}.")
         last_error: Exception | None = None
         try:
             async with asyncio.timeout_at(worker.deadline):
                 while True:
                     try:
-                        async with asyncio.timeout(_BANNER_READ_SECONDS):
-                            banner = await self._read_banner(worker)
+                        async with asyncio.timeout(_CONNECT_ATTEMPT_SECONDS):
+                            return await self.host.connect_worker(
+                                destination.host, destination.port, self.credentials
+                            )
+                    except asyncssh.HostKeyNotVerifiable, asyncssh.PermissionDenied:
+                        raise
                     except TimeoutError:
                         last_error = TunnelError(
-                            t"no SSH banner within "
-                            t"{_BANNER_READ_SECONDS:detail:g} seconds"
+                            t"no answer within "
+                            t"{_CONNECT_ATTEMPT_SECONDS:detail:g} seconds"
                         )
                     except (asyncssh.Error, OSError) as error:
                         last_error = error
                         logger.debug(
-                            t"Worker readiness attempt failed: "
+                            t"Worker connection attempt failed: "
                             t"destination={endpoint:endpoint} error={error!r}"
-                        )
-                    else:
-                        if banner.startswith(b"SSH-"):
-                            return
-                        last_error = TunnelError(
-                            t"unexpected worker banner {banner!r:detail}"
-                        )
-                        logger.debug(
-                            t"Worker readiness returned an unexpected banner: "
-                            t"destination={endpoint:endpoint} banner={banner!r:detail}"
                         )
                     await self.check_worker()
                     await asyncio.sleep(poll_interval)
@@ -609,18 +625,23 @@ class JobLifecycle:
                 t"become ready within {timeout:detail:g} seconds{detail}"
             ) from None
 
-    async def _read_banner(self, worker: RunningWorker) -> bytes:
-        reader, writer = await self.host.open_tcp(worker.node, worker.port)
+    async def _watch_node(self, node_host: RemoteHost, worker: RunningWorker) -> None:
+        """
+        Stop the job when the connection to its node is lost: with the worker's
+        word if its sshd stopped, which is what drops the connection then.
+        """
+        # Shielded: cancelling this task must not cancel `closed`, which others read.
+        if (error := await asyncio.shield(node_host.closed)) is None:
+            return
         try:
-            banner = bytearray()
-            while len(banner) < _SSH_BANNER_LIMIT and b"\n" not in banner:
-                chunk = await reader.read(_SSH_BANNER_LIMIT - len(banner))
-                if not chunk:
-                    break
-                banner.extend(chunk)
-            return bytes(banner)
-        finally:
-            writer.close()
+            async with asyncio.timeout(_STATUS_READ_SECONDS):
+                status = await worker.control.read_status()
+        except (TimeoutError, asyncssh.Error, OSError) as status_error:
+            logger.debug(t"Could not read the worker's status: {status_error!r}")
+            status = None
+        raise _worker_gone(status) or TunnelError(
+            t"worker SSH connection lost: {error}"
+        )
 
     async def _wait_for_running_job(self, scheduler: Scheduler, job_id: str) -> str:
         """
@@ -764,7 +785,10 @@ class JobLifecycle:
             )
 
     async def _monitor_job(self, scheduler: Scheduler, job_id: str) -> None:
-        """Stop the job when the scheduler says it has ended."""
+        """
+        Stop the job when the scheduler says it has ended; fail it if the job
+        ends while the connection to its node is being made.
+        """
         interval_seconds = (
             self.config.timings.job_monitor_interval_seconds.total_seconds()
         )
@@ -786,6 +810,9 @@ class JobLifecycle:
                 t"host={info.host:detail} exit_code={info.exit_code:detail}"
             )
             if ended := self._job_ended(job_id, info):
+                if not self._entered:
+                    # Before the job was ready, as `_check_job_lives` does.
+                    raise TunnelError(ended)
                 self._stop(None, ended)
                 return
 
@@ -810,9 +837,8 @@ class JobLifecycle:
 class RunningWorker:
     """The worker job, once it has said it is ready."""
 
-    # Its node, as the login node reaches it, and its sshd's port.
-    node: str
-    port: int
+    # Its sshd, as the login node reaches it.
+    sshd: TCPDestination
     ready: WorkerReady
     control: WorkerControl
     scheduler: Scheduler
@@ -820,73 +846,6 @@ class RunningWorker:
     # When sshd must answer by (loop time).
     deadline: float
     logs_dir: PurePosixPath
-
-    @property
-    def endpoint(self) -> str:
-        """Its sshd, as `host:port`."""
-        return f"{self.node}:{self.port}"
-
-
-async def finish[T](
-    description: str,
-    step: Awaitable[T],
-    *,
-    then: Callable[[T], object] | None = None,
-) -> T:
-    """
-    Await `step`, then call `then` with its result, e.g. to register a cleanup
-    step for what `step` acquired.
-
-    Cancelled midway, a step may still take effect (a job queued by a `bsub`
-    whose output never arrived, a file written by a thread), with nothing to
-    undo it. So if the job stops meanwhile, `step` still finishes first, within
-    the cleanup timeout, and `then` is called; only then does the stop proceed.
-    """
-    task = asyncio.ensure_future(step)
-    try:
-        result = await asyncio.shield(task)
-    except asyncio.CancelledError:
-        logger.debug(t"Waiting to {description} before stopping.")
-        done, _ = await asyncio.wait([task], timeout=_CLEANUP_SECONDS)
-        if not done:
-            task.cancel()
-            logger.warning(
-                t"Gave up waiting to {description} after "
-                t"{_CLEANUP_SECONDS:detail:g} seconds; it may have left "
-                t"something behind."
-            )
-        # A step that failed acquired nothing, and the job stops anyway.
-        elif task.exception() is None and then is not None:
-            then(task.result())
-        raise
-    if then is not None:
-        then(result)
-    return result
-
-
-async def cleanup(
-    description: str,
-    step: Callable[[], Awaitable[object]],
-    *,
-    seconds: float | None = None,
-) -> None:
-    """
-    Run one cleanup step, for at most `seconds` (by default `_CLEANUP_SECONDS`);
-    if it fails, warn and carry on.
-    """
-    seconds = _CLEANUP_SECONDS if seconds is None else seconds
-    try:
-        async with asyncio.timeout(seconds):
-            await step()
-    except TimeoutError:
-        logger.warning(
-            t"Could not {description}: no answer within {seconds:detail:g} seconds."
-        )
-    except Exception as error:
-        logger.warning(
-            t"Could not {description}: {error}",
-            exc_info=True,
-        )
 
 
 async def _log_job_output(job: InteractiveJob) -> None:
@@ -935,7 +894,7 @@ async def _stop_task(
         stop()
         await asyncio.wait([task], timeout=_STOP_GRACE_SECONDS)
     task.cancel()
-    await asyncio.wait([task], timeout=_CLEANUP_SECONDS)
+    await asyncio.wait([task], timeout=_TASK_STOP_SECONDS)
     if not task.done():
         logger.warning(t"The {task.get_name()} did not stop.")
 

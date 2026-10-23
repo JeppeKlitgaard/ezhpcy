@@ -3,13 +3,16 @@ Running `ezhpcy tunnel` against the in-process SSH server (use the `login` fixtu
 
 The worker job is played by the tests: a scheduler fake, or fake scheduler
 commands on the server, write the worker's `ready` status into the run's control
-directory, and `SSHTestServer.listen` stands in for the worker's sshd.
+directory, and a second SSH server stands in for the worker's sshd (the `worker`
+fixture).
 """
 
 import asyncio
 import logging
 import shlex
 import socket
+import threading
+import time
 from collections.abc import Awaitable, Callable, Generator
 from contextlib import contextmanager
 from pathlib import Path
@@ -26,7 +29,6 @@ from ezhpcy.types import ProfileConfig
 from tests.support.login import STATE, remote_state_json
 from tests.support.sshserver import Handler, Invocation, SSHTestServer, reply
 
-BANNER = b"SSH-2.0-worker\r\n"
 JOB_ID = "42"
 CONTROL_ROOT = STATE / "ezhpcy" / EZHPCY_VERSION / "worker_control"
 # A few milliseconds each, so every scenario takes well under a second.
@@ -40,6 +42,8 @@ FAST_TIMINGS = {
 }
 # The interactive job's shell, as `FakeScheduler` starts it on the login node.
 INTERACTIVE_JOB = "fake-interactive-job"
+# How often `write_atomically` tries to rename, 10 ms apart.
+_REPLACE_ATTEMPTS = 100
 
 
 def configure_tunnel(
@@ -80,10 +84,41 @@ def serve_login_shell(server: SSHTestServer, **fakes: Handler) -> None:
 
 
 def write_worker_status(server: SSHTestServer, state: str, *fields: str) -> None:
-    """Write a status as the worker does, in the only run's control directory."""
+    """
+    Write a status as the worker does, in the only run's control directory: by
+    temporary file and rename, so that the job never reads half of it.
+    """
     [directory] = server.local_path(CONTROL_ROOT).iterdir()
     content = " ".join((directory.name, state, *fields))
-    (directory / "status").write_text(f"{content}\n", encoding="utf-8")
+    write_atomically(directory / "status", f"{content}\n")
+
+
+def write_atomically(path: Path, content: str) -> None:
+    """
+    Write `path` by temporary file and rename, as the worker writes its files.
+
+    On Windows a file can't be replaced while the test server reads it, and the
+    reader may wait for the client, whose event loop may be the caller's. So
+    then the rename is tried again from a thread of its own, until the reader
+    lets go.
+    """
+    temporary = path.with_name(f"{path.name}.tmp")
+    temporary.write_text(content, encoding="utf-8")
+    try:
+        temporary.replace(path)
+    except PermissionError:
+        threading.Thread(target=_replace_soon, args=(temporary, path)).start()
+
+
+def _replace_soon(temporary: Path, path: Path) -> None:
+    for _ in range(_REPLACE_ATTEMPTS - 1):
+        try:
+            temporary.replace(path)
+        except PermissionError:
+            time.sleep(0.01)
+        else:
+            return
+    temporary.replace(path)
 
 
 def control_dirs(server: SSHTestServer) -> list[Path]:
@@ -98,17 +133,11 @@ def unused_port() -> int:
         return probe.getsockname()[1]
 
 
-async def banner_then_echo(
-    reader: asyncio.StreamReader, writer: asyncio.StreamWriter
-) -> None:
-    """The worker's sshd: a banner at once, then what the client sent, after its EOF."""
-    writer.write(BANNER)
-    writer.write(b"worker:" + await reader.read())
-    writer.close()
-
-
 def banner(text: bytes) -> Callable[..., Awaitable[None]]:
-    """A worker that sends `text`, then waits for the client to hang up."""
+    """
+    For `SSHTestServer.listen`: a worker's port that sends `text`, then waits
+    for the client to hang up, such as one that isn't an SSH server.
+    """
 
     async def handler(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         writer.write(text)
@@ -265,6 +294,7 @@ def tunnel_log() -> Generator[LogRecords]:
         logging.getLogger(name)
         for name in (
             "ezhpcy.app.session",
+            "ezhpcy.cleanup",
             "ezhpcy.cli.tunnel",
             "ezhpcy.config",
             "ezhpcy.job.lifecycle",
@@ -302,7 +332,9 @@ def worker_ready_on(server: SSHTestServer, port: int) -> Callable[[JobSpec], Non
     def submitted(spec: JobSpec) -> None:
         assert spec.stdout_path is not None
         token = spec.stdout_path.name.removeprefix("worker-").removesuffix(".out")
-        status = server.local_path(CONTROL_ROOT / token / "status")
-        status.write_text(f"{token} ready {port}\n", encoding="utf-8")
+        write_atomically(
+            server.local_path(CONTROL_ROOT / token / "status"),
+            f"{token} ready {port}\n",
+        )
 
     return submitted

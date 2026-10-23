@@ -22,8 +22,8 @@ lazy from pathlib import Path
 lazy from filelock import FileLock, Timeout
 
 from ezhpcy.messages import MessageError
+lazy from ezhpcy.cleanup import cleanup
 lazy from ezhpcy.config import config, validate_alias
-lazy from ezhpcy.job.lifecycle import cleanup
 lazy from ezhpcy.permissions import private_directory
 lazy from ezhpcy.tunnel.ssh_config import AliasProblem, probe_alias
 lazy from ezhpcy.types import ConfigError
@@ -111,7 +111,7 @@ def alias_locked(alias: str) -> bool:
 async def holding_lock(name: str) -> AsyncGenerator[None]:
     """
     Hold the alias lock `name` until left; releasing it is a cleanup step (see
-    `ezhpcy.job.lifecycle.cleanup`).
+    `ezhpcy.cleanup.cleanup`).
     """
     lock = ExitStack()
     lock.enter_context(alias_lock(name))

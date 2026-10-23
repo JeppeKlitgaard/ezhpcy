@@ -1,7 +1,7 @@
 """
-The job's lifecycle on its own, against the in-process SSH server, with the
-scheduler fake and a worker that only sends sshd's banner: how the job's end
-shows to the code that uses it, and its attachments.
+The job's lifecycle on its own, against the in-process SSH servers, with the
+scheduler fake and the worker's sshd: how the job's end shows to the code that
+uses it, and its attachments.
 """
 
 import asyncio
@@ -29,14 +29,12 @@ from ezhpcy.types import (
 from ezhpcy.worker.control import WorkerControl
 from tests.support.sshserver import SSHTestServer
 from tests.support.tunnel import (
-    BANNER,
     CONTROL_ROOT,
     FAST_TIMINGS,
     JOB_ID,
     RUNNING,
     FakeScheduler,
     Inspection,
-    banner,
     configure_tunnel,
     control_dirs,
     snapshot,
@@ -44,6 +42,7 @@ from tests.support.tunnel import (
     use_scheduler,
     write_worker_status,
 )
+from tests.support.worker import NODE
 
 DONE = snapshot(JobState.SUCCEEDED, "DONE")
 # How long a test waits for something that should happen at once.
@@ -59,40 +58,53 @@ class Rig:
     def __init__(
         self,
         login: SSHTestServer,
+        worker: SSHTestServer,
         monkeypatch: pytest.MonkeyPatch,
         connections: AsyncExitStack,
     ) -> None:
         self.login = login
         self.monkeypatch = monkeypatch
         self.connections = connections
-        self.worker_port = login.listen(banner(BANNER))
+        self.worker_port = worker.port
         self.schedulers: list[FakeScheduler] = []
         configure_tunnel(monkeypatch, login)
 
     async def job(
         self, inspections: list[Inspection], **scheduler: Any
     ) -> JobLifecycle:
-        """A batch job whose scheduler reports `inspections`, as `FakeScheduler`."""
+        """
+        A batch job whose scheduler reports `inspections`, as `FakeScheduler`.
+        The job monitor's polls are held until the job is entered: its 10 ms
+        interval could otherwise end the job while it connects to its node.
+        """
+        jobs: list[JobLifecycle] = []
 
         def make(host: Any) -> FakeScheduler:
             return FakeScheduler(
-                host, inspections, submitted=self.start_worker, **scheduler
+                host,
+                inspections,
+                submitted=self.start_worker,
+                held=lambda: jobs[0].node_host is None,
+                **scheduler,
             )
 
         self.schedulers = use_scheduler(self.monkeypatch, make)
         host = await self.connections.enter_async_context(
             await login_module.connect(Login(user="alice", host="login.example.com"))
         )
-        return JobLifecycle(
-            host=host,
-            config=JobConfig(
-                scheduler=SchedulerSettings(
-                    type=SchedulerType.LSF, submission_mode=SubmissionMode.BATCH
+        jobs.append(
+            JobLifecycle(
+                host=host,
+                config=JobConfig(
+                    scheduler=SchedulerSettings(
+                        type=SchedulerType.LSF, submission_mode=SubmissionMode.BATCH
+                    ),
+                    timings=Timings.model_validate(FAST_TIMINGS),
                 ),
-                timings=Timings.model_validate(FAST_TIMINGS),
-            ),
-            worker_ports=(self.worker_port,),
+                worker_ports=(self.worker_port,),
+            )
         )
+        return jobs[0]
 
     def start_worker(self, _spec: JobSpec) -> None:
         write_worker_status(self.login, "ready", str(self.worker_port))
@@ -105,10 +117,10 @@ class Rig:
 
 @pytest.fixture
 async def rig(
-    login: SSHTestServer, monkeypatch: pytest.MonkeyPatch
+    login: SSHTestServer, worker: SSHTestServer, monkeypatch: pytest.MonkeyPatch
 ) -> AsyncGenerator[Rig]:
     async with AsyncExitStack() as connections:
-        yield Rig(login, monkeypatch, connections)
+        yield Rig(login, worker, monkeypatch, connections)
 
 
 async def forever() -> None:
@@ -121,16 +133,23 @@ def cancellations() -> int:
     return task.cancelling()
 
 
-async def test_entering_returns_once_the_worker_answers(rig: Rig) -> None:
+async def test_entering_returns_once_connected_to_the_node(rig: Rig) -> None:
     job = await rig.job([RUNNING])
 
     with tunnel_log() as log:
         async with job:
             assert job.worker is not None
-            assert job.worker.port == rig.worker_port
+            assert job.worker.sshd.port == rig.worker_port
             assert job.status.phase is Phase.READY
+            assert job.node_host is not None
+            assert await job.node_host.run(["hostname"]) == f"{NODE}\n"
+            node_closed = job.node_host.closed
             [control] = control_dirs(rig.login)
             record = json.loads((control / "job.json").read_text(encoding="utf-8"))
+
+    # Closed with the job, not lost.
+    assert node_closed.done()
+    assert node_closed.result() is None
 
     # For a later client to find the job by.
     assert record == {

@@ -127,9 +127,9 @@ class SSHTestServer:
     user = "alice"
     home = PurePosixPath("/home/alice")
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, host_key: asyncssh.SSHKey | None = None) -> None:
         self.sftp_root = root
-        self.host_key = _generate_key("host")
+        self.host_key = host_key or _generate_key("host")
         # Not in any agent or ~/.ssh, so only tests that pass it can use it.
         self.client_key = _generate_key("client")
         self.auth = Auth(client_keys=[self.client_key])

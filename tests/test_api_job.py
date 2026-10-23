@@ -1,12 +1,11 @@
 """
 `ezhpcy.api`'s jobs: entering and leaving one, several on one cluster, Host
 blocks attached to them, and how their end shows. Uses `ezhpcy.api` alone, with
-the in-process SSH server as the login node, the scheduler fake, and a worker
-that sends sshd's banner.
+the in-process SSH servers as the login node and the worker's sshd, and the
+scheduler fake.
 """
 
 import asyncio
-import socket
 from collections.abc import Callable
 from datetime import timedelta
 from pathlib import Path
@@ -16,19 +15,18 @@ import pytest
 from ezhpcy import api
 from tests.support.sshserver import SSHTestServer
 from tests.support.tunnel import (
-    BANNER,
     FAST_TIMINGS,
     JOB_ID,
     RUNNING,
     FakeScheduler,
     Inspection,
-    banner,
     configure_tunnel,
     control_dirs,
     snapshot,
     use_scheduler,
     worker_ready_on,
 )
+from tests.support.worker import NODE, remove_worker_credentials, ssh_through
 
 LOGIN = api.Login(host="login.example.com", user="alice")
 JOB = api.JobConfig(
@@ -39,36 +37,57 @@ JOB = api.JobConfig(
 )
 DONE = snapshot(api.JobState.SUCCEEDED, "DONE")
 WAIT_SECONDS = 5
+STARTING_PHASES = {
+    api.Phase.PREPARING,
+    api.Phase.SUBMITTING,
+    api.Phase.QUEUED,
+    api.Phase.STARTING,
+}
 
 
 class Rig:
     """The login node, the worker's sshd, and the schedulers jobs were given."""
 
     def __init__(
-        self, login: SSHTestServer, monkeypatch: pytest.MonkeyPatch, runtime: Path
+        self,
+        login: SSHTestServer,
+        worker: SSHTestServer,
+        monkeypatch: pytest.MonkeyPatch,
+        runtime: Path,
     ) -> None:
         self.login = login
+        self.worker = worker
         self.monkeypatch = monkeypatch
         self.runtime = runtime
-        self.worker_port = login.listen(banner(BANNER))
+        self.worker_port = worker.port
         self.schedulers: list[FakeScheduler] = []
+        self.jobs: list[api.Job] = []
         # Provisioning's commands on the login node.
         configure_tunnel(monkeypatch, login)
 
     def scheduling(self, inspections: list[Inspection], **options: object) -> None:
-        """Give each job a scheduler that reports `inspections`."""
+        """
+        Give each job a scheduler that reports `inspections`. The job monitors'
+        polls are held while a job starts: their 10 ms interval could otherwise
+        end it while it connects to its node.
+        """
         self.schedulers = use_scheduler(
             self.monkeypatch,
             lambda host: FakeScheduler(
                 host,
                 inspections,
                 submitted=worker_ready_on(self.login, self.worker_port),
+                held=self.starting,
                 **options,  # type: ignore[arg-type]
             ),
         )
 
-    def job(self, cluster: api.Cluster, config: api.JobConfig = JOB) -> api.Job:
-        return cluster.job(config, worker_ports=[self.worker_port])
+    def starting(self) -> bool:
+        return any(job.status.phase in STARTING_PHASES for job in self.jobs)
+
+    def job(self, host: api.Cluster, config: api.JobConfig = JOB) -> api.Job:
+        self.jobs.append(host.job(config, worker_ports=[self.worker_port]))
+        return self.jobs[-1]
 
     def host_block(self, alias: str) -> Path:
         return self.runtime / "ssh-config" / f"active-{alias}.conf"
@@ -80,15 +99,12 @@ class Rig:
 
 @pytest.fixture
 def rig(
-    login: SSHTestServer, monkeypatch: pytest.MonkeyPatch, isolated_runtime_dir: Path
+    login: SSHTestServer,
+    worker: SSHTestServer,
+    monkeypatch: pytest.MonkeyPatch,
+    isolated_runtime_dir: Path,
 ) -> Rig:
-    return Rig(login, monkeypatch, isolated_runtime_dir)
-
-
-def banner_through(port: int) -> bytes:
-    """What a client that connects to `port` on this machine receives first."""
-    with socket.create_connection(("127.0.0.1", port), WAIT_SECONDS) as stream:
-        return stream.recv(len(BANNER))
+    return Rig(login, worker, monkeypatch, isolated_runtime_dir)
 
 
 async def forever() -> None:
@@ -128,7 +144,7 @@ async def test_a_published_job_serves_then_cleans_up_in_order(rig: Rig) -> None:
             assert published.alias == "gpu"
             assert published.problem is None
             assert rig.host_block("gpu").exists()
-            assert await asyncio.to_thread(banner_through, published.port) == BANNER
+            assert await asyncio.to_thread(ssh_through, published.port) == f"{NODE}\n"
             [status] = job.status.attachments
             assert isinstance(status, api.PublishedStatus)
             assert (status.alias, status.port) == ("gpu", published.port)
@@ -297,6 +313,7 @@ async def test_a_job_without_provisioning_needs_the_worker_credentials(
 ) -> None:
     rig.scheduling([RUNNING])
     config = JOB.model_copy(update={"auto_provision": False})
+    remove_worker_credentials()
 
     async with api.connect(LOGIN) as cluster:
         with pytest.raises(api.JobFailed, match="ezhpcy provision") as failed:

@@ -27,8 +27,8 @@ class Answers:
         self.accept = accept
         self.asked: list[tuple[str, ...]] = []
 
-    async def ask_password(self, user: str, host: str) -> str:
-        self.asked.append(("password", user, host))
+    async def ask_password(self, user: str, host: str, attempt: int) -> str:
+        self.asked.append(("password", user, host, str(attempt)))
         return self.password
 
     async def accept_host_key(
@@ -108,7 +108,7 @@ async def test_a_password_is_asked_for_once_keys_fail(server: SSHTestServer) -> 
     async with api.connect(login_to(server), prompts=answers.prompts()):
         pass
 
-    assert answers.asked == [("password", server.user, server.host)]
+    assert answers.asked == [("password", server.user, server.host, "1")]
 
 
 async def test_a_password_given_is_tried_once_and_never_asked_for(

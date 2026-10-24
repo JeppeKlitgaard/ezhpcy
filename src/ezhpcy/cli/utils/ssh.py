@@ -25,21 +25,18 @@ logger = get_logger(__name__)
 
 def cli_prompts() -> Prompts:
     """
-    Prompts at the terminal, for one connection: a hidden password, saying from
+    Prompts at the terminal: a hidden password, saying from
     the second time on that the last one was wrong, and whether to trust a host
     key, by its type and fingerprint. Ctrl+C at a prompt raises
     `KeyboardInterrupt`.
     """
-    asked = 0
 
-    async def ask_password(user: str, host: str) -> str:
-        nonlocal asked
-        if asked:
+    async def ask_password(user: str, host: str, attempt: int) -> str:
+        if attempt > 1:
             print_error(
                 t"Invalid password. Try again or press Ctrl+C to abort.",
-                label=f"Error [{asked}/{PASSWORD_ATTEMPTS}]",
+                label=f"Error [{attempt - 1}/{PASSWORD_ATTEMPTS}]",
             )
-        asked += 1
         return ask(
             Prompt.ask,
             rich_text(t"Enter password for {user}@{host}"),

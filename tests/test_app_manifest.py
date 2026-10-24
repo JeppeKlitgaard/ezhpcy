@@ -16,6 +16,7 @@ from ezhpcy.app.manifest import (
     App,
     AppResources,
     AssetFile,
+    Link,
     Manifest,
     assets_key,
     combined_resources,
@@ -98,6 +99,7 @@ def only(manifest: Manifest) -> App:
     """The manifest's one app version."""
     [versions] = manifest.apps.values()
     [app] = versions.values()
+    assert isinstance(app, App)
     return app
 
 
@@ -127,6 +129,8 @@ def test_the_examples_load(path: Path) -> None:
     for name, by_version in manifest.apps.items():
         for version, app in by_version.items():
             assert (app.normalised_name, app.version) == (name, version)
+            if isinstance(app, Link):
+                continue
             assert app.environment.pixi == path.parent / "pixi.toml"
             assert app.environment.lock.is_file()
 
@@ -808,6 +812,10 @@ def test_placeholders_are_bare_names(template: str, message: str) -> None:
             "access.url: access.url does not take {run_dir}",
         ),
         (
+            'access.status_hints = ["{token}", "{workdir}"]',
+            "access.status_hints[1]: access.status_hints does not take {workdir}",
+        ),
+        (
             'run.env.X = "{port}"',
             "run.env.X: {port} is not set for endpoint.transport = 'socket'",
         ),
@@ -846,6 +854,79 @@ def test_every_placeholder_problem_is_listed(tmp_path: Path) -> None:
 
     assert f"{LAB}.run.env.A: unknown placeholder {{nope}}" in message
     assert f"{LAB}.access.url: access.url does not take {{port}}" in message
+
+
+# Links
+
+LINK_TABLE = '[ezhpcy.app.code."v1.0"]\n'
+# A link, beside `MINIMAL_APP`'s lab.
+LINK_AND_LAB = (
+    MINIMAL_APP
+    + "\n"
+    + LINK_TABLE
+    + 'access.url = "vscode://vscode-remote/ssh-remote+{alias}/"\n'
+    + 'access.status_hints = ["ssh {alias}", "code --remote ssh-remote+{alias}"]\n'
+)
+
+
+def test_a_table_with_nothing_to_run_is_a_link_to_the_alias(tmp_path: Path) -> None:
+    manifest = load(tmp_path, LINK_AND_LAB)
+
+    link = manifest.apps["code"]["v1.0"]
+    assert isinstance(link, Link)
+    assert str(link) == "code v1.0"
+    assert link.url("node-1") == "vscode://vscode-remote/ssh-remote+node-1/"
+    assert link.status_hints("node-1") == (
+        "ssh node-1",
+        "code --remote ssh-remote+node-1",
+    )
+    assert isinstance(manifest.apps["lab"]["v1.0"], App)
+
+
+def test_a_link_needs_nothing_from_a_job(tmp_path: Path) -> None:
+    manifest = MINIMAL_APP + "resources.cores = 2\n" + LINK_TABLE + 'access.url = "x"\n'
+    apps = load(tmp_path, manifest).apps
+
+    assert combined_resources([apps["code"]["v1.0"]]) == {}
+    assert combined_resources([apps["code"]["v1.0"], apps["lab"]["v1.0"]]) == {
+        "cores": 2
+    }
+
+
+@pytest.mark.parametrize(
+    ("addition", "message"),
+    [
+        ('description = "x"', '"v1.0".access: Field required'),
+        ('access.url = "x"\naccess.local_port = 1', "access.local_port: unknown key"),
+        ('access.url = "x"\nassets.include = ["x"]', "assets: unknown key"),
+        (
+            'access.url = "{token}"',
+            "access.url: {token} is not set for a link, which runs nothing",
+        ),
+        (
+            'access.url = "{local_port}"',
+            "access.url: {local_port} is not set for a link, which runs nothing",
+        ),
+        (
+            'access.url = "x"\naccess.status_hints = ["{alias}", "{token}"]',
+            "access.status_hints[1]: {token} is not set for a link, which runs nothing",
+        ),
+    ],
+)
+def test_a_link_has_only_a_url_to_the_alias(
+    tmp_path: Path, addition: str, message: str
+) -> None:
+    manifest = "[ezhpcy]\nschema = 1\n" + LINK_TABLE + addition + "\n"
+
+    assert message in problems(tmp_path, manifest)
+
+
+def test_an_app_has_no_alias(tmp_path: Path) -> None:
+    manifest = MINIMAL_APP + 'access.url = "http://{alias}/"\n'
+
+    assert (
+        f"{LAB}.access.url: {{alias}} is set only for links, which have no [run]"
+    ) in problems(tmp_path, manifest)
 
 
 # Keys

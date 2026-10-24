@@ -67,8 +67,8 @@ lazy from typing import Self
 lazy from pydantic import SecretStr
 
 from ezhpcy.app import AppFailed, ManifestError
-from ezhpcy.app.manifest import App, Manifest
-from ezhpcy.app.run import AppState, AppStatus, RunningApp
+from ezhpcy.app.manifest import App, Link, Manifest
+from ezhpcy.app.run import AppState, AppStatus, LinkStatus, RunningApp
 from ezhpcy.config import Config, Profile
 from ezhpcy.forward import Forward, ForwardStatus
 from ezhpcy.job import JobEnd, JobEnded, JobFailed
@@ -133,6 +133,8 @@ __all__ = [
     "JobState",
     "JobStatus",
     "LSFOptions",
+    "Link",
+    "LinkStatus",
     "Login",
     "Manifest",
     "ManifestError",
@@ -306,7 +308,7 @@ class Host:
 
     async def run_app(
         self,
-        app: App,
+        app: App | Link,
         *,
         local_port: int | None = None,
         provision: bool = True,
@@ -336,7 +338,7 @@ class Host:
         Several runs of one app may run at once; they share its workdir.
         Raises `ProvisioningError`, and `AppFailed` (with its stderr's last
         lines) if it exits before it is ready or isn't ready in time, once it
-        has been stopped.
+        has been stopped. Raises `TypeError` for a `Link`, which runs nothing.
         """
         return await _app_run.run_app(
             self._host,

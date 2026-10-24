@@ -1,6 +1,8 @@
 """
 The apps manifest: a TOML file on this machine whose `[ezhpcy]` table describes
-apps, one table per version of each, `[ezhpcy.app.<name>."<version>"]`. Every
+apps, one table per version of each, `[ezhpcy.app.<name>."<version>"]`. An app
+(`App`) runs on a host; a table without `environment`, `run` or `endpoint` is a
+link (`Link`) instead, which runs nothing and has only a URL. Every
 other top-level table belongs to other tools and is ignored; inside `[ezhpcy]`,
 unknown keys are errors.
 
@@ -30,8 +32,10 @@ from pydantic import (
     BaseModel,
     BeforeValidator,
     ConfigDict,
+    Discriminator,
     Field,
     PrivateAttr,
+    Tag,
     ValidationInfo,
     field_validator,
     model_validator,
@@ -62,7 +66,8 @@ _MIN_LOCK_VERSION = 6
 _ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 # Every placeholder, and the environment variable that carries its value too.
-# `local_port` is only known on this machine, so it has none.
+# `local_port` and `alias` (a link's Host alias) are only known on this machine,
+# so they have none.
 ENVIRONMENT_VARIABLES = {
     "socket": "EZHPCY_SOCKET",
     "port": "EZHPCY_PORT",
@@ -77,9 +82,10 @@ _HOST_PLACEHOLDERS = frozenset({"socket", "port", "run_dir", "assets", "workdir"
 FIELD_PLACEHOLDERS = {
     "run.command": _HOST_PLACEHOLDERS,
     "run.env": _HOST_PLACEHOLDERS | {"token"},
-    "access.url": frozenset({"token", "local_port"}),
+    "access.url": frozenset({"token", "local_port", "alias"}),
+    "access.status_hints": frozenset({"token", "local_port", "alias"}),
 }
-_ALL_PLACEHOLDERS = frozenset(ENVIRONMENT_VARIABLES) | {"local_port"}
+_ALL_PLACEHOLDERS = frozenset(ENVIRONMENT_VARIABLES) | {"local_port", "alias"}
 
 
 def placeholders(template: str) -> set[str]:
@@ -406,24 +412,21 @@ class Access(_Table):
     """How the user reaches the app on this machine."""
 
     url: str = "http://127.0.0.1:{local_port}/"
+    # Lines shown under the URL in a tunnel's status, such as a command that
+    # mounts it; they take the URL's placeholders.
+    status_hints: tuple[str, ...] = ()
     # 0 lets the OS pick a free port.
     local_port: int = Field(default=0, ge=0, le=65535)
 
 
-class App(_Table):
+class _Entry(_Table):
     """
-    One version of an app, `[ezhpcy.app.<name>."<version>"]`, frozen. Shown as
-    `name version`; `normalised_name` is the name compared, and used in paths.
+    One version of an app or a link, `[ezhpcy.app.<name>."<version>"]`, frozen.
+    Shown as `name version`; `normalised_name` is the name compared, and used
+    in paths.
     """
 
     description: str | None = Field(default=None, min_length=1)
-    environment: Environment
-    assets: Assets | None = None
-    resources: AppResources = Field(default_factory=AppResources)
-    run: Run
-    endpoint: Endpoint
-    ready: Ready = Field(default_factory=Ready)
-    access: Access = Field(default_factory=Access)
     _name: str = PrivateAttr(default="")
     _version: str = PrivateAttr(default="")
 
@@ -447,18 +450,19 @@ class App(_Table):
 
     def templates(self) -> Iterator[tuple[str, str, str]]:
         """Every field that takes placeholders: (field, path, template)."""
-        for index, argument in enumerate(self.run.command):
-            yield "run.command", f"run.command[{index}]", argument
-        for name, value in self.run.env.items():
-            yield "run.env", f"run.env.{name}", value
-        yield "access.url", "access.url", self.access.url
+        raise NotImplementedError
+
+    def available(self) -> set[str]:
+        """The placeholders that have values for it."""
+        raise NotImplementedError
+
+    def unavailable(self, name: str) -> str:
+        """Why the placeholder `name` has no value for it."""
+        raise NotImplementedError
 
     def placeholder_problems(self) -> Iterator[tuple[str, str]]:
         """Each field whose placeholders are wrong: (path, why)."""
-        available = set(_ALL_PLACEHOLDERS)
-        available.discard("port" if self.endpoint.transport == "socket" else "socket")
-        if self.assets is None:
-            available.discard("assets")
+        available = self.available()
         for field, path, template in self.templates():
             try:
                 names = placeholders(template)
@@ -471,15 +475,105 @@ class App(_Table):
                 elif name not in FIELD_PLACEHOLDERS[field]:
                     yield path, f"{field} does not take {{{name}}}"
                 elif name not in available:
-                    yield path, f"{{{name}}} {_unavailable(name, self)}"
+                    yield path, f"{{{name}}} {self.unavailable(name)}"
 
 
-def _unavailable(name: str, app: App) -> str:
-    match name:
-        case "socket" | "port":
-            return f"is not set for endpoint.transport = {app.endpoint.transport!r}"
-        case _:
-            return "is not set without [assets]"
+class App(_Entry):
+    """An app: a server run on a host, and forwarded to this machine."""
+
+    environment: Environment
+    assets: Assets | None = None
+    resources: AppResources = Field(default_factory=AppResources)
+    run: Run
+    endpoint: Endpoint
+    ready: Ready = Field(default_factory=Ready)
+    access: Access = Field(default_factory=Access)
+
+    def templates(self) -> Iterator[tuple[str, str, str]]:
+        for index, argument in enumerate(self.run.command):
+            yield "run.command", f"run.command[{index}]", argument
+        for name, value in self.run.env.items():
+            yield "run.env", f"run.env.{name}", value
+        yield from _access_templates(self.access)
+
+    def available(self) -> set[str]:
+        available = set(_ALL_PLACEHOLDERS) - {"alias"}
+        available.discard("port" if self.endpoint.transport == "socket" else "socket")
+        if self.assets is None:
+            available.discard("assets")
+        return available
+
+    def unavailable(self, name: str) -> str:
+        match name:
+            case "socket" | "port":
+                return (
+                    f"is not set for endpoint.transport = {self.endpoint.transport!r}"
+                )
+            case "alias":
+                return "is set only for links, which have no [run]"
+            case _:
+                return "is not set without [assets]"
+
+
+class LinkAccess(_Table):
+    """Where a link points."""
+
+    url: str
+    # As an app's (`Access`).
+    status_hints: tuple[str, ...] = ()
+
+
+class Link(_Entry):
+    """
+    A link: an app with nothing to run, only a URL, such as one that opens the
+    host its tunnel publishes in an editor (`{alias}`, the Host alias).
+    """
+
+    access: LinkAccess
+
+    def templates(self) -> Iterator[tuple[str, str, str]]:
+        yield from _access_templates(self.access)
+
+    def available(self) -> set[str]:
+        return {"alias"}
+
+    def unavailable(self, name: str) -> str:
+        return "is not set for a link, which runs nothing"
+
+    def url(self, alias: str) -> str:
+        """Its URL, for the host published under the Host alias `alias`."""
+        return render(self.access.url, {"alias": alias})
+
+    def status_hints(self, alias: str) -> tuple[str, ...]:
+        """Its status hints, for the host published under the Host alias `alias`."""
+        return tuple(
+            render(hint, {"alias": alias}) for hint in self.access.status_hints
+        )
+
+
+def _access_templates(access: Access | LinkAccess) -> Iterator[tuple[str, str, str]]:
+    yield "access.url", "access.url", access.url
+    for index, hint in enumerate(access.status_hints):
+        yield "access.status_hints", f"access.status_hints[{index}]", hint
+
+
+# The keys that make an entry an app rather than a link.
+_APP_KEYS = frozenset({"environment", "run", "endpoint"})
+# Tags in validation errors' locations, which `_location` leaves out. Never a
+# name or a version, which have no `<`.
+_APP_TAG, _LINK_TAG = "<app>", "<link>"
+
+
+def _entry_kind(value: object) -> str:
+    if isinstance(value, dict):
+        return _APP_TAG if value.keys() & _APP_KEYS else _LINK_TAG
+    return _LINK_TAG if isinstance(value, Link) else _APP_TAG
+
+
+type Entry = Annotated[
+    Annotated[App, Tag(_APP_TAG)] | Annotated[Link, Tag(_LINK_TAG)],
+    Discriminator(_entry_kind),
+]
 
 
 def _check_app_name(name: object) -> object:
@@ -523,7 +617,7 @@ class EzhpcyTable(_Table):
 
     # `schema` would shadow `BaseModel.schema`.
     schema_version: Literal[1] = Field(alias="schema")
-    app: dict[AppName, dict[AppVersion, App]]
+    app: dict[AppName, dict[AppVersion, Entry]]
 
     @field_validator("schema_version", mode="before")
     @classmethod
@@ -537,7 +631,9 @@ class EzhpcyTable(_Table):
 
     @field_validator("app")
     @classmethod
-    def name_apps(cls, apps: dict[str, dict[str, App]]) -> dict[str, dict[str, App]]:
+    def name_apps(
+        cls, apps: dict[str, dict[str, Entry]]
+    ) -> dict[str, dict[str, Entry]]:
         names: dict[str, str] = {}
         for name, versions in apps.items():
             normalised = canonicalize_name(name)
@@ -574,7 +670,7 @@ class Manifest:
     """
 
     path: Path
-    apps: Mapping[str, Mapping[str, App]]
+    apps: Mapping[str, Mapping[str, Entry]]
 
     @classmethod
     def load(cls, path: Path) -> Manifest:
@@ -638,7 +734,9 @@ def _check_layout(path: Path, data: dict[str, object]) -> None:
             t"{'[ezhpcy.app.lab."v1.0"]':suggestion}"
         )
     for name, versions in apps.items():
-        if isinstance(versions, dict) and set(versions) & set(App.model_fields):
+        if isinstance(versions, dict) and set(versions) & (
+            set(App.model_fields) | set(Link.model_fields)
+        ):
             raise ManifestError(
                 t"{path:path}: app {name:name} has no version; each version of an "
                 t"app is a table of its own, such as "
@@ -666,8 +764,9 @@ def _location(loc: Iterable[int | str]) -> str:
     for part in loc:
         if isinstance(part, int):
             location += f"[{part}]"
-        # Pydantic's marker for a dict's key: the path names the key already.
-        elif part != "[key]":
+        # Pydantic's marker for a dict's key, which the path names already, and
+        # the tag of an app or a link.
+        elif part not in {"[key]", _APP_TAG, _LINK_TAG}:
             key = part if _BARE_KEY.fullmatch(part) else f'"{part}"'
             location += f".{key}" if location else key
     return location
@@ -682,14 +781,14 @@ def _invalid(path: Path, problems: list[tuple[str, str]]) -> ManifestError:
 
 def collect_apps(
     manifests: Sequence[Manifest], defaults: Sequence[Manifest] = ()
-) -> dict[str, dict[str, App]]:
+) -> dict[str, dict[str, Entry]]:
     """
     The apps of `manifests` and of a front end's `defaults`, by normalised
     name, then by version as written. A version of an app in one of `manifests`
     replaces the same version in `defaults`. Raises `ManifestError` for the same
     version of an app in two of `manifests`, or in two of `defaults`.
     """
-    found: dict[tuple[str, Version], tuple[App, Manifest, bool]] = {}
+    found: dict[tuple[str, Version], tuple[Entry, Manifest, bool]] = {}
     for manifest, default in [
         *((manifest, True) for manifest in defaults),
         *((manifest, False) for manifest in manifests),
@@ -710,15 +809,15 @@ def collect_apps(
                         t"default one of {source.path:path}."
                     )
                 found[key] = (app, manifest, default)
-    apps: dict[str, dict[str, App]] = {}
+    apps: dict[str, dict[str, Entry]] = {}
     for (name, _version), (app, _manifest, _default) in found.items():
         apps.setdefault(name, {})[app.version] = app
     return apps
 
 
 def choose_app(
-    apps: Mapping[str, Mapping[str, App]], name: str, version: str | None = None
-) -> App:
+    apps: Mapping[str, Mapping[str, Entry]], name: str, version: str | None = None
+) -> Entry:
     """
     The app called `name`, compared normalised, at `version`, compared as PEP
     440 versions; or without `version`, its newest that isn't a pre-release.
@@ -755,14 +854,16 @@ def choose_app(
     return finals[-1]
 
 
-def combined_resources(apps: Sequence[App]) -> dict[str, Any]:
+def combined_resources(apps: Sequence[Entry]) -> dict[str, Any]:
     """
     What `apps` need from one job together, by field of `Resources`, for those
     fields any of them sets: the most any of them asks for, and exclusive if
-    any of them is.
+    any of them is. Links need nothing.
     """
     combined: dict[str, Any] = {}
     for app in apps:
+        if isinstance(app, Link):
+            continue
         for name, value in app.resources.model_dump(exclude_unset=True).items():
             combined[name] = max(combined[name], value) if name in combined else value
     return combined

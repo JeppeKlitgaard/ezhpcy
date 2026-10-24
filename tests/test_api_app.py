@@ -30,6 +30,7 @@ LAB = MINIMAL_APP + (
     'run.env.JUPYTER_TOKEN = "{token}"\n'
     'run.env.JUPYTER_RUNTIME_DIR = "{run_dir}/jupyter"\n'
     'access.url = "http://127.0.0.1:{local_port}/lab?token={token}"\n'
+    'access.status_hints = ["lab --port {local_port} --token {token}"]\n'
     'ready = { check = "http", path = "/api" }\n'
 )
 BOARD = """\
@@ -86,6 +87,8 @@ async def test_an_app_runs_on_a_plain_host_and_is_served_here(
         token = lab.url.rsplit("token=", 1)[1]
         assert lab.url == f"http://127.0.0.1:{lab.local_port}/lab?token={token}"
         assert len(token) == 32
+        # Rendered as the URL is.
+        assert lab.status_hints == (f"lab --port {lab.local_port} --token {token}",)
         assert await asyncio.to_thread(fetch, lab.url) == b"hello"
         assert lab.process.run_dir == PurePosixPath(f"/tmp/ezhpcy-{lab.process.run_id}")
         assert lab.forward.status.destination == api.SocketDestination(
@@ -98,6 +101,7 @@ async def test_an_app_runs_on_a_plain_host_and_is_served_here(
                 state=api.AppState.READY,
                 run_id=lab.process.run_id,
                 url=lab.url,
+                status_hints=lab.status_hints,
             ),
         )
         # The token is in the launch script's environment, never on a command
@@ -301,6 +305,17 @@ async def test_without_provisioning_an_app_must_be_installed(
 
         assert len(rig.pixi.installs) == installs
         assert lab.status.state is api.AppState.READY
+
+
+async def test_a_link_is_not_run(rig: AppRig, tmp_path: Path) -> None:
+    manifest = '[ezhpcy]\nschema = 1\n[ezhpcy.app.code."v1.0"]\naccess.url = "x"\n'
+    link = config_of(tmp_path, manifest).app("code")
+
+    async with api.connect(LOGIN) as host:
+        with pytest.raises(TypeError, match=r"code v1\.0 is a link"):
+            await host.run_app(link)
+        assert host.status == ()
+        assert rig.processes.processes == []
 
 
 async def test_the_apps_root_and_local_port_can_be_chosen(

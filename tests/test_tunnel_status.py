@@ -7,7 +7,7 @@ import pytest
 from rich.console import Console
 from rich.panel import Panel
 
-from ezhpcy.app.run import AppState, AppStatus
+from ezhpcy.app.run import AppState, AppStatus, LinkStatus
 from ezhpcy.cli._tunnel_status import status_panel
 from ezhpcy.job.status import JobStatus, Phase, PublishedStatus
 from ezhpcy.scheduler.base import JobInfo, JobState
@@ -209,3 +209,42 @@ def test_each_app_has_a_row_saying_where_it_is() -> None:
         "big v1.0 provisioning",
         "slow v1.0 starting",
     ]
+
+
+def test_an_apps_status_hints_are_shown_only_while_it_serves() -> None:
+    hints = ("mount --port 4455",)
+    serving = AppStatus(
+        name="smb",
+        version="v1.0",
+        state=AppState.READY,
+        url="smb://127.0.0.1:4455/files",
+        status_hints=hints,
+    )
+    exited = replace(serving, name="old", state=AppState.EXITED, exit_status=1)
+    status = replace(SERVING, attachments=(*SERVING.attachments, serving, exited))
+
+    lines = shown(status)
+
+    first = lines.index("smb v1.0 smb://127.0.0.1:4455/files (0 connections)")
+    assert lines[first + 1 : first + 3] == [
+        "mount --port 4455",
+        "old v1.0 exited with status 1",
+    ]
+
+
+def test_a_link_has_a_row_with_its_url_and_no_connections() -> None:
+    link = LinkStatus(
+        name="code",
+        version="v1.0",
+        url="vscode://x/ssh-remote+s/",
+        status_hints=("ssh s", "code --remote ssh-remote+s"),
+    )
+    status = replace(SERVING, attachments=(*SERVING.attachments, link))
+
+    lines = shown(status)
+
+    first = lines.index("code v1.0 vscode://x/ssh-remote+s/")
+    # Its status hints, under it.
+    assert lines[first + 1 : first + 3] == ["ssh s", "code --remote ssh-remote+s"]
+    # The headline is still the Host block's.
+    assert "Connect with ssh scratch" in lines

@@ -36,7 +36,7 @@ lazy import asyncssh
 from ezhpcy.logging import REPLAY_ON_ERROR, get_logger
 lazy from ezhpcy import forward as _forward, process as _process
 lazy from ezhpcy.app import AppFailed
-lazy from ezhpcy.app.manifest import ENVIRONMENT_VARIABLES, App, Ready, render
+lazy from ezhpcy.app.manifest import ENVIRONMENT_VARIABLES, App, Link, Ready, render
 lazy from ezhpcy.app.provision import (
     AppsLayout,
     ProvisionedApp,
@@ -92,10 +92,26 @@ class AppStatus:
     # Its process's, once started.
     run_id: str | None = None
     url: str | None = None
+    # Shown under its URL (`access.status_hints`), once it has one.
+    status_hints: tuple[str, ...] = ()
     # Connections open through its forwarded port.
     connections: int = 0
     # Once it has exited: `128+n` for a death by signal n.
     exit_status: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class LinkStatus:
+    """
+    A link (`Link`), at `url` for the Host alias it was given. It runs nothing,
+    so nothing goes through it to count.
+    """
+
+    name: str
+    version: str
+    url: str
+    # Shown under its URL (`access.status_hints`).
+    status_hints: tuple[str, ...] = ()
 
 
 class RunningApp:
@@ -109,6 +125,7 @@ class RunningApp:
         self,
         app: App,
         url: str,
+        status_hints: tuple[str, ...],
         process: Process,
         forward: Forward,
         attachment: Attachment,
@@ -116,6 +133,7 @@ class RunningApp:
         # Use `Host.run_app`.
         self.app = app
         self.url = url
+        self.status_hints = status_hints
         self.process = process
         self.forward = forward
         self._attachment = attachment
@@ -150,7 +168,7 @@ class RunningApp:
 
 async def run_app(
     host: RemoteHost,
-    app: App,
+    app: App | Link,
     *,
     local_port: int | None = None,
     provision: bool = True,
@@ -166,8 +184,11 @@ async def run_app(
     host's XDG cache directory.
 
     Raises `ProvisioningError`, and `AppFailed` if the app exits before it is
-    ready, or isn't within `ready.timeout_seconds`, after stopping it.
+    ready, or isn't within `ready.timeout_seconds`, after stopping it. Raises
+    `TypeError` for a link, which has nothing to run.
     """
+    if isinstance(app, Link):
+        raise TypeError(f"{app} is a link, which has nothing to run")
     # Before the app, so that it is closed after it.
     _process.watcher(host)
     attachment = host.attachments.attach()
@@ -203,7 +224,7 @@ async def _run(
     await _note_other_runs(host, app)
     _warn_if_reachable(app)
 
-    state, url = AppState.STARTING, None
+    state, url, status_hints = AppState.STARTING, None, ()
     process: Process | None = None
     forward: Forward | None = None
 
@@ -219,6 +240,7 @@ async def _run(
                 state=AppState.EXITED if exit_status is not None else state,
                 run_id=process.run_id,
                 url=url,
+                status_hints=status_hints,
                 connections=forward.connections if forward is not None else 0,
                 exit_status=exit_status,
             )
@@ -256,10 +278,12 @@ async def _run(
         attachment=attachment.attach(on_change=changed),
     )
     state = AppState.READY
-    url = render(app.access.url, {"token": token, "local_port": str(forward.port)})
+    values = {"token": token, "local_port": str(forward.port)}
+    url = render(app.access.url, values)
+    status_hints = tuple(render(hint, values) for hint in app.access.status_hints)
     changed()
     logger.info(t"App {app!s:name} is ready at {url:target}.")
-    return RunningApp(app, url, process, forward, attachment)
+    return RunningApp(app, url, status_hints, process, forward, attachment)
 
 
 def _command(

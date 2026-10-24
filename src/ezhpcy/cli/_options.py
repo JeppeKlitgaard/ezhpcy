@@ -28,6 +28,7 @@ CONNECTION_PANEL = Group("Connection Options", sort_key=1)
 SCHEDULER_PANEL = Group("Scheduler Options", sort_key=2)
 RESOURCES_PANEL = Group("Resource Options", sort_key=3)
 TIMINGS_PANEL = Group("Timing Options", sort_key=4)
+APPS_PANEL = Group("App Options", sort_key=5)
 
 # Not shown in help: it only makes the password options mutually exclusive.
 PASSWORD_SOURCES = Group(
@@ -282,6 +283,31 @@ WorkerHeartbeatTimeoutOpt = Annotated[
         validator=validators.Number(gte=1),
         help="Maximum time the worker may go without a lease heartbeat.",
         group=TIMINGS_PANEL,
+    ),
+]
+ManifestOpt = Annotated[
+    list[Path] | None,
+    Parameter(
+        name="--manifest",
+        metavar="PATH",
+        help=(
+            "An apps manifest (`ezhpcy-apps.toml`), or a directory holding one, "
+            "for --app to choose from; may be repeated."
+        ),
+        group=APPS_PANEL,
+    ),
+]
+AppOpt = Annotated[
+    list[str] | None,
+    Parameter(
+        name="--app",
+        metavar="NAME[@VERSION]",
+        help=(
+            "An app of the manifests to run on the compute node once the tunnel "
+            "serves, provisioned there if needed: its newest version, or "
+            "VERSION. May be repeated; the apps start in order."
+        ),
+        group=APPS_PANEL,
     ),
 ]
 

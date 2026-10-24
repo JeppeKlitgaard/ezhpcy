@@ -1,7 +1,6 @@
 """The tunnel's side of the worker's control directory (see `ezhpcy.worker`)."""
 
 from dataclasses import dataclass
-from typing import Literal
 lazy import contextlib
 lazy from pathlib import PurePosixPath
 
@@ -21,38 +20,23 @@ JOB_RECORD_NAME = "job.json"
 
 @dataclass(frozen=True, slots=True)
 class WorkerReady:
-    """
-    sshd listens on `port`. With an app, the app has started, and listens on
-    `app`: the run directory's socket (`"socket"`), or a TCP port on 127.0.0.1.
-    """
+    """sshd listens on `port`."""
 
     port: int
-    app: int | Literal["socket"] | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class WorkerFailed:
-    """sshd or the app couldn't start, for `reason`."""
+    """sshd couldn't start, for `reason`."""
 
     reason: str
-
-    @property
-    def what(self) -> str:
-        """What couldn't start, as messages name it."""
-        return "app" if self.reason.startswith("app_") else "worker SSH daemon"
 
 
 @dataclass(frozen=True, slots=True)
 class WorkerStopped:
-    """`process` has exited with `exit_status`, and the worker with it."""
+    """sshd has exited, and the worker with it, with `exit_status`."""
 
-    process: Literal["sshd", "app"]
     exit_status: int
-
-    @property
-    def what(self) -> str:
-        """The process, as messages name it."""
-        return "worker SSH daemon" if self.process == "sshd" else "app"
 
 
 type WorkerStatus = WorkerReady | WorkerFailed | WorkerStopped
@@ -74,13 +58,11 @@ class WorkerControl:
         token: str,
         *,
         ports: tuple[int, ...],
-        app_ports: tuple[int, ...] = (),
     ) -> None:
         self._sftp = sftp
         self.directory = directory
         self._token = token
         self._ports = frozenset(ports)
-        self._app_ports = frozenset(app_ports)
         self._sequence = 0
         self._leases: list[PurePosixPath] = []
 
@@ -142,30 +124,21 @@ class WorkerControl:
             raise WorkerError(t"worker wrote an invalid status record")
         match fields[1:]:
             case ["ready", port]:
-                return WorkerReady(self._ready_port(port, self._ports, "SSH"))
-            case ["ready", port, "socket"]:
-                return WorkerReady(self._ready_port(port, self._ports, "SSH"), "socket")
-            case ["ready", port, app_port]:
-                return WorkerReady(
-                    self._ready_port(port, self._ports, "SSH"),
-                    self._ready_port(app_port, self._app_ports, "app"),
-                )
+                return WorkerReady(self._ready_port(port))
             case ["failed", *reason]:
                 return WorkerFailed(" ".join(reason) or "worker startup failed")
-            case ["stopped", "sshd" | "app" as process, exit_status] if (
-                exit_status.isdigit()
-            ):
-                return WorkerStopped(process, int(exit_status))
+            case ["stopped", exit_status] if exit_status.isdigit():
+                return WorkerStopped(int(exit_status))
             case _:
                 raise WorkerError(t"worker wrote an invalid status record")
 
-    def _ready_port(self, field: str, expected: frozenset[int], what: str) -> int:
+    def _ready_port(self, field: str) -> int:
         try:
             port = int(field)
         except ValueError as error:
-            raise WorkerError(t"worker reported a non-numeric {what} port") from error
-        if port not in expected:
-            raise WorkerError(t"worker reported unexpected {what} port {port:detail}")
+            raise WorkerError(t"worker reported a non-numeric SSH port") from error
+        if port not in self._ports:
+            raise WorkerError(t"worker reported unexpected SSH port {port:detail}")
         return port
 
     async def close(self) -> None:

@@ -20,6 +20,9 @@ def test_sshd_config_is_expressed_as_cli_arguments() -> None:
     assert "AuthorizedKeysCommandUser=alice" in settings
     assert "AllowUsers=alice" in settings
     assert "Subsystem=sftp internal-sftp" in settings
+    # Apps' sockets, and headroom for many processes' sessions on one connection.
+    assert "AllowStreamLocalForwarding=yes" in settings
+    assert "MaxSessions=64" in settings
     assert not any(setting.startswith("ClientAlive") for setting in settings)
 
 

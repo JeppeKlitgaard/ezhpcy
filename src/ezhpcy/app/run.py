@@ -247,7 +247,7 @@ async def _run(
     try:
         await _wait_until_ready(host, destination, app, process)
     except AppFailed as failed:
-        failed.stderr = await _log_stderr(process)
+        failed.stderr = await log_stderr(process)
         raise
     forward = await _forward.forward(
         host,
@@ -368,10 +368,10 @@ async def _wait_until_ready(
         exited.cancel()
 
 
-async def _log_stderr(process: Process) -> str:
+async def log_stderr(process: Process) -> str:
     """
-    The last lines of the app's stderr, logged to be shown with the error; empty
-    if they can't be read.
+    The last lines of the app's stderr, logged to be shown with the next error
+    (`REPLAY_ON_ERROR`); empty if they can't be read.
     """
     try:
         async with asyncio.timeout(_ATTEMPT_SECONDS):

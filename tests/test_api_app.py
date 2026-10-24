@@ -18,18 +18,11 @@ import pytest
 
 from ezhpcy import api
 from tests.support.api import JOB, LOGIN, JobRig
-from tests.support.apps import (
-    MINIMAL_APP,
-    FakePixi,
-    http_app,
-    quick_apps,
-    serve_shell_tools,
-    write_project,
-)
+from tests.support.apps import MINIMAL_APP, AppRig, http_app, write_project
 from tests.support.login import CACHE, REMOTE_STATE
 from tests.support.sshserver import SSHTestServer
-from tests.support.tunnel import unused_port
-from tests.support.worker import FakeProcess, FakeProcesses, quick_processes
+from tests.support.tunnel import JOB_ID, control_dirs, unused_port
+from tests.support.worker import NODE, FakeProcess, FakeProcesses
 
 WAIT_SECONDS = 5
 APPS_ROOT = CACHE / "ezhpcy-apps"
@@ -49,30 +42,6 @@ run.command = ["tensorboard", "--logdir", "{workdir}/runs", "--port", "{port}"]
 endpoint.transport = "tcp"
 ready.check = "tcp"
 """
-
-
-class AppRig:
-    """
-    A host for apps: the fake Pixi and shell tools for provisioning, and fake
-    processes that serve each app's socket as it starts, unless it `refuses`.
-    """
-
-    def __init__(self, server: SSHTestServer, monkeypatch: pytest.MonkeyPatch) -> None:
-        self.server = server
-        serve_shell_tools(server)
-        self.pixi = FakePixi(server)
-        quick_processes(monkeypatch)
-        quick_apps(monkeypatch)
-        self.app = http_app()
-        self.processes = FakeProcesses(server, on_start=self._serve)
-
-    def _serve(self, process: FakeProcess) -> None:
-        if self.app is not None:
-            self.server.allow_socket(process.remote_run_dir / "app.sock", self.app)
-
-    def serve_port(self) -> None:
-        """Have the next app that picks a port listen on one."""
-        self.processes.ports.append(self.server.listen(http_app()))
 
 
 @pytest.fixture
@@ -165,6 +134,8 @@ async def test_an_app_runs_on_a_plain_host_and_is_served_here(
         assert fake.signals == ["TERM"]
         assert not fake.run_dir.exists()
         assert host.status == ()
+    # A plain host's: no job, so no control directory.
+    assert control_dirs(rig.server) == []
 
 
 async def test_a_tcp_app_listens_on_the_port_its_launch_script_picks(
@@ -384,3 +355,64 @@ async def test_an_app_on_a_jobs_node_is_provisioned_and_served_there(
     assert "App board v2.18 listens on a TCP port" in warning
     # Stopped with the job.
     assert [fake.signals for fake in rig.processes.processes] == [["TERM"], ["TERM"]]
+
+
+async def test_an_apps_exit_doesnt_end_its_job(
+    login: SSHTestServer,
+    worker: SSHTestServer,
+    monkeypatch: pytest.MonkeyPatch,
+    isolated_runtime_dir: Path,
+    tmp_path: Path,
+) -> None:
+    job_rig = JobRig(login, worker, monkeypatch, isolated_runtime_dir)
+    rig = AppRig(worker, monkeypatch)
+
+    async with (
+        api.connect(LOGIN) as login_node,
+        job_rig.job(login_node) as job,
+    ):
+        lab = await job.host.run_app(config_of(tmp_path).app("lab"))
+        [fake] = rig.processes.processes
+        fake.exit(1)
+        async with asyncio.timeout(WAIT_SECONDS):
+            assert await lab.wait() == 1
+
+        assert job.status.phase is api.Phase.READY
+        assert await job.host.run(["hostname"]) == f"{NODE}\n"
+
+    [scheduler] = job_rig.schedulers
+    assert scheduler.cancelled == [JOB_ID]
+
+
+async def test_losing_the_nodes_connection_while_an_app_serves_ends_the_job(
+    login: SSHTestServer,
+    worker: SSHTestServer,
+    monkeypatch: pytest.MonkeyPatch,
+    isolated_runtime_dir: Path,
+    tmp_path: Path,
+) -> None:
+    job_rig = JobRig(login, worker, monkeypatch, isolated_runtime_dir)
+    rig = AppRig(worker, monkeypatch)
+    statuses: list[api.AppStatus] = []
+
+    async def lose_the_node(login_node: api.Host) -> None:
+        async with job_rig.job(login_node) as job:
+            lab = await job.host.run_app(config_of(tmp_path).app("lab"))
+            worker.drop()
+            try:
+                async with asyncio.timeout(WAIT_SECONDS):
+                    await asyncio.Event().wait()
+            finally:
+                statuses.append(lab.status)
+
+    async with api.connect(LOGIN) as login_node:
+        with pytest.raises(api.JobFailed, match="worker SSH connection lost"):
+            await lose_the_node(login_node)
+
+    # It served until then; with its host gone, nothing could signal it, and
+    # the scheduler's cancel ends it.
+    assert [status.state for status in statuses] == [api.AppState.READY]
+    [fake] = rig.processes.processes
+    assert fake.signals == []
+    [scheduler] = job_rig.schedulers
+    assert scheduler.cancelled == [JOB_ID]

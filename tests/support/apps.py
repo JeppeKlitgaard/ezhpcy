@@ -1,6 +1,7 @@
 """
-App projects on this machine for tests, a manifest beside Pixi files, and a
-fake `pixi` and shell tools for provisioning them on the test server.
+App projects on this machine for tests, a manifest beside Pixi files, a fake
+`pixi` and shell tools for provisioning them on the test server, and a host
+that serves them (`AppRig`).
 """
 
 import re
@@ -16,6 +17,7 @@ import pytest
 
 from ezhpcy.app import run as app_run
 from tests.support.sshserver import Invocation, SSHTestServer, reply
+from tests.support.worker import FakeProcess, FakeProcesses, quick_processes
 
 PIXI_TOML = """\
 [workspace]
@@ -163,6 +165,31 @@ class FakePixi:
 def quick_apps(monkeypatch: pytest.MonkeyPatch) -> None:
     """Check apps' readiness every 10 ms."""
     monkeypatch.setattr(app_run, "_READY_POLL_SECONDS", 0.01)
+
+
+class AppRig:
+    """
+    A host for apps: the fake Pixi and shell tools for provisioning, and fake
+    processes that serve `app` on each app's socket as it starts, unless it is
+    None.
+    """
+
+    def __init__(self, server: SSHTestServer, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.server = server
+        serve_shell_tools(server)
+        self.pixi = FakePixi(server)
+        quick_processes(monkeypatch)
+        quick_apps(monkeypatch)
+        self.app: Callable[..., Any] | None = http_app()
+        self.processes = FakeProcesses(server, on_start=self._serve)
+
+    def _serve(self, process: FakeProcess) -> None:
+        if self.app is not None:
+            self.server.allow_socket(process.remote_run_dir / "app.sock", self.app)
+
+    def serve_port(self) -> None:
+        """Have the next app that picks a port listen on one."""
+        self.processes.ports.append(self.server.listen(http_app()))
 
 
 def http_app(status: int = 200, body: bytes = b"hello") -> Callable[..., Any]:

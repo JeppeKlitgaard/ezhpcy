@@ -145,8 +145,8 @@ def capture(
     The dict stays empty if the command never got there, e.g. after a usage error.
 
     - `tunnel`: what it would serve once its alias is reserved: the `login`,
-      the `job` (a `JobConfig`), the `alias`, the `worker_ports` and the
-      `password` given, if any. The command then exits normally, without
+      the `job` (a `JobConfig`), the `alias`, the `apps` and their
+      `apps_root`, the `worker_ports` and the `password` given, if any. The command then exits normally, without
       connecting.
     - `provision`, `prune`: the `login` given to `ezhpcy.login.connect`, the
       `password` it would use (given, or read from the login's sources), and
@@ -169,6 +169,8 @@ def capture(
                     login=run.login,
                     job=run.config,
                     alias=run.alias,
+                    apps=run.apps,
+                    apps_root=run.apps_root,
                     worker_ports=worker_ports,
                     password=password,
                 )

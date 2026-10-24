@@ -83,6 +83,50 @@ def serve_login_shell(server: SSHTestServer, **fakes: Handler) -> None:
     server.command("bash -lc", dispatch)
 
 
+def bjobs(running: threading.Event, done: threading.Event):
+    """LSF's `bjobs`: pending until `running`, then running until `done`."""
+
+    def handler(invocation: Invocation) -> None:
+        if done.is_set():
+            state, exit_code = "DONE", "0"
+        elif running.is_set():
+            state, exit_code = "RUN", "-"
+        else:
+            state, exit_code = "PEND", "-"
+        host = "-" if state == "PEND" else "127.0.0.1"
+        reason = "Job slot limit reached: 3 hosts;" if state == "PEND" else "-"
+        invocation.stdout.write(f"{JOB_ID}|{state}|{host}|{exit_code}|{reason}\n")
+
+    return handler
+
+
+def serve_lsf_job(
+    login: SSHTestServer,
+    monkeypatch: pytest.MonkeyPatch,
+    worker_port: int,
+    **profile: object,
+) -> threading.Event:
+    """
+    Configure profile `base` (`profile` adds to its settings, as for
+    `configure_tunnel`) with an interactive LSF job whose worker serves on
+    `worker_port` at once. The job runs until the returned event is set.
+    """
+    running, done = threading.Event(), threading.Event()
+
+    async def bsub(invocation: Invocation) -> None:
+        invocation.stdout.write(f"Job <{JOB_ID}> is submitted to queue <normal>.\n")
+        await invocation.stdin.readline()
+        write_worker_status(login, "ready", str(worker_port))
+        running.set()
+        while await invocation.stdin.readline():
+            pass
+
+    serve_login_shell(login, bsub=bsub, bjobs=bjobs(running, done), bkill=reply())
+    configure_tunnel(monkeypatch, login, **profile)
+    monkeypatch.setattr(ssh_config, "check_host_resolution", lambda _host, _port: None)
+    return done
+
+
 def write_worker_status(server: SSHTestServer, state: str, *fields: str) -> None:
     """
     Write a status as the worker does, in the only run's control directory: by
@@ -293,8 +337,9 @@ def tunnel_log() -> Generator[LogRecords]:
     loggers = [
         logging.getLogger(name)
         for name in (
-            "ezhpcy.app.session",
+            "ezhpcy.app.run",
             "ezhpcy.cleanup",
+            "ezhpcy.cli._resolve",
             "ezhpcy.cli.tunnel",
             "ezhpcy.config",
             "ezhpcy.forward",

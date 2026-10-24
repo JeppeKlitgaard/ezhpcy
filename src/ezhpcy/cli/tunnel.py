@@ -1,19 +1,23 @@
 """
-`ezhpcy tunnel`: a worker job published under an alias, until it ends or Ctrl+C,
-through `ezhpcy.api`.
+`ezhpcy tunnel`: a worker job published under an alias, and the apps given
+running on its node, until it ends or Ctrl+C, through `ezhpcy.api`.
 
 Before connecting, so that a doomed tunnel fails before any password prompt or
-queue wait: the configuration is resolved, the worker's credentials checked,
-and the alias reserved (`api.reserve_alias`, which checks that `ssh <alias>`
-would reach it). Then: connect, enter a job, publish it under the alias, and
-wait.
+queue wait: the manifests are read and the apps chosen, the configuration is
+resolved, the worker's credentials checked, and the alias reserved
+(`api.reserve_alias`, which checks that `ssh <alias>` would reach it). Then:
+connect, enter a job, publish it under the alias, start the apps on its node in
+order, and wait. An app that fails to start, or exits, leaves the tunnel
+serving.
 """
 
 from contextlib import contextmanager
 lazy import asyncio
 lazy import os
 lazy import sys
-lazy from collections.abc import Callable, Generator
+lazy from collections.abc import Callable, Generator, Sequence
+lazy from dataclasses import replace
+lazy from pathlib import Path, PurePosixPath
 lazy from string.templatelib import Template
 lazy from types import FrameType
 lazy from typing import Annotated
@@ -24,7 +28,9 @@ lazy from pydantic import SecretStr
 
 from ezhpcy.cli._options import (
     AliasOpt,
+    AppOpt,
     ConnectionOptions,
+    ManifestOpt,
     OptionalProfileArg,
     ResourceOptions,
     SchedulerOptions,
@@ -33,6 +39,8 @@ from ezhpcy.cli._options import (
 from ezhpcy.constants import DEFAULT_WORKER_PORTS
 from ezhpcy.logging import get_logger
 lazy from ezhpcy import api
+lazy from ezhpcy.app.manifest import choose_app, collect_apps, combined_resources
+lazy from ezhpcy.app.run import log_stderr
 lazy from ezhpcy.cli import _include as include
 lazy from ezhpcy.cli._errors import CliUsageError, sentence
 lazy from ezhpcy.cli._resolve import (
@@ -46,6 +54,7 @@ lazy from ezhpcy.cli.utils.interrupts import interrupts_handled_by
 lazy from ezhpcy.cli.utils.ssh import cli_prompts
 lazy from ezhpcy.config import config
 lazy from ezhpcy.console import (
+    console,
     flush_output,
     hide_live_display,
     live_display,
@@ -92,6 +101,26 @@ def _resolve_alias(
     return alias
 
 
+def _chosen_apps(manifests: Sequence[Path], names: Sequence[str]) -> list[api.App]:
+    """The apps `--app` names, `NAME` or `NAME@VERSION`, of the `--manifest`s."""
+    try:
+        apps = collect_apps([api.Manifest.load(path) for path in manifests])
+    except api.ManifestError as error:
+        raise CliUsageError(
+            t"{sentence(error.message)}", param_hint="--manifest"
+        ) from error
+    chosen = []
+    for name in names:
+        app_name, _, version = name.partition("@")
+        try:
+            chosen.append(choose_app(apps, app_name, version or None))
+        except api.ManifestError as error:
+            raise CliUsageError(
+                t"{sentence(error.message)}", param_hint="--app", value=name
+            ) from error
+    return chosen
+
+
 # ruff: ignore[B008]  # See the comment above the option dataclasses in _options.py
 async def tunnel_cmd(
     profile: OptionalProfileArg = None,
@@ -132,10 +161,16 @@ async def tunnel_cmd(
             ),
         ),
     ] = None,
+    manifest: ManifestOpt = None,
+    app: AppOpt = None,
 ) -> None:
-    """Allocate a compute node and expose its SSH service through a tunnel."""
+    """
+    Allocate a compute node and expose its SSH service through a tunnel, with
+    apps running on it.
+    """
     # Nothing else runs on the event loop until connecting, so the local work up
     # to there (reading local files) may block it.
+    apps = _chosen_apps(manifest or [], app or [])
     select_profile(profile)
     login, password = login_from_cli(connection_options, profile_name=profile)
     job = job_from_cli(
@@ -144,6 +179,7 @@ async def tunnel_cmd(
         resource_options=resource_options,
         timing_options=timing_options,
         auto_provision=auto_provision,
+        app_resources=combined_resources(apps),
     )
     alias = _resolve_alias(alias, profile_name=profile, login=login, job=job)
     # The tunnel is known by its alias, which is usually the profile name.
@@ -156,7 +192,13 @@ async def tunnel_cmd(
         logger.info(
             t"Using profile {profile:name} with {job.scheduler.type:detail} scheduler."
         )
-    run = TunnelRun(alias, login, job)
+    run = TunnelRun(
+        alias,
+        login,
+        job,
+        apps=apps,
+        apps_root=config.resolve_profile(profile).apps.root,
+    )
     try:
         # Before connecting, so the user isn't asked for a password first.
         if not job.auto_provision and (missing := api.missing_credentials(login)):
@@ -203,14 +245,25 @@ async def tunnel_cmd(
 
 class TunnelRun:
     """
-    One `ezhpcy tunnel`: what its status panel shows, how Ctrl+C stops it, and
-    whether it served.
+    One `ezhpcy tunnel`: the apps it runs, under `apps_root` on the node (by
+    default the node's own), what its status panel shows, how Ctrl+C stops
+    it, and whether it served.
     """
 
-    def __init__(self, alias: str, login: api.Login, config: api.JobConfig) -> None:
+    def __init__(
+        self,
+        alias: str,
+        login: api.Login,
+        config: api.JobConfig,
+        *,
+        apps: Sequence[api.App] = (),
+        apps_root: PurePosixPath | None = None,
+    ) -> None:
         self.alias = alias
         self.login = login
         self.config = config
+        self.apps = tuple(apps)
+        self.apps_root = apps_root
         self.job: api.Job | None = None
         # Whether its Host block was published.
         self.served = False
@@ -222,10 +275,36 @@ class TunnelRun:
             resources=config.resources,
             submission_command=config.scheduler.interactive_submission_command,
         )
+        # The apps that failed to start, which are no longer attached.
+        self._failed: list[api.AppStatus] = []
 
     @property
     def status(self) -> api.JobStatus:
-        return self.job.status if self.job is not None else self._status
+        status = self.job.status if self.job is not None else self._status
+        if not self._failed:
+            return status
+        return replace(status, attachments=(*status.attachments, *self._failed))
+
+    async def start_app(self, host: api.Host, app: api.App) -> api.RunningApp | None:
+        """
+        Run `app` on `host`, and print its URL once it is ready; or say why it
+        couldn't start, and return None.
+        """
+        try:
+            running = await host.run_app(app, apps_root=self.apps_root)
+        except (MessageError, RuntimeError, asyncssh.Error, OSError) as error:
+            logger.error(
+                t"Could not start app {app!s:name}: {error}. The tunnel keeps serving."
+            )
+            self._failed.append(
+                api.AppStatus(
+                    name=app.name, version=app.version, state=api.AppState.EXITED
+                )
+            )
+            return None
+        # On stdout, for scripts; the log and the status are on stderr.
+        console.print(running.url, soft_wrap=True, markup=False, highlight=False)
+        return running
 
     def stop(self, why: Template) -> None:
         """Stop the tunnel: its job, or connecting, if it hasn't one yet."""
@@ -248,8 +327,9 @@ async def serve(
     worker_ports: tuple[int, ...],
 ) -> None:
     """
-    Connect, enter a job, publish it under the reserved alias, and wait until it
-    ends, or `run` is stopped; then clean up.
+    Connect, enter a job, publish it under the reserved alias, start the apps on
+    its node, and wait until it ends, or `run` is stopped; then clean up, the
+    apps first.
     """
     login = run.login
     panel = StatusPanel(
@@ -273,9 +353,36 @@ async def serve(
                         t"Tunnel ready for {run.alias:name} via worker "
                         t"{worker:endpoint}."
                     )
-                    await job.wait()
+                    watchers: list[asyncio.Task[None]] = []
+                    try:
+                        for app in run.apps:
+                            running = await run.start_app(job.host, app)
+                            if running is not None:
+                                watchers.append(
+                                    asyncio.create_task(_watch_app(running))
+                                )
+                        await job.wait()
+                    finally:
+                        # Before the apps stop with the job.
+                        for watcher in watchers:
+                            watcher.cancel()
             except api.JobEnded:
                 pass
+
+
+async def _watch_app(running: api.RunningApp) -> None:
+    """Say so when an app exits while serving, after the end of its stderr."""
+    try:
+        exit_status = await running.wait()
+    except (RuntimeError, asyncssh.Error, OSError) as error:
+        # Its host's connection is lost, which ends the job.
+        logger.debug(t"Stopped watching app {running.app!s:name}: {error!r}")
+        return
+    await log_stderr(running.process)
+    logger.error(
+        t"App {running.app!s:name} exited with status {exit_status:detail}. The "
+        t"tunnel keeps serving."
+    )
 
 
 @contextmanager

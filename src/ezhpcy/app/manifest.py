@@ -24,6 +24,7 @@ lazy import stat
 lazy import tomllib
 lazy from collections.abc import Iterable, Iterator, Mapping, Sequence
 lazy from pathlib import Path, PurePosixPath
+lazy from typing import Any
 
 from pydantic import (
     BaseModel,
@@ -42,7 +43,6 @@ lazy from pydantic import ValidationError
 from ezhpcy.types import PositiveByteSize, TimeLimit
 lazy from ezhpcy.app import ManifestError
 lazy from ezhpcy.logging import get_logger
-lazy from ezhpcy.types import Resources
 
 MANIFEST_FILE_NAME = "ezhpcy-apps.toml"
 SCHEMA_VERSION = 1
@@ -755,13 +755,17 @@ def choose_app(
     return finals[-1]
 
 
-def merge_resources(profile: Resources, app: AppResources) -> Resources:
+def combined_resources(apps: Sequence[App]) -> dict[str, Any]:
     """
-    The app's resources over the profile's. The fields either sets stay set, so
-    the CLI's options apply on top as for a tunnel.
+    What `apps` need from one job together, by field of `Resources`, for those
+    fields any of them sets: the most any of them asks for, and exclusive if
+    any of them is.
     """
-    values = profile.model_dump(exclude_unset=True) | app.model_dump(exclude_unset=True)
-    return Resources.model_validate(values)
+    combined: dict[str, Any] = {}
+    for app in apps:
+        for name, value in app.resources.model_dump(exclude_unset=True).items():
+            combined[name] = max(combined[name], value) if name in combined else value
+    return combined
 
 
 def environment_key(environment: Environment) -> str:

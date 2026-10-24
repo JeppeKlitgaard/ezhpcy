@@ -44,10 +44,12 @@ from tests.support.tunnel import (
     RUNNING,
     FakeScheduler,
     banner,
+    bjobs,
     configure_tunnel,
     control_dirs,
     serve_interactive_job,
     serve_login_shell,
+    serve_lsf_job,
     snapshot,
     tunnel_log,
     use_scheduler,
@@ -69,46 +71,6 @@ def block_port(active_config: Path) -> int:
         if line.split()[:1] == ["Port"]
     ]
     return int(port)
-
-
-def bjobs(running: threading.Event, done: threading.Event):
-    """LSF's `bjobs`: pending until `running`, then running until `done`."""
-
-    def handler(invocation: Invocation) -> None:
-        if done.is_set():
-            state, exit_code = "DONE", "0"
-        elif running.is_set():
-            state, exit_code = "RUN", "-"
-        else:
-            state, exit_code = "PEND", "-"
-        host = "-" if state == "PEND" else "127.0.0.1"
-        reason = "Job slot limit reached: 3 hosts;" if state == "PEND" else "-"
-        invocation.stdout.write(f"{JOB_ID}|{state}|{host}|{exit_code}|{reason}\n")
-
-    return handler
-
-
-def serve_lsf_job(
-    login: SSHTestServer, monkeypatch: pytest.MonkeyPatch, worker_port: int
-) -> threading.Event:
-    """
-    Configure profile `base` with an interactive LSF job whose worker serves on
-    `worker_port` at once. The job runs until the returned event is set.
-    """
-    running, done = threading.Event(), threading.Event()
-
-    async def bsub(invocation: Invocation) -> None:
-        invocation.stdout.write(f"Job <{JOB_ID}> is submitted to queue <normal>.\n")
-        await invocation.stdin.readline()
-        write_worker_status(login, "ready", str(worker_port))
-        running.set()
-        while await invocation.stdin.readline():
-            pass
-
-    serve_login_shell(login, bsub=bsub, bjobs=bjobs(running, done), bkill=reply())
-    configure_tunnel(monkeypatch, login)
-    monkeypatch.setattr(ssh_config, "check_host_resolution", lambda _host, _port: None)
-    return done
 
 
 def test_a_tunnel_forwards_its_port_to_the_worker(

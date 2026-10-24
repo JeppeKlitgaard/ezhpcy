@@ -18,12 +18,12 @@ from ezhpcy.app.manifest import (
     AssetFile,
     Manifest,
     assets_key,
+    combined_resources,
     environment_key,
-    merge_resources,
     placeholders,
     render,
 )
-from ezhpcy.types import AppsConfig, Resources
+from ezhpcy.types import AppsConfig
 from tests.support.apps import MINIMAL_APP, lock_file, write_project
 
 EXAMPLES = Path(__file__).parent.parent / "examples" / "apps"
@@ -699,15 +699,27 @@ def test_resources_are_validated_as_the_profiles_are(
     assert f"{LAB}.resources.{field}:" in message
 
 
-def test_resources_take_the_manifest_over_the_profile_and_the_cli_over_both() -> None:
-    profile = Resources(queue="hpc", cores=8, memory="32GB", gpus=0)
-    app = AppResources(cores=2, time_limit=timedelta(hours=4))
+def test_apps_on_one_job_need_the_most_any_of_them_asks_for(tmp_path: Path) -> None:
+    manifest = write_project(
+        tmp_path,
+        MINIMAL_APP
+        + 'resources = { cores = 2, time_limit = "4:00", memory = "8GB" }\n'
+        + MINIMAL_APP.split("\n\n", 1)[1].replace("lab", "board")
+        + "resources = { cores = 4, gpus = 1, exclusive = true }\n",
+    )
+    apps = Manifest.load(manifest).apps
 
-    merged = merge_resources(profile, app)
+    combined = combined_resources([apps["lab"]["v1.0"], apps["board"]["v1.0"]])
 
-    assert (merged.queue, merged.cores, merged.memory_bytes) == ("hpc", 2, 32 * 10**9)
-    assert merged.time_limit == timedelta(hours=4)
-    assert merged.model_fields_set == {"queue", "cores", "memory", "gpus", "time_limit"}
+    # Only what they set, for the profile's to stay where they don't.
+    assert combined == {
+        "cores": 4,
+        "gpus": 1,
+        "exclusive": True,
+        "time_limit": timedelta(hours=4),
+        "memory": 8 * 10**9,
+    }
+    assert combined_resources([apps["lab"]["v1.0"]])["cores"] == 2
 
 
 # Other fields

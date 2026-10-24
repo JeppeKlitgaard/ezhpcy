@@ -25,13 +25,19 @@ lazy from ezhpcy.job.status import AttachmentStatus
 class Attachment:
     """
     Something attached to a host or a job, with its cleanup steps. `on_change`
-    is called when its status changes, and when it closes.
+    is called when its status changes, and when it starts closing; `on_closed`,
+    once it has closed.
     """
 
-    def __init__(self, on_change: Callable[[], object]) -> None:
+    def __init__(
+        self,
+        on_change: Callable[[], object],
+        on_closed: Callable[[Attachment], object] | None = None,
+    ) -> None:
         self._stack = AsyncExitStack()
         self._closing: asyncio.Task[None] | None = None
         self._on_change = on_change
+        self._on_closed = on_closed
         self.status: AttachmentStatus | None = None
 
     def report(self, status: AttachmentStatus) -> None:
@@ -80,15 +86,17 @@ class Attachment:
         """
         if self._closing is None:
             self._closing = asyncio.ensure_future(self._stack.aclose())
+            if (on_closed := self._on_closed) is not None:
+                self._closing.add_done_callback(lambda _: on_closed(self))
             self._on_change()
         await asyncio.shield(self._closing)
 
 
 class Attachments:
     """
-    What is attached to one owner, oldest first. `close` closes them all, newest
-    first, and waits for those closing already, and no more can be attached
-    after. Listeners added with `on_change` are called whenever `statuses` may
+    What is attached to one owner, oldest first, until each has closed. `close`
+    closes them all, newest first, and waits for those closing already, and no
+    more can be attached after. Listeners added with `on_change` are called whenever `statuses` may
     have changed.
     """
 
@@ -104,13 +112,15 @@ class Attachments:
         """
         if self._closing is not None:
             raise RuntimeError("its connection or job is being closed")
-        attachment = Attachment(on_change=self._changed)
+        attachment = Attachment(
+            on_change=self._changed, on_closed=self._attachments.remove
+        )
         self._attachments.append(attachment)
         return attachment
 
     @property
     def statuses(self) -> tuple[AttachmentStatus, ...]:
-        """The open attachments' statuses, oldest first."""
+        """The statuses of the attachments not closing, oldest first."""
         return tuple(
             attachment.status
             for attachment in self._attachments
@@ -132,7 +142,8 @@ class Attachments:
         await asyncio.shield(self._closing)
 
     async def _close_all(self) -> None:
-        for attachment in reversed(self._attachments):
+        # A copy: each leaves the list once closed.
+        for attachment in reversed(list(self._attachments)):
             await attachment.close()
 
     def _changed(self) -> None:

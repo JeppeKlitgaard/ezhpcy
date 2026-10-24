@@ -72,8 +72,10 @@ class Rig:
         self.runs: list[tunnel_cli.TunnelRun] = []
         init = tunnel_cli.TunnelRun.__init__
 
-        def recording_init(run: tunnel_cli.TunnelRun, *args: Any) -> None:
-            init(run, *args)
+        def recording_init(
+            run: tunnel_cli.TunnelRun, *args: Any, **options: Any
+        ) -> None:
+            init(run, *args, **options)
             self.runs.append(run)
 
         monkeypatch.setattr(tunnel_cli.TunnelRun, "__init__", recording_init)
@@ -130,7 +132,7 @@ def fail_heartbeats(rig: Rig) -> JobInfo:
 
 
 def stop_sshd(rig: Rig) -> JobInfo:
-    write_worker_status(rig.server, "stopped", "sshd", "255")
+    write_worker_status(rig.server, "stopped", "255")
     return RUNNING
 
 

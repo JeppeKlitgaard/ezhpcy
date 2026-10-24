@@ -170,3 +170,42 @@ def test_ready_with_nothing_attached_is_not_yet_serving() -> None:
     assert "Ready (30 s)" in lines
     assert not any(line.startswith("Connections") for line in lines)
     assert panel(status).border_style == "yellow"
+
+
+def test_each_app_has_a_row_saying_where_it_is() -> None:
+    def app(name: str, **fields: object) -> AppStatus:
+        return AppStatus(name=name, version="v1.0", **fields)  # type: ignore[arg-type]
+
+    status = replace(
+        SERVING,
+        attachments=(
+            *SERVING.attachments,
+            app(
+                "lab", state=AppState.READY, url="http://127.0.0.1:8888/", connections=1
+            ),
+            app("board", state=AppState.READY, url="http://127.0.0.1:6006/"),
+            app(
+                "dash",
+                state=AppState.EXITED,
+                url="http://127.0.0.1:8080/",
+                exit_status=3,
+            ),
+            app("notes", state=AppState.EXITED),
+            app("big"),
+            app("slow", state=AppState.STARTING),
+        ),
+    )
+
+    lines = shown(status)
+
+    # After the job's details, the Host block still first in the headline.
+    assert "Connect with ssh scratch" in lines
+    first = lines.index("lab v1.0 http://127.0.0.1:8888/ (1 connection)")
+    assert lines[first : first + 6] == [
+        "lab v1.0 http://127.0.0.1:8888/ (1 connection)",
+        "board v1.0 http://127.0.0.1:6006/ (0 connections)",
+        "dash v1.0 exited with status 3",
+        "notes v1.0 failed to start",
+        "big v1.0 provisioning",
+        "slow v1.0 starting",
+    ]

@@ -134,7 +134,6 @@ class JobLifecycle:
         host: RemoteHost,
         config: JobConfig,
         worker_ports: tuple[int, ...] = (),
-        app_ports: tuple[int, ...] = (),
         prepare: Prepare | None = None,
         job_name: str = "ezhpcy-worker",
         what: str = "job",
@@ -143,7 +142,6 @@ class JobLifecycle:
         self.config = config
         self.credentials: WorkerCredentials
         self._worker_ports = worker_ports or select_ports(DEFAULT_WORKER_PORTS)
-        self._app_ports = app_ports
         self._prepare = prepare
         self._job_name = job_name
         self._what = what
@@ -394,7 +392,6 @@ class JobLifecycle:
             remote_state.worker_control_root() / token,
             token,
             ports=self._worker_ports,
-            app_ports=self._app_ports,
         )
         # Registered first: `close` also copes with a directory never created.
         stack.push_async_callback(
@@ -905,11 +902,11 @@ async def _stop_task(
 def _worker_gone(status: WorkerStatus | None) -> TunnelError | None:
     """The error to stop with if `status` says sshd won't serve, else None."""
     match status:
-        case WorkerFailed(reason) as failed:
-            return TunnelError(t"{failed.what} failed to start: {reason}")
-        case WorkerStopped(exit_status=exit_status) as stopped:
+        case WorkerFailed(reason):
+            return TunnelError(t"worker SSH daemon failed to start: {reason}")
+        case WorkerStopped(exit_status):
             return TunnelError(
-                t"{stopped.what} exited with status {exit_status:detail}"
+                t"worker SSH daemon exited with status {exit_status:detail}"
             )
         case _:
             return None

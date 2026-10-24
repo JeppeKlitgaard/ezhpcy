@@ -1,6 +1,7 @@
 """
 A job's status as a panel, for `ezhpcy.console.live_display`: what the job is
-doing, what is attached to it, and once it serves, how to connect to it.
+doing, what is attached to it, and once it serves, how to connect to it, and
+where each app is.
 """
 
 lazy import shlex
@@ -21,7 +22,7 @@ lazy from rich.spinner import Spinner
 lazy from rich.table import Table
 lazy from rich.text import Text
 
-lazy from ezhpcy.app.run import AppStatus
+lazy from ezhpcy.app.run import AppState, AppStatus
 lazy from ezhpcy.forward import ForwardStatus
 lazy from ezhpcy.job.status import JobStatus, Phase, PublishedStatus
 lazy from ezhpcy.messages import duration, rich_text
@@ -74,6 +75,8 @@ def status_panel(
     parts: list[RenderableType] = [top]
     if details := _details(status, now):
         parts.extend([Text(), details])
+    if apps := _apps(status):
+        parts.extend([Text(), _grid(apps)])
     hint = (
         "(press Ctrl+C again to force quit)"
         if status.phase is Phase.STOPPING
@@ -237,6 +240,28 @@ def _requested(status: JobStatus) -> _Rows:
         rows.append(("Exclusive", t"{'yes':detail}"))
     if (limit := _time_limit(status)) is not None:
         rows.append(("Time limit", t"{limit:detail}"))
+    return rows
+
+
+def _apps(status: JobStatus) -> _Rows:
+    """Each app, a row: where it serves, or where it is if it doesn't."""
+    rows: _Rows = []
+    for attachment in status.attachments:
+        if not isinstance(attachment, AppStatus):
+            continue
+        match attachment:
+            case AppStatus(state=AppState.EXITED, exit_status=int(exit_status)):
+                where = t"exited with status {exit_status:detail}"
+            case AppStatus(state=AppState.EXITED):
+                where = t"failed to start"
+            case AppStatus(url=str(url), connections=connections):
+                plural = "" if connections == 1 else "s"
+                where = t"{url:target} {f'({connections} connection{plural})':aside}"
+            case AppStatus(state=AppState.PROVISIONING):
+                where = t"provisioning"
+            case _:
+                where = t"starting"
+        rows.append((f"{attachment.name} {attachment.version}", where))
     return rows
 
 

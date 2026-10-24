@@ -34,6 +34,7 @@ class JobState(StrEnum):
 
     @property
     def is_terminal(self) -> bool:
+        """Whether the job has ended."""
         return self in {JobState.SUCCEEDED, JobState.FAILED, JobState.ENDED}
 
 

@@ -143,6 +143,7 @@ class Process:
         Wait until the process exits, and return its exit status: `128+n` for a
         death by signal n (137 when `stop` had to kill it). An exit is seen
         within about a second. Raises if the host's connection is lost first.
+        Cancelled, only the waiting stops.
         """
         return await asyncio.shield(self._exited)
 

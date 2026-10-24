@@ -151,7 +151,10 @@ class RunningApp:
         return status
 
     async def wait(self) -> int:
-        """Wait until the app exits, and return its exit status (`Process.wait`)."""
+        """
+        Wait until the app exits, and return its exit status. Cancelled, only
+        the waiting stops.
+        """
         return await self.process.wait()
 
     async def stop(self) -> None:

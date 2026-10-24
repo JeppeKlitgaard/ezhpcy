@@ -57,6 +57,8 @@ type AttachmentStatus = (
 
 @dataclass(frozen=True, slots=True)
 class JobStatus:
+    """Where a job is, and what is attached to it."""
+
     phase: Phase = Phase.PREPARING
     # When the phase began.
     since: float = field(default_factory=time.monotonic)

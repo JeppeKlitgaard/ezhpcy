@@ -55,7 +55,9 @@ paths, `timedelta`s. Build them directly, or read them from a configuration file
 and host keys only through the `Prompts` it is given.
 
 Async throughout: run it with `asyncio.run`. Cancelling a call leaves nothing
-behind that its cleanup would miss. This is version 0: the API may change.
+behind that its cleanup would miss; each says what cancelling it does.
+
+`examples/api/` in EzHPCy's repository has complete scripts.
 """
 
 from contextlib import asynccontextmanager
@@ -187,7 +189,7 @@ async def connect(
 
     Raises `ConnectionFailed`, saying what was missing if `prompts` were needed,
     `ConfigError` if a password source can't be read, and whatever the prompts
-    raise.
+    raise. Cancelled while connecting, it leaves no connection open.
     """
     host = await _login.connect(login, prompts=prompts, password=password)
     async with host:
@@ -230,7 +232,8 @@ class Host:
     def job(self, config: JobConfig, *, worker_ports: Sequence[int] = ()) -> Job:
         """
         A worker job, submitted through this host's scheduler, run while `async
-        with` it (see `Job`). A host without the scheduler fails to enter it.
+        with` it (see `Job`). On a host without the scheduler, entering it
+        raises `JobFailed`.
 
         `worker_ports` are the ports on the node that the worker's SSH daemon
         tries, in order, until one is free; by default a few random ones from
@@ -249,12 +252,22 @@ class Host:
         return await self._host.run(list(argv), stdin=stdin)
 
     async def put(self, local: Path, remote: PurePosixPath) -> None:
-        """Copy the file `local` here to `remote` on the host, over SFTP."""
+        """
+        Copy the file `local` here to `remote` on the host, over SFTP. Raises
+        `OSError` if `local` can't be read, and `asyncssh.SFTPError` if
+        `remote` can't be written. Cancelled, it stops, and leaves `remote`
+        partly written.
+        """
         async with self._host.sftp() as sftp:
             await sftp.put(local, remote)
 
     async def get(self, remote: PurePosixPath, local: Path) -> None:
-        """Copy the file `remote` on the host to `local` here, over SFTP."""
+        """
+        Copy the file `remote` on the host to `local` here, over SFTP. Raises
+        `asyncssh.SFTPError` if `remote` can't be read, and `OSError` if
+        `local` can't be written. Cancelled, it stops, and leaves `local`
+        partly written.
+        """
         async with self._host.sftp() as sftp:
             await sftp.get(remote, local)
 
@@ -281,6 +294,11 @@ class Host:
         On a job's node, the job's end ends the process too. On another host,
         nothing stops it if this program dies before stopping it: stop it, or
         leave the host's block.
+
+        Raises `ValueError` for an empty `argv` or a name in `env` that isn't
+        a shell variable's, and `CommandFailed` if the host can't start it.
+        Failing or cancelled, it stops what it started, and removes the run
+        directory.
         """
         return await _process.start(self._host, argv, env=env, cwd=cwd)
 
@@ -292,7 +310,8 @@ class Host:
         and forward each connection to it to `destination` from the host: a TCP
         port the host reaches, or a Unix socket on it. Attached to the host
         until closed. A connection the host can't make is closed, and the port
-        keeps serving. Raises `OSError` if the local port is taken.
+        keeps serving. Raises `OSError` if the local port is taken. Cancelled,
+        it leaves nothing listening.
         """
         return await _forward.forward(self._host, destination, local_port=local_port)
 
@@ -303,7 +322,8 @@ class Host:
         Have the host listen on its loopback port `remote_port` (0: a free one,
         then `Forward.port`), and forward each connection to it to
         `destination` from here. Attached to the host until closed. Raises
-        `asyncssh.ChannelListenError` if the host refuses to listen.
+        `asyncssh.ChannelListenError` if the host refuses to listen. Cancelled,
+        it leaves nothing listening.
         """
         return await _forward.reverse_forward(self._host, remote_port, destination)
 
@@ -340,6 +360,9 @@ class Host:
         Raises `ProvisioningError`, and `AppFailed` (with its stderr's last
         lines) if it exits before it is ready or isn't ready in time, once it
         has been stopped. Raises `TypeError` for a `Link`, which runs nothing.
+        Failing or cancelled, it stops what it started; an install it was
+        waiting for may still run to its end on the host, and the next one
+        repairs what it left.
         """
         return await _app_run.run_app(
             self._host,
@@ -362,9 +385,11 @@ class Job:
     Entering raises `JobFailed` if the job fails to start (its cause a
     `MissingCredentials` if the worker's credentials are missing and the config
     doesn't provision; see `missing_credentials`), and `JobEnded` if it ends
-    first, or `stop` is called. For how its end shows while it runs, see the
-    module; losing `host`'s connection fails it, as losing the login node's
-    does. A job is entered once.
+    first, or `stop` is called. Cancelled while entering, it cleans up as
+    leaving does, and a job the scheduler may have queued is cancelled. For
+    how its end shows while it runs, see the module; losing `host`'s
+    connection fails it, as losing the login node's does. A job is entered
+    once.
 
     `status` says where it is, and what is attached to it and to `host`, at any
     time.
@@ -381,6 +406,7 @@ class Job:
 
     @property
     def config(self) -> JobConfig:
+        """What the job was submitted with."""
         return self._lifecycle.config
 
     @property
@@ -426,7 +452,7 @@ class Job:
         """
         Wait until the job ends, or `stop` is called, and return how it ended.
         Raises `JobFailed` if it failed. The block's code isn't cancelled while it
-        waits here.
+        waits here. Cancelled, only the waiting stops.
         """
         return await self._lifecycle.wait()
 
@@ -446,8 +472,11 @@ class Job:
         points OpenSSH there. Withdrawn by `Published.withdraw`, or when the job
         is left. A job may be published under several aliases.
 
-        Raises `ValueError` if the reservation was released, or a job is
-        published under it already: an alias has one Host block at a time.
+        Raises `ValueError` if the reservation was released, a job is
+        published under it already (an alias has one Host block at a time), or
+        the login's user can't be named in a Host block; `RuntimeError` before
+        the job is entered; and `OSError` if the Host block can't be written. Failing or cancelled, it withdraws what it had
+        made, and the reservation is free again.
         """
         self._worker()
         return await _publish.publish(self._lifecycle, reservation)

@@ -66,6 +66,7 @@ class AliasProblem:
 
     @property
     def hint(self) -> Template:
+        """How to fix it."""
         if self.ssh_failed:
             return (
                 t"Fix what OpenSSH reports, then check with "

@@ -147,6 +147,7 @@ class _SchedulerBase(_SubConfig):
     def validate_interactive_submission_command(
         cls, value: tuple[str, ...] | None
     ) -> tuple[str, ...] | None:
+        """Refuse empty arguments, and NUL, which no command line can hold."""
         if value is not None and any(
             not argument or "\0" in argument for argument in value
         ):
@@ -186,6 +187,7 @@ class Resources(_SubConfig):
 
     @property
     def memory_bytes(self) -> int | None:
+        """`memory`, in bytes."""
         return int(self.memory) if self.memory is not None else None
 
 
@@ -214,7 +216,11 @@ class Timings(_SubConfig):
 class LSFOptions(_SubConfig):
     """Options only used by the LSF scheduler."""
 
+    # The site's LSF reserves memory per core, so the job asks for `memory`
+    # divided by its cores.
     resource_reserve_per_task: bool = False
+    # For an interactive submission: `bsub -app`, variables for `bsub` itself,
+    # and the variables passed on to the job (`bsub -env`).
     application_profile: str | None = Field(default=None, min_length=1)
     submission_environment: dict[str, str] = Field(default_factory=dict)
     export_environment: tuple[str, ...] = ()
@@ -223,6 +229,8 @@ class LSFOptions(_SubConfig):
 class PBSOptions(_SubConfig):
     """Options only used by the PBS scheduler."""
 
+    # Where `qsub`, `qstat` and `qdel` are, when they aren't on the login
+    # node's `PATH`.
     command_directory: PurePosixPath | None = None
 
 
@@ -341,7 +349,7 @@ def _ip_address(value: str) -> str:
 class Login(BaseModel):
     """
     A login node to connect to, and where its password comes from: never the
-    password itself, which is read only when connecting (see `ezhpcy.login`).
+    password itself, which is read only when connecting (see `connect`).
 
     The password's sources are tried in this order, skipping those not set:
     `password_fd`, `password_file`, the keyring (`password_keyring`), and last,
@@ -450,6 +458,7 @@ class JobConfig(BaseModel):
 
     @model_validator(mode="after")
     def check_interactive_submission_command(self) -> Self:
+        """Refuse what an interactive submission command contradicts."""
         scheduler = self.scheduler
         if scheduler.interactive_submission_command is None:
             return self

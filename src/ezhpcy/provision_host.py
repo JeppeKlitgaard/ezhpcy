@@ -22,7 +22,12 @@ logger = get_logger(__name__)
 
 
 class ProvisioningError(MessageError, RuntimeError):
-    pass
+    """
+    What EzHPCy installs on a host (its own Pixi, the worker's SSH daemon, an
+    app's environment or assets) could not be installed, or, without
+    provisioning, isn't; or the worker's SSH credentials on this machine can't
+    be used.
+    """
 
 
 async def provision_pixi(login: RemoteHost, remote_state: RemoteState) -> None:

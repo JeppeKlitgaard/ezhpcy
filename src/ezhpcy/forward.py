@@ -67,7 +67,9 @@ class Forward:
         return self.status.connections
 
     async def close(self) -> None:
-        """Refuse new connections; open ones stay open. Once only."""
+        """
+        Refuse new connections; open ones stay open.
+        """
         await self._attachment.close()
 
 

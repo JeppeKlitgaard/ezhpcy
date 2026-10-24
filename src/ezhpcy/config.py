@@ -182,6 +182,7 @@ class _ConfigValues(BaseModel):
 
     @model_validator(mode="after")
     def validate_profiles(self) -> Self:
+        """Check every profile's name, and that it resolves."""
         for name in self.profile:
             validate_alias(name)
             self.resolve_profile(name)
@@ -389,7 +390,10 @@ class _EnvSettingsSource(EnvSettingsSource):
 
 
 class Config(BaseSettings, _ConfigValues):
-    """Configuration loaded from the local workstation settings sources."""
+    """
+    EzHPCy's configuration: profiles, and the apps of the manifests it was
+    loaded with. Load one with `load`; `Config()` reads the CLI's sources.
+    """
 
     model_config = SettingsConfigDict(
         toml_file=_default_config_file(),
@@ -406,6 +410,7 @@ class Config(BaseSettings, _ConfigValues):
         dotenv_settings: PydanticBaseSettingsSource,
         file_secret_settings: PydanticBaseSettingsSource,
     ) -> tuple[PydanticBaseSettingsSource, ...]:
+        """The arguments, then the environment, then the configuration file."""
         return (
             init_settings,
             _EnvSettingsSource(settings_cls),
@@ -417,6 +422,7 @@ class Config(BaseSettings, _ConfigValues):
     @model_validator(mode="before")
     @classmethod
     def reject_local_file(cls, values: object) -> object:
+        """Refuse `local_file`, which isn't a setting."""
         # The config file location is resolved before any settings source is read,
         # so `local_file` is derived from the platform directories, not configured.
         if isinstance(values, dict) and "local_file" in values:
@@ -528,6 +534,7 @@ class Profile:
 
     @property
     def description(self) -> str | None:
+        """What the profile is for: its `description`, or the one it inherits."""
         return self._config.resolve_profile(self.name).description
 
     @property

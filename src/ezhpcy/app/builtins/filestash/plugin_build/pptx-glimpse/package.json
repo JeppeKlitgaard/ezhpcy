@@ -1,0 +1,11 @@
+{
+  "name": "ezhpcy-filestash-pptx-glimpse",
+  "private": true,
+  "description": "pptx-glimpse's SVG conversion, bundled for the browser as one script (window.PptxGlimpse) by build_plugins.py",
+  "dependencies": {
+    "pptx-glimpse": "5.3.1"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.10"
+  }
+}

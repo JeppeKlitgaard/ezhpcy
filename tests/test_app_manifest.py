@@ -19,6 +19,7 @@ from ezhpcy.app.manifest import (
     Link,
     Manifest,
     assets_key,
+    builtin_manifests,
     combined_resources,
     environment_key,
     placeholders,
@@ -27,8 +28,8 @@ from ezhpcy.app.manifest import (
 from ezhpcy.types import AppsConfig
 from tests.support.apps import MINIMAL_APP, lock_file, write_project
 
-EXAMPLES = Path(__file__).parent.parent / "examples" / "apps"
-EXAMPLE_MANIFESTS = sorted(EXAMPLES.glob("*/ezhpcy-apps.toml"))
+BUILTIN_MANIFESTS = builtin_manifests()
+BUILTINS = BUILTIN_MANIFESTS[0].parent
 LAB = 'ezhpcy.app.lab."v1.0"'
 
 # JupyterLab, written with sub-tables and with dotted keys.
@@ -121,8 +122,8 @@ def versions(*tables: tuple[str, str]) -> str:
 # Loading
 
 
-@pytest.mark.parametrize("path", EXAMPLE_MANIFESTS, ids=lambda path: path.parent.name)
-def test_the_examples_load(path: Path) -> None:
+@pytest.mark.parametrize("path", BUILTIN_MANIFESTS, ids=lambda path: path.name)
+def test_the_builtins_load(path: Path) -> None:
     manifest = Manifest.load(path)
 
     assert manifest.apps
@@ -131,12 +132,12 @@ def test_the_examples_load(path: Path) -> None:
             assert (app.normalised_name, app.version) == (name, version)
             if isinstance(app, Link):
                 continue
-            assert app.environment.pixi == path.parent / "pixi.toml"
+            assert app.environment.pixi == path / "pixi.toml"
             assert app.environment.lock.is_file()
 
 
 def test_the_notebook_apps_share_one_environment() -> None:
-    manifest = Manifest.load(EXAMPLES / "notebooks")
+    manifest = Manifest.load(BUILTINS / "notebooks")
 
     lab = manifest.apps["lab"]["v1.0"]
     tensorboard = manifest.apps["tensorboard"]["v2.18"]
@@ -397,7 +398,10 @@ def config_with(*manifests: Path, defaults: tuple[Path, ...] = ()) -> api.Config
     config_file = manifests[0].parent.parent / "ezhpcy.toml"
     config_file.write_text("", encoding="utf-8")
     return api.Config.load(
-        config_file, manifests=list(manifests), default_manifests=list(defaults)
+        config_file,
+        manifests=list(manifests),
+        default_manifests=list(defaults),
+        load_builtin_manifests=False,
     )
 
 
@@ -446,11 +450,44 @@ def test_an_unknown_app_or_version_lists_the_choices(tmp_path: Path) -> None:
 def test_without_manifests_there_are_no_apps(tmp_path: Path) -> None:
     config_file = tmp_path / "ezhpcy.toml"
     config_file.write_text("", encoding="utf-8")
-    config = api.Config.load(config_file)
+    config = api.Config.load(config_file, load_builtin_manifests=False)
 
-    assert config.apps == {}
+    assert config.available_apps == {}
     with pytest.raises(api.ManifestError, match="no manifest with apps was given"):
         config.app("lab")
+
+
+def test_the_builtin_apps_are_loaded_by_default(tmp_path: Path) -> None:
+    config_file = tmp_path / "ezhpcy.toml"
+    config_file.write_text("", encoding="utf-8")
+    config = api.Config.load(config_file)
+
+    assert config.apps.load_builtin_manifests is True
+    assert config.app("lab").environment.pixi.parent == BUILTINS / "notebooks"
+    assert set(config.available_apps) == {
+        name for path in BUILTIN_MANIFESTS for name in Manifest.load(path).apps
+    }
+
+
+def test_the_setting_or_the_argument_leaves_the_builtin_apps_out(
+    tmp_path: Path,
+) -> None:
+    config_file = tmp_path / "ezhpcy.toml"
+    config_file.write_text("[apps]\nload_builtin_manifests = false\n", encoding="utf-8")
+
+    assert api.Config.load(config_file).available_apps == {}
+    assert api.Config.load(config_file, load_builtin_manifests=True).app("lab")
+
+
+def test_a_users_manifest_replaces_a_builtin_version(tmp_path: Path) -> None:
+    user = write_project(tmp_path / "user", versions(("lab", "v1.0")))
+    config_file = tmp_path / "ezhpcy.toml"
+    config_file.write_text("", encoding="utf-8")
+
+    config = api.Config.load(config_file, manifests=[user])
+
+    assert config.app("lab").environment.pixi.parent == tmp_path / "user"
+    assert config.app("tensorboard").environment.pixi.parent == BUILTINS / "notebooks"
 
 
 def test_the_apps_of_several_manifests_are_merged(tmp_path: Path) -> None:
@@ -459,7 +496,9 @@ def test_the_apps_of_several_manifests_are_merged(tmp_path: Path) -> None:
         write_project(tmp_path / "b", versions(("Lab", "v2.0"), ("board", "v0.1"))),
     )
 
-    assert {name: list(by_version) for name, by_version in config.apps.items()} == {
+    assert {
+        name: list(by_version) for name, by_version in config.available_apps.items()
+    } == {
         "lab": ["v1.0", "v2.0"],
         "board": ["v0.1"],
     }
@@ -601,12 +640,12 @@ def test_an_old_lock_file_is_rejected(tmp_path: Path) -> None:
     assert "pixi.lock has version 5" in message
 
 
-def test_the_example_lock_files_are_read() -> None:
+def test_the_builtin_lock_files_are_read() -> None:
     """Locked by Pixi itself (version 7), not written by `lock_file`."""
-    text = (EXAMPLES / "dashboard" / "pixi.lock").read_text(encoding="utf-8")
+    text = (BUILTINS / "dashboard" / "pixi.lock").read_text(encoding="utf-8")
 
     assert text.startswith("version: 7")
-    assert only(Manifest.load(EXAMPLES / "dashboard"))
+    assert only(Manifest.load(BUILTINS / "dashboard"))
 
 
 # Assets

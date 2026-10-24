@@ -5,8 +5,8 @@ started and stopped again beside them, through `ezhpcy.api`: `Config.app` and
 
     uv run python examples/api/notebooks.py dtu-hpc --cores 2
 
-The apps come from `examples/apps/notebooks` and `examples/apps/dashboard`, and
-are provisioned on the node the first time. Open the printed URLs here.
+The apps are built in, and are provisioned on the node the first time. Open the
+printed URLs here.
 """
 
 import argparse
@@ -15,11 +15,8 @@ import logging
 import signal
 import urllib.request
 from datetime import timedelta
-from pathlib import Path
 
 from ezhpcy import api
-
-APPS = Path(__file__).parent.parent / "apps"
 
 
 def fetch(url: str) -> str:
@@ -34,7 +31,7 @@ async def main() -> None:
     parser.add_argument("--hours", type=float, default=1.0)
     arguments = parser.parse_args()
 
-    config = api.Config.load(manifests=[APPS / "notebooks", APPS / "dashboard"])
+    config = api.Config.load()
     profile = config.profiles[arguments.profile]
     job_config = profile.job.with_resources(
         cores=arguments.cores, time_limit=timedelta(hours=arguments.hours)

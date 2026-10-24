@@ -13,6 +13,9 @@ enabled = true
 level = "DEBUG"
 keep = 10  # Log files of the most recent runs to keep
 
+[apps]
+load_builtin_manifests = true
+
 [profile.base]
 connection.host = "login.hpc.example.com"
 connection.user = {{ user | tojson }}

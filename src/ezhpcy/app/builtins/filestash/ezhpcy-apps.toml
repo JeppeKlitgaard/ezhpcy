@@ -1,0 +1,45 @@
+# Filestash, a web file manager over the node's files.
+#
+#   ezhpcy tunnel PROFILE --app filestash
+#
+# The printed URL logs in: its password is the per-run token, which Filestash's
+# local storage takes (`LOCAL_BACKEND_SECRET`). There is no admin: each run has
+# an admin password hash of random bytes, which no password has (see `start.sh`).
+#
+# Filestash listens on every address of the node, not only 127.0.0.1, so other
+# users there can reach its login page; only the token logs in.
+#
+# `filestash_linux_x86_64.bin` is Filestash's static build, in Git LFS, from
+# https://downloads.filestash.app/latest/filestash_linux_x86_64.bin, downloaded
+# on 2026-10-24 (SHA-256 153ee1b30c5bbfbeb5196eba0725f5a57fb78e4c9edbc1fd1912fc1afb5521d2).
+#
+# `plugins/` holds file apps, in Git LFS:
+# - Filestash's 3d, creative and photography, from
+#   https://demo.filestash.app/assets/plugin/application_<name>.zip, downloaded
+#   on 2026-10-24.
+# - Office viewers, built by `build_plugins.py` from `plugin_src/` and pinned
+#   libraries: docx (Filestash's own `plg_application_docxjs`, with
+#   docx-preview), xlsx, xls and ods (in Filestash's table viewer, with
+#   SheetJS), and pptx (with pptx-glimpse, bundled by esbuild from
+#   `plugin_build/pptx-glimpse/`'s lock file). Filestash's `application_office`
+#   (LibreOffice in WebAssembly, 52 MB) is left out: it didn't work, most
+#   likely as its threaded build needs `SharedArrayBuffer`, which browsers give
+#   only to cross-origin isolated pages, and Filestash's aren't.
+
+[ezhpcy]
+schema = 1
+
+[ezhpcy.app.filestash."v0.1.0"]
+description = "Filestash, a web file manager over the node's files"
+environment.pixi = "pixi.toml"
+assets.include = ["start.sh", "config.json", "filestash_linux_x86_64.bin", "plugins/*.zip"]
+run.command = ["bash", "{assets}/start.sh"]
+run.env = { FILESTASH_PATH = "{run_dir}/data", FILESTASH_PORT = "{port}", LOCAL_BACKEND_SECRET = "{token}" }
+endpoint.transport = "tcp"
+endpoint.authenticates = true
+ready = { check = "http", path = "/healthz" }
+access.url = "http://127.0.0.1:{local_port}/login?type=local&password={token}"
+
+[ezhpcy.app.filestash."v0.1.0".resources]
+cores = 1
+time_limit = "4:00"

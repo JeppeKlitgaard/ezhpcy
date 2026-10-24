@@ -292,7 +292,20 @@ ManifestOpt = Annotated[
         metavar="PATH",
         help=(
             "An apps manifest (`ezhpcy-apps.toml`), or a directory holding one, "
-            "for --app to choose from; may be repeated."
+            "for --app to choose from beside the built-in apps; may be repeated."
+        ),
+        group=APPS_PANEL,
+    ),
+]
+LoadBuiltinManifestsOpt = Annotated[
+    bool | None,
+    Parameter(
+        name="--load-builtin-manifests",
+        negative="--no-load-builtin-manifests",
+        help=(
+            "Let --app choose from the apps EzHPCy ships, such as `lab`; a "
+            "--manifest's version of one replaces it. Defaults to the "
+            "apps.load_builtin_manifests setting."
         ),
         group=APPS_PANEL,
     ),

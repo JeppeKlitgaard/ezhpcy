@@ -15,6 +15,7 @@ Names follow the rules for a Python package's name, and are compared normalised
 (`My_App` is `my-app`); versions are `v` and a PEP 440 version, compared as
 such (`v1.2` is `v1.2.0`). `collect_apps` gathers several manifests' apps, and
 `choose_app` picks one by name and version, the newest by default.
+`builtin_manifests` are the manifests EzHPCy ships.
 """
 
 import re
@@ -813,6 +814,12 @@ def collect_apps(
     for (name, _version), (app, _manifest, _default) in found.items():
         apps.setdefault(name, {})[app.version] = app
     return apps
+
+
+def builtin_manifests() -> list[Path]:
+    """The manifests EzHPCy ships, one directory each in `ezhpcy/app/builtins/`."""
+    builtins = Path(__file__).parent / "builtins"
+    return sorted(path.parent for path in builtins.glob(f"*/{MANIFEST_FILE_NAME}"))
 
 
 def choose_app(

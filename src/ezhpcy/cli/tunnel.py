@@ -30,6 +30,7 @@ from ezhpcy.cli._options import (
     AliasOpt,
     AppOpt,
     ConnectionOptions,
+    LoadBuiltinManifestsOpt,
     ManifestOpt,
     OptionalProfileArg,
     ResourceOptions,
@@ -39,7 +40,12 @@ from ezhpcy.cli._options import (
 from ezhpcy.constants import DEFAULT_WORKER_PORTS
 from ezhpcy.logging import get_logger
 lazy from ezhpcy import api
-lazy from ezhpcy.app.manifest import choose_app, collect_apps, combined_resources
+lazy from ezhpcy.app.manifest import (
+    builtin_manifests,
+    choose_app,
+    collect_apps,
+    combined_resources,
+)
 lazy from ezhpcy.app.run import log_stderr
 lazy from ezhpcy.cli import _include as include
 lazy from ezhpcy.cli._errors import CliUsageError, sentence
@@ -102,11 +108,18 @@ def _resolve_alias(
 
 
 def _chosen_apps(
-    manifests: Sequence[Path], names: Sequence[str]
+    manifests: Sequence[Path], names: Sequence[str], *, load_builtins: bool
 ) -> list[api.App | api.Link]:
-    """The apps `--app` names, `NAME` or `NAME@VERSION`, of the `--manifest`s."""
+    """
+    The apps `--app` names, `NAME` or `NAME@VERSION`, of the `--manifest`s, and
+    of the built-in manifests if `load_builtins`.
+    """
+    defaults = builtin_manifests() if load_builtins else []
     try:
-        apps = collect_apps([api.Manifest.load(path) for path in manifests])
+        apps = collect_apps(
+            [api.Manifest.load(path) for path in manifests],
+            [api.Manifest.load(path) for path in defaults],
+        )
     except api.ManifestError as error:
         raise CliUsageError(
             t"{sentence(error.message)}", param_hint="--manifest"
@@ -164,6 +177,7 @@ async def tunnel_cmd(
         ),
     ] = None,
     manifest: ManifestOpt = None,
+    load_builtin_manifests: LoadBuiltinManifestsOpt = None,
     app: AppOpt = None,
 ) -> None:
     """
@@ -172,7 +186,9 @@ async def tunnel_cmd(
     """
     # Nothing else runs on the event loop until connecting, so the local work up
     # to there (reading local files) may block it.
-    apps = _chosen_apps(manifest or [], app or [])
+    if load_builtin_manifests is None:
+        load_builtin_manifests = config.apps.load_builtin_manifests
+    apps = _chosen_apps(manifest or [], app or [], load_builtins=load_builtin_manifests)
     select_profile(profile)
     login, password = login_from_cli(connection_options, profile_name=profile)
     job = job_from_cli(

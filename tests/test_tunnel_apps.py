@@ -20,6 +20,7 @@ import pytest
 
 from ezhpcy import api
 from ezhpcy.cli import tunnel as tunnel_cli
+from ezhpcy.config import config
 from tests.support.apps import MINIMAL_APP, AppRig, http_app, write_project
 from tests.support.cli import Result, capture, invoke
 from tests.support.login import remote_state_json
@@ -381,7 +382,10 @@ def test_an_unknown_app_fails_before_connecting_listing_the_apps(
 ) -> None:
     manifest = write_project(tmp_path / "project", APPS)
 
-    result = invoke(["tunnel", "base", "--manifest", str(manifest), "--app", "nope"])
+    result = invoke(
+        ["tunnel", "base", "--manifest", str(manifest), "--app", "nope"]
+        + ["--no-load-builtin-manifests"]
+    )
 
     assert result.exit_code == 2, result
     assert 'Invalid value "nope" for --app.' in result.stderr
@@ -409,13 +413,55 @@ def test_an_unknown_version_fails_listing_the_versions(
     assert captured == {}
 
 
-def test_an_app_without_a_manifest_says_none_was_given(captured: dict) -> None:
-    result = invoke(["tunnel", "base", "--app", "lab"])
+def test_a_builtin_app_needs_no_manifest(captured: dict) -> None:
+    result = invoke(["tunnel", "base", "--app", "lab", "--app", "vscode-remote"])
+
+    assert result.exit_code == 0, result
+    assert [str(app) for app in captured["apps"]] == [
+        "lab v1.0",
+        "vscode-remote v0.1.0",
+    ]
+
+
+def test_a_manifests_version_of_a_builtin_app_replaces_it(
+    captured: dict, tmp_path: Path
+) -> None:
+    manifest = write_project(tmp_path / "project", APPS)
+
+    result = invoke(["tunnel", "base", "--manifest", str(manifest), "--app", "lab"])
+
+    assert result.exit_code == 0, result
+    [lab] = captured["apps"]
+    assert lab.environment.pixi.parent == tmp_path / "project"
+
+
+@pytest.mark.parametrize(
+    ("setting", "flags"),
+    [(False, []), (True, ["--no-load-builtin-manifests"])],
+    ids=["by-the-setting", "by-the-flag"],
+)
+def test_an_app_without_manifests_or_builtins_says_none_was_given(
+    captured: dict, monkeypatch: pytest.MonkeyPatch, setting: bool, flags: list[str]
+) -> None:
+    monkeypatch.setattr(config.apps, "load_builtin_manifests", setting)
+
+    result = invoke(["tunnel", "base", "--app", "lab", *flags])
 
     assert result.exit_code == 2, result
     assert "There is no app" in result.stderr
     assert "no manifest with apps was given" in result.stderr
     assert captured == {}
+
+
+def test_the_flag_loads_the_builtins_over_the_setting(
+    captured: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(config.apps, "load_builtin_manifests", False)
+
+    result = invoke(["tunnel", "base", "--app", "lab", "--load-builtin-manifests"])
+
+    assert result.exit_code == 0, result
+    assert [str(app) for app in captured["apps"]] == ["lab v1.0"]
 
 
 def test_an_invalid_manifest_fails_before_connecting(

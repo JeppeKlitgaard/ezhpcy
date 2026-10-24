@@ -1,0 +1,24 @@
+{
+    "author": "EzHPCy",
+    "version": "v0.1",
+    "modules": [
+        {
+            "type": "xdg-open",
+            "mime": "application/excel",
+            "entrypoint": "loader_xlsx.js",
+            "application": "table"
+        },
+        {
+            "type": "xdg-open",
+            "mime": "application/vnd.ms-excel",
+            "entrypoint": "loader_xlsx.js",
+            "application": "table"
+        },
+        {
+            "type": "xdg-open",
+            "mime": "application/vnd.oasis.opendocument.spreadsheet",
+            "entrypoint": "loader_xlsx.js",
+            "application": "table"
+        }
+    ]
+}

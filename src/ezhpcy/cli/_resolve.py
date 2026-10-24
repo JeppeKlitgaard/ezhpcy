@@ -6,9 +6,8 @@ runs with (`Login`, `JobConfig`), through `ezhpcy.config`, rendering their
 
 lazy import shlex
 lazy from collections.abc import Mapping
-lazy from string.templatelib import Template
 
-lazy from pydantic import SecretStr, ValidationError
+lazy from pydantic import SecretStr
 
 lazy from ezhpcy.cli._errors import CliUsageError, sentence
 lazy from ezhpcy.cli._options import (
@@ -17,6 +16,7 @@ lazy from ezhpcy.cli._options import (
     SchedulerOptions,
     TimingOptions,
     given_options,
+    option_flags,
 )
 lazy from ezhpcy.config import config
 lazy from ezhpcy.logging import get_logger, label_log_file
@@ -27,54 +27,12 @@ lazy from ezhpcy.types import (
     Login,
     MissingSetting,
     SubmissionCommandError,
+    validated,
 )
 
 LIST_PROFILES_HINT = (
     t" Run {'ezhpcy list-profiles':suggestion} to see available profiles."
 )
-# The options for `Login`'s fields, by field.
-_LOGIN_FLAGS = {
-    "user": "--user",
-    "host": "--host",
-    "password_file": "--password-file",
-    "password_fd": "--password-fd",
-    "password_keyring": "--password-keyring",
-}
-
-
-def missing_setting_error(
-    name: str,
-    *,
-    cli_param: str,
-    config_param: str | None,
-    hint: Template = t"",
-) -> CliUsageError:
-    """Report a setting that neither the CLI nor the profile (if any) gave."""
-    config_source = t"{config_param:name}" if config_param else t"a profile"
-    return CliUsageError(
-        t"{name:name} must be set via CLI ({cli_param:name}) "
-        t"or config ({config_source})." + hint
-    )
-
-
-def _validation_usage_error(
-    error: ValidationError, names: Mapping[str, str]
-) -> CliUsageError:
-    """Report the first of Pydantic's errors, under the name the user knows."""
-    details = error.errors(include_url=False)[0]
-    # Pydantic prefixes a validator's own message with "Value error, ".
-    message = (
-        str(details["ctx"]["error"])
-        if details["type"] == "value_error"
-        else details["msg"]
-    )
-    message = t"{sentence(message)}"
-    if not details["loc"]:
-        return CliUsageError(message)
-    field = ".".join(map(str, details["loc"]))
-    return CliUsageError(
-        message, param_hint=names.get(field, field), value=details["input"]
-    )
 
 
 def check_profile_name(profile_name: str) -> None:
@@ -147,18 +105,19 @@ def direct_login_from_cli(
     if options.host is None:
         raise CliUsageError(t"{'host':name} must be set via {'--host':name}.")
     try:
-        login = Login(
-            user=options.user,
-            host=options.host,
-            password_file=options.password_file,
-            password_fd=options.password_fd,
-            password_keyring=options.password_keyring,
+        login = validated(
+            Login,
+            {
+                "user": options.user,
+                "host": options.host,
+                "password_file": options.password_file,
+                "password_fd": options.password_fd,
+                "password_keyring": options.password_keyring,
+            },
         )
         if options.password is not None:
             return login, SecretStr(options.password)
         return login, read_password(login)
-    except ValidationError as error:
-        raise _validation_usage_error(error, _LOGIN_FLAGS) from error
     except ConfigError as error:
         raise login_usage_error(error, options, profile_name=None) from error
 
@@ -170,26 +129,22 @@ def login_usage_error(
     `error`, from resolving a login or from connecting, as a usage error that
     names the option or the setting at fault.
     """
-    hint = LIST_PROFILES_HINT if profile_name is None else t""
-    if isinstance(error, MissingSetting):
-        assert error.setting is not None
-        return missing_setting_error(
-            error.setting,
-            cli_param=_LOGIN_FLAGS[error.setting],
-            config_param=error.key if profile_name is not None else None,
-            hint=hint,
-        )
     given = {
-        name
-        for name, (_, value) in given_options(options).items()
+        name: flag
+        for name, (flag, value) in given_options(options).items()
         # `--password-keyring` is a flag, always given.
         if value is not False
     }
-    flags = {name: flag for name, flag in _LOGIN_FLAGS.items() if name in given}
     prefix = (
         "connection" if profile_name is None else f"profile.{profile_name}.connection"
     )
-    return _usage_error(error, flags, prefix=prefix)
+    return _usage_error(
+        error,
+        option_flags(ConnectionOptions),
+        given,
+        prefix=prefix,
+        profile_name=profile_name,
+    )
 
 
 def job_from_cli(
@@ -207,14 +162,12 @@ def job_from_cli(
     options on top. An interactive submission command decides the resources
     instead, so then `app_resources` are left out, with a warning.
     """
-    given = {
-        section: given_options(options)
-        for section, options in (
-            ("scheduler", scheduler_options),
-            ("resources", resource_options),
-            ("timings", timing_options),
-        )
+    sections = {
+        "scheduler": scheduler_options,
+        "resources": resource_options,
+        "timings": timing_options,
     }
+    given = {section: given_options(options) for section, options in sections.items()}
     changes = {
         section: {name: value for name, (_, value) in options.items()}
         for section, options in given.items()
@@ -234,38 +187,57 @@ def job_from_cli(
             profile_name, **changes, auto_provision=auto_provision
         )
     except ConfigError as error:
-        raise _job_usage_error(error, given, profile_name=profile_name) from error
+        given_flags = {
+            f"{section}.{name}": flag
+            for section, options in given.items()
+            for name, (flag, _) in options.items()
+        }
+        if isinstance(error, SubmissionCommandError):
+            raise _submission_command_error(
+                error, given, given_flags, profile_name=profile_name
+            ) from error
+        flags = {
+            f"{section}.{name}": flag
+            for section, options in sections.items()
+            for name, flag in option_flags(type(options)).items()
+        }
+        raise _usage_error(
+            error,
+            flags,
+            given_flags,
+            prefix=f"profile.{profile_name}" if profile_name is not None else None,
+            profile_name=profile_name,
+        ) from error
 
 
-def _job_usage_error(
+def _usage_error(
     error: ConfigError,
-    given: Mapping[str, Mapping[str, tuple[str, object]]],
+    flags: Mapping[str, str],
+    given: Mapping[str, str],
     *,
+    prefix: str | None,
     profile_name: str | None,
 ) -> CliUsageError:
-    hint = LIST_PROFILES_HINT if profile_name is None else t""
-    flags = {
-        f"{section}.{name}": flag
-        for section, options in given.items()
-        for name, (flag, _) in options.items()
-    }
+    """
+    `error` as a usage error. A missing setting names its option (`flags`, by
+    setting) and its key in the profile; any other names the option that gave
+    the setting (`given`), or else its key in the configuration file, under
+    `prefix`.
+    """
     if isinstance(error, MissingSetting):
         assert error.setting is not None
-        return missing_setting_error(
-            error.setting,
-            cli_param={
-                "scheduler.type": "--scheduler",
-                "scheduler.submission_mode": "--submission-mode",
-            }[error.setting],
-            config_param=error.key if profile_name is not None else None,
-            hint=hint,
+        hint = LIST_PROFILES_HINT if profile_name is None else t""
+        source = t"{error.key:name}" if profile_name is not None else t"a profile"
+        return CliUsageError(
+            t"{error.setting:name} must be set via CLI "
+            t"({flags[error.setting]:name}) or config ({source})." + hint
         )
-    if isinstance(error, SubmissionCommandError):
-        return _submission_command_error(error, given, flags, profile_name=profile_name)
-    return _usage_error(
-        error,
-        flags,
-        prefix=f"profile.{profile_name}" if profile_name is not None else None,
+    if error.setting is None:
+        return CliUsageError(t"{sentence(error.message)}")
+    setting = error.setting
+    param_hint = given.get(setting) or (f"{prefix}.{setting}" if prefix else setting)
+    return CliUsageError(
+        t"{sentence(error.detail)}", param_hint=param_hint, value=error.value
     )
 
 
@@ -312,20 +284,4 @@ def _submission_command_error(
         t"with submission options: {conflicts}.",
         param_hint=source,
         value=value,
-    )
-
-
-def _usage_error(
-    error: ConfigError, flags: Mapping[str, str], *, prefix: str | None
-) -> CliUsageError:
-    """
-    `error` as a usage error, naming its setting by the option that gave it, or
-    else by its key in the configuration file, under `prefix`.
-    """
-    if error.setting is None:
-        return CliUsageError(t"{sentence(error.message)}")
-    setting = error.setting
-    param_hint = flags.get(setting) or (f"{prefix}.{setting}" if prefix else setting)
-    return CliUsageError(
-        t"{sentence(error.detail)}", param_hint=param_hint, value=error.value
     )

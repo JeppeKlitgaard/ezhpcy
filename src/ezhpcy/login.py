@@ -62,7 +62,8 @@ class Prompts:
     """
     How to ask the user while connecting, for a caller that can.
 
-    - `ask_password(user, host)`: the login node's password.
+    - `ask_password(user, host, attempt)`: the login node's password, for the
+      `attempt`th time (from 1): from the second on, the last one was wrong.
     - `accept_host_key(host, port, key_type, fingerprint)`: whether to trust a
       host key that no known hosts file has; `fingerprint` is SHA256's, as
       OpenSSH shows it.
@@ -70,7 +71,7 @@ class Prompts:
     Either may raise to stop connecting, e.g. `KeyboardInterrupt` at a terminal.
     """
 
-    ask_password: Callable[[str, str], Awaitable[str]]
+    ask_password: Callable[[str, str, int], Awaitable[str]]
     accept_host_key: Callable[[str, int, str, str], Awaitable[bool]]
 
 
@@ -90,8 +91,11 @@ def terminal_prompts() -> Prompts:
     key with `input`, each in a thread.
     """
 
-    async def ask_password(user: str, host: str) -> str:
-        return await asyncio.to_thread(getpass.getpass, f"Password for {user}@{host}: ")
+    async def ask_password(user: str, host: str, attempt: int) -> str:
+        again = "Wrong password. " if attempt > 1 else ""
+        return await asyncio.to_thread(
+            getpass.getpass, f"{again}Password for {user}@{host}: "
+        )
 
     async def accept_host_key(
         host: str, port: int, key_type: str, fingerprint: str
@@ -170,7 +174,11 @@ async def connect(
                         "was given, nor a prompt to ask for it."
                     ) from None
                 password_attempts += 1
-                password = SecretStr(await prompts.ask_password(login.user, login.host))
+                password = SecretStr(
+                    await prompts.ask_password(
+                        login.user, login.host, password_attempts
+                    )
+                )
     except (asyncssh.Error, OSError) as error:
         raise ConnectionFailed(error) from error
 

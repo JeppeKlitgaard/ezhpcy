@@ -12,6 +12,9 @@ An app's environment and assets on the host it runs on, under the apps root
       pixi-cache/              Pixi's cache for app environments
       work/<normalised name>/  the default workdir: the user's, never pruned
 
+Every directory EzHPCy creates here is its owner's alone (`private_directory`),
+and so are the asset files.
+
 **Environments** are installed by EzHPCy's own Pixi, in place: Pixi detects
 and repairs an install that was interrupted, and an environment keyed by its Pixi files never goes out
 of date. An install holds the apps root's one lock, as file locks don't hold
@@ -49,7 +52,12 @@ lazy from ezhpcy.app.manifest import (
     environment_key,
 )
 lazy from ezhpcy.provision_host import ProvisioningError, provision_pixi
-lazy from ezhpcy.ssh import CommandFailed, RemoteHost, ensure_directory
+lazy from ezhpcy.ssh import (
+    CommandFailed,
+    RemoteHost,
+    ensure_directory,
+    private_directory,
+)
 lazy from ezhpcy.types import RemoteState
 
 logger = get_logger(__name__)
@@ -287,7 +295,7 @@ async def publish_once(
         attempt = directory / f"{key}.{secrets.token_hex(8)}"
         logger.info(t"Provisioning the {what} in {attempt:path}.")
         started = time.monotonic()
-        await sftp.mkdir(attempt)
+        await sftp.mkdir(attempt, attrs=private_directory())
         try:
             # First, while the attempt's directory is writable (see `mark_used`).
             async with sftp.open(attempt / LAST_USED_NAME, "w"):
@@ -355,7 +363,7 @@ async def _acquire(
     seen: tuple[int | None, float] | None = None
     while True:
         try:
-            await sftp.mkdir(lock, attrs=asyncssh.SFTPAttrs(permissions=0o700))
+            await sftp.mkdir(lock, attrs=private_directory())
             return
         # Any failure, not only an existing lock: on BeeGFS, a `mkdir` of a
         # name another node removes meanwhile can fail with ENOENT.
@@ -463,7 +471,10 @@ def _reason(error: BaseException) -> str:
 
 
 def _assets_builder(sftp: asyncssh.SFTPClient, files: Sequence[AssetFile]) -> Build:
-    """Upload the asset files, then make them and their directories read-only."""
+    """
+    Upload the asset files, then make them and their directories read-only, and
+    their owner's alone, as the directories that hold them.
+    """
 
     async def build(attempt: PurePosixPath) -> None:
         directories = sorted(
@@ -472,14 +483,14 @@ def _assets_builder(sftp: asyncssh.SFTPClient, files: Sequence[AssetFile]) -> Bu
             key=lambda path: len(path.parts),
         )
         for directory in directories:
-            await sftp.mkdir(directory)
+            await sftp.mkdir(directory, attrs=private_directory())
         uploads = asyncio.Semaphore(_UPLOADS_AT_ONCE)
 
         async def upload(file: AssetFile) -> None:
             async with uploads:
                 await sftp.put(file.path, attempt / file.relative)
                 await sftp.chmod(
-                    attempt / file.relative, 0o555 if file.executable else 0o444
+                    attempt / file.relative, 0o500 if file.executable else 0o400
                 )
 
         # A group, so that when one upload fails the others have stopped before
@@ -492,6 +503,6 @@ def _assets_builder(sftp: asyncssh.SFTPClient, files: Sequence[AssetFile]) -> Bu
             raise failed.exceptions[0] from None
         # Deepest first, while their parents are still writable.
         for directory in [*reversed(directories), attempt]:
-            await sftp.chmod(directory, 0o555)
+            await sftp.chmod(directory, 0o500)
 
     return build

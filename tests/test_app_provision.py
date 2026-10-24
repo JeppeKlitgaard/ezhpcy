@@ -262,6 +262,51 @@ async def test_assets_are_published_once_as_they_are_and_read_only(
     assert not os.access(assets / "main.py", os.W_OK)
 
 
+async def test_every_directory_and_asset_is_its_owners_alone(
+    ssh_server: SSHTestServer,
+    fake_pixi: FakePixi,
+    app: App,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The modes asked of the server, whose filesystem here may not keep them.
+    created: list[int | None] = []
+    chmods: dict[str, int] = {}
+
+    def recording_creation(name: str) -> None:
+        create = getattr(asyncssh.SFTPClient, name)
+
+        async def recording(
+            self: asyncssh.SFTPClient, path: object, *args: object, **kwargs: object
+        ) -> object:
+            attrs = kwargs.get("attrs", args[0] if args else asyncssh.SFTPAttrs())
+            assert isinstance(attrs, asyncssh.SFTPAttrs)
+            created.append(attrs.permissions)
+            return await create(self, path, *args, **kwargs)
+
+        monkeypatch.setattr(asyncssh.SFTPClient, name, recording)
+
+    recording_creation("mkdir")
+    recording_creation("makedirs")
+    chmod = asyncssh.SFTPClient.chmod
+
+    async def recording_chmod(
+        self: asyncssh.SFTPClient, path: str, mode: int, **kwargs: object
+    ) -> None:
+        chmods[PurePosixPath(path).name] = mode
+        await chmod(self, path, mode, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(asyncssh.SFTPClient, "chmod", recording_chmod)
+
+    provisioned = await provision(ssh_server, app)
+
+    assert provisioned.assets is not None
+    assert created
+    assert set(created) == {0o700}
+    assert chmods["main.py"] == 0o400
+    assert chmods["logo.svg"] == 0o400
+    assert chmods["img"] == chmods[provisioned.assets.name] == 0o500
+
+
 async def test_an_upload_that_fails_partway_leaves_nothing(
     ssh_server: SSHTestServer,
     fake_pixi: FakePixi,

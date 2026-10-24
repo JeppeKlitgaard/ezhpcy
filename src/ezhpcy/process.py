@@ -56,7 +56,7 @@ lazy import asyncssh
 from ezhpcy.logging import get_logger
 lazy from ezhpcy.attachments import Attachment
 lazy from ezhpcy.cleanup import finish
-lazy from ezhpcy.ssh import CommandFailed, RemoteHost
+lazy from ezhpcy.ssh import CommandFailed, RemoteHost, private_directory
 
 logger = get_logger(__name__)
 
@@ -229,7 +229,7 @@ async def _start(
     # Fails if the path exists: only a directory made here is the user's alone.
     await finish(
         "create the run directory",
-        sftp.mkdir(run_dir, asyncssh.SFTPAttrs(permissions=0o700)),
+        sftp.mkdir(run_dir, private_directory()),
         then=lambda _: attachment.push(
             "remove the run directory", remove_run_directory
         ),

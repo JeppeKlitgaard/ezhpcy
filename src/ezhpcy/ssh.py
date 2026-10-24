@@ -96,13 +96,23 @@ async def connect(
     return RemoteHost(conn, login, client.closed)
 
 
+def private_directory() -> asyncssh.SFTPAttrs:
+    """
+    The attributes of every directory EzHPCy creates on a host: its owner's
+    alone (0700), as what it holds may be secret, and other users share the
+    host. An existing directory keeps its own.
+    """
+    return asyncssh.SFTPAttrs(permissions=0o700)
+
+
 async def ensure_directory(sftp: asyncssh.SFTPClient, path: PurePosixPath) -> None:
     """
-    Create a directory and its parents, unless it exists already. That costs one
-    round trip, where `SFTPClient.makedirs` tries every component from `/`.
+    Create a directory and its parents, private (`private_directory`), unless it
+    exists already. That costs one round trip, where `SFTPClient.makedirs` tries
+    every component from `/`.
     """
     if not await sftp.isdir(path):
-        await sftp.makedirs(path, exist_ok=True)
+        await sftp.makedirs(path, attrs=private_directory(), exist_ok=True)
 
 
 class CommandFailed(MessageError, RuntimeError):

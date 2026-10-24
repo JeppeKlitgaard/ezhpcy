@@ -35,7 +35,7 @@ lazy from pydantic import SecretStr
 from ezhpcy import ssh
 from ezhpcy.logging import get_logger
 from ezhpcy.messages import MessageError
-lazy from ezhpcy.config import config
+lazy from ezhpcy.config import local_files
 lazy from ezhpcy.constants import KEYRING_SERVICE_NAME
 lazy from ezhpcy.types import ConfigError, Login
 
@@ -126,7 +126,7 @@ async def connect(
     Raises `ConnectionFailed` when it can't connect, `ConfigError` when a
     password source can't be read, and whatever a prompt raises.
     """
-    known_hosts_file = config.local_file.login_known_hosts_file
+    known_hosts_file = local_files.login_known_hosts_file
     if password is None:
         password = await asyncio.to_thread(read_password, login)
     known_hosts = await asyncio.to_thread(_KnownHosts.load, known_hosts_file)

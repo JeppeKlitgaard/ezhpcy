@@ -169,8 +169,11 @@ class AppManifestsConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+# Where EzHPCy keeps its files on this machine.
+local_files = LocalFileConfig()
+
+
 class _ConfigValues(BaseModel):
-    local_file: LocalFileConfig = LocalFileConfig()
     logging: LoggingConfig = LoggingConfig()
     apps: AppManifestsConfig = AppManifestsConfig()
     debug: bool = False
@@ -180,6 +183,11 @@ class _ConfigValues(BaseModel):
     profile: dict[str, ProfileConfig] = Field(default_factory=dict)
 
     model_config = ConfigDict(extra="forbid")
+
+    @property
+    def local_file(self) -> LocalFileConfig:
+        """Where EzHPCy keeps its files on this machine."""
+        return local_files
 
     @model_validator(mode="after")
     def validate_profiles(self) -> Self:
@@ -369,7 +377,7 @@ class _ConfigValues(BaseModel):
 
 # Settings that `EZHPCY_<NAME>` environment variables can't set: they're tables, and
 # `EZHPCY_PROFILE` is the CLI's PROFILE argument.
-_NOT_FROM_ENV = frozenset({"profile", "local_file", "logging", "connection", "apps"})
+_NOT_FROM_ENV = frozenset({"profile", "logging", "connection", "apps"})
 
 
 class _EnvSettingsSource(EnvSettingsSource):
@@ -386,13 +394,11 @@ class _EnvSettingsSource(EnvSettingsSource):
 class Config(BaseSettings, _ConfigValues):
     """
     EzHPCy's configuration: profiles, and the apps of the manifests it was
-    loaded with. Load one with `load`; `Config()` reads the CLI's sources.
+    loaded with. Load one with `load`, or as the CLI does, with
+    `from_environment`.
     """
 
-    model_config = SettingsConfigDict(
-        toml_file=_default_config_file(),
-        env_prefix="EZHPCY_",
-    )
+    model_config = SettingsConfigDict(env_prefix="EZHPCY_")
     _apps: dict[str, dict[str, App | Link]] = PrivateAttr(default_factory=dict)
 
     @classmethod
@@ -409,7 +415,7 @@ class Config(BaseSettings, _ConfigValues):
             init_settings,
             _EnvSettingsSource(settings_cls),
             dotenv_settings,
-            TomlConfigSettingsSource(settings_cls),
+            TomlConfigSettingsSource(settings_cls, toml_file=local_files.config_file),
             file_secret_settings,
         )
 
@@ -425,6 +431,35 @@ class Config(BaseSettings, _ConfigValues):
                 "different configuration file"
             )
         return values
+
+    @classmethod
+    def from_environment(cls) -> Self:
+        """
+        Read the configuration as the CLI does: the environment (`EZHPCY_*`), then
+        the configuration file (`default_path`). Raises `ConfigError` naming the
+        file and its first problem, and each key that lost its `_seconds` suffix.
+        """
+        path = local_files.config_file
+        try:
+            return cls()
+        except (OSError, tomllib.TOMLDecodeError) as error:
+            raise ConfigError(
+                t"Could not read the configuration file {path:path}: {error}"
+            ) from error
+        except ValidationError as error:
+            message = t"Invalid configuration file {path:path}: {config_error(error)}"
+            renamed = [
+                ".".join(map(str, details["loc"]))
+                for details in error.errors(include_url=False)
+                if details["type"] == "extra_forbidden"
+                and str(details["loc"][-1]).endswith("_seconds")
+            ]
+            if renamed:
+                message += (
+                    t". Durations no longer end in {'_seconds':name}: remove it "
+                    t"from {renamed:name}"
+                )
+            raise ConfigError(message) from error
 
     @classmethod
     def from_mapping(cls, values: object) -> Self:
@@ -491,7 +526,7 @@ class Config(BaseSettings, _ConfigValues):
         The configuration file the CLI reads: `EZHPCY_CONFIG_FILE`, or
         `ezhpcy.toml` in the platform's configuration directory.
         """
-        return _default_config_file()
+        return local_files.config_file
 
     @classmethod
     def from_file(cls, path: Path) -> Self:
@@ -543,6 +578,3 @@ class Profile:
 
     def __repr__(self) -> str:
         return f"Profile({self.name!r})"
-
-
-config = Config()

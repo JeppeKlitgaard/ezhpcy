@@ -13,7 +13,6 @@ import pytest
 from pydantic import SecretStr
 
 from ezhpcy import api
-from ezhpcy.config import config
 from tests.support.login import offer_client_key
 from tests.support.sshserver import SSHTestServer
 from tests.support.tunnel import openssh_resolves
@@ -58,9 +57,14 @@ def login_to(server: SSHTestServer, **settings: object) -> api.Login:
     )
 
 
+def known_hosts_file() -> Path:
+    """EzHPCy's own known hosts file, in the test's local files."""
+    return api.Config.from_mapping({}).local_file.login_known_hosts_file
+
+
 def trust(server: SSHTestServer) -> Path:
     """Put the server's host key in EzHPCy's known hosts file; return the file."""
-    known_hosts = config.local_file.login_known_hosts_file
+    known_hosts = known_hosts_file()
     known_hosts.parent.mkdir(parents=True, exist_ok=True)
     known_hosts.write_text(server.known_hosts_line, encoding="utf-8")
     return known_hosts
@@ -157,7 +161,7 @@ async def test_an_accepted_host_key_is_saved(server: SSHTestServer) -> None:
     assert (what, host, port) == ("host key", server.host, str(server.port))
     assert key_type == "ssh-ed25519"
     assert fingerprint == server.host_key.get_fingerprint()
-    saved = config.local_file.login_known_hosts_file.read_text(encoding="utf-8")
+    saved = known_hosts_file().read_text(encoding="utf-8")
     assert saved.strip() == server.known_hosts_line.strip()
 
 
@@ -170,7 +174,7 @@ async def test_a_rejected_host_key_fails_and_is_not_saved(
         async with api.connect(login_to(server), prompts=answers.prompts()):
             pass
 
-    assert not config.local_file.login_known_hosts_file.exists()
+    assert not known_hosts_file().exists()
 
 
 async def test_a_changed_host_key_is_refused_without_asking(
@@ -252,15 +256,6 @@ def test_a_loaded_configuration_resolves_its_profiles(config_file: Path) -> None
     assert job.timings.queue_timeout == timedelta(seconds=60)
     assert job.auto_provision is False
     assert loaded.auto_provision is False
-
-
-def test_loading_a_configuration_leaves_the_clis_as_it_was(config_file: Path) -> None:
-    before = config.model_dump()
-
-    api.Config.load(config_file)
-
-    assert config.model_dump() == before
-    assert "gpu" not in config.profile
 
 
 def test_a_profile_without_a_required_setting_says_which(config_file: Path) -> None:

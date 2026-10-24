@@ -1,6 +1,6 @@
 """
 From a command's PROFILE argument and options to the configuration models it
-runs with (`Login`, `JobConfig`), through `ezhpcy.config`, rendering their
+runs with (`Login`, `JobConfig`), through its `Config`, rendering their
 `ConfigError`s as usage errors that name the options and settings at fault.
 """
 
@@ -9,6 +9,7 @@ lazy from collections.abc import Mapping
 
 lazy from pydantic import SecretStr
 
+lazy from ezhpcy.api import Config
 lazy from ezhpcy.cli._errors import CliUsageError, sentence
 lazy from ezhpcy.cli._options import (
     ConnectionOptions,
@@ -18,7 +19,6 @@ lazy from ezhpcy.cli._options import (
     given_options,
     option_flags,
 )
-lazy from ezhpcy.config import config
 lazy from ezhpcy.logging import get_logger, label_log_file
 lazy from ezhpcy.login import read_password
 lazy from ezhpcy.types import (
@@ -35,8 +35,8 @@ LIST_PROFILES_HINT = (
 )
 
 
-def check_profile_name(profile_name: str) -> None:
-    """Report a PROFILE argument that names no configured profile."""
+def check_profile_name(config: Config, profile_name: str) -> None:
+    """Report a PROFILE argument that names no profile of `config`."""
     if profile_name in config.profile:
         return
     # Worded like Cyclopts' error for an invalid choice.
@@ -50,16 +50,16 @@ def check_profile_name(profile_name: str) -> None:
     raise CliUsageError(message, param_hint="PROFILE", value=profile_name)
 
 
-def select_profile(profile_name: str | None) -> None:
+def select_profile(config: Config, profile_name: str | None) -> None:
     """Check the PROFILE argument, if given, and label the log file with it."""
     if profile_name is not None:
-        check_profile_name(profile_name)
+        check_profile_name(config, profile_name)
         # Profile names are safe as file names (`validate_alias`).
         label_log_file(profile_name)
 
 
 def login_from_cli(
-    options: ConnectionOptions, *, profile_name: str | None
+    config: Config, options: ConnectionOptions, *, profile_name: str | None
 ) -> tuple[Login, SecretStr | None]:
     """
     The login node, from `profile_name`'s settings (or the top-level ones) and
@@ -148,6 +148,7 @@ def login_usage_error(
 
 
 def job_from_cli(
+    config: Config,
     profile_name: str | None,
     *,
     scheduler_options: SchedulerOptions,
@@ -194,7 +195,7 @@ def job_from_cli(
         }
         if isinstance(error, SubmissionCommandError):
             raise _submission_command_error(
-                error, given, given_flags, profile_name=profile_name
+                config, error, given, given_flags, profile_name=profile_name
             ) from error
         flags = {
             f"{section}.{name}": flag
@@ -242,6 +243,7 @@ def _usage_error(
 
 
 def _submission_command_error(
+    config: Config,
     error: SubmissionCommandError,
     given: Mapping[str, Mapping[str, tuple[str, object]]],
     flags: Mapping[str, str],

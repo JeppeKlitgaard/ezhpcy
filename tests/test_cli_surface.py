@@ -20,18 +20,14 @@ from pathlib import Path
 import keyring
 import pytest
 
-from ezhpcy.config import (
-    ConsoleLoggingConfig,
-    FileLoggingConfig,
-    LocalFileConfig,
-    config,
-)
+from ezhpcy.api import Config
+from ezhpcy.config import LocalFileConfig, local_files
 from ezhpcy.console import flush_output
 from ezhpcy.constants import EZHPCY_VERSION, PACKAGE_NAME
 from ezhpcy.logging import TERMINAL_HANDLER_NAME, configure_logging
 from ezhpcy.scheduler.types import SchedulerType
-from ezhpcy.types import ProfileConfig, SubmissionMode
-from tests.support.cli import capture, invoke
+from ezhpcy.types import SubmissionMode
+from tests.support.cli import capture, invoke, use_settings
 from tests.support.terminal import (
     file_handler,
     log_file_path,
@@ -55,21 +51,15 @@ _PIPED_PASSWORD_PROMPT = pytest.mark.filterwarnings("ignore::getpass.GetPassWarn
 
 
 @pytest.fixture(autouse=True)
-def surface_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
-    """Replace the workstation's configuration with known profiles and settings."""
-    monkeypatch.setattr(
-        config,
-        "profile",
-        {
-            name: ProfileConfig.model_validate(values)
-            for name, values in _PROFILES.items()
-        },
+def settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, object]:
+    """
+    Give the CLI known profiles and settings, as the configuration's tables, for a
+    test to change.
+    """
+    monkeypatch.setattr(local_files, "config_file", tmp_path / "ezhpcy.toml")
+    return use_settings(
+        monkeypatch, {"auto_provision": True, "debug": False, "profile": _PROFILES}
     )
-    monkeypatch.setattr(config, "auto_provision", True)
-    monkeypatch.setattr(config, "debug", False)
-    config_file = tmp_path / "ezhpcy.toml"
-    monkeypatch.setattr(config.local_file, "config_file", config_file)
-    return config_file
 
 
 @pytest.fixture(autouse=True)
@@ -308,7 +298,7 @@ def test_connection_options_reach_each_command_and_resolve_only_its_profile(
     monkeypatch: pytest.MonkeyPatch, command: str
 ) -> None:
     captured = capture(monkeypatch, command)
-    resolve_profile = type(config).resolve_profile
+    resolve_profile = Config.resolve_profile
     resolved_profiles: list[str] = []
 
     def counting_resolve_profile(self, name: str, **kwargs: bool):
@@ -318,7 +308,7 @@ def test_connection_options_reach_each_command_and_resolve_only_its_profile(
             resolved_profiles.append(name)
         return resolve_profile(self, name, **kwargs)
 
-    monkeypatch.setattr(type(config), "resolve_profile", counting_resolve_profile)
+    monkeypatch.setattr(Config, "resolve_profile", counting_resolve_profile)
 
     # `provision` asks before connecting.
     yes = ["--yes"] if command == "provision" else []
@@ -438,9 +428,12 @@ def test_tunnel_worker_port_retries_adds_alternate_ports(
     [(True, []), (False, ["--auto-provision"])],
 )
 def test_tunnel_auto_provisions_when_configured_or_asked(
-    monkeypatch: pytest.MonkeyPatch, configured: bool, arguments: list[str]
+    monkeypatch: pytest.MonkeyPatch,
+    configured: bool,
+    arguments: list[str],
+    settings: dict[str, object],
 ) -> None:
-    monkeypatch.setattr(config, "auto_provision", configured)
+    settings["auto_provision"] = configured
     captured = capture(monkeypatch, "tunnel")
 
     result = invoke(["tunnel", "base", *arguments])
@@ -454,9 +447,12 @@ def test_tunnel_auto_provisions_when_configured_or_asked(
     [(False, []), (True, ["--no-auto-provision"])],
 )
 def test_tunnel_without_auto_provision_needs_existing_worker_credentials(
-    monkeypatch: pytest.MonkeyPatch, configured: bool, arguments: list[str]
+    monkeypatch: pytest.MonkeyPatch,
+    configured: bool,
+    arguments: list[str],
+    settings: dict[str, object],
 ) -> None:
-    monkeypatch.setattr(config, "auto_provision", configured)
+    settings["auto_provision"] = configured
     captured = capture(monkeypatch, "tunnel")
 
     result = invoke(["tunnel", "base", *arguments])
@@ -535,9 +531,11 @@ def test_exclusive_and_shared_count_as_given_submission_options(
     ],
 )
 def test_debug_enables_debug_logging_with_timestamps(
-    arguments: list[str], config_debug: bool, monkeypatch: pytest.MonkeyPatch
+    arguments: list[str],
+    config_debug: bool,
+    settings: dict[str, object],
 ) -> None:
-    monkeypatch.setattr(config, "debug", config_debug)
+    settings["debug"] = config_debug
 
     result = invoke(arguments)
 
@@ -566,10 +564,12 @@ def test_help_shows_the_debug_default_as_auto() -> None:
     ],
 )
 def test_configured_log_level_applies_without_debug(
-    arguments: list[str], config_debug: bool, monkeypatch: pytest.MonkeyPatch
+    arguments: list[str],
+    config_debug: bool,
+    settings: dict[str, object],
 ) -> None:
-    monkeypatch.setattr(config, "debug", config_debug)
-    monkeypatch.setattr(config.logging.console, "level", logging.WARNING)
+    settings["debug"] = config_debug
+    settings["logging"] = {"console": {"level": "WARNING"}}
 
     result = invoke(arguments)
 
@@ -581,9 +581,11 @@ def test_configured_log_level_applies_without_debug(
     ("arguments", "shown"), [(["version"], False), (["--debug", "version"], True)]
 )
 def test_the_console_log_can_be_disabled_but_debug_enables_it(
-    arguments: list[str], shown: bool, monkeypatch: pytest.MonkeyPatch
+    arguments: list[str],
+    shown: bool,
+    settings: dict[str, object],
 ) -> None:
-    monkeypatch.setattr(config.logging, "console", ConsoleLoggingConfig(enabled=False))
+    settings["logging"] = {"console": {"enabled": False}}
 
     result = invoke(arguments)
     logging.getLogger("ezhpcy.cli.version").warning("Worker gone")
@@ -596,13 +598,10 @@ def test_the_console_log_can_be_disabled_but_debug_enables_it(
 
 
 def test_the_log_file_follows_its_configuration(
-    isolated_local_files: LocalFileConfig, monkeypatch: pytest.MonkeyPatch
+    isolated_local_files: LocalFileConfig,
+    settings: dict[str, object],
 ) -> None:
-    monkeypatch.setattr(
-        config.logging,
-        "file",
-        FileLoggingConfig.model_validate({"level": "warning", "keep": 2}),
-    )
+    settings["logging"] = {"file": {"level": "warning", "keep": 2}}
     log_dir = isolated_local_files.log_dir
     log_dir.mkdir(parents=True)
     for age, name in enumerate(["ezhpcy-old.log", "ezhpcy-older.log"], start=1):
@@ -634,9 +633,10 @@ def test_the_log_file_is_named_after_the_profile(
 
 
 def test_the_log_file_can_be_disabled(
-    isolated_local_files: LocalFileConfig, monkeypatch: pytest.MonkeyPatch
+    isolated_local_files: LocalFileConfig,
+    settings: dict[str, object],
 ) -> None:
-    monkeypatch.setattr(config.logging, "file", FileLoggingConfig(enabled=False))
+    settings["logging"] = {"file": {"enabled": False}}
 
     result = invoke(["version"])
     logging.getLogger("ezhpcy.cli.version").warning("Not written to a file")
@@ -882,9 +882,9 @@ def test_command_errors_are_usage_errors_with_their_key_message(
 
 
 def test_unknown_profile_without_any_profiles_points_to_a_preset(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, settings: dict[str, object]
 ) -> None:
-    monkeypatch.setattr(config, "profile", {})
+    settings["profile"] = {}
     captured = capture(monkeypatch, "tunnel")
 
     result = invoke(["tunnel", "missing"])

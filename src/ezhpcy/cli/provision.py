@@ -4,7 +4,7 @@ lazy from typing import Annotated
 lazy from cyclopts import Parameter
 lazy from rich.prompt import Confirm
 
-from ezhpcy.cli._options import ConnectionOptions, OptionalProfileArg
+from ezhpcy.cli._options import ConfigArg, ConnectionOptions, OptionalProfileArg
 lazy from ezhpcy.cli._resolve import login_from_cli, select_profile
 lazy from ezhpcy.cli.utils.prompt import ask
 lazy from ezhpcy.cli.utils.ssh import connect_or_exit
@@ -20,6 +20,7 @@ async def provision_cmd(
     profile: OptionalProfileArg = None,
     /,
     *,
+    config: ConfigArg,
     connection_options: ConnectionOptions = ConnectionOptions(),
     yes: Annotated[
         bool,
@@ -30,8 +31,8 @@ async def provision_cmd(
     ] = False,
 ) -> None:
     """Idempotently provision worker infrastructure on the remote HPC host."""
-    select_profile(profile)
-    login, password = login_from_cli(connection_options, profile_name=profile)
+    select_profile(config, profile)
+    login, password = login_from_cli(config, connection_options, profile_name=profile)
     credentials = WorkerCredentials.for_login(
         login, machine_id=await asyncio.to_thread(local_machine_id)
     )

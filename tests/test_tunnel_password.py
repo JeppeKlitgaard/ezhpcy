@@ -8,10 +8,11 @@ import pytest
 from keyring.errors import KeyringError
 
 from ezhpcy import login as login_module
+from ezhpcy.api import Config
 from ezhpcy.cli import _options, _resolve
 from ezhpcy.constants import KEYRING_SERVICE_NAME
-from ezhpcy.types import ConfigError, Login, PasswordConfig, ProfileConfig
-from tests.support.cli import invoke
+from ezhpcy.types import ConfigError, Login
+from tests.support.cli import invoke, use_settings
 
 
 def read_password(**sources: object) -> str | None:
@@ -32,19 +33,13 @@ def _password_fd(password: str) -> int:
 
 
 @pytest.fixture(autouse=True)
-def base_profile(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        _resolve.config,
-        "profile",
-        {
-            "base": ProfileConfig.model_validate(
-                {
-                    "connection": {"host": "login.example.com", "user": "alice"},
-                    "scheduler": {"type": "LSF"},
-                }
-            )
-        },
-    )
+def settings(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
+    """The configuration's tables, with profile `base`, for a test to change."""
+    base = {
+        "connection": {"host": "login.example.com", "user": "alice"},
+        "scheduler": {"type": "LSF"},
+    }
+    return use_settings(monkeypatch, {"profile": {"base": base}})
 
 
 def test_password_file_is_read_as_utf8_and_trailing_newlines_are_removed(
@@ -71,22 +66,21 @@ def test_password_without_an_explicit_or_profile_source_is_none() -> None:
 
 @pytest.mark.parametrize("profile_name", [None, "base"])
 def test_top_level_keyring_and_prompt_reach_the_connection(
-    monkeypatch: pytest.MonkeyPatch, profile_name: str | None
+    settings: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+    profile_name: str | None,
 ) -> None:
     """
     With both enabled, the keyring's password is used, and the prompt setting
     kept for when it is needed.
     """
-    monkeypatch.setattr(
-        _resolve.config,
-        "connection",
-        PasswordConfig(password_keyring=True, password_prompt=False),
-    )
+    settings["connection"] = {"password_keyring": True, "password_prompt": False}
     monkeypatch.setattr(
         login_module.keyring, "get_password", lambda *_args: "from-keyring"
     )
 
     login, _ = _resolve.login_from_cli(
+        Config.from_mapping(settings),
         _options.ConnectionOptions(user="alice", host="login.example.com"),
         profile_name=profile_name,
     )
@@ -95,9 +89,13 @@ def test_top_level_keyring_and_prompt_reach_the_connection(
     assert login_module.read_password(login).get_secret_value() == "from-keyring"
 
 
-def test_a_password_on_the_command_line_is_the_one_given_to_connect() -> None:
+def test_a_password_on_the_command_line_is_the_one_given_to_connect(
+    settings: dict[str, object],
+) -> None:
     _, password = _resolve.login_from_cli(
-        _options.ConnectionOptions(password="from-command-line"), profile_name="base"
+        Config.from_mapping(settings),
+        _options.ConnectionOptions(password="from-command-line"),
+        profile_name="base",
     )
 
     assert password is not None
@@ -105,18 +103,16 @@ def test_a_password_on_the_command_line_is_the_one_given_to_connect() -> None:
 
 
 def test_a_password_source_on_the_command_line_replaces_the_profiles(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    settings: dict[str, object], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.setattr(
-        _resolve.config,
-        "connection",
-        PasswordConfig(password_fd=0, password_keyring=True),
-    )
+    settings["connection"] = {"password_fd": 0, "password_keyring": True}
     password_file = tmp_path / "password"
     password_file.write_text("from-file", encoding="utf-8")
 
     login, _ = _resolve.login_from_cli(
-        _options.ConnectionOptions(password_file=password_file), profile_name="base"
+        Config.from_mapping(settings),
+        _options.ConnectionOptions(password_file=password_file),
+        profile_name="base",
     )
 
     assert (login.password_fd, login.password_keyring) == (None, False)
@@ -207,59 +203,45 @@ def test_configured_password_sources_are_tried_fd_file_then_keyring(
 
 
 def test_a_disabled_password_file_and_fd_leave_it_to_the_keyring(
+    settings: dict[str, object],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        _resolve.config,
-        "connection",
-        PasswordConfig(password_fd=0, password_file=Path("password.txt")),
-    )
-    monkeypatch.setattr(
-        _resolve.config,
-        "profile",
-        {
-            "base": ProfileConfig.model_validate(
-                {
-                    "connection": {
-                        "host": "login.example.com",
-                        "user": "alice",
-                        "password_fd": False,
-                        "password_file": False,
-                        "password_keyring": True,
-                    }
-                }
-            )
-        },
-    )
+    settings["connection"] = {"password_fd": 0, "password_file": Path("password.txt")}
+    settings["profile"] = {
+        "base": {
+            "connection": {
+                "host": "login.example.com",
+                "user": "alice",
+                "password_fd": False,
+                "password_file": False,
+                "password_keyring": True,
+            }
+        }
+    }
     monkeypatch.setattr(
         login_module.keyring, "get_password", lambda *_args: "from-keyring"
     )
 
     login, _ = _resolve.login_from_cli(
-        _options.ConnectionOptions(), profile_name="base"
+        Config.from_mapping(settings), _options.ConnectionOptions(), profile_name="base"
     )
 
     assert login_module.read_password(login).get_secret_value() == "from-keyring"
 
 
 def test_invalid_profile_password_settings_are_reported_as_a_cli_parameter_error(
+    settings: dict[str, object],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        _resolve.config,
-        "profile",
-        {
-            "base": ProfileConfig.model_validate(
-                {
-                    "connection": {
-                        "host": "login.example.com",
-                        "user": "alice",
-                        "password": "hunter2",
-                    }
-                }
-            )
-        },
-    )
+    settings["profile"] = {
+        "base": {
+            "connection": {
+                "host": "login.example.com",
+                "user": "alice",
+                "password": "hunter2",
+            }
+        }
+    }
 
     result = invoke(["tunnel", "base"], color=True)
 
@@ -273,25 +255,19 @@ def test_invalid_profile_password_settings_are_reported_as_a_cli_parameter_error
 
 
 def test_a_password_file_that_cant_be_read_is_a_usage_error_naming_it(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    settings: dict[str, object], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     missing = tmp_path / "missing"
-    monkeypatch.setattr(
-        _resolve.config,
-        "profile",
-        {
-            "base": ProfileConfig.model_validate(
-                {
-                    "connection": {
-                        "host": "login.example.com",
-                        "user": "alice",
-                        "password_file": missing,
-                    },
-                    "scheduler": {"type": "LSF", "submission_mode": "batch"},
-                }
-            )
-        },
-    )
+    settings["profile"] = {
+        "base": {
+            "connection": {
+                "host": "login.example.com",
+                "user": "alice",
+                "password_file": missing,
+            },
+            "scheduler": {"type": "LSF", "submission_mode": "batch"},
+        }
+    }
 
     result = invoke(["tunnel", "base"])
 

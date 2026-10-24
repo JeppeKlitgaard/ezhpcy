@@ -5,11 +5,11 @@ from pathlib import Path
 
 import pytest
 from pydantic import BaseModel, ValidationError
-from pydantic_settings import SettingsConfigDict
 
 from ezhpcy import config as config_module
 from ezhpcy.scheduler.types import SchedulerType
 from ezhpcy.types import (
+    ConfigError,
     JobConfig,
     Login,
     PasswordConfig,
@@ -279,17 +279,15 @@ def test_a_stored_password_is_rejected_where_it_is_set(
         config.reject_stored_password(profile_name)
 
 
-def test_local_file_cannot_be_set_in_the_config_file(tmp_path: Path) -> None:
-    config_file = tmp_path / "ezhpcy.toml"
-    config_file.write_text(
-        '[local_file]\nconfig_file = "other.toml"\n', encoding="utf-8"
-    )
+def test_local_file_cannot_be_set_in_the_config_file(
+    isolated_local_files: config_module.LocalFileConfig,
+) -> None:
+    config_file = isolated_local_files.config_file
+    config_file.parent.mkdir(parents=True)
+    config_file.write_text("[local_file]\nconfig_dir = 'elsewhere'\n", encoding="utf-8")
 
-    class FileConfig(config_module.Config):
-        model_config = SettingsConfigDict(toml_file=config_file)
-
-    with pytest.raises(ValidationError, match="local_file cannot be configured"):
-        FileConfig()
+    with pytest.raises(ConfigError, match="local_file cannot be configured"):
+        config_module.Config.from_environment()
 
 
 @pytest.mark.parametrize(
@@ -304,18 +302,15 @@ def test_local_file_cannot_be_set_in_the_config_file(tmp_path: Path) -> None:
     ],
 )
 def test_tables_are_not_read_from_the_environment(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, variable: str, value: str
+    monkeypatch: pytest.MonkeyPatch, variable: str, value: str
 ) -> None:
-    class FileConfig(config_module.Config):
-        model_config = SettingsConfigDict(toml_file=tmp_path / "ezhpcy.toml")
-
     monkeypatch.setenv(variable, value)
     monkeypatch.setenv("EZHPCY_AUTO_PROVISION", "false")
 
-    config = FileConfig()
+    config = config_module.Config.from_environment()
 
     assert config.profile == {}
-    assert config.local_file == config_module.LocalFileConfig()
+    assert config.local_file.config_dir != Path("elsewhere")
     assert config.logging == config_module.LoggingConfig()
     assert config.connection == PasswordConfig()
     # Plain settings still come from the environment.

@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from ezhpcy.cli import doctor as doctor_cli
-from ezhpcy.config import config
+from ezhpcy.config import local_files
 from ezhpcy.tunnel import ssh_config
 from ezhpcy.tunnel.lock import alias_lock
 from ezhpcy.tunnel.ssh_config import (
@@ -14,8 +14,7 @@ from ezhpcy.tunnel.ssh_config import (
     include_directive,
     write_active_host_config,
 )
-from ezhpcy.types import PasswordConfig, ProfileConfig
-from tests.support.cli import invoke
+from tests.support.cli import invoke, use_settings
 
 type Resolver = Callable[[str], dict[str, list[str]] | AliasProblem | None]
 
@@ -24,8 +23,14 @@ type Resolver = Callable[[str], dict[str, list[str]] | AliasProblem | None]
 def config_file(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     path = tmp_path / "ezhpcy.toml"
     path.write_text("", encoding="utf-8")
-    monkeypatch.setattr(config.local_file, "config_file", path)
+    monkeypatch.setattr(local_files, "config_file", path)
     return path
+
+
+@pytest.fixture(autouse=True)
+def settings(monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
+    """The configuration's tables, as the CLI loads them."""
+    return use_settings(monkeypatch, {})
 
 
 @pytest.fixture(autouse=True)
@@ -61,26 +66,13 @@ def resolved(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
 
 @pytest.fixture
-def profiles(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        config,
-        "profile",
-        {
-            "base": ProfileConfig.model_validate({"scheduler": {"type": "LSF"}}),
-            "cpu": ProfileConfig.model_validate(
-                {
-                    "inherit": "base",
-                    "connection": {"host": "login.example.com", "user": "alice"},
-                }
-            ),
-            "gpu": ProfileConfig.model_validate(
-                {
-                    "inherit": "base",
-                    "connection": {"host": "login.example.com", "user": "alice"},
-                }
-            ),
-        },
-    )
+def profiles(settings: dict[str, object]) -> None:
+    connection = {"host": "login.example.com", "user": "alice"}
+    settings["profile"] = {
+        "base": {"scheduler": {"type": "LSF"}},
+        "cpu": {"inherit": "base", "connection": connection},
+        "gpu": {"inherit": "base", "connection": connection},
+    }
 
 
 def worker_host(alias: str) -> WorkerHost:
@@ -194,9 +186,9 @@ def test_doctor_reports_ssh_refusing_the_configuration(
 
 
 def test_doctor_checks_the_include_without_profiles(
-    monkeypatch: pytest.MonkeyPatch, resolved: list[str]
+    settings: dict[str, object], resolved: list[str]
 ) -> None:
-    monkeypatch.setattr(config, "profile", {})
+    settings["profile"] = {}
 
     result = invoke(["doctor"])
 
@@ -209,9 +201,9 @@ def test_doctor_checks_the_include_without_profiles(
 
 
 def test_doctor_fails_without_the_include_and_without_profiles(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, settings: dict[str, object]
 ) -> None:
-    monkeypatch.setattr(config, "profile", {})
+    settings["profile"] = {}
     monkeypatch.setattr(
         ssh_config, "resolve_alias", lambda alias: {"hostname": [alias]}
     )
@@ -270,21 +262,19 @@ def test_doctor_fails_without_a_configuration_file(
     ("profile", "message"),
     [
         (
-            ProfileConfig.model_validate({"connection": {"password": "hunter2"}}),
+            {"connection": {"password": "hunter2"}},
             "profile.broken.connection.password must not be set",
         ),
         (
-            ProfileConfig.model_validate(
-                {"connection": {"password_file": Path("missing-password.txt")}}
-            ),
+            {"connection": {"password_file": Path("missing-password.txt")}},
             "connection.password_file missing-password.txt does not exist",
         ),
     ],
 )
 def test_doctor_fails_on_invalid_profiles(
-    monkeypatch: pytest.MonkeyPatch, profile: ProfileConfig, message: str
+    settings: dict[str, object], profile: dict[str, object], message: str
 ) -> None:
-    monkeypatch.setattr(config, "profile", {"broken": profile})
+    settings["profile"] = {"broken": profile}
 
     result = invoke(["doctor"])
 
@@ -293,13 +283,9 @@ def test_doctor_fails_on_invalid_profiles(
 
 
 def test_doctor_fails_on_invalid_top_level_password_settings(
-    profiles: None, monkeypatch: pytest.MonkeyPatch
+    profiles: None, settings: dict[str, object]
 ) -> None:
-    monkeypatch.setattr(
-        config,
-        "connection",
-        PasswordConfig.model_validate({"password_file": Path("missing.txt")}),
-    )
+    settings["connection"] = {"password_file": Path("missing.txt")}
 
     result = invoke(["doctor"])
 
@@ -311,15 +297,9 @@ def test_doctor_fails_on_invalid_top_level_password_settings(
 
 
 def test_doctor_ignores_a_password_file_that_a_descriptor_comes_before(
-    profiles: None, monkeypatch: pytest.MonkeyPatch
+    profiles: None, settings: dict[str, object]
 ) -> None:
-    monkeypatch.setattr(
-        config,
-        "connection",
-        PasswordConfig.model_validate(
-            {"password_fd": 3, "password_file": Path("missing.txt")}
-        ),
-    )
+    settings["connection"] = {"password_fd": 3, "password_file": Path("missing.txt")}
 
     result = invoke(["doctor"])
 

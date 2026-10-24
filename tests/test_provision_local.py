@@ -5,7 +5,7 @@ from pathlib import Path, PurePosixPath
 import asyncssh
 import pytest
 
-from ezhpcy.config import config
+from ezhpcy.config import local_files
 from ezhpcy.constants import WORKER_HOST_ALIAS
 from ezhpcy.provision_local import WorkerCredentials
 from ezhpcy.types import RemoteState
@@ -25,7 +25,7 @@ def _key_files(credentials: WorkerCredentials) -> list[Path]:
 def test_worker_credentials_stay_where_earlier_versions_put_them() -> None:
     # Local keys must keep being found where earlier versions put them.
     local_dir = (
-        config.local_file.config_dir / "ssh" / "machine-id" / "alice@login.example.com"
+        local_files.config_dir / "ssh" / "machine-id" / "alice@login.example.com"
     )
     credentials = WorkerCredentials("machine-id", "alice", "Login.Example.com")
     remote_state = RemoteState(

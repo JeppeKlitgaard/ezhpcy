@@ -12,9 +12,9 @@ lazy from pydantic import ValidationError
 lazy from rich.prompt import Confirm, Prompt
 lazy from rich.text import Text
 
+lazy from ezhpcy.api import Config
 lazy from ezhpcy.cli._errors import CliUsageError
 lazy from ezhpcy.cli._options import UserOpt
-lazy from ezhpcy.config import Config, config
 lazy from ezhpcy.console import error_console
 lazy from ezhpcy.messages import print_aborted, print_success, print_warning
 
@@ -114,7 +114,7 @@ def load_cmd(
             param_hint="PRESET",
             value=preset_name,
         ) from error
-    config_file = config.local_file.config_file
+    config_file = Config.default_path()
 
     if config_file.exists():
         try:

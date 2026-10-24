@@ -7,8 +7,8 @@ lazy from typing import Annotated
 
 lazy from cyclopts import Parameter
 
+lazy from ezhpcy.api import Config
 lazy from ezhpcy.cli._errors import CliUsageError
-lazy from ezhpcy.config import config
 lazy from ezhpcy.messages import print_error
 
 IS_WINDOWS = os.name == "nt"
@@ -66,7 +66,7 @@ def edit_cmd(
     /,
 ) -> None:
     """Open the EzHPCy configuration file in an editor and wait for it to close."""
-    config_file = config.local_file.config_file
+    config_file = Config.default_path()
 
     try:
         config_file.parent.mkdir(parents=True, exist_ok=True)

@@ -116,8 +116,6 @@ async def connect(
     *,
     prompts: Prompts | None = None,
     password: SecretStr | None = None,
-    known_hosts_file: Path | None = None,
-    **options: object,
 ) -> ssh.RemoteHost:
     """
     Connect to the login node, with `password`, or one read from the `login`'s
@@ -125,14 +123,10 @@ async def connect(
 
     Use the result with `async with` to close it.
 
-    `known_hosts_file` is EzHPCy's own known hosts file (by default
-    `config.local_file.login_known_hosts_file`). `options` are passed on to
-    `ezhpcy.ssh.connect`.
-
     Raises `ConnectionFailed` when it can't connect, `ConfigError` when a
     password source can't be read, and whatever a prompt raises.
     """
-    known_hosts_file = known_hosts_file or config.local_file.login_known_hosts_file
+    known_hosts_file = config.local_file.login_known_hosts_file
     if password is None:
         password = await asyncio.to_thread(read_password, login)
     known_hosts = await asyncio.to_thread(_KnownHosts.load, known_hosts_file)
@@ -147,9 +141,7 @@ async def connect(
             if password is not None:
                 connect_options["password"] = password.get_secret_value()
             try:
-                return await ssh.connect(
-                    login, client=client, **(connect_options | options)
-                )
+                return await ssh.connect(login, client=client, **connect_options)
             except asyncssh.HostKeyNotVerifiable:
                 if client.changed_host_key is not None:
                     raise client.changed_host_key from None

@@ -5,7 +5,6 @@ in-process SSH server, with the worker played by the tests. How each failure shu
 """
 
 import asyncio
-import functools
 import io
 import itertools
 import logging
@@ -35,6 +34,7 @@ from ezhpcy.tunnel import lock, ssh_config
 from ezhpcy.tunnel.lock import alias_lock, alias_locked
 from ezhpcy.worker.control import WorkerControl
 from tests.support.cli import invoke
+from tests.support.login import ssh_options
 from tests.support.sshserver import Invocation, SSHTestServer, reply
 from tests.support.terminal import GatedTerminal, terminal_handler, use_terminal
 from tests.support.tunnel import (
@@ -601,13 +601,6 @@ def test_keepalive_loss_while_serving_stops_the_tunnel(
     login: SSHTestServer, worker: SSHTestServer, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     worker_port = worker.port
-    monkeypatch.setattr(
-        login_module,
-        "connect",
-        functools.partial(
-            login_module.connect, keepalive_interval=0.1, keepalive_count_max=2
-        ),
-    )
 
     def unplug() -> object:
         login.blackhole()
@@ -632,7 +625,10 @@ def test_keepalive_loss_while_serving_stops_the_tunnel(
         publish, "publish_host", lambda *_args, **_kwargs: published.set()
     )
 
-    with tunnel_log() as log:
+    with (
+        ssh_options(keepalive_interval=0.1, keepalive_count_max=2),
+        tunnel_log() as log,
+    ):
         result = invoke(["tunnel", "base", "--worker-port", str(worker_port)])
 
     assert result.exit_code == 1, result

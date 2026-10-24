@@ -1,7 +1,10 @@
 """Sending a command's login connection to the in-process SSH server."""
 
 import json
+from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
+from unittest import mock
 
 import pytest
 
@@ -21,8 +24,7 @@ def route_login(
 ) -> None:
     """
     Send every login connection to the test server, whose host key is trusted,
-    and give it a fake for `remote_state`'s command. The replacement
-    `ezhpcy.login.connect` passes further options on, so a test can wrap it.
+    and give it a fake for `remote_state`'s command.
     """
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
@@ -35,9 +37,8 @@ def route_login(
     async def connect_to_server(login: Login, **options: object) -> ssh.RemoteHost:
         # Profiles' hosts are domain names.
         routed = login.model_copy(update={"host": server.host, "port": server.port})
-        host = await connect(
-            routed, client_keys=[server.client_key], agent_path=None, **options
-        )
+        with ssh_options(client_keys=[server.client_key], agent_path=None):
+            host = await connect(routed, **options)
         # As connected to the login node configured, whose worker credentials
         # those are.
         host.login = login
@@ -45,6 +46,21 @@ def route_login(
 
     monkeypatch.setattr(login_module, "connect", connect_to_server)
     server.command("bash -lc", reply(stdout=remote_state_json()))
+
+
+@contextmanager
+def ssh_options(**options: object) -> Generator[None]:
+    """
+    Pass `options` on to `asyncssh.connect` from every login connection made
+    meanwhile (`ezhpcy.ssh.connect`), under those EzHPCy gives itself.
+    """
+    connect = ssh.connect
+
+    async def with_options(login: Login, **given: object) -> ssh.RemoteHost:
+        return await connect(login, **(options | given))
+
+    with mock.patch.object(ssh, "connect", with_options):
+        yield
 
 
 def offer_client_key(

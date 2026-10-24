@@ -58,6 +58,14 @@ coverage *args:
 check:
     uv run --group typecheck pyrefly check
 
+# Counts the lines of code
+[group: 'dev']
+sloc:
+    @echo "src/ezhpcy"
+    @uvx pygount --format=summary src/ezhpcy
+    @echo "tests"
+    @uvx pygount --format=summary tests
+
 # Bumps the version (major, minor, patch, stable, alpha, beta, rc, post or dev; several combine) and commits it
 [group: 'release']
 bump +bumps:

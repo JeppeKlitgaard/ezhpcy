@@ -4,12 +4,23 @@ from datetime import timedelta
 from pathlib import Path
 
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 from pydantic_settings import SettingsConfigDict
 
 from ezhpcy import config as config_module
 from ezhpcy.scheduler.types import SchedulerType
-from ezhpcy.types import JobConfig, Login, PasswordConfig
+from ezhpcy.types import (
+    JobConfig,
+    Login,
+    PasswordConfig,
+    ResourceChanges,
+    Resources,
+    SchedulerChanges,
+    SchedulerSettings,
+    SubmissionMode,
+    TimingChanges,
+    Timings,
+)
 
 
 def test_logging_is_configured_in_its_tables() -> None:
@@ -436,3 +447,27 @@ def test_job_config_requires_scheduler_type_and_submission_mode(
 ) -> None:
     with pytest.raises(ValidationError):
         JobConfig.model_validate({"scheduler": scheduler})
+
+
+@pytest.mark.parametrize(
+    ("changes", "model"),
+    [
+        (ResourceChanges, Resources),
+        (TimingChanges, Timings),
+        (SchedulerChanges, SchedulerSettings),
+    ],
+)
+def test_the_typed_changes_name_every_field_of_their_model(
+    changes: type, model: type[BaseModel]
+) -> None:
+    assert set(changes.__annotations__) == set(model.model_fields)
+
+
+def test_a_memory_change_takes_a_size() -> None:
+    job = JobConfig(
+        scheduler=SchedulerSettings(
+            type=SchedulerType.LSF, submission_mode=SubmissionMode.BATCH
+        )
+    )
+
+    assert job.with_resources(memory="2GiB").resources.memory_bytes == 2 * 1024**3

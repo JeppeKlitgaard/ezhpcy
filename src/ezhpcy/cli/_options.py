@@ -415,7 +415,7 @@ class TimingOptions:
 
 
 @cache
-def _flags(options_type: type) -> dict[str, str]:
+def option_flags(options_type: type) -> dict[str, str]:
     """Each field's flag as errors name it, e.g. `--queue` or `--exclusive/--shared`."""
     flags = {}
     for name, hint in get_type_hints(options_type, include_extras=True).items():
@@ -438,7 +438,7 @@ def given_options(options: object) -> dict[str, tuple[str, object]]:
     >>> given_options(resource_options)
     {'cores': ('--cores', 8), 'exclusive': ('--exclusive/--shared', False)}
     """
-    flags = _flags(type(options))
+    flags = option_flags(type(options))
     return {
         name: (flag, value)
         for name, flag in flags.items()

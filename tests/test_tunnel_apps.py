@@ -97,7 +97,7 @@ class TunnelApps:
         ) -> api.RunningApp | None:
             running = await start_app(run, host, app)
             started.append(running)
-            if len(started) == len(run.apps):
+            if len(started) == sum(isinstance(app, api.App) for app in run.apps):
                 self.serving = Serving(run, list(started), asyncio.get_running_loop())
                 threading.Thread(target=self._then, args=(self.serving,)).start()
             return running
@@ -197,6 +197,37 @@ def test_the_apps_start_on_the_node_in_order_and_stop_with_the_tunnel(
     assert any(
         message.startswith("App board v2.18 listens on a TCP port")
         for message in log.messages(logging.WARNING)
+    )
+
+
+def test_a_link_is_printed_for_the_alias_in_its_place(
+    apps: TunnelApps, tmp_path: Path
+) -> None:
+    apps.manifest = write_project(
+        tmp_path / "project",
+        APPS
+        + '[ezhpcy.app.code."v1.0"]\n'
+        + 'access.url = "vscode://vscode-remote/ssh-remote+{alias}/"\n',
+    )
+    apps.rig.serve_port()
+
+    result = apps.tunnel("--app", "code", "--app", "lab", "--alias", "node-1")
+
+    assert result.exit_code == 0, result
+    assert apps.serving is not None
+    [lab] = apps.serving.started
+    assert lab is not None
+    assert result.stdout.splitlines() == [
+        "vscode://vscode-remote/ssh-remote+node-1/",
+        lab.url,
+    ]
+    # Nothing runs for it, and it is shown with the apps.
+    assert len(apps.rig.processes.processes) == 1
+    assert (
+        api.LinkStatus(
+            name="code", version="v1.0", url="vscode://vscode-remote/ssh-remote+node-1/"
+        )
+        in apps.serving.run.status.attachments
     )
 
 

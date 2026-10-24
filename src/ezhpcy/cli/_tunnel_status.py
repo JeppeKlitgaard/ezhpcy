@@ -22,7 +22,7 @@ lazy from rich.spinner import Spinner
 lazy from rich.table import Table
 lazy from rich.text import Text
 
-lazy from ezhpcy.app.run import AppState, AppStatus
+lazy from ezhpcy.app.run import AppState, AppStatus, LinkStatus
 lazy from ezhpcy.forward import ForwardStatus
 lazy from ezhpcy.job.status import JobStatus, Phase, PublishedStatus
 lazy from ezhpcy.messages import duration, rich_text
@@ -244,17 +244,23 @@ def _requested(status: JobStatus) -> _Rows:
 
 
 def _apps(status: JobStatus) -> _Rows:
-    """Each app, a row: where it serves, or where it is if it doesn't."""
+    """
+    Each app and link, a row: where it serves, or where it is if it doesn't,
+    then its status hints while it serves. A link has no connections to count.
+    """
     rows: _Rows = []
     for attachment in status.attachments:
-        if not isinstance(attachment, AppStatus):
+        if not isinstance(attachment, AppStatus | LinkStatus):
             continue
+        hints: tuple[str, ...] = ()
         match attachment:
+            case LinkStatus(url=url, status_hints=hints):
+                where = t"{url:target}"
             case AppStatus(state=AppState.EXITED, exit_status=int(exit_status)):
                 where = t"exited with status {exit_status:detail}"
             case AppStatus(state=AppState.EXITED):
                 where = t"failed to start"
-            case AppStatus(url=str(url), connections=connections):
+            case AppStatus(url=str(url), connections=connections, status_hints=hints):
                 plural = "" if connections == 1 else "s"
                 where = t"{url:target} {f'({connections} connection{plural})':aside}"
             case AppStatus(state=AppState.PROVISIONING):
@@ -262,6 +268,7 @@ def _apps(status: JobStatus) -> _Rows:
             case _:
                 where = t"starting"
         rows.append((f"{attachment.name} {attachment.version}", where))
+        rows.extend(("", t"{hint:hint}") for hint in hints)
     return rows
 
 

@@ -87,6 +87,14 @@ def test_a_target_is_styled_as_a_suggestion_without_quotes() -> None:
     assert styled_runs(text) == [("ssh", "bold cyan"), ("dtu-a100sh", "bold green")]
 
 
+def test_a_hint_is_green_but_not_bold() -> None:
+    hint = "Remove-SmbMapping Z:"
+
+    text = rich_text(t"{hint:hint}")
+
+    assert styled_runs(text) == [("Remove-SmbMapping Z:", "green")]
+
+
 def test_an_unknown_kind_is_rejected() -> None:
     with pytest.raises(ValueError, match="unknown message part kind: 'g'"):
         plain(t"{30.0:g}")

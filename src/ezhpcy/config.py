@@ -30,7 +30,7 @@ lazy from pydantic.fields import FieldInfo
 
 from ezhpcy.constants import LOGIN_KNOWN_HOSTS_NAME, PACKAGE_NAME, SSH_DIRECTORY_NAME
 from ezhpcy.types import ConfigError, PasswordConfig
-lazy from ezhpcy.app.manifest import App, Manifest, choose_app, collect_apps
+lazy from ezhpcy.app.manifest import App, Link, Manifest, choose_app, collect_apps
 lazy from ezhpcy.logging import get_logger
 lazy from ezhpcy.types import (
     JobConfig,
@@ -380,7 +380,7 @@ class Config(BaseSettings, _ConfigValues):
         toml_file=_default_config_file(),
         env_prefix="EZHPCY_",
     )
-    _apps: dict[str, dict[str, App]] = PrivateAttr(default_factory=dict)
+    _apps: dict[str, dict[str, App | Link]] = PrivateAttr(default_factory=dict)
 
     @classmethod
     def settings_customise_sources(
@@ -446,14 +446,14 @@ class Config(BaseSettings, _ConfigValues):
         return loaded
 
     @property
-    def apps(self) -> Mapping[str, Mapping[str, App]]:
+    def apps(self) -> Mapping[str, Mapping[str, App | Link]]:
         """
         The apps of the manifests it was loaded with, by normalised name
         (`My_App` is `my-app`), then by version as the manifest spells it.
         """
         return self._apps
 
-    def app(self, name: str, version: str | None = None) -> App:
+    def app(self, name: str, version: str | None = None) -> App | Link:
         """
         The app called `name`, compared normalised, at `version` (`v1.2`, the
         same as `v1.2.0`), or by default its newest version that isn't a

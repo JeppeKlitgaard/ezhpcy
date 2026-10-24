@@ -7,8 +7,8 @@ queue wait: the manifests are read and the apps chosen, the configuration is
 resolved, the worker's credentials checked, and the alias reserved
 (`api.reserve_alias`, which checks that `ssh <alias>` would reach it). Then:
 connect, enter a job, publish it under the alias, start the apps on its node in
-order, and wait. An app that fails to start, or exits, leaves the tunnel
-serving.
+order (printing a link's URL, for the alias, in its place), and wait. An app
+that fails to start, or exits, leaves the tunnel serving.
 """
 
 from contextlib import contextmanager
@@ -101,7 +101,9 @@ def _resolve_alias(
     return alias
 
 
-def _chosen_apps(manifests: Sequence[Path], names: Sequence[str]) -> list[api.App]:
+def _chosen_apps(
+    manifests: Sequence[Path], names: Sequence[str]
+) -> list[api.App | api.Link]:
     """The apps `--app` names, `NAME` or `NAME@VERSION`, of the `--manifest`s."""
     try:
         apps = collect_apps([api.Manifest.load(path) for path in manifests])
@@ -256,7 +258,7 @@ class TunnelRun:
         login: api.Login,
         config: api.JobConfig,
         *,
-        apps: Sequence[api.App] = (),
+        apps: Sequence[api.App | api.Link] = (),
         apps_root: PurePosixPath | None = None,
     ) -> None:
         self.alias = alias
@@ -275,15 +277,16 @@ class TunnelRun:
             resources=config.resources,
             submission_command=config.scheduler.interactive_submission_command,
         )
-        # The apps that failed to start, which are no longer attached.
-        self._failed: list[api.AppStatus] = []
+        # What has no attachment of its own: the apps that failed to start, and
+        # the links, once published.
+        self._unattached: list[api.AppStatus | api.LinkStatus] = []
 
     @property
     def status(self) -> api.JobStatus:
         status = self.job.status if self.job is not None else self._status
-        if not self._failed:
+        if not self._unattached:
             return status
-        return replace(status, attachments=(*status.attachments, *self._failed))
+        return replace(status, attachments=(*status.attachments, *self._unattached))
 
     async def start_app(self, host: api.Host, app: api.App) -> api.RunningApp | None:
         """
@@ -296,15 +299,27 @@ class TunnelRun:
             logger.error(
                 t"Could not start app {app!s:name}: {error}. The tunnel keeps serving."
             )
-            self._failed.append(
+            self._unattached.append(
                 api.AppStatus(
                     name=app.name, version=app.version, state=api.AppState.EXITED
                 )
             )
             return None
-        # On stdout, for scripts; the log and the status are on stderr.
-        console.print(running.url, soft_wrap=True, markup=False, highlight=False)
+        _print_url(running.url)
         return running
+
+    def show_link(self, link: api.Link) -> None:
+        """Print `link`'s URL, for the alias, and show it with the apps."""
+        url = link.url(self.alias)
+        self._unattached.append(
+            api.LinkStatus(
+                name=link.name,
+                version=link.version,
+                url=url,
+                status_hints=link.status_hints(self.alias),
+            )
+        )
+        _print_url(url)
 
     def stop(self, why: Template) -> None:
         """Stop the tunnel: its job, or connecting, if it hasn't one yet."""
@@ -356,6 +371,9 @@ async def serve(
                     watchers: list[asyncio.Task[None]] = []
                     try:
                         for app in run.apps:
+                            if isinstance(app, api.Link):
+                                run.show_link(app)
+                                continue
                             running = await run.start_app(job.host, app)
                             if running is not None:
                                 watchers.append(
@@ -368,6 +386,11 @@ async def serve(
                             watcher.cancel()
             except api.JobEnded:
                 pass
+
+
+def _print_url(url: str) -> None:
+    # On stdout, for scripts; the log and the status are on stderr.
+    console.print(url, soft_wrap=True, markup=False, highlight=False)
 
 
 async def _watch_app(running: api.RunningApp) -> None:

@@ -144,3 +144,13 @@ def test_keyring_unset_takes_no_password_options() -> None:
 
     assert result.exit_code == 2
     assert "--password" in result.stderr
+
+
+def test_keyring_set_names_the_option_of_an_invalid_host() -> None:
+    result = invoke(
+        ["keyring", "set", "--user", "alice", "--host", "not a host", "--password", "x"]
+    )
+
+    assert result.exit_code == 2
+    assert 'Invalid value "not a host" for --host' in result.stderr
+    assert "must be a domain name or an IP address" in result.stderr

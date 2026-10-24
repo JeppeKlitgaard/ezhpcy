@@ -63,6 +63,22 @@ def test_auto_provision_can_be_disabled_from_the_environment(monkeypatch) -> Non
     assert config.auto_provision is False
 
 
+@pytest.mark.parametrize("host", ["login.example.com", "10.0.0.1", "::1"])
+def test_a_profiles_login_node_is_a_domain_name_or_an_ip_address(host: str) -> None:
+    config = config_module.Config.from_mapping(
+        {"profile": {"base": {"connection": {"host": host, "user": "alice"}}}}
+    )
+
+    assert config.profiles["base"].login.host == host
+
+
+def test_a_login_node_that_is_neither_is_refused() -> None:
+    with pytest.raises(ValidationError, match="must be a domain name or an IP address"):
+        config_module.Config.from_mapping(
+            {"profile": {"base": {"connection": {"host": "not a host"}}}}
+        )
+
+
 def test_profile_ssh_keepalive_must_be_positive() -> None:
     with pytest.raises(ValidationError, match="ssh_keepalive_interval"):
         config_module.Config.from_mapping(

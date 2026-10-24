@@ -19,6 +19,7 @@ from pydantic import (
     Field,
     PlainSerializer,
     Strict,
+    TypeAdapter,
     ValidationError,
     field_validator,
     model_validator,
@@ -100,6 +101,21 @@ def _whole_seconds(value: timedelta) -> timedelta:
 Seconds = Annotated[timedelta, PlainSerializer(_as_seconds, when_used="json")]
 
 
+def _host_name(value: str) -> str:
+    try:
+        ipaddress.ip_address(value)
+    except ValueError:
+        try:
+            TypeAdapter(DomainStr).validate_python(value)
+        except ValidationError:
+            raise ValueError("must be a domain name or an IP address") from None
+    return value
+
+
+# A domain name, or an IP address.
+HostName = Annotated[str, AfterValidator(_host_name)]
+
+
 class _SubConfig(BaseModel):
     """
     A group of related profile settings, written as one table per profile. Frozen:
@@ -129,7 +145,7 @@ class PasswordConfig(_SubConfig):
 class ConnectionConfig(PasswordConfig):
     """How to reach and authenticate with the login node."""
 
-    host: DomainStr | None = None
+    host: HostName | None = None
     user: str | None = Field(default=None, min_length=1)
 
     ssh_keepalive_interval: Seconds = Field(default=timedelta(seconds=30), gt=_ZERO)
@@ -341,11 +357,6 @@ class RemoteState(BaseModel):
         return self.package_state_dir() / "worker_control"
 
 
-def _ip_address(value: str) -> str:
-    ipaddress.ip_address(value)
-    return value
-
-
 class Login(BaseModel):
     """
     A login node to connect to, and where its password comes from: never the
@@ -358,8 +369,7 @@ class Login(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    # A domain name, or an IP address.
-    host: DomainStr | Annotated[str, AfterValidator(_ip_address)]
+    host: HostName
     user: str = Field(min_length=1)
     port: int = Field(default=22, ge=1, le=65535)
     # How often to check that the connection is alive.

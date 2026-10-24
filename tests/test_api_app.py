@@ -176,7 +176,7 @@ async def test_an_app_that_never_becomes_ready_fails_with_its_stderr(
     rig.app = http_app(status=503)
     manifest = LAB.replace(
         'ready = { check = "http", path = "/api" }',
-        'ready = { check = "http", path = "/api", timeout_seconds = 0.3 }',
+        'ready = { check = "http", path = "/api", timeout = 0.3 }',
     )
     rig.processes = FakeProcesses(
         rig.server,

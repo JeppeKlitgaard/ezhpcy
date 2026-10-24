@@ -184,7 +184,7 @@ async def run_app(
     host's XDG cache directory.
 
     Raises `ProvisioningError`, and `AppFailed` if the app exits before it is
-    ready, or isn't within `ready.timeout_seconds`, after stopping it. Raises
+    ready, or isn't within `ready.timeout`, after stopping it. Raises
     `TypeError` for a link, which has nothing to run.
     """
     if isinstance(app, Link):
@@ -357,7 +357,7 @@ async def _wait_until_ready(
 ) -> None:
     """
     Check the app through the host's connection until it is ready, for at most
-    `ready.timeout_seconds`, giving up early if its process exits.
+    `ready.timeout`, giving up early if its process exits.
     """
     ready = app.ready
     logger.info(
@@ -366,7 +366,7 @@ async def _wait_until_ready(
     exited = asyncio.ensure_future(process.wait())
     why = "no attempt finished"
     try:
-        async with asyncio.timeout(ready.timeout_seconds):
+        async with asyncio.timeout(ready.timeout.total_seconds()):
             while True:
                 try:
                     async with asyncio.timeout(_ATTEMPT_SECONDS):
@@ -386,7 +386,7 @@ async def _wait_until_ready(
     except TimeoutError:
         raise AppFailed(
             t"app {app!s:name} did not become ready within "
-            t"{ready.timeout_seconds:detail:g} seconds: {why}"
+            t"{ready.timeout.total_seconds():detail:g} seconds: {why}"
         ) from None
     finally:
         exited.cancel()

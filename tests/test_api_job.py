@@ -328,7 +328,7 @@ async def test_a_job_without_provisioning_needs_the_worker_credentials(
 
 async def test_a_job_that_never_starts_fails_entering(rig: Rig) -> None:
     rig.scheduling([snapshot(api.JobState.PENDING, "PEND")])
-    config = JOB.with_timings(queue_timeout_seconds=timedelta(seconds=0.1))
+    config = JOB.with_timings(queue_timeout=timedelta(seconds=0.1))
 
     async with api.connect(LOGIN) as login_node:
         with pytest.raises(api.JobFailed, match=r"did not start within 0\.1 seconds"):

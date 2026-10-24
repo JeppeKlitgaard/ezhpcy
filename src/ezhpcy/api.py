@@ -332,7 +332,7 @@ class Host:
            workdir: not through a login shell, so the host's profile and
            modules aren't read.
         3. Its readiness check runs through the host's connection, until it
-           passes, the app exits, or `ready.timeout_seconds` pass.
+           passes, the app exits, or `ready.timeout` passes.
         4. A loopback port here is forwarded to it (`forward`): to its socket
            in the process's run directory, or to `127.0.0.1` on the host.
 

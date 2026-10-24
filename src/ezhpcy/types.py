@@ -132,7 +132,7 @@ class ConnectionConfig(PasswordConfig):
     host: DomainStr | None = None
     user: str | None = Field(default=None, min_length=1)
 
-    ssh_keepalive_interval_seconds: int = Field(default=30, gt=0)
+    ssh_keepalive_interval: Seconds = Field(default=timedelta(seconds=30), gt=_ZERO)
 
 
 class _SchedulerBase(_SubConfig):
@@ -192,29 +192,23 @@ class Resources(_SubConfig):
 class Timings(_SubConfig):
     """
     Timeouts and intervals of the job's scheduler and worker checks. Each is a
-    `timedelta`, written in the configuration file in seconds, as its name says.
+    `timedelta`, written in the configuration file in seconds.
     """
 
     # How long the job may queue.
-    queue_timeout_seconds: Seconds = Field(default=timedelta(minutes=15), gt=_ZERO)
+    queue_timeout: Seconds = Field(default=timedelta(minutes=15), gt=_ZERO)
     # From the job's start, how long the worker's sshd may take to answer.
-    worker_startup_timeout_seconds: Seconds = Field(
-        default=timedelta(minutes=2), gt=_ZERO
-    )
+    worker_startup_timeout: Seconds = Field(default=timedelta(minutes=2), gt=_ZERO)
     # How often the scheduler and the worker are checked while the job starts.
-    job_poll_interval_seconds: Seconds = Field(default=timedelta(seconds=2.5), gt=_ZERO)
+    job_poll_interval: Seconds = Field(default=timedelta(seconds=2.5), gt=_ZERO)
     # How often the scheduler is asked whether the job still runs, once it is ready.
-    job_monitor_interval_seconds: Seconds = Field(
-        default=timedelta(minutes=1), gt=_ZERO
-    )
+    job_monitor_interval: Seconds = Field(default=timedelta(minutes=1), gt=_ZERO)
     # How often the worker's lease is renewed, and how long the worker may go
     # without a renewal before it cancels its own job (whole seconds).
-    worker_heartbeat_interval_seconds: Seconds = Field(
-        default=timedelta(seconds=30), gt=_ZERO
+    worker_heartbeat_interval: Seconds = Field(default=timedelta(seconds=30), gt=_ZERO)
+    worker_heartbeat_timeout: Annotated[Seconds, AfterValidator(_whole_seconds)] = (
+        Field(default=timedelta(seconds=90), gt=_ZERO)
     )
-    worker_heartbeat_timeout_seconds: Annotated[
-        Seconds, AfterValidator(_whole_seconds)
-    ] = Field(default=timedelta(seconds=90), gt=_ZERO)
 
 
 class LSFOptions(_SubConfig):
@@ -395,12 +389,12 @@ class ResourceChanges(TypedDict, total=False):
 
 
 class TimingChanges(TypedDict, total=False):
-    queue_timeout_seconds: timedelta
-    worker_startup_timeout_seconds: timedelta
-    job_poll_interval_seconds: timedelta
-    job_monitor_interval_seconds: timedelta
-    worker_heartbeat_interval_seconds: timedelta
-    worker_heartbeat_timeout_seconds: timedelta
+    queue_timeout: timedelta
+    worker_startup_timeout: timedelta
+    job_poll_interval: timedelta
+    job_monitor_interval: timedelta
+    worker_heartbeat_interval: timedelta
+    worker_heartbeat_timeout: timedelta
 
 
 class SchedulerChanges(TypedDict, total=False):

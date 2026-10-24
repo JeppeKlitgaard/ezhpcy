@@ -63,7 +63,7 @@ authenticates = true
 [ezhpcy.app.lab."v1.0".ready]
 check = "http"
 path = "/api"
-timeout_seconds = 180
+timeout = 180
 
 [ezhpcy.app.lab."v1.0".access]
 url = "http://127.0.0.1:{local_port}/lab?token={token}"
@@ -87,7 +87,7 @@ run.env.JUPYTER_RUNTIME_DIR = "{run_dir}/jupyter"
 endpoint = { transport = "socket", authenticates = true }
 ready.check = "http"
 ready.path = "/api"
-ready.timeout_seconds = 180
+ready.timeout = 180
 access.url = "http://127.0.0.1:{local_port}/lab?token={token}"
 """
 
@@ -260,7 +260,7 @@ def test_an_unknown_key_in_ezhpcy_names_its_path(tmp_path: Path) -> None:
     [
         ("rnu = 1", f"{LAB}.rnu"),
         ("run.workdri = '/x'", f"{LAB}.run.workdri"),
-        ("ready.timeout = 3", f"{LAB}.ready.timeout"),
+        ("ready.timeout_seconds = 3", f"{LAB}.ready.timeout_seconds"),
         ("environment.lock = 'x'", f"{LAB}.environment.lock"),
         ("assets = { include = ['*.toml'], files = [] }", f"{LAB}.assets.files"),
     ],
@@ -780,7 +780,7 @@ def test_apps_on_one_job_need_the_most_any_of_them_asks_for(tmp_path: Path) -> N
         ('ready.path = "/api"', "path only apply to check = 'http'"),
         ('ready = { check = "http", path = "api" }', f"{LAB}.ready.path:"),
         ('ready = { check = "http", status = [300, 200] }', "status must be"),
-        ("ready.timeout_seconds = 0", f"{LAB}.ready.timeout_seconds:"),
+        ("ready.timeout = 0", f"{LAB}.ready.timeout:"),
         ("access.local_port = 70000", f"{LAB}.access.local_port:"),
         ('endpoint.transport = "udp"', f"{LAB}.endpoint.transport:"),
     ],
@@ -804,6 +804,12 @@ def test_a_banner_check_with_a_prefix_loads(tmp_path: Path) -> None:
     )
 
     assert only(manifest).ready.prefix == "SSH-"
+
+
+def test_the_ready_timeout_is_a_duration_in_seconds(tmp_path: Path) -> None:
+    manifest = load(tmp_path, MINIMAL_APP + "ready.timeout = 2.5\n")
+
+    assert only(manifest).ready.timeout == timedelta(seconds=2.5)
 
 
 # Placeholders

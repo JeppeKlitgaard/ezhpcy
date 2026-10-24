@@ -372,9 +372,9 @@ class JobLifecycle:
         stack = self._stack
         config, host = self.config, self.host
         resources, timings = config.resources, config.timings
-        heartbeat_interval = timings.worker_heartbeat_interval_seconds.total_seconds()
-        heartbeat_timeout = timings.worker_heartbeat_timeout_seconds.total_seconds()
-        startup_timeout = timings.worker_startup_timeout_seconds.total_seconds()
+        heartbeat_interval = timings.worker_heartbeat_interval.total_seconds()
+        heartbeat_timeout = timings.worker_heartbeat_timeout.total_seconds()
+        startup_timeout = timings.worker_startup_timeout.total_seconds()
 
         self.start_task(self._watch_connection(host), name="connection watcher")
         self.report(Phase.PREPARING)
@@ -580,7 +580,7 @@ class JobLifecycle:
         job still runs.
         """
         loop = asyncio.get_running_loop()
-        poll_interval = self.config.timings.job_poll_interval_seconds.total_seconds()
+        poll_interval = self.config.timings.job_poll_interval.total_seconds()
         next_job_check = loop.time() + poll_interval
         try:
             async with asyncio.timeout_at(deadline):
@@ -596,7 +596,7 @@ class JobLifecycle:
                         next_job_check = loop.time() + poll_interval
                     await asyncio.sleep(_STATUS_POLL_SECONDS)
         except TimeoutError:
-            timeout = self.config.timings.worker_startup_timeout_seconds.total_seconds()
+            timeout = self.config.timings.worker_startup_timeout.total_seconds()
             raise TunnelError(
                 t"worker SSH daemon did not bind a candidate port within "
                 t"{timeout:detail:g} seconds"
@@ -611,8 +611,8 @@ class JobLifecycle:
         come right by waiting.
         """
         timings = self.config.timings
-        timeout = timings.worker_startup_timeout_seconds.total_seconds()
-        poll_interval = timings.job_poll_interval_seconds.total_seconds()
+        timeout = timings.worker_startup_timeout.total_seconds()
+        poll_interval = timings.job_poll_interval.total_seconds()
         destination = worker.sshd
         endpoint = str(destination)
         logger.info(t"Waiting for worker SSH endpoint {endpoint:endpoint}.")
@@ -671,7 +671,7 @@ class JobLifecycle:
         the job's state changes, and why the job waits, if the scheduler does.
         """
         timings = self.config.timings
-        queue_timeout = timings.queue_timeout_seconds.total_seconds()
+        queue_timeout = timings.queue_timeout.total_seconds()
         previous_state: tuple[JobState, str] | None = None
         try:
             async with asyncio.timeout(queue_timeout):
@@ -692,9 +692,7 @@ class JobLifecycle:
                         return info.host
                     if ended := self._job_ended(job_id, info):
                         raise TunnelError(ended)
-                    await asyncio.sleep(
-                        timings.job_poll_interval_seconds.total_seconds()
-                    )
+                    await asyncio.sleep(timings.job_poll_interval.total_seconds())
         except TimeoutError:
             raise TunnelError(
                 t"worker job {job_id:detail} did not start within "
@@ -773,7 +771,7 @@ class JobLifecycle:
     ) -> None:
         """Renew the worker's lease every heartbeat interval, until `stopping`."""
         timings = self.config.timings
-        interval_seconds = timings.worker_heartbeat_interval_seconds.total_seconds()
+        interval_seconds = timings.worker_heartbeat_interval.total_seconds()
         sequence = 0
         logger.debug(
             t"Worker heartbeat sender started: job={job_id:detail} "
@@ -812,9 +810,7 @@ class JobLifecycle:
         Stop the job when the scheduler says it has ended; fail it if the job
         ends while the connection to its node is being made.
         """
-        interval_seconds = (
-            self.config.timings.job_monitor_interval_seconds.total_seconds()
-        )
+        interval_seconds = self.config.timings.job_monitor_interval.total_seconds()
         polls = 0
         while True:
             await asyncio.sleep(interval_seconds)

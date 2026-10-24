@@ -69,4 +69,6 @@ async def main() -> None:
 if __name__ == "__main__":
     # The API logs to the `ezhpcy` logger, and leaves it to the caller to show.
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    # asyncssh logs a line per channel at INFO, which would drown EzHPCy's own.
+    logging.getLogger("asyncssh").setLevel(logging.WARNING)
     asyncio.run(main())

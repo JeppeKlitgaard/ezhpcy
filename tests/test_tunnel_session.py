@@ -594,7 +594,7 @@ def test_an_lsf_batch_tunnel_sends_the_worker_script_to_bsub(
     assert script.startswith("#!/usr/bin/env bash\nexec env PIXI_HOME=")
     assert " bash -c " in script
     assert "AuthorizedKeysCommand=/bin/echo ssh-ed25519 " in script
-    assert log.starting("Tunnel ready for base via worker 127.0.0.1:")
+    assert "Tunnel ready for base via worker 127.0.0.1." in log.messages()
 
 
 def test_keepalive_loss_while_serving_stops_the_tunnel(
@@ -961,6 +961,25 @@ def test_ctrl_c_during_a_step_still_cleans_up_after_it(
     assert "Stopping job: Ctrl+C" in log.messages()
     assert control_dirs(login) == []
     assert published == withdrawn
+    assert not alias_locked("base")
+
+
+def test_ctrl_c_while_connecting_stops_at_once(
+    login: SSHTestServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def connecting(*_args: object, **_kwargs: object) -> None:
+        signal.raise_signal(signal.SIGINT)
+        await asyncio.Event().wait()
+
+    configure_tunnel(monkeypatch, login)
+    monkeypatch.setattr(login_module, "connect", connecting)
+
+    with tunnel_log() as log:
+        result = invoke(["tunnel", "base"])
+
+    assert result.exit_code == 0, result
+    assert "Stopping job: Ctrl+C" in log.messages()
+    assert log.command_errors() == []
     assert not alias_locked("base")
 
 

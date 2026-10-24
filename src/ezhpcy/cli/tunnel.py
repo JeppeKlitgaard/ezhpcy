@@ -224,16 +224,29 @@ async def tunnel_cmd(
         # Before connecting too: a tunnel that `ssh <alias>` won't reach is of no
         # use, and the job may queue for long before it would tell.
         async with api.reserve_alias(alias) as reservation:
-            await serve(
-                run,
-                reservation,
-                password=password,
-                worker_ports=(
-                    (worker_port,)
-                    if worker_port is not None
-                    else select_ports(worker_port_retries + 1)
-                ),
+            # A task of its own, so that stopping while connecting cancels it,
+            # not the command.
+            serving = run.serving = asyncio.ensure_future(
+                serve(
+                    run,
+                    reservation,
+                    password=password,
+                    worker_ports=(
+                        (worker_port,)
+                        if worker_port is not None
+                        else select_ports(worker_port_retries + 1)
+                    ),
+                )
             )
+            try:
+                await asyncio.wait([serving])
+            finally:
+                if not serving.done():
+                    serving.cancel()
+                    await asyncio.wait([serving])
+            # Cancelled only by stopping while connecting: as a stopped job.
+            if not serving.cancelled():
+                serving.result()
     except api.AliasUnreachable as error:
         logger.error(
             t"Could not start tunnel: {f'ssh {alias}':suggestion} would not reach "
@@ -246,13 +259,6 @@ async def tunnel_cmd(
         raise login_usage_error(
             error, connection_options, profile_name=profile
         ) from error
-    except asyncio.CancelledError:
-        # Stopped while connecting: as a stopped job, not an error.
-        if not run.stopped_while_connecting:
-            raise
-        task = asyncio.current_task()
-        assert task is not None
-        task.uncancel()
     except (MessageError, RuntimeError, asyncssh.Error, OSError) as error:
         # ruff: ignore[TRY401]  # The terminal shows the traceback only at DEBUG
         logger.exception(
@@ -285,8 +291,10 @@ class TunnelRun:
         self.job: api.Job | None = None
         # Whether its Host block was published.
         self.served = False
-        self.stopped_while_connecting = False
-        self._task = asyncio.current_task()
+        # What connects and serves, once started; stopping cancels it until
+        # there is a job.
+        self.serving: asyncio.Future[None] | None = None
+        self._stopped_while_connecting = False
         # Until the job exists.
         self._status = api.JobStatus(
             phase=api.Phase.CONNECTING,
@@ -342,12 +350,12 @@ class TunnelRun:
         if self.job is not None:
             self.job.stop(plain(why))
             return
-        if self.stopped_while_connecting or self._task is None:
+        if self._stopped_while_connecting or self.serving is None:
             return
-        self.stopped_while_connecting = True
+        self._stopped_while_connecting = True
         logger.info(t"Stopping job: {why}")
         self._status = api.JobStatus(phase=api.Phase.STOPPING)
-        self._task.cancel()
+        self.serving.cancel()
 
 
 async def serve(
@@ -379,10 +387,9 @@ async def serve(
                     if published.problem is not None:
                         include.print_include_lines(published.problem)
                     run.served = True
-                    worker = job.status.worker
                     logger.info(
                         t"Tunnel ready for {run.alias:name} via worker "
-                        t"{worker:endpoint}."
+                        t"{job.node:endpoint}."
                     )
                     watchers: list[asyncio.Task[None]] = []
                     try:

@@ -151,6 +151,8 @@ class JobLifecycle:
         )
         self.worker: RunningWorker | None = None
         self.node_host: RemoteHost | None = None
+        # Stops the job when the node's connection is lost (`_watch_node`).
+        self._node_watcher: asyncio.Task[None] | None = None
         # The job's own: its Host blocks.
         self.attachments = Attachments()
         self.attachments.on_change(self._report_attachments)
@@ -220,6 +222,8 @@ class JobLifecycle:
             and isinstance(error, asyncio.CancelledError)
         )
         passed_on = error is not None and not ours and not isinstance(error, Exception)
+        if isinstance(error, Exception) and not passed_on:
+            await self._await_node_loss()
         if self._why is None and not passed_on:
             if isinstance(error, Exception):
                 self._stop(self._blame(error))
@@ -314,6 +318,24 @@ class JobLifecycle:
         if phase is not None and self.status.phase is not Phase.STOPPING:
             changes |= {"phase": phase, "since": time.monotonic()}
         self.status = replace(self.status, **changes)
+
+    async def _await_node_loss(self) -> None:
+        """
+        Before blaming the block's error, let the node's watcher stop the job if
+        the node's connection was lost, as the error may come of that: asyncssh
+        fails the connection's channels, and refuses new ones, one step before
+        `closed` says it is lost, and the watcher then reads the worker's status
+        to say why.
+        """
+        node_host, watcher = self.node_host, self._node_watcher
+        if node_host is None or watcher is None:
+            return
+        # The connection's cleanup, which resolves `closed`, is already queued
+        # when its channels fail: one step lets it run.
+        await asyncio.sleep(0)
+        if node_host.closed.done() and node_host.closed.result() is not None:
+            # It stops the job with its verdict, from its done callback.
+            await asyncio.wait([watcher])
 
     def _blame(self, error: Exception) -> Exception:
         """
@@ -537,7 +559,7 @@ class JobLifecycle:
         # What runs on the node, first.
         stack.push_async_callback(node_host.attachments.close)
         node_host.attachments.on_change(self._report_attachments)
-        self.start_task(
+        self._node_watcher = self.start_task(
             self._watch_node(node_host, worker), name="worker connection watcher"
         )
 
@@ -719,7 +741,7 @@ class JobLifecycle:
         *,
         name: str,
         stop: Callable[[], object] | None = None,
-    ) -> None:
+    ) -> asyncio.Task[None]:
         """
         Run `coroutine` in the background until cleanup gets back to this point. If
         it fails, the job stops with its error.
@@ -732,6 +754,7 @@ class JobLifecycle:
         task = asyncio.create_task(coroutine, name=name)
         task.add_done_callback(self._stop_on_failure)
         self._stack.push_async_callback(_stop_task, task, stop)
+        return task
 
     def _stop_on_failure(self, task: asyncio.Task[None]) -> None:
         if task.cancelled():

@@ -431,3 +431,27 @@ async def test_losing_the_nodes_connection_while_an_app_serves_ends_the_job(
     assert fake.signals == []
     [scheduler] = job_rig.schedulers
     assert scheduler.cancelled == [JOB_ID]
+
+
+async def test_losing_the_node_while_waiting_on_an_app_blames_the_connection(
+    login: SSHTestServer,
+    worker: SSHTestServer,
+    monkeypatch: pytest.MonkeyPatch,
+    isolated_runtime_dir: Path,
+    tmp_path: Path,
+) -> None:
+    job_rig = JobRig(login, worker, monkeypatch, isolated_runtime_dir)
+    AppRig(worker, monkeypatch)
+
+    async def lose_the_node(login_node: api.Host) -> None:
+        async with job_rig.job(login_node) as job:
+            lab = await job.host.run_app(config_of(tmp_path).app("lab"))
+            worker.drop()
+            # Fails as soon as the connection goes, maybe before the job knows.
+            async with asyncio.timeout(WAIT_SECONDS):
+                await lab.wait()
+
+    async with api.connect(LOGIN) as login_node:
+        # The loss, not the wait that noticed it first.
+        with pytest.raises(api.JobFailed, match="worker SSH connection lost"):
+            await lose_the_node(login_node)

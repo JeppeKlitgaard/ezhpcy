@@ -6,19 +6,24 @@ uses it, and its attachments.
 
 import asyncio
 import json
+import threading
+import time
 from collections.abc import AsyncGenerator, Callable
 from contextlib import AsyncExitStack
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 from ezhpcy import login as login_module
-from ezhpcy.job import JobEnd, JobEnded, JobFailed
+from ezhpcy.job import JobEnd, JobEnded, JobFailed, publish as publish_module
 from ezhpcy.job.lifecycle import JobLifecycle
+from ezhpcy.job.publish import publish
 from ezhpcy.job.status import Phase
 from ezhpcy.scheduler.base import JobInfo, JobSpec, JobState, SchedulerError
 from ezhpcy.scheduler.types import SchedulerType
 from ezhpcy.tunnel import TunnelError
+from ezhpcy.tunnel.lock import reserve_alias
 from ezhpcy.types import (
     JobConfig,
     Login,
@@ -430,3 +435,49 @@ async def test_a_cancelled_close_still_closes(rig: Rig) -> None:
 
     # Leaving the job waited for it.
     assert closed.is_set()
+
+
+async def test_a_publish_that_fails_leaves_nothing_behind(
+    rig: Rig, isolated_runtime_dir: Path
+) -> None:
+    def refuse(_host: object, _port: int) -> None:
+        raise OSError("the SSH configuration is read-only")
+
+    rig.monkeypatch.setattr(publish_module, "publish_host", refuse)
+    job = await rig.job([RUNNING])
+
+    async with reserve_alias("gpu") as gpu, job:
+        with pytest.raises(OSError, match="read-only"):
+            await publish(job, gpu)
+
+        assert not gpu.published
+        assert job.status.attachments == ()
+        assert not (isolated_runtime_dir / "ssh-config" / "active-gpu.conf").exists()
+
+
+async def test_a_cancelled_publish_withdraws_what_it_wrote(
+    rig: Rig, isolated_runtime_dir: Path
+) -> None:
+    writing = threading.Event()
+    publish_host = publish_module.publish_host
+
+    def slowly(host: Any, port: int) -> Any:
+        writing.set()
+        time.sleep(0.2)
+        return publish_host(host, port)
+
+    rig.monkeypatch.setattr(publish_module, "publish_host", slowly)
+    job = await rig.job([RUNNING])
+
+    async with reserve_alias("gpu") as gpu, job:
+        publishing = asyncio.create_task(publish(job, gpu))
+        await asyncio.to_thread(writing.wait, WAIT_SECONDS)
+        publishing.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await publishing
+
+        # The block was written once the write finished, then withdrawn.
+        assert not gpu.published
+        assert job.status.attachments == ()
+        assert not (isolated_runtime_dir / "ssh-config" / "active-gpu.conf").exists()
+        await publish(job, gpu)

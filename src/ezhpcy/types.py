@@ -403,7 +403,7 @@ class ResourceChanges(TypedDict, total=False):
     gpus: int
     exclusive: bool
     time_limit: timedelta | None
-    memory: int | None
+    memory: int | str | None
 
 
 class TimingChanges(TypedDict, total=False):

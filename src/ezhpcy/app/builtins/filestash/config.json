@@ -1,0 +1,8 @@
+{
+    "connections": [
+        {
+            "type": "local",
+            "label": "Files"
+        }
+    ]
+}

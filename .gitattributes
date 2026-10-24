@@ -1,2 +1,5 @@
 *.sh text eol=lf
 *.sh.j2 text eol=lf
+# LFS
+*.bin filter=lfs diff=lfs merge=lfs -text
+*.zip filter=lfs diff=lfs merge=lfs -text

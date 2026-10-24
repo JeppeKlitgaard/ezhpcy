@@ -1,6 +1,6 @@
 # A NiceGUI dashboard, served on a Unix socket.
 #
-#   ezhpcy tunnel PROFILE --manifest examples/apps/dashboard --app dashboard
+#   ezhpcy tunnel PROFILE --app dashboard
 
 [ezhpcy]
 schema = 1

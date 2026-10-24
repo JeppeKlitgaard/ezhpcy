@@ -1,6 +1,6 @@
 # JupyterLab and TensorBoard, sharing one environment.
 #
-#   ezhpcy tunnel PROFILE --manifest examples/apps/notebooks --app lab --app tensorboard
+#   ezhpcy tunnel PROFILE --app lab --app tensorboard
 
 [ezhpcy]
 schema = 1

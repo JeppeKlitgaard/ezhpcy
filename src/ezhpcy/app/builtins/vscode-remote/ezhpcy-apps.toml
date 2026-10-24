@@ -1,0 +1,13 @@
+# A link that opens the tunnel's node in VS Code, over Remote - SSH.
+#
+#   ezhpcy tunnel PROFILE --app vscode-remote
+#
+# Nothing runs on the node: with no environment, run or endpoint, the app is a
+# link, and the tunnel prints its URL once `ssh <alias>` reaches the node.
+
+[ezhpcy]
+schema = 1
+
+[ezhpcy.app.vscode-remote."v0.1.0"]
+description = "Open the node in VS Code (Remote - SSH)"
+access.url = "vscode://vscode-remote/ssh-remote+{alias}/?windowId=_blank"

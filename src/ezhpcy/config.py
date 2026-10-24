@@ -30,7 +30,14 @@ lazy from pydantic.fields import FieldInfo
 
 from ezhpcy.constants import LOGIN_KNOWN_HOSTS_NAME, PACKAGE_NAME, SSH_DIRECTORY_NAME
 from ezhpcy.types import ConfigError, PasswordConfig
-lazy from ezhpcy.app.manifest import App, Link, Manifest, choose_app, collect_apps
+lazy from ezhpcy.app.manifest import (
+    App,
+    Link,
+    Manifest,
+    builtin_manifests,
+    choose_app,
+    collect_apps,
+)
 lazy from ezhpcy.logging import get_logger
 lazy from ezhpcy.types import (
     JobConfig,
@@ -152,9 +159,20 @@ class LoggingConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class AppManifestsConfig(BaseModel):
+    """The manifests loaded beside those given (`Config.load`, `--manifest`)."""
+
+    # The manifests EzHPCy ships (`builtin_manifests`); `--no-load-builtin-manifests`
+    # leaves them out.
+    load_builtin_manifests: bool = True
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class _ConfigValues(BaseModel):
     local_file: LocalFileConfig = LocalFileConfig()
     logging: LoggingConfig = LoggingConfig()
+    apps: AppManifestsConfig = AppManifestsConfig()
     debug: bool = False
     auto_provision: bool = True
     # Every profile inherits these, and a run without a profile uses them.
@@ -359,7 +377,7 @@ class _ConfigValues(BaseModel):
 
 # Settings that `EZHPCY_<NAME>` environment variables can't set: they're tables, and
 # `EZHPCY_PROFILE` is the CLI's PROFILE argument.
-_NOT_FROM_ENV = frozenset({"profile", "local_file", "logging", "connection"})
+_NOT_FROM_ENV = frozenset({"profile", "local_file", "logging", "connection", "apps"})
 
 
 class _EnvSettingsSource(EnvSettingsSource):
@@ -426,6 +444,7 @@ class Config(BaseSettings, _ConfigValues):
         *,
         manifests: Sequence[Path] = (),
         default_manifests: Sequence[Path] = (),
+        load_builtin_manifests: bool | None = None,
     ) -> Self:
         """
         Read the configuration file `path`, by default the one the CLI reads
@@ -433,20 +452,28 @@ class Config(BaseSettings, _ConfigValues):
         `Config()`, the environment (`EZHPCY_*`) is not read. A value: loading
         one changes nothing global, and several may be used at once.
 
-        `default_manifests` are a front end's own: a version of an app in one of
-        `manifests` replaces the same version there. Raises `ConfigError`, and
-        `ManifestError` for an invalid manifest, or the same version of an app
-        in two of `manifests` (or two of `default_manifests`).
+        `default_manifests` are a front end's own, and with
+        `load_builtin_manifests` (by default the file's
+        `apps.load_builtin_manifests`) so are the ones EzHPCy ships: a version
+        of an app in one of `manifests` replaces the same version there. Raises
+        `ConfigError`, and `ManifestError` for an invalid manifest, or the same
+        version of an app in two of `manifests` (or two of the defaults).
         """
         loaded = cls.from_file(path or cls.default_path())
+        if load_builtin_manifests is None:
+            load_builtin_manifests = loaded.apps.load_builtin_manifests
+        defaults = [
+            *(builtin_manifests() if load_builtin_manifests else ()),
+            *default_manifests,
+        ]
         loaded._apps = collect_apps(
             [Manifest.load(manifest) for manifest in manifests],
-            [Manifest.load(manifest) for manifest in default_manifests],
+            [Manifest.load(manifest) for manifest in defaults],
         )
         return loaded
 
     @property
-    def apps(self) -> Mapping[str, Mapping[str, App | Link]]:
+    def available_apps(self) -> Mapping[str, Mapping[str, App | Link]]:
         """
         The apps of the manifests it was loaded with, by normalised name
         (`My_App` is `my-app`), then by version as the manifest spells it.

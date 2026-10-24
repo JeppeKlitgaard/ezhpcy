@@ -33,11 +33,12 @@ cancels the job unless it ended, and cleans up; leaving a connection's block
 closes it.
 
 Apps, such as JupyterLab, are described by manifests (`Manifest`), which a
-configuration loads (`Config.load(manifests=…)`, `Config.app`). An app runs as
-a process on its host, through EzHPCy's own Pixi, in an environment installed
+configuration loads (`Config.load(manifests=…)`, `Config.app`), beside the
+ones EzHPCy ships unless `load_builtin_manifests` is false. An app runs as a
+process on its host, through EzHPCy's own Pixi, in an environment installed
 there, and is forwarded to a loopback port here:
 
-    config = api.Config.load(manifests=[Path("examples/apps/notebooks")])
+    config = api.Config.load()
     lab = await job.host.run_app(config.app("lab"))
     print(lab.url)
 

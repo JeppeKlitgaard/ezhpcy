@@ -113,12 +113,20 @@ isort.combine-as-imports = true
 "examples/**" = [
     "INP", # no-pep420
 ]
+# Built-in apps' scripts, run on their host in the app's environment
+"src/ezhpcy/app/builtins/**" = [
+    "INP", # no-pep420
+]
 
 # Pyrefly - Type checking
 [tool.pyrefly]
 project-includes = [
     "src/**/*.py*",
     "src/**/*.ipynb",
+]
+# Built-in apps' scripts import their environment's packages
+project-excludes = [
+    "src/ezhpcy/app/builtins/**",
 ]
 
 # Build system

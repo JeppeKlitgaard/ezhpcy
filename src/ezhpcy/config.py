@@ -38,6 +38,7 @@ lazy from ezhpcy.app.manifest import (
     collect_apps,
 )
 lazy from ezhpcy.logging import get_logger
+lazy from ezhpcy.scheduler.types import SchedulerType
 lazy from ezhpcy.types import (
     JobConfig,
     Login,
@@ -277,18 +278,15 @@ class _ConfigValues(BaseModel):
         values["auto_provision"] = (
             self.auto_provision if auto_provision is None else auto_provision
         )
+        for name in ("type", "submission_mode"):
+            if values["scheduler"].get(name) is None:
+                setting = f"scheduler.{name}"
+                raise self._missing(profile_name, setting, setting)
         if values["scheduler"].get("interactive_submission_command") is not None:
             self._drop_inherited_submission_options(
                 profile_name, profile, values, changes
             )
-        try:
-            return validated(JobConfig, values)
-        except ConfigError as error:
-            for name in ("type", "submission_mode"):
-                if values["scheduler"].get(name) is None:
-                    setting = f"scheduler.{name}"
-                    raise self._missing(profile_name, setting, setting) from error
-            raise
+        return validated(JobConfig, values)
 
     def _drop_inherited_submission_options(
         self,
@@ -304,12 +302,8 @@ class _ConfigValues(BaseModel):
         """
         own = self.profile[profile_name] if profile_name is not None else None
         try:
-            scheduler_type = validated(
-                type(profile.scheduler), values["scheduler"]
-            ).type
-        except ConfigError:
-            scheduler_type = None
-        if scheduler_type is None:
+            scheduler_type = SchedulerType(values["scheduler"]["type"])
+        except ValueError:
             # Validating the job reports it.
             return
         inherited: list[str] = []

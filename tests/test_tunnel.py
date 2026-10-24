@@ -112,8 +112,8 @@ def test_tunnel_command_accepts_anonymous_cli_configuration(
     job = captured["job"]
     assert job.scheduler.type is SchedulerType.LSF
     assert job.resources.cores == 1
-    assert job.timings.job_poll_interval_seconds == timedelta(seconds=2.5)
-    assert job.timings.job_monitor_interval_seconds == timedelta(seconds=60)
+    assert job.timings.job_poll_interval == timedelta(seconds=2.5)
+    assert job.timings.job_monitor_interval == timedelta(seconds=60)
     assert captured["login"] == Login(host="login.example.com", user="alice")
 
 
@@ -129,7 +129,7 @@ def test_tunnel_command_resolves_profile_and_applies_cli_overrides(
                     "connection": {
                         "host": "login.example.com",
                         "user": "alice",
-                        "ssh_keepalive_interval_seconds": 75,
+                        "ssh_keepalive_interval": 75,
                     },
                     "scheduler": {"type": "LSF", "submission_mode": "interactive"},
                     "resources": {
@@ -141,10 +141,10 @@ def test_tunnel_command_resolves_profile_and_applies_cli_overrides(
                         "memory": "32GB",
                     },
                     "timings": {
-                        "worker_heartbeat_interval_seconds": 20,
-                        "worker_heartbeat_timeout_seconds": 60,
-                        "job_poll_interval_seconds": 4,
-                        "job_monitor_interval_seconds": 120,
+                        "worker_heartbeat_interval": 20,
+                        "worker_heartbeat_timeout": 60,
+                        "job_poll_interval": 4,
+                        "job_monitor_interval": 120,
                     },
                 }
             ),
@@ -186,10 +186,10 @@ def test_tunnel_command_resolves_profile_and_applies_cli_overrides(
         keepalive_interval=timedelta(seconds=75),
     )
     assert job.auto_provision is True
-    assert job.timings.worker_heartbeat_interval_seconds == timedelta(seconds=12)
-    assert job.timings.worker_heartbeat_timeout_seconds == timedelta(seconds=60)
-    assert job.timings.job_poll_interval_seconds == timedelta(seconds=1.5)
-    assert job.timings.job_monitor_interval_seconds == timedelta(seconds=120)
+    assert job.timings.worker_heartbeat_interval == timedelta(seconds=12)
+    assert job.timings.worker_heartbeat_timeout == timedelta(seconds=60)
+    assert job.timings.job_poll_interval == timedelta(seconds=1.5)
+    assert job.timings.job_monitor_interval == timedelta(seconds=120)
     worker_ports = captured["worker_ports"]
     assert isinstance(worker_ports, tuple)
     assert len(set(worker_ports)) == 6
@@ -585,7 +585,7 @@ def test_anonymous_alias_digest_excludes_timings() -> None:
         {
             "connection": {**connection, "keepalive_interval": 75, "port": 2222},
             "scheduler": SCHEDULER,
-            "timings": {"queue_timeout_seconds": 60},
+            "timings": {"queue_timeout": 60},
         }
     )
 

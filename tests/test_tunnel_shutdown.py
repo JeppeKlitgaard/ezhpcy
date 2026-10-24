@@ -252,7 +252,7 @@ SCENARIOS = [
     Scenario(
         id="job_never_starts",
         inspections=[PENDING],
-        timings={"queue_timeout_seconds": 0.1},
+        timings={"queue_timeout": 0.1},
         exit_code=1,
         message="Could not start tunnel: worker job 42 did not start within 0.1 seconds",
         cancelled=True,
@@ -304,7 +304,7 @@ SCENARIOS = [
         id="worker_banner_never_appears",
         inspections=[RUNNING],
         banner=b"not an ssh server\n",
-        timings={"worker_startup_timeout_seconds": 0.2},
+        timings={"worker_startup_timeout": 0.2},
         exit_code=1,
         message=(
             r"Could not start tunnel: worker SSH endpoint 127\.0\.0\.1:\d+ did not "

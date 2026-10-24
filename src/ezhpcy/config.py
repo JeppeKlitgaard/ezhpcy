@@ -4,7 +4,6 @@ from typing import Annotated
 lazy import os
 lazy import tomllib
 lazy from collections.abc import Mapping, Sequence
-lazy from datetime import timedelta
 lazy from pathlib import Path
 lazy from typing import Any, Literal, Self
 
@@ -227,9 +226,7 @@ class _ConfigValues(BaseModel):
         values = {
             "host": connection.host,
             "user": connection.user,
-            "keepalive_interval": timedelta(
-                seconds=connection.ssh_keepalive_interval_seconds
-            ),
+            "keepalive_interval": connection.ssh_keepalive_interval,
             "password_fd": unless_disabled(connection.password_fd),
             "password_file": unless_disabled(connection.password_file),
             "password_keyring": connection.password_keyring,

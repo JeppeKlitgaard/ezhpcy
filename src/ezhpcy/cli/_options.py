@@ -406,12 +406,12 @@ class ResourceOptions:
 @Parameter(name="*")
 @dataclass(frozen=True, kw_only=True)
 class TimingOptions:
-    queue_timeout_seconds: QueueTimeoutOpt = None
-    worker_startup_timeout_seconds: WorkerStartupTimeoutOpt = None
-    job_poll_interval_seconds: JobPollIntervalOpt = None
-    job_monitor_interval_seconds: JobMonitorIntervalOpt = None
-    worker_heartbeat_interval_seconds: WorkerHeartbeatIntervalOpt = None
-    worker_heartbeat_timeout_seconds: WorkerHeartbeatTimeoutOpt = None
+    queue_timeout: QueueTimeoutOpt = None
+    worker_startup_timeout: WorkerStartupTimeoutOpt = None
+    job_poll_interval: JobPollIntervalOpt = None
+    job_monitor_interval: JobMonitorIntervalOpt = None
+    worker_heartbeat_interval: WorkerHeartbeatIntervalOpt = None
+    worker_heartbeat_timeout: WorkerHeartbeatTimeoutOpt = None
 
 
 @cache

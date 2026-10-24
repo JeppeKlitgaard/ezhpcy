@@ -653,7 +653,7 @@ def test_a_job_waiting_in_the_queue_says_why_once(
     configure_tunnel(
         monkeypatch,
         login,
-        timings=FAST_TIMINGS | {"queue_timeout_seconds": 0.35},
+        timings=FAST_TIMINGS | {"queue_timeout": 0.35},
     )
     serve_interactive_job(login)
     waiting = JobInfo(
@@ -684,7 +684,7 @@ def test_the_worker_startup_timeout_covers_both_waits(
     configure_tunnel(
         monkeypatch,
         login,
-        timings=FAST_TIMINGS | {"worker_startup_timeout_seconds": timeout_seconds},
+        timings=FAST_TIMINGS | {"worker_startup_timeout": timeout_seconds},
     )
     serve_interactive_job(login)
 

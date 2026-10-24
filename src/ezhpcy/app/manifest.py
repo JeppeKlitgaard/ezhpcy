@@ -21,6 +21,7 @@ such (`v1.2` is `v1.2.0`). `collect_apps` gathers several manifests' apps, and
 import re
 import string
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Annotated, Literal, Self
 lazy import hashlib
 lazy import stat
@@ -45,7 +46,7 @@ lazy from packaging.utils import canonicalize_name
 lazy from packaging.version import InvalidVersion, Version
 lazy from pydantic import ValidationError
 
-from ezhpcy.types import PositiveByteSize, TimeLimit
+from ezhpcy.types import PositiveByteSize, Seconds, TimeLimit
 lazy from ezhpcy.app import ManifestError
 lazy from ezhpcy.logging import get_logger
 
@@ -388,7 +389,7 @@ class Ready(_Table):
     # The lowest and highest status that count as ready.
     status: tuple[int, int] = (200, 399)
     # From when the launch script reports the app started.
-    timeout_seconds: float = Field(default=120, gt=0)
+    timeout: Seconds = Field(default=timedelta(seconds=120), gt=timedelta(0))
 
     def accepts(self, status: int) -> bool:
         low, high = self.status

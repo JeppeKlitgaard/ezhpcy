@@ -21,14 +21,14 @@ keep = 10  # Log files of the most recent runs to keep
 load_builtin_manifests = true
 
 [profile.base]
-connection.ssh_keepalive_interval_seconds = 30
+connection.ssh_keepalive_interval = 30  # Durations are in seconds
 
-timings.queue_timeout_seconds = 900
-timings.worker_startup_timeout_seconds = 120
-timings.worker_heartbeat_interval_seconds = 30
-timings.worker_heartbeat_timeout_seconds = 90
-timings.job_poll_interval_seconds = 2.5
-timings.job_monitor_interval_seconds = 60
+timings.queue_timeout = 900
+timings.worker_startup_timeout = 120
+timings.worker_heartbeat_interval = 30
+timings.worker_heartbeat_timeout = 90
+timings.job_poll_interval = 2.5
+timings.job_monitor_interval = 60
 
 [profile.dtu-base]
 description = "DTU HPC"

@@ -31,7 +31,7 @@ authenticates = true
 [ezhpcy.app.lab."v1.0".ready]
 check = "http"
 path = "/api"
-timeout_seconds = 180
+timeout = 180
 
 [ezhpcy.app.lab."v1.0".access]
 url = "http://127.0.0.1:{local_port}/lab?token={token}"

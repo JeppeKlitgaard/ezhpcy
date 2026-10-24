@@ -365,32 +365,32 @@ _TUNNEL_OPTION_CASES = [
     (["--memory", "2GB"], "resources.memory_bytes", 2 * 1000**3),
     (
         ["--queue-timeout", "120"],
-        "timings.queue_timeout_seconds",
+        "timings.queue_timeout",
         timedelta(seconds=120),
     ),
     (
         ["--worker-startup-timeout", "30"],
-        "timings.worker_startup_timeout_seconds",
+        "timings.worker_startup_timeout",
         timedelta(seconds=30),
     ),
     (
         ["--job-poll-interval", "0.5"],
-        "timings.job_poll_interval_seconds",
+        "timings.job_poll_interval",
         timedelta(seconds=0.5),
     ),
     (
         ["--job-monitor-interval", "5"],
-        "timings.job_monitor_interval_seconds",
+        "timings.job_monitor_interval",
         timedelta(seconds=5),
     ),
     (
         ["--worker-heartbeat-interval", "10"],
-        "timings.worker_heartbeat_interval_seconds",
+        "timings.worker_heartbeat_interval",
         timedelta(seconds=10),
     ),
     (
         ["--worker-heartbeat-timeout", "40"],
-        "timings.worker_heartbeat_timeout_seconds",
+        "timings.worker_heartbeat_timeout",
         timedelta(seconds=40),
     ),
 ]

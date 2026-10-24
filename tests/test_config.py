@@ -64,17 +64,17 @@ def test_auto_provision_can_be_disabled_from_the_environment(monkeypatch) -> Non
 
 
 def test_profile_ssh_keepalive_must_be_positive() -> None:
-    with pytest.raises(ValidationError, match="ssh_keepalive_interval_seconds"):
+    with pytest.raises(ValidationError, match="ssh_keepalive_interval"):
         config_module.Config.from_mapping(
-            {"profile": {"base": {"connection": {"ssh_keepalive_interval_seconds": 0}}}}
+            {"profile": {"base": {"connection": {"ssh_keepalive_interval": 0}}}}
         )
 
 
 @pytest.mark.parametrize(
     "field",
     [
-        "job_poll_interval_seconds",
-        "job_monitor_interval_seconds",
+        "job_poll_interval",
+        "job_monitor_interval",
     ],
 )
 def test_profile_job_intervals_must_be_positive(field: str) -> None:
@@ -82,6 +82,37 @@ def test_profile_job_intervals_must_be_positive(field: str) -> None:
         config_module.Config.from_mapping(
             {"profile": {"base": {"timings": {field: 0}}}}
         )
+
+
+@pytest.mark.parametrize(
+    ("table", "key"),
+    [
+        ("connection", "ssh_keepalive_interval_seconds"),
+        ("timings", "queue_timeout_seconds"),
+        ("timings", "worker_heartbeat_timeout_seconds"),
+    ],
+)
+def test_the_old_seconds_settings_are_unknown_keys(table: str, key: str) -> None:
+    with pytest.raises(ValidationError, match=rf"{table}\.{key}\n  Extra inputs"):
+        config_module.Config.from_mapping({"profile": {"base": {table: {key: 30}}}})
+
+
+def test_the_keepalive_interval_reaches_the_login_as_a_duration() -> None:
+    config = config_module.Config.from_mapping(
+        {
+            "profile": {
+                "base": {
+                    "connection": {
+                        "host": "login.example.com",
+                        "user": "alice",
+                        "ssh_keepalive_interval": 7.5,
+                    }
+                }
+            }
+        }
+    )
+
+    assert config.profiles["base"].login.keepalive_interval == timedelta(seconds=7.5)
 
 
 @pytest.mark.parametrize("command", [[], ["a100sh", ""], ["a100sh", "a\0b"]])

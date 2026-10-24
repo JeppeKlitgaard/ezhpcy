@@ -218,7 +218,7 @@ scheduler.type = "LSF"
 scheduler.submission_mode = "batch"
 resources.queue = "hpc"
 resources.time_limit = "2:00"
-timings.queue_timeout_seconds = 60
+timings.queue_timeout = 60
 
 [profile.gpu]
 inherit = "base"
@@ -249,7 +249,7 @@ def test_a_loaded_configuration_resolves_its_profiles(config_file: Path) -> None
     assert job.scheduler.submission_mode is api.SubmissionMode.BATCH
     assert (job.resources.queue, job.resources.gpus) == ("hpc", 1)
     assert job.resources.time_limit == timedelta(hours=2)
-    assert job.timings.queue_timeout_seconds == timedelta(seconds=60)
+    assert job.timings.queue_timeout == timedelta(seconds=60)
     assert job.auto_provision is False
     assert loaded.auto_provision is False
 
@@ -290,11 +290,11 @@ def test_models_are_built_directly_and_changed_by_validated_copies() -> None:
     )
 
     changed = job.with_resources(cores=4, time_limit=timedelta(hours=2)).with_timings(
-        queue_timeout_seconds=timedelta(minutes=5)
+        queue_timeout=timedelta(minutes=5)
     )
 
     assert (changed.resources.queue, changed.resources.cores) == ("hpc", 4)
-    assert changed.timings.queue_timeout_seconds == timedelta(minutes=5)
+    assert changed.timings.queue_timeout == timedelta(minutes=5)
     assert job.resources.cores == 1
     with pytest.raises(api.ConfigError, match=r"resources\.cores"):
         job.with_resources(cores=0)

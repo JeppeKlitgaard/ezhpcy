@@ -33,12 +33,12 @@ JOB_ID = "42"
 CONTROL_ROOT = STATE / "ezhpcy" / EZHPCY_VERSION / "worker_control"
 # A few milliseconds each, so every scenario takes well under a second.
 FAST_TIMINGS = {
-    "queue_timeout_seconds": 5,
-    "worker_startup_timeout_seconds": 5,
-    "job_poll_interval_seconds": 0.01,
-    "job_monitor_interval_seconds": 0.01,
-    "worker_heartbeat_interval_seconds": 0.01,
-    "worker_heartbeat_timeout_seconds": 1,
+    "queue_timeout": 5,
+    "worker_startup_timeout": 5,
+    "job_poll_interval": 0.01,
+    "job_monitor_interval": 0.01,
+    "worker_heartbeat_interval": 0.01,
+    "worker_heartbeat_timeout": 1,
 }
 # The interactive job's shell, as `FakeScheduler` starts it on the login node.
 INTERACTIVE_JOB = "fake-interactive-job"

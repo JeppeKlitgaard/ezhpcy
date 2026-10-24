@@ -18,7 +18,7 @@ from rich.prompt import Confirm, Prompt
 
 from ezhpcy import login as login_module
 from ezhpcy.cli.utils.ssh import cli_prompts
-from ezhpcy.config import config
+from ezhpcy.config import local_files
 from ezhpcy.login import ConnectionFailed
 from ezhpcy.ssh import RemoteHost
 from ezhpcy.types import Login
@@ -67,7 +67,7 @@ def system_known_hosts(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
 @pytest.fixture
 def known_hosts_file(system_known_hosts: Path) -> Path:
     """EzHPCy's own known hosts file, in the test's local files."""
-    return config.local_file.login_known_hosts_file
+    return local_files.login_known_hosts_file
 
 
 @pytest.fixture
@@ -422,11 +422,8 @@ async def test_a_host_key_that_cant_be_saved_is_trusted_for_this_connection(
 ):
     # Its directory is a file.
     (tmp_path / "not-a-directory").write_text("")
-    local_file = config.local_file.model_copy(
-        update={"config_dir": tmp_path / "not-a-directory"}
-    )
-    monkeypatch.setattr(config, "local_file", local_file)
-    known_hosts_file = local_file.login_known_hosts_file
+    monkeypatch.setattr(local_files, "config_dir", tmp_path / "not-a-directory")
+    known_hosts_file = local_files.login_known_hosts_file
     prompts.answers = [True, True]
 
     async with await _connect(ssh_server):

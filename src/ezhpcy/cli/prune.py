@@ -3,12 +3,11 @@ lazy from typing import Annotated
 lazy from cyclopts import Parameter
 lazy from rich.prompt import Confirm
 
-from ezhpcy.cli._options import ConnectionOptions, OptionalProfileArg
+from ezhpcy.cli._options import ConfigArg, ConnectionOptions, OptionalProfileArg
 from ezhpcy.constants import APPS_DIRECTORY_NAME
 lazy from ezhpcy.cli._resolve import login_from_cli, select_profile
 lazy from ezhpcy.cli.utils.prompt import ask
 lazy from ezhpcy.cli.utils.ssh import connect_or_exit
-lazy from ezhpcy.config import config
 lazy from ezhpcy.console import error_console
 lazy from ezhpcy.messages import print_aborted, print_success, rich_text
 lazy from ezhpcy.provision_host import prune_all_remote_data, prune_stale_data
@@ -19,6 +18,7 @@ async def prune_cmd(
     profile: OptionalProfileArg = None,
     /,
     *,
+    config: ConfigArg,
     connection_options: ConnectionOptions = ConnectionOptions(),
     all_data: Annotated[
         bool,
@@ -36,8 +36,8 @@ async def prune_cmd(
     ] = False,
 ) -> None:
     """Prune stale installations and Pixi data."""
-    select_profile(profile)
-    login, password = login_from_cli(connection_options, profile_name=profile)
+    select_profile(config, profile)
+    login, password = login_from_cli(config, connection_options, profile_name=profile)
     if not all_data:
         async with await connect_or_exit(
             login, password, connection_options, profile_name=profile

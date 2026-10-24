@@ -13,6 +13,7 @@ from pydantic import SecretStr
 from rich.console import Console
 
 from ezhpcy import login as login_module
+from ezhpcy.api import Config
 from ezhpcy.cli import main, tunnel
 from ezhpcy.console import make_console
 from ezhpcy.types import Login, RemoteState
@@ -29,6 +30,19 @@ class Result:
     stderr: str
     # An exception that escaped the command, other than a normal exit.
     exception: BaseException | None
+
+
+def use_settings(
+    monkeypatch: pytest.MonkeyPatch, settings: dict[str, object]
+) -> dict[str, object]:
+    """
+    Have the CLI load `settings`, the configuration file's tables, as each
+    command starts: change them until then. Returns `settings`.
+    """
+    monkeypatch.setattr(
+        Config, "from_environment", classmethod(lambda cls: cls.from_mapping(settings))
+    )
+    return settings
 
 
 def invoke(

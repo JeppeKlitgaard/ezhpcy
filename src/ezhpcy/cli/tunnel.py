@@ -29,6 +29,7 @@ lazy from pydantic import SecretStr
 from ezhpcy.cli._options import (
     AliasOpt,
     AppOpt,
+    ConfigArg,
     ConnectionOptions,
     LoadBuiltinManifestsOpt,
     ManifestOpt,
@@ -58,7 +59,6 @@ lazy from ezhpcy.cli._resolve import (
 lazy from ezhpcy.cli._tunnel_status import StatusPanel
 lazy from ezhpcy.cli.utils.interrupts import interrupts_handled_by
 lazy from ezhpcy.cli.utils.ssh import cli_prompts
-lazy from ezhpcy.config import config
 lazy from ezhpcy.console import (
     console,
     flush_output,
@@ -80,6 +80,7 @@ logger = get_logger(__name__)
 
 
 def _resolve_alias(
+    config: api.Config,
     alias: str | None,
     *,
     profile_name: str | None,
@@ -141,6 +142,7 @@ async def tunnel_cmd(
     profile: OptionalProfileArg = None,
     /,
     *,
+    config: ConfigArg,
     connection_options: ConnectionOptions = ConnectionOptions(),
     scheduler_options: SchedulerOptions = SchedulerOptions(),
     resource_options: ResourceOptions = ResourceOptions(),
@@ -189,9 +191,10 @@ async def tunnel_cmd(
     if load_builtin_manifests is None:
         load_builtin_manifests = config.apps.load_builtin_manifests
     apps = _chosen_apps(manifest or [], app or [], load_builtins=load_builtin_manifests)
-    select_profile(profile)
-    login, password = login_from_cli(connection_options, profile_name=profile)
+    select_profile(config, profile)
+    login, password = login_from_cli(config, connection_options, profile_name=profile)
     job = job_from_cli(
+        config,
         profile,
         scheduler_options=scheduler_options,
         resource_options=resource_options,
@@ -199,7 +202,7 @@ async def tunnel_cmd(
         auto_provision=auto_provision,
         app_resources=combined_resources(apps),
     )
-    alias = _resolve_alias(alias, profile_name=profile, login=login, job=job)
+    alias = _resolve_alias(config, alias, profile_name=profile, login=login, job=job)
     # The tunnel is known by its alias, which is usually the profile name.
     label_log_file(alias)
     if profile is None:

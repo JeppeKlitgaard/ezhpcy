@@ -22,7 +22,7 @@ lazy import uuid
 lazy from collections.abc import Generator, Iterable
 lazy from string.templatelib import Template
 
-from ezhpcy.config import config, validate_alias
+from ezhpcy.config import local_files, validate_alias
 from ezhpcy.logging import get_logger
 lazy from ezhpcy.constants import (
     LOOPBACK_HOST,
@@ -92,7 +92,7 @@ def _config_path(path: Path) -> str:
 
 
 def ssh_config_dir() -> Path:
-    return config.local_file.runtime_dir / SSH_CONFIG_DIRECTORY_NAME
+    return local_files.runtime_dir / SSH_CONFIG_DIRECTORY_NAME
 
 
 def include_directive() -> str:

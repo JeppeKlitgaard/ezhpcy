@@ -10,10 +10,11 @@ lazy from typing import get_type_hints
 from cyclopts import Group, Parameter, validators
 lazy from cyclopts import Token
 
+from ezhpcy.api import Config
 from ezhpcy.constants import KEYRING_SERVICE_NAME
 from ezhpcy.scheduler.types import SchedulerType
 from ezhpcy.types import SubmissionMode
-lazy from ezhpcy.config import config
+lazy from ezhpcy.api import ConfigError
 
 DEBUG_ENV_VAR = "EZHPCY_DEBUG"
 HOST_ENV_VAR = "EZHPCY_HOST"
@@ -43,11 +44,24 @@ def _readable(_type: type, value: Path | None) -> None:
 
 
 def _complete_profiles(_context: object) -> dict[str, str]:
-    """Offer the configured profiles, described like `ezhpcy list-profiles`."""
+    """
+    Offer the configured profiles, described like `ezhpcy list-profiles`; none
+    if the configuration can't be loaded. Completion runs before any command, so
+    it loads the configuration itself.
+    """
+    try:
+        config = Config.from_environment()
+    except ConfigError:
+        return {}
     return {
         name: profile_config.description or ""
         for name, profile_config in config.profile.items()
     }
+
+
+# The configuration, given to a command by the meta app (see `ezhpcy.cli`), never
+# parsed from the command line.
+ConfigArg = Annotated[Config, Parameter(parse=False)]
 
 
 OptionalProfileArg = Annotated[

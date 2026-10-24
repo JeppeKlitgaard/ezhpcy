@@ -12,7 +12,7 @@ lazy import asyncssh
 lazy from filelock import FileLock, Timeout
 
 from ezhpcy.provision_host import ProvisioningError
-lazy from ezhpcy.config import config
+lazy from ezhpcy.config import local_files
 lazy from ezhpcy.constants import (
     SSH_DIRECTORY_NAME,
     WORKER_CLIENT_KEY_NAME,
@@ -47,7 +47,7 @@ class WorkerCredentials:
 
     @property
     def local_dir(self) -> Path:
-        return config.local_file.ssh_dir(
+        return local_files.ssh_dir(
             self.machine_id, user=self.login_user, host=self.login_host
         )
 

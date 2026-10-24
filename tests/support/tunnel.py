@@ -19,13 +19,12 @@ from pathlib import Path
 
 import pytest
 
-from ezhpcy.config import config
 from ezhpcy.constants import EZHPCY_VERSION
 from ezhpcy.job import lifecycle
 from ezhpcy.scheduler.base import InteractiveJob, JobInfo, JobSpec, JobState
 from ezhpcy.ssh import RemoteHost
 from ezhpcy.tunnel import ssh_config
-from ezhpcy.types import ProfileConfig
+from tests.support.cli import use_settings
 from tests.support.login import STATE, remote_state_json
 from tests.support.sshserver import Handler, Invocation, SSHTestServer, reply
 
@@ -48,23 +47,24 @@ _REPLACE_ATTEMPTS = 100
 
 def configure_tunnel(
     monkeypatch: pytest.MonkeyPatch, server: SSHTestServer, **profile: object
-) -> None:
+) -> dict[str, object]:
     """
     Configure profile `base` (LSF, interactive, `FAST_TIMINGS`; `profile` adds to
     or overrides its settings), with automatic provisioning against `server`.
+    Returns the configuration's tables, as `use_settings`.
     """
     settings: dict[str, object] = {
         "connection": {"host": "login.example.com", "user": "alice"},
         "scheduler": {"type": "LSF", "submission_mode": "interactive"},
         "timings": FAST_TIMINGS,
     }
-    monkeypatch.setattr(
-        config, "profile", {"base": ProfileConfig.model_validate(settings | profile)}
+    configured = use_settings(
+        monkeypatch, {"auto_provision": True, "profile": {"base": settings | profile}}
     )
-    monkeypatch.setattr(config, "auto_provision", True)
     # Provisioning: the Pixi install and the two `pixi exec` runs of sshd.
     server.command("bash -c", reply())
     server.command("env", reply())
+    return configured
 
 
 def serve_login_shell(server: SSHTestServer, **fakes: Handler) -> None:

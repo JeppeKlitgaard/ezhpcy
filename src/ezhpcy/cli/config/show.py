@@ -8,9 +8,9 @@ lazy from typing import Annotated
 lazy from cyclopts import Parameter
 lazy from pydantic import BaseModel
 
-lazy from ezhpcy.cli._options import ShownProfileArg
+lazy from ezhpcy.api import Config
+lazy from ezhpcy.cli._options import ConfigArg, ShownProfileArg
 lazy from ezhpcy.cli._resolve import check_profile_name
-lazy from ezhpcy.config import Config, config
 lazy from ezhpcy.console import console
 lazy from ezhpcy.messages import rich_text
 
@@ -133,6 +133,7 @@ def show_cmd(
     profile: ShownProfileArg = None,
     /,
     *,
+    config: ConfigArg,
     only_profile: Annotated[
         bool,
         Parameter(
@@ -145,7 +146,7 @@ def show_cmd(
     if profile is None:
         profile_names = list(config.profile)
     else:
-        check_profile_name(profile)
+        check_profile_name(config, profile)
         profile_names = [profile]
     # `ezhpcy info` shows the local files, which aren't configurable.
     tables = (

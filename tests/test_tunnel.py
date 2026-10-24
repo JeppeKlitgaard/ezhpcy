@@ -8,7 +8,6 @@ import pytest
 from pydantic import ValidationError
 
 from ezhpcy import types as types_module
-from ezhpcy.cli import tunnel as tunnel_module
 from ezhpcy.scheduler.types import SchedulerType
 from ezhpcy.tunnel import ssh_config
 from ezhpcy.tunnel.ssh_config import (
@@ -16,8 +15,8 @@ from ezhpcy.tunnel.ssh_config import (
     AliasProblem,
     include_directive,
 )
-from ezhpcy.types import JobConfig, Login, ProfileConfig, Resources, alias_digest
-from tests.support.cli import capture, invoke
+from ezhpcy.types import JobConfig, Login, Resources, alias_digest
+from tests.support.cli import capture, invoke, use_settings
 from tests.support.tunnel import tunnel_log
 
 
@@ -120,12 +119,11 @@ def test_tunnel_command_accepts_anonymous_cli_configuration(
 def test_tunnel_command_resolves_profile_and_applies_cli_overrides(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        tunnel_module.config,
-        "profile",
+    use_settings(
+        monkeypatch,
         {
-            "base": ProfileConfig.model_validate(
-                {
+            "profile": {
+                "base": {
                     "connection": {
                         "host": "login.example.com",
                         "user": "alice",
@@ -146,11 +144,9 @@ def test_tunnel_command_resolves_profile_and_applies_cli_overrides(
                         "job_poll_interval": 4,
                         "job_monitor_interval": 120,
                     },
-                }
-            ),
-            "gpu": ProfileConfig.model_validate(
-                {"inherit": "base", "resources": {"queue": "gpu", "cores": 8}}
-            ),
+                },
+                "gpu": {"inherit": "base", "resources": {"queue": "gpu", "cores": 8}},
+            }
         },
     )
     captured = capture(monkeypatch, "tunnel")
@@ -212,12 +208,11 @@ def test_tunnel_command_limits_worker_port_retries(
 def test_tunnel_command_allows_wrapper_with_implicit_resource_defaults(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        tunnel_module.config,
-        "profile",
+    use_settings(
+        monkeypatch,
         {
-            "base": ProfileConfig.model_validate(
-                {
+            "profile": {
+                "base": {
                     "connection": {"host": "login.example.com", "user": "alice"},
                     "scheduler": {
                         "type": "LSF",
@@ -225,7 +220,7 @@ def test_tunnel_command_allows_wrapper_with_implicit_resource_defaults(
                         "interactive_submission_command": ["/site/bin/interactive-lsf"],
                     },
                 }
-            )
+            }
         },
     )
     captured = capture(monkeypatch, "tunnel")
@@ -246,26 +241,23 @@ def test_tunnel_command_allows_wrapper_with_implicit_resource_defaults(
 def test_tunnel_command_logs_inherited_submission_options_ignored_by_wrapper(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        tunnel_module.config,
-        "profile",
+    use_settings(
+        monkeypatch,
         {
-            "base": ProfileConfig.model_validate(
-                {
+            "profile": {
+                "base": {
                     "connection": {"host": "login.example.com", "user": "alice"},
                     "scheduler": {"type": "LSF", "submission_mode": "interactive"},
                     "resources": {"queue": "normal"},
                     "lsf": {"application_profile": "qrsh"},
-                }
-            ),
-            "wrapper": ProfileConfig.model_validate(
-                {
+                },
+                "wrapper": {
                     "inherit": "base",
                     "scheduler": {
                         "interactive_submission_command": ["/site/bin/interactive-lsf"]
                     },
-                }
-            ),
+                },
+            }
         },
     )
     capture(monkeypatch, "tunnel")
@@ -303,12 +295,11 @@ def test_tunnel_command_rejects_configured_submission_options_with_wrapper(
     field: str,
     value: object,
 ) -> None:
-    monkeypatch.setattr(
-        tunnel_module.config,
-        "profile",
+    use_settings(
+        monkeypatch,
         {
-            "base": ProfileConfig.model_validate(
-                {
+            "profile": {
+                "base": {
                     "connection": {"host": "login.example.com", "user": "alice"},
                     "scheduler": {
                         "type": "LSF",
@@ -317,7 +308,7 @@ def test_tunnel_command_rejects_configured_submission_options_with_wrapper(
                     },
                     section: {field: value},
                 }
-            )
+            }
         },
     )
 
@@ -332,25 +323,22 @@ def test_tunnel_command_rejects_a_cli_option_over_an_inherited_one_with_wrapper(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Only what the profile inherits is ignored: the CLI's own options are refused."""
-    monkeypatch.setattr(
-        tunnel_module.config,
-        "profile",
+    use_settings(
+        monkeypatch,
         {
-            "base": ProfileConfig.model_validate(
-                {
+            "profile": {
+                "base": {
                     "connection": {"host": "login.example.com", "user": "alice"},
                     "scheduler": {"type": "LSF", "submission_mode": "interactive"},
                     "resources": {"cores": 8},
-                }
-            ),
-            "wrapper": ProfileConfig.model_validate(
-                {
+                },
+                "wrapper": {
                     "inherit": "base",
                     "scheduler": {
                         "interactive_submission_command": ["/site/bin/interactive-lsf"]
                     },
-                }
-            ),
+                },
+            }
         },
     )
     captured = capture(monkeypatch, "tunnel")
@@ -363,14 +351,12 @@ def test_tunnel_command_rejects_a_cli_option_over_an_inherited_one_with_wrapper(
     assert captured == {}
 
 
-def _alias_profiles() -> dict[str, ProfileConfig]:
+def _alias_profiles() -> dict[str, dict[str, object]]:
     return {
-        name: ProfileConfig.model_validate(
-            {
-                "connection": {"host": "login.example.com", "user": "alice"},
-                "scheduler": {"type": "LSF", "submission_mode": "interactive"},
-            }
-        )
+        name: {
+            "connection": {"host": "login.example.com", "user": "alice"},
+            "scheduler": {"type": "LSF", "submission_mode": "interactive"},
+        }
         for name in ("cpu", "gpu")
     }
 
@@ -421,7 +407,7 @@ def test_profile_tunnel_alias_defaults_to_the_profile_name(
     alias: str,
     user: str,
 ) -> None:
-    monkeypatch.setattr(tunnel_module.config, "profile", _alias_profiles())
+    use_settings(monkeypatch, {"profile": _alias_profiles()})
     captured = capture(monkeypatch, "tunnel")
 
     result = invoke(["tunnel", "gpu", *arguments])
@@ -436,7 +422,7 @@ def test_profile_tunnel_alias_defaults_to_the_profile_name(
 def test_tunnel_probes_its_alias_before_connecting(
     monkeypatch: pytest.MonkeyPatch, alias: str
 ) -> None:
-    monkeypatch.setattr(tunnel_module.config, "profile", _alias_profiles())
+    use_settings(monkeypatch, {"profile": _alias_profiles()})
     probed: list[str] = []
 
     def resolve(alias: str) -> dict[str, list[str]]:
@@ -456,7 +442,7 @@ def test_tunnel_probes_its_alias_before_connecting(
 def test_tunnel_that_ssh_would_bypass_fails_before_connecting(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(tunnel_module.config, "profile", _alias_profiles())
+    use_settings(monkeypatch, {"profile": _alias_profiles()})
     # Without the Include, OpenSSH takes the alias for the host name.
     monkeypatch.setattr(
         ssh_config, "resolve_alias", lambda alias: {"hostname": [alias]}
@@ -482,7 +468,7 @@ def test_tunnel_that_ssh_would_bypass_fails_before_connecting(
 def test_tunnel_with_a_bad_openssh_configuration_fails_before_connecting(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(tunnel_module.config, "profile", _alias_profiles())
+    use_settings(monkeypatch, {"profile": _alias_profiles()})
     bad_line = "~/.ssh/config: line 2: Bad configuration option: bogus"
     monkeypatch.setattr(
         ssh_config,
@@ -686,7 +672,7 @@ def test_anonymous_tunnel_accepts_an_explicit_alias(
 def test_tunnel_rejects_unusable_aliases(
     monkeypatch: pytest.MonkeyPatch, arguments: list[str], message: str
 ) -> None:
-    monkeypatch.setattr(tunnel_module.config, "profile", _alias_profiles())
+    use_settings(monkeypatch, {"profile": _alias_profiles()})
     captured = capture(monkeypatch, "tunnel")
 
     result = invoke(arguments)

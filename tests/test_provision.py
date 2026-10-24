@@ -9,7 +9,7 @@ import pytest
 from rich.prompt import Confirm
 
 from ezhpcy import ssh
-from ezhpcy.config import config
+from ezhpcy.config import local_files
 from ezhpcy.constants import (
     EZHPCY_VERSION,
     OPENSSH_MATCHSPEC,
@@ -152,7 +152,7 @@ def test_a_rejected_login_is_one_error_line(login: SSHTestServer) -> None:
 
 
 def test_a_rejected_host_key_is_one_error_line(login: SSHTestServer) -> None:
-    config.local_file.login_known_hosts_file.unlink()
+    local_files.login_known_hosts_file.unlink()
 
     result = invoke(["prune", *_LOGIN], stdin="n\n")
 

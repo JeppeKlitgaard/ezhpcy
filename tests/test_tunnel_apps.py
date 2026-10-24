@@ -20,7 +20,6 @@ import pytest
 
 from ezhpcy import api
 from ezhpcy.cli import tunnel as tunnel_cli
-from ezhpcy.config import config
 from tests.support.apps import MINIMAL_APP, AppRig, http_app, write_project
 from tests.support.cli import Result, capture, invoke
 from tests.support.login import remote_state_json
@@ -322,13 +321,17 @@ def test_ctrl_c_stops_the_apps_and_the_tunnel(apps: TunnelApps) -> None:
 
 
 @pytest.fixture
-def captured(login: SSHTestServer, monkeypatch: pytest.MonkeyPatch) -> dict:
-    configure_tunnel(
+def settings(login: SSHTestServer, monkeypatch: pytest.MonkeyPatch) -> dict:
+    return configure_tunnel(
         monkeypatch,
         login,
         resources={"queue": "hpc", "cores": 8, "memory": "32GB"},
         apps={"root": "/work3/alice/apps"},
     )
+
+
+@pytest.fixture
+def captured(settings: dict, monkeypatch: pytest.MonkeyPatch) -> dict:
     return capture(monkeypatch, "tunnel")
 
 
@@ -441,9 +444,9 @@ def test_a_manifests_version_of_a_builtin_app_replaces_it(
     ids=["by-the-setting", "by-the-flag"],
 )
 def test_an_app_without_manifests_or_builtins_says_none_was_given(
-    captured: dict, monkeypatch: pytest.MonkeyPatch, setting: bool, flags: list[str]
+    captured: dict, settings: dict, setting: bool, flags: list[str]
 ) -> None:
-    monkeypatch.setattr(config.apps, "load_builtin_manifests", setting)
+    settings["apps"] = {"load_builtin_manifests": setting}
 
     result = invoke(["tunnel", "base", "--app", "lab", *flags])
 
@@ -454,9 +457,9 @@ def test_an_app_without_manifests_or_builtins_says_none_was_given(
 
 
 def test_the_flag_loads_the_builtins_over_the_setting(
-    captured: dict, monkeypatch: pytest.MonkeyPatch
+    captured: dict, settings: dict
 ) -> None:
-    monkeypatch.setattr(config.apps, "load_builtin_manifests", False)
+    settings["apps"] = {"load_builtin_manifests": False}
 
     result = invoke(["tunnel", "base", "--app", "lab", "--load-builtin-manifests"])
 

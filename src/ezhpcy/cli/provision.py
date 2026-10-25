@@ -4,8 +4,8 @@ lazy from typing import Annotated
 lazy from cyclopts import Parameter
 lazy from rich.prompt import Confirm
 
-from ezhpcy.cli._options import ConnectionOptions, OptionalProfileArg
-lazy from ezhpcy.cli._resolve import connection_from_cli, resolve_profile_config
+from ezhpcy.cli._options import ConfigArg, ConnectionOptions, OptionalProfileArg
+lazy from ezhpcy.cli._resolve import login_from_cli, select_profile
 lazy from ezhpcy.cli.utils.prompt import ask
 lazy from ezhpcy.cli.utils.ssh import connect_or_exit
 lazy from ezhpcy.console import error_console
@@ -20,6 +20,7 @@ async def provision_cmd(
     profile: OptionalProfileArg = None,
     /,
     *,
+    config: ConfigArg,
     connection_options: ConnectionOptions = ConnectionOptions(),
     yes: Annotated[
         bool,
@@ -30,16 +31,13 @@ async def provision_cmd(
     ] = False,
 ) -> None:
     """Idempotently provision worker infrastructure on the remote HPC host."""
-    conn_info = connection_from_cli(
-        connection_options,
-        resolve_profile_config(profile).connection,
-        profile_name=profile,
-    )
+    select_profile(config, profile)
+    login, password = login_from_cli(config, connection_options, profile_name=profile)
     credentials = WorkerCredentials.for_login(
-        conn_info, machine_id=await asyncio.to_thread(local_machine_id)
+        login, machine_id=await asyncio.to_thread(local_machine_id)
     )
     # Asked before connecting (see `ask`).
-    target = f"{conn_info.user}@{conn_info.host}"
+    target = f"{login.user}@{login.host}"
     user_accepts = yes or ask(
         Confirm.ask,
         rich_text(
@@ -53,7 +51,9 @@ async def provision_cmd(
         print_aborted(t"Provisioning cancelled.")
         raise SystemExit(1)
 
-    async with await connect_or_exit(conn_info) as login:
-        remote_state = await login.remote_state()
-        await provision_worker_infrastructure(login, remote_state, credentials)
+    async with await connect_or_exit(
+        login, password, connection_options, profile_name=profile
+    ) as host:
+        remote_state = await host.remote_state()
+        await provision_worker_infrastructure(host, remote_state, credentials)
     print_success(t"Remote provisioning completed.")

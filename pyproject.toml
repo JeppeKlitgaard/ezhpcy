@@ -26,6 +26,7 @@ dependencies = [
     "py-machineid>=1.0.0",
     "platformdirs>=4.9.4",
     "filelock>=4.2.0",
+    "packaging>=26.3",
 ]
 
 [project.scripts]
@@ -108,12 +109,24 @@ isort.combine-as-imports = true
 "scripts/**" = [
     "INP", # no-pep420, scripts are standalone and not part of a package
 ]
+# Examples, run on their own, not part of a package
+"examples/**" = [
+    "INP", # no-pep420
+]
+# Built-in apps' scripts, run on their host in the app's environment
+"src/ezhpcy/app/builtins/**" = [
+    "INP", # no-pep420
+]
 
 # Pyrefly - Type checking
 [tool.pyrefly]
 project-includes = [
     "src/**/*.py*",
     "src/**/*.ipynb",
+]
+# Built-in apps' scripts import their environment's packages
+project-excludes = [
+    "src/ezhpcy/app/builtins/**",
 ]
 
 # Build system

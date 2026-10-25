@@ -75,10 +75,14 @@ def _sshd_config_settings(
         # Restrictions
         ("PermitUserEnvironment", "no"),
         ("AllowTcpForwarding", "yes"),
+        ("AllowStreamLocalForwarding", "yes"),
         ("GatewayPorts", "no"),
         ("AllowAgentForwarding", "no"),
         ("X11Forwarding", "no"),
         ("PermitTunnel", "no"),
+        # Headroom over the default 10 for the channels of one client's
+        # processes, forwards and SFTP sessions.
+        ("MaxSessions", "64"),
         # Liveness
         *liveness,
         # Misc

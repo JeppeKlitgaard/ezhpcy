@@ -1,26 +1,21 @@
+import os
 import subprocess
+import sys
 import tomllib
 from pathlib import Path
-from types import ModuleType
 
 import pytest
 
-from ezhpcy.cli import _resolve as cli_resolve, list_profiles as config_list_profiles
 from ezhpcy.cli.config import (
     edit as config_edit,
-    load as config_load,
-    show as config_show,
 )
-from ezhpcy.config import Config
+from ezhpcy.config import Config, local_files
 from ezhpcy.types import SubmissionMode
-from tests.support.cli import invoke
+from tests.support.cli import invoke, use_settings
 
 
-def use_config_file(
-    monkeypatch: pytest.MonkeyPatch, module: ModuleType, config_file: Path
-) -> None:
-    config = Config.from_mapping({"local_file": {"config_file": config_file}})
-    monkeypatch.setattr(module, "config", config)
+def use_config_file(monkeypatch: pytest.MonkeyPatch, config_file: Path) -> None:
+    monkeypatch.setattr(local_files, "config_file", config_file)
 
 
 def record_editor_runs(
@@ -65,7 +60,7 @@ def test_config_edit_creates_config_file_and_waits_for_editor(
     expected_editor: str,
 ) -> None:
     config_file = tmp_path / "missing" / "ezhpcy.toml"
-    use_config_file(monkeypatch, config_edit, config_file)
+    use_config_file(monkeypatch, config_file)
     runs = record_editor_runs(monkeypatch, windows=windows)
     for name, value in environment.items():
         monkeypatch.setenv(name, value)
@@ -121,7 +116,7 @@ def test_config_edit_splits_editor_command(
     expected_arguments: list[str],
 ) -> None:
     config_file = tmp_path / "ezhpcy.toml"
-    use_config_file(monkeypatch, config_edit, config_file)
+    use_config_file(monkeypatch, config_file)
     runs = record_editor_runs(monkeypatch, windows=windows, executables=executables)
 
     result = invoke(["config", "edit", editor])
@@ -134,7 +129,7 @@ def test_config_edit_does_not_interpret_editor_metacharacters(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     config_file = tmp_path / "ezhpcy.toml"
-    use_config_file(monkeypatch, config_edit, config_file)
+    use_config_file(monkeypatch, config_file)
     runs = record_editor_runs(monkeypatch, windows=False)
 
     result = invoke(["config", "edit", "code;echo INJECTED"])
@@ -147,7 +142,7 @@ def test_config_edit_refuses_metacharacters_for_batch_file_editor(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     config_file = tmp_path / "config&echo INJECTED.toml"
-    use_config_file(monkeypatch, config_edit, config_file)
+    use_config_file(monkeypatch, config_file)
     runs = record_editor_runs(
         monkeypatch, windows=True, executables={"code": r"C:\VS Code\bin\code.cmd"}
     )
@@ -163,7 +158,7 @@ def test_config_edit_refuses_metacharacters_for_batch_file_editor(
 def test_config_edit_rejects_invalid_editor_command(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, editor: str
 ) -> None:
-    use_config_file(monkeypatch, config_edit, tmp_path / "ezhpcy.toml")
+    use_config_file(monkeypatch, tmp_path / "ezhpcy.toml")
     runs = record_editor_runs(monkeypatch, windows=False)
 
     result = invoke(["config", "edit", editor])
@@ -176,7 +171,7 @@ def test_config_edit_rejects_invalid_editor_command(
 def test_config_edit_reports_editor_failure(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    use_config_file(monkeypatch, config_edit, tmp_path / "ezhpcy.toml")
+    use_config_file(monkeypatch, tmp_path / "ezhpcy.toml")
     record_editor_runs(monkeypatch, windows=False, returncode=3)
 
     result = invoke(["config", "edit", "vi"])
@@ -188,7 +183,7 @@ def test_config_edit_reports_editor_failure(
 def test_config_edit_reports_missing_editor(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    use_config_file(monkeypatch, config_edit, tmp_path / "ezhpcy.toml")
+    use_config_file(monkeypatch, tmp_path / "ezhpcy.toml")
     record_editor_runs(monkeypatch, windows=False)
 
     def missing(command: list[str], *, check: bool) -> None:
@@ -205,18 +200,15 @@ def test_config_edit_reports_missing_editor(
 def test_list_profiles_shows_local_profile_metadata(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    config = Config.from_mapping(
+    use_settings(
+        monkeypatch,
         {
             "profile": {
-                "gpu": {
-                    "description": "GPU jobs [a100]",
-                    "inherit": "default",
-                },
+                "gpu": {"description": "GPU jobs [a100]", "inherit": "default"},
                 "default": {"description": "General login"},
             },
-        }
+        },
     )
-    monkeypatch.setattr(config_list_profiles, "config", config)
 
     result = invoke(["list-profiles"])
 
@@ -234,7 +226,7 @@ def test_config_load_creates_dtu_config_case_insensitively(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, preset: str
 ) -> None:
     config_file = tmp_path / "missing" / "ezhpcy.toml"
-    use_config_file(monkeypatch, config_load, config_file)
+    use_config_file(monkeypatch, config_file)
 
     result = invoke(["config", "load", preset, "--user", "alice"])
 
@@ -252,10 +244,10 @@ def test_config_load_creates_dtu_config_case_insensitively(
     assert gpul40s.scheduler.submission_mode is SubmissionMode.BATCH
     a100sh = loaded_config.resolve_profile("dtu-a100sh")
     assert a100sh.scheduler.submission_mode is SubmissionMode.INTERACTIVE
-    assert a100sh.scheduler.interactive_submission_command == ["/lsf/local/bin/a100sh"]
+    assert a100sh.scheduler.interactive_submission_command == ("/lsf/local/bin/a100sh",)
     assert a100sh.lsf.application_profile == "qrsh"
     assert a100sh.lsf.submission_environment == {}
-    assert a100sh.lsf.export_environment == []
+    assert a100sh.lsf.export_environment == ()
     assert not loaded_config.profile["dtu-a100sh"].lsf.model_fields_set
     dtu_base_pbs = loaded_config.resolve_profile("dtu-base-pbs")
     assert str(dtu_base_pbs.pbs.command_directory) == "/opt/pbspro/bin"
@@ -269,7 +261,7 @@ def test_config_load_existing_file_defaults_to_no(
         '[profile.old]\nconnection.host = "old.example.com"\n',
         encoding="utf-8",
     )
-    use_config_file(monkeypatch, config_load, config_file)
+    use_config_file(monkeypatch, config_file)
 
     result = invoke(["config", "load", "dtu", "--user", "alice"], stdin="\n")
 
@@ -293,7 +285,7 @@ def test_config_load_yes_overwrites_existing_file(
         '[profile.old]\nconnection.host = "old.example.com"\n',
         encoding="utf-8",
     )
-    use_config_file(monkeypatch, config_load, config_file)
+    use_config_file(monkeypatch, config_file)
 
     result = invoke(["config", "load", "DTU", "--user", "alice", "--yes"])
 
@@ -330,13 +322,6 @@ def test_config_load_help_lists_available_presets() -> None:
     assert "[choices: dtu, generic]" in output
 
 
-def use_config(monkeypatch: pytest.MonkeyPatch, values: dict[str, object]) -> None:
-    """Replace the configuration that `config show` reads."""
-    config = Config.from_mapping(values)
-    for module in (config_show, cli_resolve):
-        monkeypatch.setattr(module, "config", config)
-
-
 _SHOWN_CONFIG = {
     "debug": True,
     "connection": {"password_keyring": True},
@@ -357,7 +342,7 @@ _SHOWN_CONFIG = {
 def test_config_show_marks_inherited_and_default_settings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    use_config(monkeypatch, _SHOWN_CONFIG)
+    use_settings(monkeypatch, _SHOWN_CONFIG)
 
     result = invoke(["config", "show"])
 
@@ -389,7 +374,7 @@ def test_config_show_marks_inherited_and_default_settings(
 def test_config_show_with_a_profile_leaves_out_the_other_profiles(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    use_config(monkeypatch, _SHOWN_CONFIG)
+    use_settings(monkeypatch, _SHOWN_CONFIG)
 
     result = invoke(["config", "show", "child"])
 
@@ -404,7 +389,7 @@ def test_config_show_with_a_profile_leaves_out_the_other_profiles(
 def test_config_show_only_profile_shows_just_the_profile(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    use_config(monkeypatch, _SHOWN_CONFIG)
+    use_settings(monkeypatch, _SHOWN_CONFIG)
 
     result = invoke(["config", "show", "child", "--only-profile"])
 
@@ -419,7 +404,7 @@ def test_config_show_only_profile_shows_just_the_profile(
 def test_config_show_only_profile_without_a_profile_shows_every_profile(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    use_config(monkeypatch, _SHOWN_CONFIG)
+    use_settings(monkeypatch, _SHOWN_CONFIG)
 
     result = invoke(["config", "show", "--only-profile"])
 
@@ -434,7 +419,7 @@ def test_config_show_only_profile_without_a_profile_shows_every_profile(
 def test_config_show_never_shows_a_configured_password(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    use_config(
+    use_settings(
         monkeypatch,
         {"profile": {"base": {"connection": {"password": "hunter2"}}}},
     )
@@ -448,9 +433,68 @@ def test_config_show_never_shows_a_configured_password(
 def test_config_show_rejects_an_unknown_profile(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    use_config(monkeypatch, _SHOWN_CONFIG)
+    use_settings(monkeypatch, _SHOWN_CONFIG)
 
     result = invoke(["config", "show", "missing"])
 
     assert result.exit_code == 2
     assert 'Invalid value "missing" for PROFILE' in result.stderr
+
+
+def _run_with_config_file(
+    tmp_path: Path, content: str, *arguments: str
+) -> subprocess.CompletedProcess[str]:
+    """Run `arguments` in a Python process whose configuration file is `content`."""
+    config_file = tmp_path / "ezhpcy.toml"
+    config_file.write_text(content, encoding="utf-8")
+    return subprocess.run(
+        [sys.executable, *arguments],
+        env={**os.environ, "EZHPCY_CONFIG_FILE": str(config_file), "COLUMNS": "200"},
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+
+
+_OLD_KEYS = "[profile.base]\ntimings.queue_timeout_seconds = 900\n"
+
+
+def test_an_invalid_configuration_file_doesnt_stop_importing_the_api(
+    tmp_path: Path,
+) -> None:
+    result = _run_with_config_file(
+        tmp_path, _OLD_KEYS, "-c", "from ezhpcy import api; print(api.Host)"
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Host" in result.stdout
+
+
+def test_a_command_reports_an_invalid_configuration_file_and_its_fix(
+    tmp_path: Path,
+) -> None:
+    result = _run_with_config_file(
+        tmp_path, _OLD_KEYS, "-m", "ezhpcy.cli", "list-profiles"
+    )
+
+    # As Rich wraps it.
+    stderr = " ".join(result.stderr.split())
+    assert result.returncode == 1
+    assert "Traceback" not in stderr
+    assert "Invalid configuration file" in stderr
+    assert "profile.base.timings.queue_timeout_seconds" in stderr
+    assert "Durations no longer end in _seconds" in stderr
+    assert "ezhpcy config edit" in stderr
+
+
+@pytest.mark.parametrize(
+    "command", [["version"], ["config", "edit", f'"{sys.executable}" -c pass']]
+)
+def test_some_commands_run_with_an_invalid_configuration_file(
+    tmp_path: Path, command: list[str]
+) -> None:
+    result = _run_with_config_file(tmp_path, _OLD_KEYS, "-m", "ezhpcy.cli", *command)
+
+    assert result.returncode == 0, result.stderr
+    assert "Warning: Invalid configuration file" in " ".join(result.stderr.split())

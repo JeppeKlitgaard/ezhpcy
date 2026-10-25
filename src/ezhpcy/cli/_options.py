@@ -10,12 +10,11 @@ lazy from typing import get_type_hints
 from cyclopts import Group, Parameter, validators
 lazy from cyclopts import Token
 
-from ezhpcy.constants import PACKAGE_NAME
+from ezhpcy.api import Config
+from ezhpcy.constants import KEYRING_SERVICE_NAME
 from ezhpcy.scheduler.types import SchedulerType
 from ezhpcy.types import SubmissionMode
-lazy from ezhpcy.config import config
-
-KEYRING_SERVICE_NAME = PACKAGE_NAME
+lazy from ezhpcy.api import ConfigError
 
 DEBUG_ENV_VAR = "EZHPCY_DEBUG"
 HOST_ENV_VAR = "EZHPCY_HOST"
@@ -30,6 +29,7 @@ CONNECTION_PANEL = Group("Connection Options", sort_key=1)
 SCHEDULER_PANEL = Group("Scheduler Options", sort_key=2)
 RESOURCES_PANEL = Group("Resource Options", sort_key=3)
 TIMINGS_PANEL = Group("Timing Options", sort_key=4)
+APPS_PANEL = Group("App Options", sort_key=5)
 
 # Not shown in help: it only makes the password options mutually exclusive.
 PASSWORD_SOURCES = Group(
@@ -44,11 +44,24 @@ def _readable(_type: type, value: Path | None) -> None:
 
 
 def _complete_profiles(_context: object) -> dict[str, str]:
-    """Offer the configured profiles, described like `ezhpcy list-profiles`."""
+    """
+    Offer the configured profiles, described like `ezhpcy list-profiles`; none
+    if the configuration can't be loaded. Completion runs before any command, so
+    it loads the configuration itself.
+    """
+    try:
+        config = Config.from_environment()
+    except ConfigError:
+        return {}
     return {
         name: profile_config.description or ""
         for name, profile_config in config.profile.items()
     }
+
+
+# The configuration, given to a command by the meta app (see `ezhpcy.cli`), never
+# parsed from the command line.
+ConfigArg = Annotated[Config, Parameter(parse=False)]
 
 
 OptionalProfileArg = Annotated[
@@ -286,6 +299,45 @@ WorkerHeartbeatTimeoutOpt = Annotated[
         group=TIMINGS_PANEL,
     ),
 ]
+ManifestOpt = Annotated[
+    list[Path] | None,
+    Parameter(
+        name="--manifest",
+        metavar="PATH",
+        help=(
+            "An apps manifest (`ezhpcy-apps.toml`), or a directory holding one, "
+            "for --app to choose from beside the built-in apps; may be repeated."
+        ),
+        group=APPS_PANEL,
+    ),
+]
+LoadBuiltinManifestsOpt = Annotated[
+    bool | None,
+    Parameter(
+        name="--load-builtin-manifests",
+        negative="--no-load-builtin-manifests",
+        help=(
+            "Let --app choose from the apps EzHPCy ships, such as `lab`; a "
+            "--manifest's version of one replaces it. Defaults to the "
+            "apps.load_builtin_manifests setting."
+        ),
+        group=APPS_PANEL,
+    ),
+]
+AppOpt = Annotated[
+    list[str] | None,
+    Parameter(
+        name="--app",
+        metavar="NAME[@VERSION]",
+        help=(
+            "An app of the manifests to run on the compute node once the tunnel "
+            "serves, provisioned there if needed: its newest version, or "
+            "VERSION. A link is printed instead, for the tunnel's alias. May be "
+            "repeated; the apps start in order."
+        ),
+        group=APPS_PANEL,
+    ),
+]
 
 
 def _split_command(_type: type, tokens: Sequence[Token]) -> list[str]:
@@ -368,16 +420,16 @@ class ResourceOptions:
 @Parameter(name="*")
 @dataclass(frozen=True, kw_only=True)
 class TimingOptions:
-    queue_timeout_seconds: QueueTimeoutOpt = None
-    worker_startup_timeout_seconds: WorkerStartupTimeoutOpt = None
-    job_poll_interval_seconds: JobPollIntervalOpt = None
-    job_monitor_interval_seconds: JobMonitorIntervalOpt = None
-    worker_heartbeat_interval_seconds: WorkerHeartbeatIntervalOpt = None
-    worker_heartbeat_timeout_seconds: WorkerHeartbeatTimeoutOpt = None
+    queue_timeout: QueueTimeoutOpt = None
+    worker_startup_timeout: WorkerStartupTimeoutOpt = None
+    job_poll_interval: JobPollIntervalOpt = None
+    job_monitor_interval: JobMonitorIntervalOpt = None
+    worker_heartbeat_interval: WorkerHeartbeatIntervalOpt = None
+    worker_heartbeat_timeout: WorkerHeartbeatTimeoutOpt = None
 
 
 @cache
-def _flags(options_type: type) -> dict[str, str]:
+def option_flags(options_type: type) -> dict[str, str]:
     """Each field's flag as errors name it, e.g. `--queue` or `--exclusive/--shared`."""
     flags = {}
     for name, hint in get_type_hints(options_type, include_extras=True).items():
@@ -400,7 +452,7 @@ def given_options(options: object) -> dict[str, tuple[str, object]]:
     >>> given_options(resource_options)
     {'cores': ('--cores', 8), 'exclusive': ('--exclusive/--shared', False)}
     """
-    flags = _flags(type(options))
+    flags = option_flags(type(options))
     return {
         name: (flag, value)
         for name, flag in flags.items()

@@ -1,0 +1,12 @@
+{
+    "author": "EzHPCy",
+    "version": "v0.1",
+    "modules": [
+        {
+            "type": "xdg-open",
+            "mime": "application/powerpoint",
+            "entrypoint": "loader_pptx.js",
+            "application": "skeleton"
+        }
+    ]
+}

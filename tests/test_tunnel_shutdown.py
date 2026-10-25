@@ -1,12 +1,9 @@
 """
-Characterization of how `ezhpcy tunnel` shuts down in each failure scenario.
+Characterization of how `ezhpcy tunnel` shuts down in each failure scenario,
+against the in-process SSH server and a scheduler fake. Among the outcomes:
 
-Phase 0 pinned these outcomes on the threaded tunnel. Phase 7 ported the table to
-`TunnelSession`, against the in-process SSH server and a scheduler fake, with
-these deliberate differences (see FINDINGS.md, "Phase 7"):
-
-- Shutdown reasons are gone. The table checks the one `Stopping tunnel: <why>`
-  line each way of stopping logs instead.
+- Each way of stopping logs one `Stopping job: <why>` line, which the table
+  checks.
 - A failure after the tunnel was ready reads `Tunnel stopped: …`, not `Could not
   start tunnel: …`.
 - When the login connection is lost while waiting for the job, the user sees that
@@ -21,19 +18,19 @@ import re
 import signal
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Literal
 
 import pytest
 
+from ezhpcy.cli import tunnel as tunnel_cli
+from ezhpcy.job import publish
 from ezhpcy.scheduler.base import JobInfo, JobSpec, JobState, SchedulerError
 from ezhpcy.ssh import RemoteHost
-from ezhpcy.tunnel import session
 from ezhpcy.tunnel.lock import alias_locked
 from ezhpcy.worker.control import WorkerControl
 from tests.support.cli import invoke
 from tests.support.sshserver import SSHTestServer
 from tests.support.tunnel import (
-    BANNER,
     FAST_TIMINGS,
     JOB_ID,
     RUNNING,
@@ -54,24 +51,51 @@ PENDING = snapshot(JobState.PENDING, "PEND")
 class Rig:
     """The fakes of one scenario, and the flag its steps set."""
 
-    def __init__(self, scenario: Scenario, server: SSHTestServer) -> None:
+    def __init__(
+        self,
+        scenario: Scenario,
+        server: SSHTestServer,
+        worker: SSHTestServer,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         self.scenario = scenario
         self.server = server
         self.heartbeats_fail = scenario.heartbeats == "fail_from_start"
         self.published: list[str] = []
         self.withdrawn: list[str] = []
-        self.worker_port = (
-            unused_port()
-            if scenario.endpoint_refuses
-            else server.listen(banner(scenario.banner))
-        )
+        if scenario.endpoint_refuses:
+            self.worker_port = unused_port()
+        elif scenario.banner is not None:
+            self.worker_port = server.listen(banner(scenario.banner))
+        else:
+            self.worker_port = worker.port
+        self.runs: list[tunnel_cli.TunnelRun] = []
+        init = tunnel_cli.TunnelRun.__init__
+
+        def recording_init(
+            run: tunnel_cli.TunnelRun, *args: Any, **options: Any
+        ) -> None:
+            init(run, *args, **options)
+            self.runs.append(run)
+
+        monkeypatch.setattr(tunnel_cli.TunnelRun, "__init__", recording_init)
 
     def scheduler(self, host: RemoteHost) -> FakeScheduler:
         inspections = [
             functools.partial(entry, self) if callable(entry) else entry
             for entry in self.scenario.inspections
         ]
-        return FakeScheduler(host, inspections, submitted=self.start_worker)
+        # A scenario that publishes its Host block plays the job monitor's polls
+        # once the tunnel serves: its 10 ms interval could otherwise beat it.
+        return FakeScheduler(
+            host,
+            inspections,
+            submitted=self.start_worker,
+            held=lambda: self.scenario.withdrawn and not self.serving(),
+        )
+
+    def serving(self) -> bool:
+        return any(run.served for run in self.runs)
 
     def start_worker(self, _spec: JobSpec) -> None:
         status = self.scenario.worker_status
@@ -132,7 +156,7 @@ class Scenario:
     message: str | None
     cancelled: bool
     withdrawn: bool
-    # Why the tunnel stopped, in its `Stopping tunnel: <why>` line, if it didn't
+    # Why the tunnel stopped, in its `Stopping job: <why>` line, if it didn't
     # fail; a failure's `why` is its error.
     why: str | None = None
     # The status the worker writes once submitted: "ready" (with the worker's
@@ -140,7 +164,8 @@ class Scenario:
     worker_status: str | None = "ready"
     heartbeats: Literal["ok", "fail_from_start"] = "ok"
     endpoint_refuses: bool = False
-    banner: bytes = BANNER
+    # What the worker's port sends, if it isn't the worker's sshd.
+    banner: bytes | None = None
     timings: dict[str, float] = field(default_factory=dict)
 
 
@@ -163,8 +188,7 @@ SCENARIOS = [
         withdrawn=True,
     ),
     Scenario(
-        # Phase 0: the failed scheduler query raised first, so the user saw its
-        # error instead.
+        # The loss is reported, not the failed scheduler query that noticed it.
         id="login_connection_lost_while_waiting_for_the_job",
         inspections=[lose_connection_while(PENDING), PENDING],
         exit_code=1,
@@ -200,7 +224,7 @@ SCENARIOS = [
         withdrawn=True,
     ),
     Scenario(
-        # New in Phase 7: PBS no longer lists the job (FINDINGS.md, "Phase 5").
+        # PBS no longer lists the job: it has ended.
         id="job_monitor_sees_that_pbs_dropped_the_job",
         inspections=[RUNNING, snapshot(JobState.ENDED, "")],
         exit_code=0,
@@ -228,7 +252,7 @@ SCENARIOS = [
     Scenario(
         id="job_never_starts",
         inspections=[PENDING],
-        timings={"queue_timeout_seconds": 0.1},
+        timings={"queue_timeout": 0.1},
         exit_code=1,
         message="Could not start tunnel: worker job 42 did not start within 0.1 seconds",
         cancelled=True,
@@ -280,7 +304,7 @@ SCENARIOS = [
         id="worker_banner_never_appears",
         inspections=[RUNNING],
         banner=b"not an ssh server\n",
-        timings={"worker_startup_timeout_seconds": 0.2},
+        timings={"worker_startup_timeout": 0.2},
         exit_code=1,
         message=(
             r"Could not start tunnel: worker SSH endpoint 127\.0\.0\.1:\d+ did not "
@@ -299,8 +323,7 @@ SCENARIOS = [
         withdrawn=False,
     ),
     Scenario(
-        # Phase 0: the connection error won and the monitor's reached only the
-        # log. Now the first failure wins.
+        # The first failure wins: the monitor's, not the connection's.
         id="monitor_error_then_connection_lost",
         inspections=[RUNNING, fail_then_lose_connection],
         exit_code=1,
@@ -313,17 +336,20 @@ SCENARIOS = [
 
 @pytest.mark.parametrize("scenario", SCENARIOS, ids=lambda scenario: scenario.id)
 def test_tunnel_shutdown(
-    scenario: Scenario, login: SSHTestServer, monkeypatch: pytest.MonkeyPatch
+    scenario: Scenario,
+    login: SSHTestServer,
+    worker: SSHTestServer,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    rig = Rig(scenario, login)
+    rig = Rig(scenario, login, worker, monkeypatch)
     configure_tunnel(monkeypatch, login, timings=FAST_TIMINGS | scenario.timings)
     serve_interactive_job(login)
     schedulers = use_scheduler(monkeypatch, rig.scheduler)
     monkeypatch.setattr(
-        session, "publish_host", lambda host, _port: rig.published.append(host.alias)
+        publish, "publish_host", lambda host, _port: rig.published.append(host.alias)
     )
     monkeypatch.setattr(
-        session, "withdraw_host", lambda host: rig.withdrawn.append(host.alias)
+        publish, "withdraw_host", lambda host: rig.withdrawn.append(host.alias)
     )
 
     publish_lease = WorkerControl.publish_lease
@@ -345,8 +371,8 @@ def test_tunnel_shutdown(
     assert result.exit_code == scenario.exit_code, result
     assert result.exception is None, result
     errors = log.command_errors()
-    [stopping] = log.starting("Stopping tunnel: ")
-    why = stopping.removeprefix("Stopping tunnel: ")
+    [stopping] = log.starting("Stopping job: ")
+    why = stopping.removeprefix("Stopping job: ")
     if scenario.message is None:
         assert errors == []
         assert why == scenario.why

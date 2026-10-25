@@ -6,8 +6,7 @@ Cyclopts and the live display write to too.
 
 A terminal can stop taking output: a selection in a Windows console window,
 Ctrl+S in a POSIX terminal, a pager that stops reading. Written from the event
-loop, that froze the whole tunnel (FINDINGS.md, "Phase 4"). So what mustn't wait
-for the terminal is handed to the output thread (`write_later`), which writes it
+loop, that would freeze the whole tunnel. So what mustn't wait for the terminal is handed to the output thread (`write_later`), which writes it
 in the order it was handed over: the log's records (see `ezhpcy.logging`), and the
 live display. Another thread waits for it only to flush (`flush_output`), and it
 waits for no other thread, so the two never wait for each other.

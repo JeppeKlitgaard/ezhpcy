@@ -12,8 +12,13 @@ from pathlib import Path
 
 import pytest
 
-from ezhpcy.tunnel import TunnelError
-from ezhpcy.tunnel.lock import LOCK_DIRECTORY_NAME, alias_lock, alias_locked, lock_path
+from ezhpcy.tunnel.lock import (
+    LOCK_DIRECTORY_NAME,
+    AliasInUse,
+    alias_lock,
+    alias_locked,
+    lock_path,
+)
 
 # How long the lock holder may take to start or to end once killed.
 PROCESS_SECONDS = 30
@@ -24,10 +29,10 @@ _HOLDER_PROGRAM = textwrap.dedent(
     import os
     import sys
     from pathlib import Path
-    from ezhpcy.config import config
+    from ezhpcy.config import local_files
     from ezhpcy.tunnel.lock import alias_lock
 
-    config.local_file.runtime_dir = Path(sys.argv[1])
+    local_files.runtime_dir = Path(sys.argv[1])
     with alias_lock("gpu"):
         print(os.getpid(), flush=True)
         sys.stdin.read()
@@ -49,7 +54,7 @@ def test_alias_lock_is_held_until_released():
 def test_a_second_lock_for_a_held_alias_is_refused():
     with alias_lock("gpu"):
         with (
-            pytest.raises(TunnelError, match=r"^a tunnel is already running for gpu$"),
+            pytest.raises(AliasInUse, match=r"^a tunnel is already running for gpu$"),
             alias_lock("gpu"),
         ):
             pass

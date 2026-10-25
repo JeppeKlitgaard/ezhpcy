@@ -15,6 +15,8 @@ An interpolation's format spec says what it is:
 - `endpoint`: a `host:port`, its host styled as a detail and its port apart.
 - `emphasis`: a word to stress, such as "all" before something destructive.
 - `aside`: context that can be skipped, shown dimmed.
+- `hint`: something to run or write that the program offers, such as a command
+  that mounts what it serves, in green but not bold, unlike a suggestion.
 
 Without one, it's plain text. The quotes make a part stand out without colour
 too. A format spec for the value may follow the kind, after a colon. A list or
@@ -95,6 +97,7 @@ _KINDS = {
     ),
     "emphasis": _Kind("bold red"),
     "aside": _Kind(STYLE_SOURCE),
+    "hint": _Kind("green"),
 }
 
 

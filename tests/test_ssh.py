@@ -6,6 +6,7 @@ import socket
 import threading
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from pathlib import Path, PurePosixPath
 from typing import Any, cast
 
@@ -14,8 +15,8 @@ import pytest
 
 from ezhpcy import ssh
 from ezhpcy.constants import EZHPCY_VERSION, LOOPBACK_HOST, PIXI_VERSION
-from ezhpcy.ssh import ForwardedPort, RemoteHost
-from ezhpcy.types import ConnectionInfo, RemoteState
+from ezhpcy.ssh import CommandFailed, ForwardedPort, RemoteHost, TCPDestination
+from ezhpcy.types import Login, RemoteState
 from tests.support.sshserver import Invocation, SSHTestServer, StreamHandler, reply
 
 LARGE_OUTPUT_BYTES = 5_000_000
@@ -23,12 +24,12 @@ LARGE_OUTPUT_BYTES = 5_000_000
 WAIT_SECONDS = 5
 
 
-def _conn_info(server: SSHTestServer, keepalive_seconds: int = 30) -> ConnectionInfo:
-    # `model_construct`, because `ConnectionInfo.host` accepts domain names only.
-    return ConnectionInfo.model_construct(
+def _login(server: SSHTestServer, keepalive_seconds: int = 30) -> Login:
+    return Login(
         user=server.user,
         host=server.host,
-        ssh_keepalive_interval_seconds=keepalive_seconds,
+        port=server.port,
+        keepalive_interval=timedelta(seconds=keepalive_seconds),
     )
 
 
@@ -40,7 +41,7 @@ async def _connect(server: SSHTestServer, **options: Any) -> RemoteHost:
         "client_keys": [server.client_key],
         "agent_path": None,
     }
-    return await ssh.connect(_conn_info(server), **(defaults | options))
+    return await ssh.connect(_login(server), **(defaults | options))
 
 
 async def _wait_for(event: threading.Event) -> bool:
@@ -69,7 +70,7 @@ async def test_connect_keeps_alive_as_configured(
     monkeypatch.setattr(asyncssh, "connect", recording_connect)
 
     async with await ssh.connect(
-        _conn_info(ssh_server, keepalive_seconds=75),
+        _login(ssh_server, keepalive_seconds=75),
         port=ssh_server.port,
         known_hosts=ssh_server.known_hosts,
         client_keys=[ssh_server.client_key],
@@ -154,19 +155,18 @@ async def test_run_replaces_output_that_is_not_utf8(ssh_server: SSHTestServer):
         assert await host.run(["true"]) == ""
 
 
-async def test_run_raises_process_error_with_stderr(ssh_server: SSHTestServer):
+async def test_run_raises_command_failed_with_stderr(ssh_server: SSHTestServer):
     ssh_server.command(
         "bjobs",
         reply(stdout="partial\n", stderr="  Job <42> is not found\n", exit_status=255),
     )
 
     async with await _connect(ssh_server) as host:
-        with pytest.raises(asyncssh.ProcessError) as raised:
+        with pytest.raises(CommandFailed) as raised:
             await host.run(["bjobs", "42"])
 
     # The schedulers match on this message.
     assert str(raised.value) == "Remote command failed (255): Job <42> is not found"
-    assert raised.value.reason == str(raised.value)
     assert raised.value.exit_status == 255
     assert raised.value.stdout == "partial\n"
     assert raised.value.stderr == "  Job <42> is not found\n"
@@ -181,11 +181,11 @@ async def test_run_raises_when_a_signal_ends_the_command(ssh_server: SSHTestServ
     ssh_server.command("worker", killed)
 
     async with await _connect(ssh_server) as host:
-        with pytest.raises(asyncssh.ProcessError) as raised:
+        with pytest.raises(CommandFailed) as raised:
             await host.run(["worker"])
 
     assert str(raised.value) == "Remote command failed (signal KILL): going down"
-    assert raised.value.exit_signal is not None
+    assert raised.value.exit_signal == "KILL"
 
 
 async def test_run_raises_when_the_connection_is_lost(ssh_server: SSHTestServer):
@@ -207,7 +207,7 @@ async def test_run_raises_when_the_connection_is_lost(ssh_server: SSHTestServer)
         await host.run(["true"])
         ssh_server.drop()
 
-        with pytest.raises(asyncssh.ProcessError) as raised:
+        with pytest.raises(CommandFailed) as raised:
             await asyncio.wait_for(running, WAIT_SECONDS)
 
     assert str(raised.value) == "Remote command failed (connection lost): "
@@ -451,7 +451,7 @@ async def test_forward_local_port_listens_on_loopback(ssh_server: SSHTestServer)
         _destination(ssh_server, _echo) as port,
         await _connect(ssh_server) as host,
     ):
-        listener = await host.forward_local_port(LOOPBACK_HOST, port)
+        listener = await host.forward_local_port(TCPDestination(LOOPBACK_HOST, port))
         _reader, writer = await _open(listener)
         try:
             assert writer.get_extra_info("peername")[0] == LOOPBACK_HOST
@@ -482,7 +482,7 @@ async def test_forward_local_port_listens_on_no_other_address(
     port = _closed_port()
     ssh_server.allow_forwarding(port)
     async with await _connect(ssh_server) as host:
-        listener = await host.forward_local_port(LOOPBACK_HOST, port)
+        listener = await host.forward_local_port(TCPDestination(LOOPBACK_HOST, port))
         listener.close()
 
     # A port the OS picks, on loopback only.
@@ -497,7 +497,7 @@ async def test_forward_local_port_passes_on_the_clients_eof(
         _destination(ssh_server, _echo) as port,
         await _connect(ssh_server) as host,
     ):
-        listener = await host.forward_local_port(LOOPBACK_HOST, port)
+        listener = await host.forward_local_port(TCPDestination(LOOPBACK_HOST, port))
         # The destination only replies in full, and closes, after the client's EOF.
         assert await _round_trip(listener, payload) == payload
 
@@ -519,7 +519,7 @@ async def test_forward_local_port_passes_on_the_destinations_eof(
         _destination(ssh_server, banner_then_read) as port,
         await _connect(ssh_server) as host,
     ):
-        listener = await host.forward_local_port(LOOPBACK_HOST, port)
+        listener = await host.forward_local_port(TCPDestination(LOOPBACK_HOST, port))
         reader, writer = await _open(listener)
         try:
             assert await asyncio.wait_for(reader.read(), WAIT_SECONDS) == (
@@ -541,7 +541,7 @@ async def test_forward_local_port_serves_concurrent_connections(
         _destination(ssh_server, _echo) as port,
         await _connect(ssh_server) as host,
     ):
-        listener = await host.forward_local_port(LOOPBACK_HOST, port)
+        listener = await host.forward_local_port(TCPDestination(LOOPBACK_HOST, port))
         replies = await asyncio.gather(
             *(_round_trip(listener, payload) for payload in payloads)
         )
@@ -555,7 +555,7 @@ async def test_forward_local_port_survives_a_refusing_destination(
     port = _closed_port()
     ssh_server.allow_forwarding(port)
     async with await _connect(ssh_server) as host:
-        listener = await host.forward_local_port(LOOPBACK_HOST, port)
+        listener = await host.forward_local_port(TCPDestination(LOOPBACK_HOST, port))
         # The channel can't be opened, so the local connection is closed.
         assert await _refused(listener)
 
@@ -579,7 +579,7 @@ async def test_forward_local_port_counts_the_open_connections(
         await _connect(ssh_server) as host,
     ):
         listener = await host.forward_local_port(
-            LOOPBACK_HOST, port, on_connections=count
+            TCPDestination(LOOPBACK_HOST, port), on_connections=count
         )
         first = await _open(listener)
         second = await _open(listener)
@@ -604,7 +604,7 @@ async def test_a_connection_that_cannot_be_forwarded_is_not_counted_as_open(
     counts: list[int] = []
     async with await _connect(ssh_server) as host:
         listener = await host.forward_local_port(
-            LOOPBACK_HOST, port, on_connections=counts.append
+            TCPDestination(LOOPBACK_HOST, port), on_connections=counts.append
         )
         assert await _refused(listener)
 
@@ -618,7 +618,7 @@ async def test_closing_the_forwarded_port_keeps_open_connections(
         _destination(ssh_server, _echo) as port,
         await _connect(ssh_server) as host,
     ):
-        listener = await host.forward_local_port(LOOPBACK_HOST, port)
+        listener = await host.forward_local_port(TCPDestination(LOOPBACK_HOST, port))
         reader, writer = await _open(listener)
         writer.write(b"before\n")
         assert await asyncio.wait_for(reader.readline(), WAIT_SECONDS) == b"before\n"
@@ -639,7 +639,7 @@ async def test_losing_the_login_connection_closes_the_forwarded_port(
         _destination(ssh_server, _echo) as port,
         await _connect(ssh_server) as host,
     ):
-        listener = await host.forward_local_port(LOOPBACK_HOST, port)
+        listener = await host.forward_local_port(TCPDestination(LOOPBACK_HOST, port))
         reader, writer = await _open(listener)
         writer.write(b"before\n")
         assert await asyncio.wait_for(reader.readline(), WAIT_SECONDS) == b"before\n"

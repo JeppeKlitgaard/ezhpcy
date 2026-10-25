@@ -1,11 +1,10 @@
 """
-`ezhpcy tunnel` end to end: the session against the in-process SSH server, with
-the worker played by the tests. How each failure shuts the tunnel down is in
+`ezhpcy tunnel` end to end: the command, through `ezhpcy.api`, against the
+in-process SSH server, with the worker played by the tests. How each failure shuts the tunnel down is in
 `test_tunnel_shutdown.py`.
 """
 
 import asyncio
-import functools
 import io
 import itertools
 import logging
@@ -20,39 +19,43 @@ from pathlib import Path
 
 import pytest
 
+from ezhpcy import cleanup, login as login_module
 from ezhpcy.cli import tunnel as tunnel_cli
-from ezhpcy.cli.utils import ssh as cli_ssh
 from ezhpcy.config import LocalFileConfig
 from ezhpcy.console import flush_output, make_console
 from ezhpcy.constants import LOOPBACK_HOST
+from ezhpcy.job import lifecycle, publish
+from ezhpcy.job.lifecycle import JobLifecycle
+from ezhpcy.job.status import JobStatus, Phase, PublishedStatus
 from ezhpcy.logging import REPLAY_ON_ERROR
 from ezhpcy.scheduler.base import JobInfo, JobState
 from ezhpcy.ssh import RemoteHost
-from ezhpcy.tunnel import lock, session, ssh_config
+from ezhpcy.tunnel import lock, ssh_config
 from ezhpcy.tunnel.lock import alias_lock, alias_locked
-from ezhpcy.tunnel.status import Phase, TunnelStatus
 from ezhpcy.worker.control import WorkerControl
 from tests.support.cli import invoke
+from tests.support.login import ssh_options
 from tests.support.sshserver import Invocation, SSHTestServer, reply
 from tests.support.terminal import GatedTerminal, terminal_handler, use_terminal
 from tests.support.tunnel import (
-    BANNER,
     FAST_TIMINGS,
     INTERACTIVE_JOB,
     JOB_ID,
     RUNNING,
     FakeScheduler,
     banner,
-    banner_then_echo,
+    bjobs,
     configure_tunnel,
     control_dirs,
     serve_interactive_job,
     serve_login_shell,
+    serve_lsf_job,
     snapshot,
     tunnel_log,
     use_scheduler,
     write_worker_status,
 )
+from tests.support.worker import NODE, ssh_through
 
 # How long a test waits for something that should happen at once.
 WAIT_SECONDS = 5
@@ -70,65 +73,14 @@ def block_port(active_config: Path) -> int:
     return int(port)
 
 
-def connect_through(port: int, data: bytes) -> bytes:
-    """As `ssh` does: connect to the tunnel's port, send `data` and EOF, and
-    return everything that comes back."""
-    received = b""
-    with socket.create_connection((LOOPBACK_HOST, port), WAIT_SECONDS) as stream:
-        stream.sendall(data)
-        stream.shutdown(socket.SHUT_WR)
-        while chunk := stream.recv(64 * 1024):
-            received += chunk
-    return received
-
-
-def bjobs(running: threading.Event, done: threading.Event):
-    """LSF's `bjobs`: pending until `running`, then running until `done`."""
-
-    def handler(invocation: Invocation) -> None:
-        if done.is_set():
-            state, exit_code = "DONE", "0"
-        elif running.is_set():
-            state, exit_code = "RUN", "-"
-        else:
-            state, exit_code = "PEND", "-"
-        host = "-" if state == "PEND" else "127.0.0.1"
-        reason = "Job slot limit reached: 3 hosts;" if state == "PEND" else "-"
-        invocation.stdout.write(f"{JOB_ID}|{state}|{host}|{exit_code}|{reason}\n")
-
-    return handler
-
-
-def serve_lsf_job(
-    login: SSHTestServer, monkeypatch: pytest.MonkeyPatch, worker_port: int
-) -> threading.Event:
-    """
-    Configure profile `base` with an interactive LSF job whose worker serves on
-    `worker_port` at once. The job runs until the returned event is set.
-    """
-    running, done = threading.Event(), threading.Event()
-
-    async def bsub(invocation: Invocation) -> None:
-        invocation.stdout.write(f"Job <{JOB_ID}> is submitted to queue <normal>.\n")
-        await invocation.stdin.readline()
-        write_worker_status(login, "ready", str(worker_port))
-        running.set()
-        while await invocation.stdin.readline():
-            pass
-
-    serve_login_shell(login, bsub=bsub, bjobs=bjobs(running, done), bkill=reply())
-    configure_tunnel(monkeypatch, login)
-    monkeypatch.setattr(ssh_config, "check_host_resolution", lambda _host, _port: None)
-    return done
-
-
 def test_a_tunnel_forwards_its_port_to_the_worker(
     login: SSHTestServer,
+    worker: SSHTestServer,
     monkeypatch: pytest.MonkeyPatch,
     isolated_runtime_dir: Path,
     isolated_local_files: LocalFileConfig,
 ) -> None:
-    worker_port = login.listen(banner_then_echo)
+    worker_port = worker.port
     running, done = threading.Event(), threading.Event()
     submissions: list[list[str]] = []
     worker_commands: list[str] = []
@@ -159,18 +111,18 @@ def test_a_tunnel_forwards_its_port_to_the_worker(
         2222,
     )
     published: list[bool] = []
-    outputs: list[bytes] = []
+    outputs: list[str] = []
 
     def publish_then_connect(host: ssh_config.WorkerHost, port: int) -> None:
         ssh_config.publish_host(host, port)
         published.extend([active_config.exists(), stale_config.exists()])
         assert block_port(active_config) == port
-        # As `ssh scratch` does, twice.
-        outputs.extend(connect_through(port, data) for data in (b"hello", b"again"))
+        # As `ssh scratch hostname` does, twice.
+        outputs.extend(ssh_through(port) for _ in range(2))
         # Then the job ends.
         done.set()
 
-    monkeypatch.setattr(session, "publish_host", publish_then_connect)
+    monkeypatch.setattr(publish, "publish_host", publish_then_connect)
     previous_handler = signal.getsignal(signal.SIGINT)
 
     with tunnel_log() as log:
@@ -179,7 +131,7 @@ def test_a_tunnel_forwards_its_port_to_the_worker(
         )
 
     assert result.exit_code == 0, result
-    assert outputs == [BANNER + b"worker:hello", BANNER + b"worker:again"]
+    assert outputs == [f"{NODE}\n"] * 2
     # The interactive job's output is logged, its ID included.
     job_output = "\n".join(log.messages())
     assert "Job <42> is submitted to queue <normal>." in job_output
@@ -200,7 +152,7 @@ def test_a_tunnel_forwards_its_port_to_the_worker(
 
     assert (
         log.messages(logging.INFO).count(
-            "Stopping tunnel: worker job 42 ended in scheduler state DONE with exit code 0"
+            "Stopping job: worker job 42 ended in scheduler state DONE with exit code 0"
         )
         == 1
     )
@@ -224,18 +176,18 @@ def test_a_tunnel_forwards_its_port_to_the_worker(
 
 
 def test_a_terminal_that_takes_no_output_does_not_stop_the_tunnel(
-    login: SSHTestServer, monkeypatch: pytest.MonkeyPatch
+    login: SSHTestServer, worker: SSHTestServer, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """
     With debug logging, each connection logs. Written from the event loop, a
-    terminal that took no output froze every session (FINDINGS.md, "Phase 4").
+    terminal that took no output would freeze every session.
     """
-    worker_port = login.listen(banner_then_echo)
+    worker_port = worker.port
     done = serve_lsf_job(login, monkeypatch, worker_port)
     terminal = GatedTerminal()
     terminal.opened.set()
     monkeypatch.setattr(terminal_handler(), "console", make_console(file=terminal))
-    outputs: list[bytes] = []
+    outputs: list[str] = []
     blocked_while_serving: list[bool] = []
 
     def publish_then_connect(host: ssh_config.WorkerHost, port: int) -> None:
@@ -243,15 +195,15 @@ def test_a_terminal_that_takes_no_output_does_not_stop_the_tunnel(
         # The terminal stops taking output once the tunnel serves.
         terminal.opened.clear()
         try:
-            for number in range(10):
-                outputs.append(connect_through(port, b"%d" % number))
+            for _ in range(10):
+                outputs.append(ssh_through(port))
             blocked_while_serving.append(not flush_output(0))
         finally:
             # Also if a connection hung, so the test fails rather than hangs.
             terminal.opened.set()
             done.set()
 
-    monkeypatch.setattr(session, "publish_host", publish_then_connect)
+    monkeypatch.setattr(publish, "publish_host", publish_then_connect)
 
     result = invoke(
         [
@@ -266,7 +218,7 @@ def test_a_terminal_that_takes_no_output_does_not_stop_the_tunnel(
     )
 
     assert result.exit_code == 0, result
-    assert outputs == [BANNER + b"worker:%d" % number for number in range(10)]
+    assert outputs == [f"{NODE}\n"] * 10
     assert blocked_while_serving == [True]
     # Nothing is lost once the terminal takes output again.
     assert terminal.getvalue().count("Forwarded connection opened") == 10
@@ -287,56 +239,60 @@ class Recorded:
         self.values.append(value)
 
 
-def test_the_status_follows_the_tunnel_from_connecting_until_it_stops(
-    login: SSHTestServer, monkeypatch: pytest.MonkeyPatch
+def test_the_status_follows_the_job_from_preparing_until_it_stops(
+    login: SSHTestServer, worker: SSHTestServer, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    worker_port = login.listen(banner_then_echo)
+    worker_port = worker.port
     done = serve_lsf_job(login, monkeypatch, worker_port)
     recorded = Recorded("status")
-    monkeypatch.setattr(session.TunnelSession, "status", recorded, raising=False)
+    monkeypatch.setattr(JobLifecycle, "status", recorded, raising=False)
 
     def publish_then_connect(host: ssh_config.WorkerHost, port: int) -> None:
         ssh_config.publish_host(host, port)
-        connect_through(port, b"hello")
+        ssh_through(port)
         done.set()
 
-    monkeypatch.setattr(session, "publish_host", publish_then_connect)
+    monkeypatch.setattr(publish, "publish_host", publish_then_connect)
 
     result = invoke(["tunnel", "base", "--worker-port", str(worker_port)])
 
     assert result.exit_code == 0, result
-    statuses = [
-        status for status in recorded.values if isinstance(status, TunnelStatus)
-    ]
+    statuses = [status for status in recorded.values if isinstance(status, JobStatus)]
     assert len(statuses) == len(recorded.values)
+    # Connecting is before the job, which the command shows itself.
     assert [phase for phase, _ in itertools.groupby(s.phase for s in statuses)] == [
-        Phase.CONNECTING,
         Phase.PREPARING,
         Phase.SUBMITTING,
         Phase.QUEUED,
         Phase.STARTING,
-        Phase.SERVING,
+        Phase.READY,
         Phase.STOPPING,
     ]
-    assert statuses[0].alias == "base"
-    assert statuses[0].login == "alice@login.example.com"
-    serving = next(s for s in statuses if s.phase is Phase.SERVING)
+    serving = next(s for s in statuses if s.attachments)
+    assert serving.phase is Phase.READY
     assert serving.job_id == JOB_ID
     assert serving.job is not None
     assert serving.job.state is JobState.RUNNING
     assert serving.running_since is not None
     assert serving.worker == f"127.0.0.1:{worker_port}"
-    # One connection was open, and closed by the end.
-    assert max(s.connections for s in statuses) == 1
-    assert statuses[-1].connections == 0
+    [published] = serving.attachments
+    assert isinstance(published, PublishedStatus)
+    assert published.alias == "base"
+    # One connection was open, and closed by the end, when the block was
+    # withdrawn.
+    connections = [
+        sum(attachment.connections for attachment in s.attachments) for s in statuses
+    ]
+    assert max(connections) == 1
+    assert statuses[-1].attachments == ()
     assert any(s.last_heartbeat is not None for s in statuses)
 
 
 def test_on_a_terminal_the_status_display_shows_the_tunnel(
-    login: SSHTestServer, monkeypatch: pytest.MonkeyPatch
+    login: SSHTestServer, worker: SSHTestServer, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """With debug logging, so that records are written under it all along."""
-    worker_port = login.listen(banner_then_echo)
+    worker_port = worker.port
     done = serve_lsf_job(login, monkeypatch, worker_port)
     terminal = io.StringIO()
     use_terminal(monkeypatch, terminal)
@@ -346,24 +302,23 @@ def test_on_a_terminal_the_status_display_shows_the_tunnel(
         # Long enough to be redrawn serving.
         threading.Timer(0.6, done.set).start()
 
-    monkeypatch.setattr(session, "publish_host", publish_then_serve)
+    monkeypatch.setattr(publish, "publish_host", publish_then_serve)
 
     result = invoke(["--debug", "tunnel", "base", "--worker-port", str(worker_port)])
 
     assert result.exit_code == 0, result
     assert flush_output(WAIT_SECONDS)
     output = terminal.getvalue()
-    assert "Connecting to alice@login.example.com" in output
     assert "Connections" in output
-    assert "Stopping tunnel: worker job 42 ended" in output
+    assert "Stopping job: worker job 42 ended" in output
 
 
 def test_open_sessions_are_cut_when_the_tunnel_stops(
-    login: SSHTestServer, monkeypatch: pytest.MonkeyPatch
+    login: SSHTestServer, worker: SSHTestServer, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """As `ssh` sees it: a session still open when the tunnel stops ends with it."""
-    # A worker that keeps each session open until the client hangs up.
-    worker_port = login.listen(banner(BANNER))
+    # The worker's sshd keeps a connection open until the client hangs up.
+    worker_port = worker.port
     done = serve_lsf_job(login, monkeypatch, worker_port)
     watchers: list[threading.Thread] = []
     endings: list[bytes | str] = []
@@ -371,7 +326,9 @@ def test_open_sessions_are_cut_when_the_tunnel_stops(
     def wait_for_the_end(stream: socket.socket) -> None:
         with stream:
             try:
-                endings.append(stream.recv(64 * 1024))
+                while stream.recv(64 * 1024):
+                    pass
+                endings.append(b"")
             except OSError as error:
                 endings.append(type(error).__name__)
 
@@ -379,15 +336,15 @@ def test_open_sessions_are_cut_when_the_tunnel_stops(
         ssh_config.publish_host(host, port)
         stream = socket.create_connection((LOOPBACK_HOST, port), WAIT_SECONDS)
         received = b""
-        while len(received) < len(BANNER):
-            received += stream.recv(len(BANNER) - len(received))
-        assert received == BANNER
+        while b"\n" not in received:
+            received += stream.recv(1)
+        assert received.startswith(b"SSH-2.0-")
         watchers.append(threading.Thread(target=wait_for_the_end, args=(stream,)))
         watchers[0].start()
         # Then the job ends, and the tunnel stops.
         done.set()
 
-    monkeypatch.setattr(session, "publish_host", publish_then_open_a_session)
+    monkeypatch.setattr(publish, "publish_host", publish_then_open_a_session)
 
     result = invoke(["tunnel", "base", "--worker-port", str(worker_port)])
 
@@ -415,24 +372,29 @@ def test_a_second_tunnel_for_a_served_alias_is_refused_before_connecting(
 
 
 def test_shutdown_withdraws_the_block_before_closing_the_port(
-    login: SSHTestServer, monkeypatch: pytest.MonkeyPatch
+    login: SSHTestServer, worker: SSHTestServer, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """And releases the alias lock last."""
-    worker_port = login.listen(banner(BANNER))
+    """
+    After closing the worker connection, and before closing the login
+    connection; and releases the alias lock last.
+    """
+    worker_port = worker.port
     events: list[str] = []
+    login_hosts: list[RemoteHost] = []
 
     @contextmanager
     def recording_lock(alias: str) -> Generator[None]:
-        with lock.alias_lock(alias):
+        with alias_lock(alias):
             events.append("take the lock")
             yield
         events.append("release the lock")
 
-    connect = cli_ssh.connect_interactive
+    connect = login_module.connect
 
     async def recording_connect(*args: object, **kwargs: object) -> RemoteHost:
         events.append("connect")
-        return await connect(*args, **kwargs)  # type: ignore[arg-type]
+        login_hosts.append(await connect(*args, **kwargs))  # type: ignore[arg-type]
+        return login_hosts[-1]
 
     forward = RemoteHost.forward_local_port
 
@@ -450,7 +412,8 @@ def test_shutdown_withdraws_the_block_before_closing_the_port(
     close_login = RemoteHost.close
 
     async def recording_close_login(host: RemoteHost) -> None:
-        events.append("close the login connection")
+        login = host in login_hosts
+        events.append(f"close the {'login' if login else 'worker'} connection")
         await close_login(host)
 
     def press() -> object:
@@ -467,17 +430,18 @@ def test_shutdown_withdraws_the_block_before_closing_the_port(
             submitted=lambda _spec: write_worker_status(
                 login, "ready", str(worker_port)
             ),
+            held=lambda: "publish" not in events,
         ),
     )
-    monkeypatch.setattr(session, "alias_lock", recording_lock)
-    monkeypatch.setattr(cli_ssh, "connect_interactive", recording_connect)
+    monkeypatch.setattr(lock, "alias_lock", recording_lock)
+    monkeypatch.setattr(login_module, "connect", recording_connect)
     monkeypatch.setattr(RemoteHost, "forward_local_port", recording_forward)
     monkeypatch.setattr(RemoteHost, "close", recording_close_login)
     monkeypatch.setattr(
-        session, "publish_host", lambda _host, _port: events.append("publish")
+        publish, "publish_host", lambda _host, _port: events.append("publish")
     )
     monkeypatch.setattr(
-        session, "withdraw_host", lambda _host: events.append("withdraw")
+        publish, "withdraw_host", lambda _host: events.append("withdraw")
     )
 
     result = invoke(["tunnel", "base", "--worker-port", str(worker_port)])
@@ -487,6 +451,7 @@ def test_shutdown_withdraws_the_block_before_closing_the_port(
         "take the lock",
         "connect",
         "publish",
+        "close the worker connection",
         "withdraw",
         "close the forwarded port",
         "close the login connection",
@@ -513,12 +478,12 @@ class _OutputJob:
 async def test_interactive_output_is_logged_line_by_line(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    caplog.set_level(logging.DEBUG, logger=session.__name__)
+    caplog.set_level(logging.DEBUG, logger=lifecycle.__name__)
     # "Velkommen på" with its "å" split and a terminal's line ending, then a
     # cut-off "ø" without one.
     job = _OutputJob(b"Velkommen p\xc3", b"\xa5\r\nHej", b"\n\n\xc3")
 
-    await session._log_job_output(job)  # type: ignore[arg-type]
+    await lifecycle._log_job_output(job)  # type: ignore[arg-type]
 
     # All read, so that the job doesn't stall.
     assert job.drained == list(job.chunks)
@@ -555,9 +520,9 @@ async def test_interactive_output_is_logged_line_by_line(
 async def test_interactive_output_is_logged_as_a_terminal_shows_it(
     caplog: pytest.LogCaptureFixture, output: bytes, shown: str
 ) -> None:
-    caplog.set_level(logging.DEBUG, logger=session.__name__)
+    caplog.set_level(logging.DEBUG, logger=lifecycle.__name__)
 
-    await session._log_job_output(_OutputJob(output))  # type: ignore[arg-type]
+    await lifecycle._log_job_output(_OutputJob(output))  # type: ignore[arg-type]
 
     assert caplog.messages == [shown]
 
@@ -602,9 +567,9 @@ def test_a_failed_interactive_tunnel_shows_the_end_of_the_job_output(
 
 
 def test_an_lsf_batch_tunnel_sends_the_worker_script_to_bsub(
-    login: SSHTestServer, monkeypatch: pytest.MonkeyPatch
+    login: SSHTestServer, worker: SSHTestServer, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    worker_port = login.listen(banner(BANNER))
+    worker_port = worker.port
     running, done = threading.Event(), threading.Event()
     scripts: list[str] = []
 
@@ -619,7 +584,7 @@ def test_an_lsf_batch_tunnel_sends_the_worker_script_to_bsub(
     configure_tunnel(
         monkeypatch, login, scheduler={"type": "LSF", "submission_mode": "batch"}
     )
-    monkeypatch.setattr(session, "publish_host", lambda *_args, **_kwargs: done.set())
+    monkeypatch.setattr(publish, "publish_host", lambda *_args, **_kwargs: done.set())
 
     with tunnel_log() as log:
         result = invoke(["tunnel", "base", "--worker-port", str(worker_port)])
@@ -629,20 +594,13 @@ def test_an_lsf_batch_tunnel_sends_the_worker_script_to_bsub(
     assert script.startswith("#!/usr/bin/env bash\nexec env PIXI_HOME=")
     assert " bash -c " in script
     assert "AuthorizedKeysCommand=/bin/echo ssh-ed25519 " in script
-    assert log.starting("Tunnel ready for base via worker 127.0.0.1:")
+    assert "Tunnel ready for base via worker 127.0.0.1." in log.messages()
 
 
 def test_keepalive_loss_while_serving_stops_the_tunnel(
-    login: SSHTestServer, monkeypatch: pytest.MonkeyPatch
+    login: SSHTestServer, worker: SSHTestServer, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    worker_port = login.listen(banner(BANNER))
-    monkeypatch.setattr(
-        cli_ssh,
-        "connect_interactive",
-        functools.partial(
-            cli_ssh.connect_interactive, keepalive_interval=0.1, keepalive_count_max=2
-        ),
-    )
+    worker_port = worker.port
 
     def unplug() -> object:
         login.blackhole()
@@ -650,6 +608,7 @@ def test_keepalive_loss_while_serving_stops_the_tunnel(
 
     configure_tunnel(monkeypatch, login)
     serve_interactive_job(login)
+    published = threading.Event()
     schedulers = use_scheduler(
         monkeypatch,
         lambda host: FakeScheduler(
@@ -658,11 +617,18 @@ def test_keepalive_loss_while_serving_stops_the_tunnel(
             submitted=lambda _spec: write_worker_status(
                 login, "ready", str(worker_port)
             ),
+            # Unplugged while serving, once published.
+            held=lambda: not published.is_set(),
         ),
     )
-    monkeypatch.setattr(session, "publish_host", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        publish, "publish_host", lambda *_args, **_kwargs: published.set()
+    )
 
-    with tunnel_log() as log:
+    with (
+        ssh_options(keepalive_interval=0.1, keepalive_count_max=2),
+        tunnel_log() as log,
+    ):
         result = invoke(["tunnel", "base", "--worker-port", str(worker_port)])
 
     assert result.exit_code == 1, result
@@ -683,7 +649,7 @@ def test_a_job_waiting_in_the_queue_says_why_once(
     configure_tunnel(
         monkeypatch,
         login,
-        timings=FAST_TIMINGS | {"queue_timeout_seconds": 0.35},
+        timings=FAST_TIMINGS | {"queue_timeout": 0.35},
     )
     serve_interactive_job(login)
     waiting = JobInfo(
@@ -709,12 +675,12 @@ def test_the_worker_startup_timeout_covers_both_waits(
 ) -> None:
     timeout_seconds = 1.0
     # So that the worker's status is seen as soon as it is written.
-    monkeypatch.setattr(session, "_STATUS_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(lifecycle, "_STATUS_POLL_SECONDS", 0.01)
     worker_port = login.listen(banner(b"not an ssh server\n"))
     configure_tunnel(
         monkeypatch,
         login,
-        timings=FAST_TIMINGS | {"worker_startup_timeout_seconds": timeout_seconds},
+        timings=FAST_TIMINGS | {"worker_startup_timeout": timeout_seconds},
     )
     serve_interactive_job(login)
 
@@ -744,7 +710,7 @@ def test_the_worker_startup_timeout_covers_both_waits(
     [stopping] = [
         record
         for record in log.records
-        if record.getMessage().startswith("Stopping tunnel: ")
+        if record.getMessage().startswith("Stopping job: ")
     ]
     # Two budgets would take 1.7 seconds.
     assert stopping.created - allocated.created < 1.4 * timeout_seconds
@@ -767,9 +733,10 @@ def test_the_worker_startup_timeout_covers_both_waits(
 def test_a_second_interrupt_quits_without_cleaning_up(
     login: SSHTestServer,
     monkeypatch: pytest.MonkeyPatch,
+    worker: SSHTestServer,
     interrupt: signal.Signals,
 ) -> None:
-    worker_port = login.listen(banner(BANNER))
+    worker_port = worker.port
     exits: list[int] = []
     # In place of ending the test run; the cleanup then simply carries on.
     monkeypatch.setattr(tunnel_cli.os, "_exit", exits.append)
@@ -794,7 +761,7 @@ def test_a_second_interrupt_quits_without_cleaning_up(
             cancelling=press_again,
         ),
     )
-    monkeypatch.setattr(session, "publish_host", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(publish, "publish_host", lambda *_args, **_kwargs: None)
     previous_handler = signal.getsignal(interrupt)
 
     with tunnel_log() as log:
@@ -802,16 +769,16 @@ def test_a_second_interrupt_quits_without_cleaning_up(
 
     assert result.exit_code == 0, result
     assert exits == [130]
-    assert "Stopping tunnel: Ctrl+C" in log.messages()
+    assert "Stopping job: Ctrl+C" in log.messages()
     assert log.starting("Quitting without cleaning up.")
     assert signal.getsignal(interrupt) is previous_handler
 
 
 def test_a_cleanup_step_that_hangs_is_given_up_on(
-    login: SSHTestServer, monkeypatch: pytest.MonkeyPatch
+    login: SSHTestServer, worker: SSHTestServer, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    worker_port = login.listen(banner(BANNER))
-    monkeypatch.setattr(session, "_CLEANUP_SECONDS", 0.2)
+    worker_port = worker.port
+    monkeypatch.setattr(cleanup, "_CLEANUP_SECONDS", 0.2)
 
     async def hang() -> None:
         await asyncio.Event().wait()
@@ -829,7 +796,7 @@ def test_a_cleanup_step_that_hangs_is_given_up_on(
             cancelling=hang,
         ),
     )
-    monkeypatch.setattr(session, "publish_host", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(publish, "publish_host", lambda *_args, **_kwargs: None)
 
     with tunnel_log() as log:
         result = invoke(["tunnel", "base", "--worker-port", str(worker_port)])
@@ -841,14 +808,14 @@ def test_a_cleanup_step_that_hangs_is_given_up_on(
 
 
 def test_a_lock_release_that_hangs_is_given_up_on(
-    login: SSHTestServer, monkeypatch: pytest.MonkeyPatch
+    login: SSHTestServer, worker: SSHTestServer, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    worker_port = login.listen(banner(BANNER))
-    monkeypatch.setattr(session, "_LOCK_RELEASE_SECONDS", 0.1)
+    worker_port = worker.port
+    monkeypatch.setattr(lock, "_LOCK_RELEASE_SECONDS", 0.1)
 
     @contextmanager
     def slow_lock(alias: str) -> Generator[None]:
-        with lock.alias_lock(alias):
+        with alias_lock(alias):
             try:
                 yield
             finally:
@@ -856,6 +823,7 @@ def test_a_lock_release_that_hangs_is_given_up_on(
 
     configure_tunnel(monkeypatch, login)
     serve_interactive_job(login)
+    published = threading.Event()
     use_scheduler(
         monkeypatch,
         lambda host: FakeScheduler(
@@ -864,10 +832,12 @@ def test_a_lock_release_that_hangs_is_given_up_on(
             submitted=lambda _spec: write_worker_status(
                 login, "ready", str(worker_port)
             ),
+            # The job ends once it serves.
+            held=lambda: not published.is_set(),
         ),
     )
-    monkeypatch.setattr(session, "alias_lock", slow_lock)
-    monkeypatch.setattr(session, "publish_host", lambda _host, _port: None)
+    monkeypatch.setattr(lock, "alias_lock", slow_lock)
+    monkeypatch.setattr(publish, "publish_host", lambda _host, _port: published.set())
 
     with tunnel_log() as log:
         result = invoke(["tunnel", "base", "--worker-port", str(worker_port)])
@@ -883,7 +853,7 @@ def test_ctrl_c_during_batch_submission_lets_it_finish(
     login: SSHTestServer, monkeypatch: pytest.MonkeyPatch, hangs: bool
 ) -> None:
     """Cancelled midway, `qsub` could queue the job without returning its ID."""
-    monkeypatch.setattr(session, "_CLEANUP_SECONDS", 0.2)
+    monkeypatch.setattr(cleanup, "_CLEANUP_SECONDS", 0.2)
 
     async def press() -> None:
         signal.raise_signal(signal.SIGINT)
@@ -900,7 +870,7 @@ def test_ctrl_c_during_batch_submission_lets_it_finish(
         result = invoke(["tunnel", "base"])
 
     assert result.exit_code == 0, result
-    assert "Stopping tunnel: Ctrl+C" in log.messages()
+    assert "Stopping job: Ctrl+C" in log.messages()
     [scheduler] = schedulers
     if hangs:
         # Given up on, with a warning.
@@ -939,7 +909,7 @@ def _stop_before_publishing_the_host_block(
         _stop_from_thread()
         published.append(host.alias)
 
-    monkeypatch.setattr(session, "publish_host", stop_then_publish)
+    monkeypatch.setattr(publish, "publish_host", stop_then_publish)
 
 
 @pytest.mark.parametrize(
@@ -952,11 +922,12 @@ def _stop_before_publishing_the_host_block(
 )
 def test_ctrl_c_during_a_step_still_cleans_up_after_it(
     login: SSHTestServer,
+    worker: SSHTestServer,
     monkeypatch: pytest.MonkeyPatch,
     stop_during_step: Callable[[pytest.MonkeyPatch, list[str]], None],
 ) -> None:
     """Cancelled midway, the step would still take effect, with no cleanup for it."""
-    worker_port = login.listen(banner(BANNER))
+    worker_port = worker.port
     configure_tunnel(monkeypatch, login)
     serve_interactive_job(login)
     use_scheduler(
@@ -972,10 +943,10 @@ def test_ctrl_c_during_a_step_still_cleans_up_after_it(
     published: list[str] = []
     withdrawn: list[str] = []
     monkeypatch.setattr(
-        session, "publish_host", lambda host, _port: published.append(host.alias)
+        publish, "publish_host", lambda host, _port: published.append(host.alias)
     )
     monkeypatch.setattr(
-        session, "withdraw_host", lambda host: withdrawn.append(host.alias)
+        publish, "withdraw_host", lambda host: withdrawn.append(host.alias)
     )
     stop_during_step(monkeypatch, published)
 
@@ -983,9 +954,28 @@ def test_ctrl_c_during_a_step_still_cleans_up_after_it(
         result = invoke(["tunnel", "base", "--worker-port", str(worker_port)])
 
     assert result.exit_code == 0, result
-    assert "Stopping tunnel: Ctrl+C" in log.messages()
+    assert "Stopping job: Ctrl+C" in log.messages()
     assert control_dirs(login) == []
     assert published == withdrawn
+    assert not alias_locked("base")
+
+
+def test_ctrl_c_while_connecting_stops_at_once(
+    login: SSHTestServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def connecting(*_args: object, **_kwargs: object) -> None:
+        signal.raise_signal(signal.SIGINT)
+        await asyncio.Event().wait()
+
+    configure_tunnel(monkeypatch, login)
+    monkeypatch.setattr(login_module, "connect", connecting)
+
+    with tunnel_log() as log:
+        result = invoke(["tunnel", "base"])
+
+    assert result.exit_code == 0, result
+    assert "Stopping job: Ctrl+C" in log.messages()
+    assert log.command_errors() == []
     assert not alias_locked("base")
 
 
@@ -996,7 +986,7 @@ def test_ctrl_c_at_a_prompt_exits_130(
         raise KeyboardInterrupt
 
     configure_tunnel(monkeypatch, login)
-    monkeypatch.setattr(cli_ssh, "connect_interactive", interrupted)
+    monkeypatch.setattr(login_module, "connect", interrupted)
 
     result = invoke(["tunnel", "base"])
 

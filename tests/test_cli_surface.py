@@ -20,18 +20,14 @@ from pathlib import Path
 import keyring
 import pytest
 
-from ezhpcy.config import (
-    ConsoleLoggingConfig,
-    FileLoggingConfig,
-    LocalFileConfig,
-    config,
-)
+from ezhpcy.api import Config
+from ezhpcy.config import LocalFileConfig, local_files
 from ezhpcy.console import flush_output
 from ezhpcy.constants import EZHPCY_VERSION, PACKAGE_NAME
 from ezhpcy.logging import TERMINAL_HANDLER_NAME, configure_logging
 from ezhpcy.scheduler.types import SchedulerType
-from ezhpcy.types import ProfileConfig, SubmissionMode
-from tests.support.cli import capture, invoke
+from ezhpcy.types import SubmissionMode
+from tests.support.cli import capture, invoke, use_settings
 from tests.support.terminal import (
     file_handler,
     log_file_path,
@@ -55,21 +51,15 @@ _PIPED_PASSWORD_PROMPT = pytest.mark.filterwarnings("ignore::getpass.GetPassWarn
 
 
 @pytest.fixture(autouse=True)
-def surface_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
-    """Replace the workstation's configuration with known profiles and settings."""
-    monkeypatch.setattr(
-        config,
-        "profile",
-        {
-            name: ProfileConfig.model_validate(values)
-            for name, values in _PROFILES.items()
-        },
+def settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, object]:
+    """
+    Give the CLI known profiles and settings, as the configuration's tables, for a
+    test to change.
+    """
+    monkeypatch.setattr(local_files, "config_file", tmp_path / "ezhpcy.toml")
+    return use_settings(
+        monkeypatch, {"auto_provision": True, "debug": False, "profile": _PROFILES}
     )
-    monkeypatch.setattr(config, "auto_provision", True)
-    monkeypatch.setattr(config, "debug", False)
-    config_file = tmp_path / "ezhpcy.toml"
-    monkeypatch.setattr(config.local_file, "config_file", config_file)
-    return config_file
 
 
 @pytest.fixture(autouse=True)
@@ -106,8 +96,8 @@ def test_tunnel_and_its_alias_start_a_tunnel_for_a_profile(
     result = invoke([name, "base"])
 
     assert result.exit_code == 0, result
-    assert captured["resolved"].connection.user == "alice"
-    assert captured["ssh_host"].alias == "base"
+    assert captured["login"].user == "alice"
+    assert captured["alias"] == "base"
 
 
 def test_provision_with_yes_starts_provisioning_without_asking(
@@ -117,7 +107,7 @@ def test_provision_with_yes_starts_provisioning_without_asking(
 
     result = invoke(["provision", "base", "--yes"])
 
-    assert captured["conn_info"].user == "alice", result
+    assert captured["login"].user == "alice", result
     assert "remote_operation" in captured
     assert "Proceed?" not in result.stderr
 
@@ -133,7 +123,7 @@ def test_provision_asks_first_and_can_be_cancelled(
     assert "Proceed?" in result.stderr
     assert "Aborted: Provisioning cancelled." in result.stderr
     # Asked before connecting, so the connection can't drop while it waits.
-    assert "conn_info" not in captured
+    assert "login" not in captured
 
 
 def _removes_cache_root(captured: dict[str, object]) -> bool:
@@ -174,7 +164,7 @@ def test_prune_all_asks_first_and_defaults_to_no(
     assert result.exit_code == 1, result
     assert "Proceed?" in result.stderr
     assert "Aborted: Prune cancelled." in result.stderr
-    assert "conn_info" not in captured
+    assert "login" not in captured
 
 
 @pytest.mark.parametrize("arguments", [[], ["--json"]])
@@ -281,8 +271,11 @@ def test_connection_options_reach_the_login_connection(
         env=env,
     )
 
-    assert "conn_info" in captured, result
-    assert getattr(captured["conn_info"], field) == expected
+    assert "login" in captured, result
+    if field == "password":
+        assert captured["password"].get_secret_value() == expected
+    else:
+        assert getattr(captured["login"], field) == expected
 
 
 @_PIPED_PASSWORD_PROMPT
@@ -301,11 +294,11 @@ def test_connection_options_reach_keyring_set(monkeypatch: pytest.MonkeyPatch) -
 
 
 @pytest.mark.parametrize("command", _LOGIN_COMMANDS)
-def test_connection_options_reach_each_command_and_resolve_the_profile_once(
+def test_connection_options_reach_each_command_and_resolve_only_its_profile(
     monkeypatch: pytest.MonkeyPatch, command: str
 ) -> None:
     captured = capture(monkeypatch, command)
-    resolve_profile = type(config).resolve_profile
+    resolve_profile = Config.resolve_profile
     resolved_profiles: list[str] = []
 
     def counting_resolve_profile(self, name: str, **kwargs: bool):
@@ -315,20 +308,18 @@ def test_connection_options_reach_each_command_and_resolve_the_profile_once(
             resolved_profiles.append(name)
         return resolve_profile(self, name, **kwargs)
 
-    monkeypatch.setattr(type(config), "resolve_profile", counting_resolve_profile)
+    monkeypatch.setattr(Config, "resolve_profile", counting_resolve_profile)
 
     # `provision` asks before connecting.
     yes = ["--yes"] if command == "provision" else []
     result = invoke([command, "base", "--user", "bob", *yes])
 
-    conn_info = (
-        captured["resolved"].connection
-        if command == "tunnel"
-        else captured.get("conn_info")
-    )
-    assert conn_info is not None, result
-    assert conn_info.user == "bob"
-    assert resolved_profiles == ["base"]
+    login = captured.get("login")
+    assert login is not None, result
+    assert login.user == "bob"
+    # Resolving reads no password, so `tunnel` may resolve it for its login and
+    # for its job.
+    assert set(resolved_profiles) == {"base"}
 
 
 def test_profile_argument_can_come_from_the_environment(
@@ -339,8 +330,8 @@ def test_profile_argument_can_come_from_the_environment(
     result = invoke(["tunnel"], env={"EZHPCY_PROFILE": "base"})
 
     assert result.exit_code == 0, result
-    assert captured["resolved"].connection.user == "alice"
-    assert captured["ssh_host"].alias == "base"
+    assert captured["login"].user == "alice"
+    assert captured["alias"] == "base"
 
 
 # (arguments, attribute of the resolved configuration, expected value)
@@ -352,7 +343,7 @@ _TUNNEL_OPTION_CASES = [
     (
         ["--interactive-submission-command", "a100sh --gpu 'two words'"],
         "scheduler.interactive_submission_command",
-        ["a100sh", "--gpu", "two words"],
+        ("a100sh", "--gpu", "two words"),
     ),
     (["--queue", "gpu"], "resources.queue", "gpu"),
     (["-q", "gpu"], "resources.queue", "gpu"),
@@ -362,19 +353,35 @@ _TUNNEL_OPTION_CASES = [
     (["--time-limit", "1:30"], "resources.time_limit", timedelta(minutes=90)),
     (["--memory", "2GiB"], "resources.memory_bytes", 2 * 1024**3),
     (["--memory", "2GB"], "resources.memory_bytes", 2 * 1000**3),
-    (["--queue-timeout", "120"], "timings.queue_timeout_seconds", 120),
-    (["--worker-startup-timeout", "30"], "timings.worker_startup_timeout_seconds", 30),
-    (["--job-poll-interval", "0.5"], "timings.job_poll_interval_seconds", 0.5),
-    (["--job-monitor-interval", "5"], "timings.job_monitor_interval_seconds", 5),
+    (
+        ["--queue-timeout", "120"],
+        "timings.queue_timeout",
+        timedelta(seconds=120),
+    ),
+    (
+        ["--worker-startup-timeout", "30"],
+        "timings.worker_startup_timeout",
+        timedelta(seconds=30),
+    ),
+    (
+        ["--job-poll-interval", "0.5"],
+        "timings.job_poll_interval",
+        timedelta(seconds=0.5),
+    ),
+    (
+        ["--job-monitor-interval", "5"],
+        "timings.job_monitor_interval",
+        timedelta(seconds=5),
+    ),
     (
         ["--worker-heartbeat-interval", "10"],
-        "timings.worker_heartbeat_interval_seconds",
-        10,
+        "timings.worker_heartbeat_interval",
+        timedelta(seconds=10),
     ),
     (
         ["--worker-heartbeat-timeout", "40"],
-        "timings.worker_heartbeat_timeout_seconds",
-        40,
+        "timings.worker_heartbeat_timeout",
+        timedelta(seconds=40),
     ),
 ]
 
@@ -391,7 +398,7 @@ def test_tunnel_options_reach_the_resolved_configuration(
     result = invoke(["tunnel", "base", *arguments])
 
     assert result.exit_code == 0, result
-    assert attrgetter(attribute)(captured["resolved"]) == expected
+    assert attrgetter(attribute)(captured["job"]) == expected
 
 
 def test_tunnel_worker_port_is_the_only_port_tried(
@@ -421,15 +428,18 @@ def test_tunnel_worker_port_retries_adds_alternate_ports(
     [(True, []), (False, ["--auto-provision"])],
 )
 def test_tunnel_auto_provisions_when_configured_or_asked(
-    monkeypatch: pytest.MonkeyPatch, configured: bool, arguments: list[str]
+    monkeypatch: pytest.MonkeyPatch,
+    configured: bool,
+    arguments: list[str],
+    settings: dict[str, object],
 ) -> None:
-    monkeypatch.setattr(config, "auto_provision", configured)
+    settings["auto_provision"] = configured
     captured = capture(monkeypatch, "tunnel")
 
     result = invoke(["tunnel", "base", *arguments])
 
     assert result.exit_code == 0, result
-    assert captured["auto_provision"] is True
+    assert captured["job"].auto_provision is True
 
 
 @pytest.mark.parametrize(
@@ -437,9 +447,12 @@ def test_tunnel_auto_provisions_when_configured_or_asked(
     [(False, []), (True, ["--no-auto-provision"])],
 )
 def test_tunnel_without_auto_provision_needs_existing_worker_credentials(
-    monkeypatch: pytest.MonkeyPatch, configured: bool, arguments: list[str]
+    monkeypatch: pytest.MonkeyPatch,
+    configured: bool,
+    arguments: list[str],
+    settings: dict[str, object],
 ) -> None:
-    monkeypatch.setattr(config, "auto_provision", configured)
+    settings["auto_provision"] = configured
     captured = capture(monkeypatch, "tunnel")
 
     result = invoke(["tunnel", "base", *arguments])
@@ -480,7 +493,7 @@ def test_exclusive_and_shared_override_the_profile_only_when_given(
     result = invoke(["tunnel", profile, *arguments])
 
     assert result.exit_code == 0, result
-    assert captured["resolved"].resources.exclusive is expected
+    assert captured["job"].resources.exclusive is expected
 
 
 @pytest.mark.parametrize(
@@ -518,9 +531,11 @@ def test_exclusive_and_shared_count_as_given_submission_options(
     ],
 )
 def test_debug_enables_debug_logging_with_timestamps(
-    arguments: list[str], config_debug: bool, monkeypatch: pytest.MonkeyPatch
+    arguments: list[str],
+    config_debug: bool,
+    settings: dict[str, object],
 ) -> None:
-    monkeypatch.setattr(config, "debug", config_debug)
+    settings["debug"] = config_debug
 
     result = invoke(arguments)
 
@@ -549,10 +564,12 @@ def test_help_shows_the_debug_default_as_auto() -> None:
     ],
 )
 def test_configured_log_level_applies_without_debug(
-    arguments: list[str], config_debug: bool, monkeypatch: pytest.MonkeyPatch
+    arguments: list[str],
+    config_debug: bool,
+    settings: dict[str, object],
 ) -> None:
-    monkeypatch.setattr(config, "debug", config_debug)
-    monkeypatch.setattr(config.logging.console, "level", logging.WARNING)
+    settings["debug"] = config_debug
+    settings["logging"] = {"console": {"level": "WARNING"}}
 
     result = invoke(arguments)
 
@@ -564,9 +581,11 @@ def test_configured_log_level_applies_without_debug(
     ("arguments", "shown"), [(["version"], False), (["--debug", "version"], True)]
 )
 def test_the_console_log_can_be_disabled_but_debug_enables_it(
-    arguments: list[str], shown: bool, monkeypatch: pytest.MonkeyPatch
+    arguments: list[str],
+    shown: bool,
+    settings: dict[str, object],
 ) -> None:
-    monkeypatch.setattr(config.logging, "console", ConsoleLoggingConfig(enabled=False))
+    settings["logging"] = {"console": {"enabled": False}}
 
     result = invoke(arguments)
     logging.getLogger("ezhpcy.cli.version").warning("Worker gone")
@@ -579,13 +598,10 @@ def test_the_console_log_can_be_disabled_but_debug_enables_it(
 
 
 def test_the_log_file_follows_its_configuration(
-    isolated_local_files: LocalFileConfig, monkeypatch: pytest.MonkeyPatch
+    isolated_local_files: LocalFileConfig,
+    settings: dict[str, object],
 ) -> None:
-    monkeypatch.setattr(
-        config.logging,
-        "file",
-        FileLoggingConfig.model_validate({"level": "warning", "keep": 2}),
-    )
+    settings["logging"] = {"file": {"level": "warning", "keep": 2}}
     log_dir = isolated_local_files.log_dir
     log_dir.mkdir(parents=True)
     for age, name in enumerate(["ezhpcy-old.log", "ezhpcy-older.log"], start=1):
@@ -617,9 +633,10 @@ def test_the_log_file_is_named_after_the_profile(
 
 
 def test_the_log_file_can_be_disabled(
-    isolated_local_files: LocalFileConfig, monkeypatch: pytest.MonkeyPatch
+    isolated_local_files: LocalFileConfig,
+    settings: dict[str, object],
 ) -> None:
-    monkeypatch.setattr(config.logging, "file", FileLoggingConfig(enabled=False))
+    settings["logging"] = {"file": {"enabled": False}}
 
     result = invoke(["version"])
     logging.getLogger("ezhpcy.cli.version").warning("Not written to a file")
@@ -694,7 +711,7 @@ def test_values_at_the_limits_are_accepted(
     result = invoke(["tunnel", "base", *arguments])
 
     assert result.exit_code == 0, result
-    assert "resolved" in captured
+    assert "job" in captured
 
 
 @pytest.mark.parametrize(
@@ -865,9 +882,9 @@ def test_command_errors_are_usage_errors_with_their_key_message(
 
 
 def test_unknown_profile_without_any_profiles_points_to_a_preset(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, settings: dict[str, object]
 ) -> None:
-    monkeypatch.setattr(config, "profile", {})
+    settings["profile"] = {}
     captured = capture(monkeypatch, "tunnel")
 
     result = invoke(["tunnel", "missing"])

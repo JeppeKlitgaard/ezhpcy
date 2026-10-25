@@ -19,13 +19,13 @@ from ezhpcy.scheduler.base import JobSpec, JobState, Scheduler, SchedulerError
 from ezhpcy.scheduler.lsf import LSFScheduler
 from ezhpcy.scheduler.pbs import PBSScheduler
 from ezhpcy.scheduler.types import SchedulerType
-from ezhpcy.ssh import RemoteHost
+from ezhpcy.ssh import CommandFailed, RemoteHost
 from ezhpcy.types import (
-    ConnectionInfo,
-    LSFConfig,
-    PBSConfig,
-    ResolvedConfig,
-    ResolvedSchedulerConfig,
+    JobConfig,
+    Login,
+    LSFOptions,
+    PBSOptions,
+    SchedulerSettings,
     SubmissionMode,
 )
 from tests.support.sshserver import Handler, Invocation, SSHTestServer, reply
@@ -125,17 +125,19 @@ class FakeHost:
         return self.process
 
 
-def _failed(stderr: str) -> asyncssh.ProcessError:
+def _failed(stderr: str) -> CommandFailed:
     """A remote command's failure, as `RemoteHost.run` raises it."""
-    return asyncssh.ProcessError(None, "command", None, 255, None, 255, "", stderr)
+    return CommandFailed(
+        "command", exit_status=255, exit_signal=None, stdout="", stderr=stderr
+    )
 
 
 def _lsf(host: Any, **lsf: Any) -> LSFScheduler:
-    return LSFScheduler(host, LSFConfig(**lsf))
+    return LSFScheduler(host, LSFOptions(**lsf))
 
 
 def _pbs(host: Any, **pbs: Any) -> PBSScheduler:
-    return PBSScheduler(host, PBSConfig(**pbs))
+    return PBSScheduler(host, PBSOptions(**pbs))
 
 
 # Shared behaviour of both adapters
@@ -144,7 +146,7 @@ def _pbs(host: Any, **pbs: Any) -> PBSScheduler:
 @dataclass(frozen=True)
 class Adapter:
     scheduler: type[LSFScheduler | PBSScheduler]
-    config: LSFConfig | PBSConfig
+    config: LSFOptions | PBSOptions
     # The interactive submission command, and its output naming `job_id`.
     submit_command: str
     submitted: str
@@ -158,7 +160,7 @@ _ADAPTERS = [
     pytest.param(
         Adapter(
             LSFScheduler,
-            LSFConfig(),
+            LSFOptions(),
             "bsub",
             "Job <2718> is submitted to queue <hpcint>.\r\n",
             "2718",
@@ -168,7 +170,7 @@ _ADAPTERS = [
     pytest.param(
         Adapter(
             PBSScheduler,
-            PBSConfig(),
+            PBSOptions(),
             "qsub",
             "qsub: waiting for job 690874.hnode41 to start\r\n",
             "690874.hnode41",
@@ -961,20 +963,18 @@ async def test_pbs_history_query_failure_is_still_an_error():
 # create_scheduler
 
 
-def _resolved(**sections: Any) -> ResolvedConfig:
-    return ResolvedConfig(
-        connection=ConnectionInfo(user="alice", host="login.example.com"), **sections
-    )
+def _job(**sections: Any) -> JobConfig:
+    return JobConfig(**sections)
 
 
 async def test_create_scheduler_configures_lsf_from_the_profile():
     host = FakeHost(process=FakeProcess(b"Job <1> is submitted to queue <q>.\n"))
     scheduler = create_scheduler(
-        _resolved(
-            scheduler=ResolvedSchedulerConfig(
+        _job(
+            scheduler=SchedulerSettings(
                 type=SchedulerType.LSF, submission_mode=SubmissionMode.INTERACTIVE
             ),
-            lsf=LSFConfig(application_profile="qrsh"),
+            lsf=LSFOptions(application_profile="qrsh"),
         ),
         host,
     )
@@ -990,13 +990,13 @@ async def test_create_scheduler_configures_lsf_from_the_profile():
 async def test_create_scheduler_configures_pbs_from_the_profile():
     host = FakeHost(process=FakeProcess(b"qsub: waiting for job 1.server to start\n"))
     scheduler = create_scheduler(
-        _resolved(
-            scheduler=ResolvedSchedulerConfig(
+        _job(
+            scheduler=SchedulerSettings(
                 type=SchedulerType.PBS,
                 submission_mode=SubmissionMode.INTERACTIVE,
-                interactive_submission_command=["linuxsh"],
+                interactive_submission_command=("linuxsh",),
             ),
-            pbs=PBSConfig(command_directory=PurePosixPath("/opt/pbspro/bin")),
+            pbs=PBSOptions(command_directory=PurePosixPath("/opt/pbspro/bin")),
         ),
         host,
     )
@@ -1015,7 +1015,7 @@ async def test_create_scheduler_configures_pbs_from_the_profile():
 
 
 async def _connect(server: SSHTestServer) -> RemoteHost:
-    conn_info = ConnectionInfo.model_construct(user=server.user, host=server.host)
+    conn_info = Login(user=server.user, host=server.host)
     return await ssh.connect(
         conn_info,
         port=server.port,
@@ -1106,7 +1106,7 @@ async def test_pbs_on_the_login_node(ssh_server: SSHTestServer):
 
 
 async def test_pbs_without_job_history_on_the_login_node(ssh_server: SSHTestServer):
-    # As DTU's server answered when probed (see FINDINGS.md).
+    # As DTU's server answered when probed.
     envelope = '{\n    "timestamp":1792065543,\n    "pbs_version":"20.0.0"\n}'
 
     def qstat(invocation: Invocation) -> int:

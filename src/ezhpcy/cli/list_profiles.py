@@ -1,11 +1,11 @@
 lazy from rich.table import Table
 lazy from rich.text import Text
 
-lazy from ezhpcy.config import config
+lazy from ezhpcy.cli._options import ConfigArg
 lazy from ezhpcy.console import console
 
 
-def list_profiles_cmd() -> None:
+def list_profiles_cmd(*, config: ConfigArg) -> None:
     """List the profiles in the local configuration."""
     if not config.profile:
         console.print("No profiles configured.")

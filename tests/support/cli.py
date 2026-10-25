@@ -9,12 +9,14 @@ from typing import Literal, Self, TextIO
 
 import keyring
 import pytest
+from pydantic import SecretStr
 from rich.console import Console
 
+from ezhpcy import login as login_module
+from ezhpcy.api import Config
 from ezhpcy.cli import main, tunnel
-from ezhpcy.cli.utils import ssh as cli_ssh
 from ezhpcy.console import make_console
-from ezhpcy.types import ConnectionInfo, RemoteState
+from ezhpcy.types import Login, RemoteState
 
 # Wide enough that help and error panels never wrap: at any narrower width, which
 # phrases a line break splits depends on the width and the framework's layout.
@@ -28,6 +30,19 @@ class Result:
     stderr: str
     # An exception that escaped the command, other than a normal exit.
     exception: BaseException | None
+
+
+def use_settings(
+    monkeypatch: pytest.MonkeyPatch, settings: dict[str, object]
+) -> dict[str, object]:
+    """
+    Have the CLI load `settings`, the configuration file's tables, as each
+    command starts: change them until then. Returns `settings`.
+    """
+    monkeypatch.setattr(
+        Config, "from_environment", classmethod(lambda cls: cls.from_mapping(settings))
+    )
+    return settings
 
 
 def invoke(
@@ -143,9 +158,12 @@ def capture(
 
     The dict stays empty if the command never got there, e.g. after a usage error.
 
-    - `tunnel`: the keyword arguments of `TunnelSession` (`resolved`, `ssh_host`,
-      ...). The command then exits normally, without running the session.
-    - `provision`, `prune`: the `conn_info` given to `connect_interactive`, and
+    - `tunnel`: what it would serve once its alias is reserved: the `login`,
+      the `job` (a `JobConfig`), the `alias`, the `apps` and their
+      `apps_root`, the `worker_ports` and the `password` given, if any. The command then exits normally, without
+      connecting.
+    - `provision`, `prune`: the `login` given to `ezhpcy.login.connect`, the
+      `password` it would use (given, or read from the login's sources), and
       `remote_operation` (name, args, kwargs) for the first operation after
       `remote_state`, at which the command stops with an exception.
     - `keyring`: `service`, `account` and `password` given to the system keyring.
@@ -154,21 +172,34 @@ def capture(
     match command:
         case "tunnel":
 
-            class Session:
-                def __init__(self, **kwargs: object) -> None:
-                    captured.update(kwargs)
+            async def serve(
+                run: tunnel.TunnelRun,
+                reservation: object,
+                *,
+                password: SecretStr | None,
+                worker_ports: tuple[int, ...],
+            ) -> None:
+                captured.update(
+                    login=run.login,
+                    job=run.config,
+                    alias=run.alias,
+                    apps=run.apps,
+                    apps_root=run.apps_root,
+                    worker_ports=worker_ports,
+                    password=password,
+                )
 
-                async def run(self) -> None:
-                    pass
-
-            monkeypatch.setattr(tunnel, "TunnelSession", Session)
+            monkeypatch.setattr(tunnel, "serve", serve)
         case "provision" | "prune":
 
-            async def connect_interactive(conn_info: ConnectionInfo) -> _FakeLogin:
-                captured["conn_info"] = conn_info
+            async def connect(
+                login: Login, *, password: SecretStr | None, **_options: object
+            ) -> _FakeLogin:
+                captured["login"] = login
+                captured["password"] = password or login_module.read_password(login)
                 return _FakeLogin(captured)
 
-            monkeypatch.setattr(cli_ssh, "connect_interactive", connect_interactive)
+            monkeypatch.setattr(login_module, "connect", connect)
         case "keyring":
 
             def set_password(service: str, account: str, password: str) -> None:

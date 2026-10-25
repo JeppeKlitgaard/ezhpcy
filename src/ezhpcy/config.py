@@ -2,8 +2,10 @@ import logging
 import re
 from typing import Annotated
 lazy import os
+lazy import tomllib
+lazy from collections.abc import Mapping, Sequence
 lazy from pathlib import Path
-lazy from typing import Any, Self
+lazy from typing import Any, Literal, Self
 
 from platformdirs import PlatformDirs
 from pydantic import (
@@ -12,6 +14,7 @@ from pydantic import (
     ConfigDict,
     Field,
     PlainSerializer,
+    PrivateAttr,
     model_validator,
 )
 from pydantic_settings import (
@@ -21,18 +24,43 @@ from pydantic_settings import (
     SettingsConfigDict,
     TomlConfigSettingsSource,
 )
+lazy from pydantic import ValidationError
 lazy from pydantic.fields import FieldInfo
 
 from ezhpcy.constants import LOGIN_KNOWN_HOSTS_NAME, PACKAGE_NAME, SSH_DIRECTORY_NAME
-from ezhpcy.messages import MessageError
-from ezhpcy.types import PasswordConfig
-lazy from ezhpcy.types import ProfileConfig, ResolvedProfileConfig
+from ezhpcy.types import ConfigError, PasswordConfig
+lazy from ezhpcy.app.manifest import (
+    App,
+    Link,
+    Manifest,
+    builtin_manifests,
+    choose_app,
+    collect_apps,
+)
+lazy from ezhpcy.logging import get_logger
+lazy from ezhpcy.scheduler.types import SchedulerType
+lazy from ezhpcy.types import (
+    JobConfig,
+    Login,
+    MissingSetting,
+    ProfileConfig,
+    ResolvedProfileConfig,
+    config_error,
+    submission_sections,
+    validated,
+)
 lazy from ezhpcy.utils import ssh_connection_id
 
 _DIRS = PlatformDirs(PACKAGE_NAME, appauthor=False)
 # Profile names double as OpenSSH Host aliases, so they exclude whitespace and the
 # pattern characters `*`, `?`, `!` and `,`.
 _ALIAS_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+
+
+def unless_disabled[T](value: T | Literal[False] | None) -> T | None:
+    """A password setting's value, or `None` if it is unset or `false`."""
+    # `is`, since `0 == False`, and 0 is a valid descriptor.
+    return None if value is False else value
 
 
 def validate_alias(alias: str) -> str:
@@ -46,7 +74,7 @@ def validate_alias(alias: str) -> str:
     return alias
 
 
-class StoredPasswordError(MessageError):
+class StoredPasswordError(ConfigError):
     """A `password` in the configuration, where passwords must not be stored."""
 
 
@@ -131,9 +159,23 @@ class LoggingConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class AppManifestsConfig(BaseModel):
+    """The manifests loaded beside those given (`Config.load`, `--manifest`)."""
+
+    # The manifests EzHPCy ships (`builtin_manifests`); `--no-load-builtin-manifests`
+    # leaves them out.
+    load_builtin_manifests: bool = True
+
+    model_config = ConfigDict(extra="forbid")
+
+
+# Where EzHPCy keeps its files on this machine.
+local_files = LocalFileConfig()
+
+
 class _ConfigValues(BaseModel):
-    local_file: LocalFileConfig = LocalFileConfig()
     logging: LoggingConfig = LoggingConfig()
+    apps: AppManifestsConfig = AppManifestsConfig()
     debug: bool = False
     auto_provision: bool = True
     # Every profile inherits these, and a run without a profile uses them.
@@ -142,8 +184,14 @@ class _ConfigValues(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    @property
+    def local_file(self) -> LocalFileConfig:
+        """Where EzHPCy keeps its files on this machine."""
+        return local_files
+
     @model_validator(mode="after")
     def validate_profiles(self) -> Self:
+        """Check every profile's name, and that it resolves."""
         for name in self.profile:
             validate_alias(name)
             self.resolve_profile(name)
@@ -167,6 +215,125 @@ class _ConfigValues(BaseModel):
                     values[key] = value
 
         return ResolvedProfileConfig.model_validate(values)
+
+    @property
+    def profiles(self) -> Mapping[str, Profile]:
+        """The profiles, by name, each with its inheritance applied when read."""
+        return {name: Profile(self, name) for name in self.profile}
+
+    def resolve_login(
+        self, profile_name: str | None = None, **changes: object
+    ) -> Login:
+        """
+        The login node of a profile, or of the top-level settings alone when
+        `None`, with `changes` to its fields (those of `Login`) on top.
+
+        Raises `ConfigError`, such as `MissingSetting` for a host or user that
+        neither gives, or `StoredPasswordError`.
+        """
+        self.reject_stored_password(profile_name)
+        connection = self.resolve_profile(profile_name).connection
+        values = {
+            "host": connection.host,
+            "user": connection.user,
+            "keepalive_interval": connection.ssh_keepalive_interval,
+            "password_fd": unless_disabled(connection.password_fd),
+            "password_file": unless_disabled(connection.password_file),
+            "password_keyring": connection.password_keyring,
+            "password_prompt": connection.password_prompt,
+        } | changes
+        for name in ("user", "host"):
+            if values[name] is None:
+                raise self._missing(profile_name, name, f"connection.{name}")
+        return validated(Login, values)
+
+    def resolve_job(
+        self,
+        profile_name: str | None = None,
+        *,
+        scheduler: Mapping[str, object] | None = None,
+        resources: Mapping[str, object] | None = None,
+        timings: Mapping[str, object] | None = None,
+        auto_provision: bool | None = None,
+    ) -> JobConfig:
+        """
+        The worker job of a profile, or of the top-level settings alone when
+        `None`, with changes to its `scheduler`, `resources` and `timings` on top,
+        and `auto_provision` if given, else the top-level setting.
+
+        With an interactive submission command, the submission options (see
+        `JobConfig`) that the profile only inherits are logged and dropped:
+        profiles for a site's wrapper typically inherit from a base profile that
+        sets them. Those set in the profile itself, or in the changes, are an
+        error.
+
+        Raises `ConfigError`, such as `MissingSetting` for a scheduler type or
+        submission mode that neither gives, or `SubmissionCommandError`.
+        """
+        profile = self.resolve_profile(profile_name)
+        changes = {
+            "scheduler": scheduler or {},
+            "resources": resources or {},
+            "timings": timings or {},
+        }
+        values: dict[str, Any] = {
+            section: {
+                **getattr(profile, section).model_dump(exclude_unset=True),
+                **changes.get(section, {}),
+            }
+            for section in ("scheduler", "resources", "timings", "lsf", "pbs")
+        }
+        values["auto_provision"] = (
+            self.auto_provision if auto_provision is None else auto_provision
+        )
+        for name in ("type", "submission_mode"):
+            if values["scheduler"].get(name) is None:
+                setting = f"scheduler.{name}"
+                raise self._missing(profile_name, setting, setting)
+        if values["scheduler"].get("interactive_submission_command") is not None:
+            self._drop_inherited_submission_options(
+                profile_name, profile, values, changes
+            )
+        return validated(JobConfig, values)
+
+    def _drop_inherited_submission_options(
+        self,
+        profile_name: str | None,
+        profile: ResolvedProfileConfig,
+        values: dict[str, Any],
+        changes: Mapping[str, Mapping[str, object]],
+    ) -> None:
+        """
+        Drop from `values` the submission options that `profile_name` only
+        inherits, for its interactive submission command (see `resolve_job`):
+        not those `changes` give, which stay to be refused.
+        """
+        own = self.profile[profile_name] if profile_name is not None else None
+        try:
+            scheduler_type = SchedulerType(values["scheduler"]["type"])
+        except ValueError:
+            # Validating the job reports it.
+            return
+        inherited: list[str] = []
+        for section in submission_sections(scheduler_type):
+            configured = getattr(profile, section).model_fields_set
+            directly = getattr(own, section).model_fields_set if own else set()
+            for name in configured - directly - set(changes.get(section, {})):
+                values[section].pop(name, None)
+                inherited.append(f"{section}.{name}")
+        if inherited:
+            get_logger(__name__).info(
+                t"Ignoring inherited scheduler submission options for "
+                t"{'scheduler.interactive_submission_command':name}: "
+                t"{sorted(inherited):name}"
+            )
+
+    @staticmethod
+    def _missing(profile_name: str | None, setting: str, key: str) -> MissingSetting:
+        """`setting` is missing; `key` is its path in a profile."""
+        if profile_name is not None:
+            key = f"profile.{profile_name}.{key}"
+        return MissingSetting(setting, key=key)
 
     def reject_stored_password(self, profile_name: str | None = None) -> None:
         """
@@ -210,7 +377,7 @@ class _ConfigValues(BaseModel):
 
 # Settings that `EZHPCY_<NAME>` environment variables can't set: they're tables, and
 # `EZHPCY_PROFILE` is the CLI's PROFILE argument.
-_NOT_FROM_ENV = frozenset({"profile", "local_file", "logging", "connection"})
+_NOT_FROM_ENV = frozenset({"profile", "logging", "connection", "apps"})
 
 
 class _EnvSettingsSource(EnvSettingsSource):
@@ -225,12 +392,14 @@ class _EnvSettingsSource(EnvSettingsSource):
 
 
 class Config(BaseSettings, _ConfigValues):
-    """Configuration loaded from the local workstation settings sources."""
+    """
+    EzHPCy's configuration: profiles, and the apps of the manifests it was
+    loaded with. Load one with `load`, or as the CLI does, with
+    `from_environment`.
+    """
 
-    model_config = SettingsConfigDict(
-        toml_file=_default_config_file(),
-        env_prefix="EZHPCY_",
-    )
+    model_config = SettingsConfigDict(env_prefix="EZHPCY_")
+    _apps: dict[str, dict[str, App | Link]] = PrivateAttr(default_factory=dict)
 
     @classmethod
     def settings_customise_sources(
@@ -241,17 +410,19 @@ class Config(BaseSettings, _ConfigValues):
         dotenv_settings: PydanticBaseSettingsSource,
         file_secret_settings: PydanticBaseSettingsSource,
     ) -> tuple[PydanticBaseSettingsSource, ...]:
+        """The arguments, then the environment, then the configuration file."""
         return (
             init_settings,
             _EnvSettingsSource(settings_cls),
             dotenv_settings,
-            TomlConfigSettingsSource(settings_cls),
+            TomlConfigSettingsSource(settings_cls, toml_file=local_files.config_file),
             file_secret_settings,
         )
 
     @model_validator(mode="before")
     @classmethod
     def reject_local_file(cls, values: object) -> object:
+        """Refuse `local_file`, which isn't a setting."""
         # The config file location is resolved before any settings source is read,
         # so `local_file` is derived from the platform directories, not configured.
         if isinstance(values, dict) and "local_file" in values:
@@ -262,6 +433,35 @@ class Config(BaseSettings, _ConfigValues):
         return values
 
     @classmethod
+    def from_environment(cls) -> Self:
+        """
+        Read the configuration as the CLI does: the environment (`EZHPCY_*`), then
+        the configuration file (`default_path`). Raises `ConfigError` naming the
+        file and its first problem, and each key that lost its `_seconds` suffix.
+        """
+        path = local_files.config_file
+        try:
+            return cls()
+        except (OSError, tomllib.TOMLDecodeError) as error:
+            raise ConfigError(
+                t"Could not read the configuration file {path:path}: {error}"
+            ) from error
+        except ValidationError as error:
+            message = t"Invalid configuration file {path:path}: {config_error(error)}"
+            renamed = [
+                ".".join(map(str, details["loc"]))
+                for details in error.errors(include_url=False)
+                if details["type"] == "extra_forbidden"
+                and str(details["loc"][-1]).endswith("_seconds")
+            ]
+            if renamed:
+                message += (
+                    t". Durations no longer end in {'_seconds':name}: remove it "
+                    t"from {renamed:name}"
+                )
+            raise ConfigError(message) from error
+
+    @classmethod
     def from_mapping(cls, values: object) -> Self:
         """Validate explicit values without loading workstation settings sources."""
         validated = _ConfigValues.model_validate(values)
@@ -269,5 +469,112 @@ class Config(BaseSettings, _ConfigValues):
             _fields_set=validated.model_fields_set, **validated.__dict__
         )
 
+    @classmethod
+    def load(
+        cls,
+        path: Path | None = None,
+        *,
+        manifests: Sequence[Path] = (),
+        default_manifests: Sequence[Path] = (),
+        load_builtin_manifests: bool | None = None,
+    ) -> Self:
+        """
+        Read the configuration file `path`, by default the one the CLI reads
+        (`default_path`), and the apps of `manifests` (`Manifest.load`). Unlike
+        `Config()`, the environment (`EZHPCY_*`) is not read. A value: loading
+        one changes nothing global, and several may be used at once.
 
-config = Config()
+        `default_manifests` are a front end's own, and with
+        `load_builtin_manifests` (by default the file's
+        `apps.load_builtin_manifests`) so are the ones EzHPCy ships: a version
+        of an app in one of `manifests` replaces the same version there. Raises
+        `ConfigError`, and `ManifestError` for an invalid manifest, or the same
+        version of an app in two of `manifests` (or two of the defaults).
+        """
+        loaded = cls.from_file(path or cls.default_path())
+        if load_builtin_manifests is None:
+            load_builtin_manifests = loaded.apps.load_builtin_manifests
+        defaults = [
+            *(builtin_manifests() if load_builtin_manifests else ()),
+            *default_manifests,
+        ]
+        loaded._apps = collect_apps(
+            [Manifest.load(manifest) for manifest in manifests],
+            [Manifest.load(manifest) for manifest in defaults],
+        )
+        return loaded
+
+    @property
+    def available_apps(self) -> Mapping[str, Mapping[str, App | Link]]:
+        """
+        The apps of the manifests it was loaded with, by normalised name
+        (`My_App` is `my-app`), then by version as the manifest spells it.
+        """
+        return self._apps
+
+    def app(self, name: str, version: str | None = None) -> App | Link:
+        """
+        The app called `name`, compared normalised, at `version` (`v1.2`, the
+        same as `v1.2.0`), or by default its newest version that isn't a
+        pre-release. Raises `ManifestError`, listing the choices.
+        """
+        return choose_app(self._apps, name, version)
+
+    @staticmethod
+    def default_path() -> Path:
+        """
+        The configuration file the CLI reads: `EZHPCY_CONFIG_FILE`, or
+        `ezhpcy.toml` in the platform's configuration directory.
+        """
+        return local_files.config_file
+
+    @classmethod
+    def from_file(cls, path: Path) -> Self:
+        """
+        Read and validate the configuration file `path`, without the environment
+        or any other source. Raises `ConfigError`.
+        """
+        try:
+            with path.open("rb") as file:
+                values = tomllib.load(file)
+        except (OSError, tomllib.TOMLDecodeError) as error:
+            raise ConfigError(
+                t"Could not read the configuration file {path:path}: {error}"
+            ) from error
+        try:
+            return cls.from_mapping(values)
+        except ValidationError as error:
+            raise ConfigError(
+                t"Invalid configuration file {path:path}: {config_error(error)}"
+            ) from error
+
+
+class Profile:
+    """
+    A profile of a configuration: its `login` and its `job`, each built and
+    checked when read. A profile without a setting it needs (a host, a
+    scheduler type) is still listed; reading `login` or `job` then raises
+    `ConfigError` naming it.
+    """
+
+    def __init__(self, config: _ConfigValues, name: str) -> None:
+        self._config = config
+        self.name = name
+
+    @property
+    def description(self) -> str | None:
+        """What the profile is for: its `description`, or the one it inherits."""
+        return self._config.resolve_profile(self.name).description
+
+    @property
+    def login(self) -> Login:
+        """The login node, and where its password comes from."""
+        return self._config.resolve_login(self.name)
+
+    @property
+    def job(self) -> JobConfig:
+        """The worker job."""
+        return self._config.resolve_job(self.name)
+
+    def __repr__(self) -> str:
+        return f"Profile({self.name!r})"

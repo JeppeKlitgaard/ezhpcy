@@ -9,7 +9,7 @@ import pytest
 from rich.prompt import Confirm
 
 from ezhpcy import ssh
-from ezhpcy.config import config
+from ezhpcy.config import local_files
 from ezhpcy.constants import (
     EZHPCY_VERSION,
     OPENSSH_MATCHSPEC,
@@ -20,7 +20,8 @@ from ezhpcy.constants import (
 )
 from ezhpcy.provision_host import ProvisioningError, validate_worker_infrastructure
 from ezhpcy.provision_local import WorkerCredentials
-from ezhpcy.types import ConnectionInfo
+from ezhpcy.ssh import CommandFailed
+from ezhpcy.types import Login
 from tests.support.cli import invoke
 from tests.support.login import CACHE, MACHINE_ID, REMOTE_STATE, STATE
 from tests.support.sshserver import SSHTestServer, reply
@@ -114,7 +115,7 @@ def test_provision_fails_with_the_remote_command_s_error(
     result = invoke(["provision", *_LOGIN, "--yes"])
 
     assert result.exit_code == 1, result
-    assert isinstance(result.exception, asyncssh.ProcessError)
+    assert isinstance(result.exception, CommandFailed)
     assert str(result.exception) == (
         "Remote command failed (1): curl: (6) Could not resolve host"
     )
@@ -151,7 +152,7 @@ def test_a_rejected_login_is_one_error_line(login: SSHTestServer) -> None:
 
 
 def test_a_rejected_host_key_is_one_error_line(login: SSHTestServer) -> None:
-    config.local_file.login_known_hosts_file.unlink()
+    local_files.login_known_hosts_file.unlink()
 
     result = invoke(["prune", *_LOGIN], stdin="n\n")
 
@@ -234,23 +235,51 @@ def test_prune_with_nothing_on_the_server_removes_nothing(
     assert _commands(login, "rm") == []
 
 
-def test_prune_all_removes_the_package_cache_and_state(login: SSHTestServer) -> None:
-    login.command("rm", reply())
+def test_prune_all_removes_the_package_cache_and_state_and_the_apps_root(
+    login: SSHTestServer,
+) -> None:
+    login.command("sh", reply())
 
     result = invoke(["prune", *_LOGIN, "--all", "--yes"])
 
     assert result.exit_code == 0, result
-    assert _commands(login, "rm") == [
-        ["rm", "-rf", "--", f"{CACHE}/ezhpcy", f"{STATE}/ezhpcy"]
+    [command] = _commands(login, "sh")
+    # Read-only assets are made writable first.
+    assert command[:2] == ["sh", "-c"]
+    assert "chmod -R u+w" in command[2]
+    assert command[3:] == [
+        "prune",
+        f"{CACHE}/ezhpcy",
+        f"{STATE}/ezhpcy",
+        f"{CACHE}/ezhpcy-apps",
     ]
     assert "Success: All managed remote data removed." in result.stdout
+
+
+def test_prune_all_says_it_removes_the_apps_workdirs(login: SSHTestServer) -> None:
+    result = invoke(["prune", *_LOGIN, "--all"], stdin="n\n")
+
+    assert result.exit_code == 1, result
+    assert "workdirs" in result.stderr
+    assert "ezhpcy-apps" in result.stderr
+
+
+def test_prune_never_touches_the_apps_root(login: SSHTestServer) -> None:
+    login.command("rm", reply())
+    # A sibling of the package cache root, not inside it.
+    _make_remote_dirs(login, _PACKAGE_CACHE, CACHE / "ezhpcy-apps" / "envs")
+
+    result = invoke(["prune", *_LOGIN])
+
+    assert result.exit_code == 0, result
+    assert _commands(login, "rm") == []
 
 
 # validate_worker_infrastructure
 
 
 async def _validate(server: SSHTestServer) -> None:
-    conn_info = ConnectionInfo.model_construct(user=server.user, host=server.host)
+    conn_info = Login(user=server.user, host=server.host)
     async with await ssh.connect(
         conn_info,
         port=server.port,

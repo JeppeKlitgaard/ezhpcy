@@ -7,15 +7,15 @@ lazy from string.templatelib import Template
 
 lazy from rich.text import Text
 
-from ezhpcy.config import Config, StoredPasswordError, config
+from ezhpcy.config import Config, StoredPasswordError, unless_disabled
+lazy from ezhpcy.cli import _include as include
 lazy from ezhpcy.cli._errors import sentence
-lazy from ezhpcy.cli._resolve import unless_disabled
+lazy from ezhpcy.cli._options import ConfigArg
 lazy from ezhpcy.console import console
 lazy from ezhpcy.messages import rich_text
 lazy from ezhpcy.permissions import FilePermissionError
 lazy from ezhpcy.tunnel.ssh_config import (
     AliasProblem,
-    echo_include_directive,
     probe_hosts,
     prune_stale_active_configs,
     resolution_problem,
@@ -79,7 +79,7 @@ def _check_profile(source: Config, profile_name: str | None) -> Check:
     )
 
 
-def check_config(source: Config = config) -> Iterator[Check]:
+def check_config(source: Config) -> Iterator[Check]:
     """
     Check that the configuration file exists, and that its top-level `connection`
     table and every profile resolve.
@@ -122,7 +122,7 @@ def _profile_aliases(source: Config) -> list[str]:
     return aliases
 
 
-def check_ssh_config(source: Config = config) -> Iterator[Check]:
+def check_ssh_config(source: Config) -> Iterator[Check]:
     """
     Remove stale Host blocks, then check that OpenSSH gives each profile's alias
     EzHPCy's Host block, as it does for a running tunnel.
@@ -182,7 +182,7 @@ def check_ssh_config(source: Config = config) -> Iterator[Check]:
                 if aliases
                 else t"OpenSSH does not read EzHPCy's SSH configuration: "
                 t"{problem.detail}",
-                hint=problem.hint,
+                hint=include.hint(problem),
                 show_include=True,
             )
 
@@ -199,23 +199,24 @@ def _print_check(check: Check, printed_hints: set[str]) -> None:
         console.print(Text("        ") + hint, style="dim")
         if check.show_include:
             console.print()
-            echo_include_directive()
+            include.echo_include_directive()
 
 
-def doctor_cmd() -> None:
+def doctor_cmd(*, config: ConfigArg) -> None:
     """Check the configuration and that OpenSSH picks up EzHPCy's Host blocks."""
+    # Generators: each runs only as far as it is read.
     sections = {
-        "Configuration": check_config,
-        "SSH (lets `ssh <alias>` reach running tunnels)": check_ssh_config,
+        "Configuration": check_config(config),
+        "SSH (lets `ssh <alias>` reach running tunnels)": check_ssh_config(config),
     }
     printed_hints: set[str] = set()
     warnings = 0
-    for index, (title, run_checks) in enumerate(sections.items()):
+    for index, (title, checks) in enumerate(sections.items()):
         if index > 0:
             console.print()
         console.print(Text(title, style="bold"))
         # Checks run lazily, so later checks never act on a broken earlier step.
-        for check in run_checks():
+        for check in checks:
             _print_check(check, printed_hints)
             if check.status is Status.FAIL:
                 console.print()

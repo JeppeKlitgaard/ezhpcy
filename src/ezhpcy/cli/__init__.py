@@ -1,3 +1,5 @@
+lazy import asyncio
+lazy import inspect
 lazy import logging
 lazy import sys
 lazy from collections.abc import Sequence
@@ -17,11 +19,12 @@ lazy from rich.panel import Panel
 lazy from rich.text import Text
 
 from ezhpcy import console as consoles
+lazy from ezhpcy.api import Config, ConfigError
 lazy from ezhpcy.cli._errors import CliUsageError
 lazy from ezhpcy.cli._options import DEBUG_ENV_VAR
-lazy from ezhpcy.config import config as ezhpcy_config  # To avoid shadowing
 lazy from ezhpcy.console import flush_output
 lazy from ezhpcy.logging import configure_log_file, configure_logging
+lazy from ezhpcy.messages import print_error, print_warning
 
 
 def _format_error(error: CycloptsError) -> Panel:
@@ -65,7 +68,8 @@ app = App(
 
 # Options that every command takes, such as `--debug`, need a meta app: it parses
 # them wherever they appear (before or after the command, up to `--`), then runs
-# `app` on the remaining tokens. Each option names its group: setting
+# the command the remaining tokens name, giving it the configuration if it takes
+# one (`ConfigArg`). Each option names its group: setting
 # `app.meta.group_parameters` instead would also move every option of a lazily
 # registered command there, because Cyclopts resolves those with the meta app as
 # their parent.
@@ -89,23 +93,45 @@ def _meta(
         ),
     ] = None,
 ) -> object:
+    try:
+        config, problem = Config.from_environment(), None
+    except ConfigError as error:
+        # The defaults, for logging, until the command says whether it needs the
+        # configuration.
+        config, problem = Config.from_mapping({}), error
     # The configuration reads `EZHPCY_DEBUG`, so `--debug` doesn't.
     if debug is None:
-        debug = ezhpcy_config.debug
-    console_log = ezhpcy_config.logging.console
+        debug = config.debug
+    console_log = config.logging.console
     configure_logging(
         logging.DEBUG if debug else console_log.level,
         debug=debug,
         # Debug logging is for the terminal.
         enabled=debug or console_log.enabled,
     )
-    log_file = ezhpcy_config.logging.file
+    log_file = config.logging.file
     configure_log_file(
-        ezhpcy_config.local_file.log_dir if log_file.enabled else None,
+        config.local_file.log_dir if log_file.enabled else None,
         level=log_file.level,
         keep=log_file.keep,
     )
-    return app(tokens)
+    command, bound, ignored = app.parse_args(tokens)
+    if "config" not in ignored:
+        # It runs without the configuration, so that a file that can't be loaded
+        # can still be fixed, or replaced.
+        if problem is not None:
+            print_warning(problem.message + t".")
+        result = command(*bound.args, **bound.kwargs)
+    elif problem is not None:
+        print_error(
+            problem.message
+            + t". Fix it with {'ezhpcy config edit':suggestion}, or replace it "
+            t"with {'ezhpcy config load <preset>':suggestion}."
+        )
+        sys.exit(1)
+    else:
+        result = command(*bound.args, **bound.kwargs, config=config)
+    return asyncio.run(result) if inspect.iscoroutine(result) else result
 
 
 # Commands are registered by import path, so a command's module is imported only

@@ -22,7 +22,12 @@ logger = get_logger(__name__)
 
 
 class ProvisioningError(MessageError, RuntimeError):
-    pass
+    """
+    What EzHPCy installs on a host (its own Pixi, the worker's SSH daemon, an
+    app's environment or assets) could not be installed, or, without
+    provisioning, isn't; or the worker's SSH credentials on this machine can't
+    be used.
+    """
 
 
 async def provision_pixi(login: RemoteHost, remote_state: RemoteState) -> None:
@@ -115,11 +120,13 @@ def _prepare_local_keys(credentials: WorkerCredentials) -> tuple[str, str]:
     """
     Create the local worker keys if they don't exist, pin the worker's host key,
     and return the client key for the worker's sshd to authorize. All local file
-    work, so it runs in one thread.
+    work, so it runs in one thread; locked, as jobs starting at once, in this
+    process or others, would otherwise create the keys at once.
     """
-    credentials.ensure_local_keys()
-    credentials.pin_host_key()
-    return credentials.authorized_key()
+    with credentials.local_files_locked():
+        credentials.ensure_local_keys()
+        credentials.pin_host_key()
+        return credentials.authorized_key()
 
 
 async def provision_worker_infrastructure(
@@ -206,9 +213,19 @@ async def _stale_siblings(
     return stale
 
 
-async def prune_all_remote_data(login: RemoteHost, remote_state: RemoteState) -> None:
-    """Remove the complete EzHPCy-managed remote footprint."""
-    roots = (remote_state.package_cache_root(), remote_state.package_state_root())
-    logger.info(t"Removing {roots[0]:path} and {roots[1]:path}.")
-
-    await login.run(["rm", "-rf", "--", *map(str, roots)])
+async def prune_all_remote_data(
+    login: RemoteHost, remote_state: RemoteState, apps_root: PurePosixPath
+) -> None:
+    """
+    Remove the complete EzHPCy-managed remote footprint: its cache and state, and
+    `apps_root`, apps' environments, assets and workdirs.
+    """
+    roots = (
+        remote_state.package_cache_root(),
+        remote_state.package_state_root(),
+        apps_root,
+    )
+    logger.info(t"Removing {list(roots):path}.")
+    # Assets are read-only, directories included.
+    script = 'chmod -R u+w -- "$@" 2>/dev/null; rm -rf -- "$@"'
+    await login.run(["sh", "-c", script, "prune", *map(str, roots)])

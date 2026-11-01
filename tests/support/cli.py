@@ -1,5 +1,6 @@
 """Run the EzHPCy CLI in-process through its `main()`."""
 
+import getpass
 import io
 import sys
 from collections.abc import Mapping, Sequence
@@ -72,6 +73,8 @@ def invoke(
             "stdin",
             io.TextIOWrapper(io.BytesIO((stdin or "").encode()), encoding="utf-8"),
         )
+        # On POSIX, `getpass` would read the controlling terminal instead, if any.
+        monkeypatch.setattr(getpass, "getpass", getpass.fallback_getpass)
         monkeypatch.setattr(sys, "stdout", stdout)
         monkeypatch.setattr(sys, "stderr", stderr)
         try:

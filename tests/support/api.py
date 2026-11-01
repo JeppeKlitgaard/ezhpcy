@@ -3,11 +3,14 @@ Values and a rig for tests of `ezhpcy.api`: a plain host's login, a batch job,
 and the login node, the worker's sshd and a scheduler for jobs (`JobRig`).
 """
 
+import asyncio
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from ezhpcy import api
+from ezhpcy.ssh import RemoteHost
 from tests.support.login import remote_state_json
 from tests.support.sshserver import SSHTestServer, reply
 from tests.support.tunnel import (
@@ -27,6 +30,28 @@ JOB = api.JobConfig(
     ),
     timings=api.Timings.model_validate(FAST_TIMINGS),
 )
+
+
+class SlowPorts:
+    """
+    Has `RemoteHost.<method>` (`forward_local_port`, `forward_remote_port`) take a
+    moment to return once its port listens, for a test to cancel it meanwhile:
+    `opened` is set then, and `port` is the port it opened.
+    """
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch, method: str) -> None:
+        self.opened = asyncio.Event()
+        self.port = 0
+        original = getattr(RemoteHost, method)
+
+        async def slowly(*args: Any, **options: Any) -> Any:
+            port = await original(*args, **options)
+            self.port = port.port
+            self.opened.set()
+            await asyncio.sleep(0.05)
+            return port
+
+        monkeypatch.setattr(RemoteHost, method, slowly)
 
 
 class JobRig:

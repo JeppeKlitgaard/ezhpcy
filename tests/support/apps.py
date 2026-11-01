@@ -115,7 +115,9 @@ class FakePixi:
     install`, as `run_pixi` runs it (`env PIXI_HOME=… PIXI_CACHE_DIR=… pixi
     …`), writes the environment beside the manifest, or with `fail`, writes
     some of it and then fails as on a full disk; `installing` is called before
-    it finishes, on the server's thread.
+    it finishes, on the server's thread. It fails anything but `pixi exec` and
+    `pixi install --frozen`, such as `pixi lock`, which would write the user's
+    files. `pixi run` isn't run through here, but by the launch script.
     """
 
     def __init__(self, server: SSHTestServer) -> None:
@@ -133,9 +135,11 @@ class FakePixi:
         self.cache_dirs.append(argv[2].removeprefix("PIXI_CACHE_DIR="))
         command, options = argv[4], argv[5:]
         # The worker infrastructure's `pixi exec` runs.
-        if "--manifest-path" not in options:
+        if command == "exec":
             return 0
-        assert command == "install", argv
+        if command != "install" or "--frozen" not in options:
+            invocation.stderr.write(f"FakePixi refuses: {shlex.join(argv[4:])}\n")
+            return 1
         manifest = options[options.index("--manifest-path") + 1]
         self.installs.append(manifest)
         bin_dir = self.server.local_path(

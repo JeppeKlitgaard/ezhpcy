@@ -11,18 +11,24 @@ import asyncio
 import json
 import logging
 import shlex
+import threading
+import time
+import urllib.error
 import urllib.request
 from pathlib import Path, PurePosixPath
+from typing import Any
 
 import pytest
 
 from ezhpcy import api
-from tests.support.api import JOB, LOGIN, JobRig
+from tests.support.api import JOB, LOGIN, JobRig, SlowPorts
 from tests.support.apps import MINIMAL_APP, AppRig, http_app, write_project
 from tests.support.login import CACHE, REMOTE_STATE
 from tests.support.sshserver import SSHTestServer
 from tests.support.tunnel import JOB_ID, control_dirs, unused_port
 from tests.support.worker import NODE, FakeProcess, FakeProcesses
+
+pytestmark = pytest.mark.usefixtures("quiet_api")
 
 WAIT_SECONDS = 5
 APPS_ROOT = CACHE / "ezhpcy-apps"
@@ -353,6 +359,94 @@ async def test_the_apps_root_and_local_port_can_be_chosen(
         assert lab.local_port == port
         assert lab.url.startswith(f"http://127.0.0.1:{port}/lab?token=")
         await lab.stop()
+
+
+async def test_an_apps_name_is_normalised_in_every_path(
+    rig: AppRig, tmp_path: Path
+) -> None:
+    manifest = LAB.replace('app.lab."v1.0"', 'app.My_Lab."v1.0"')
+    app = config_of(tmp_path, manifest).app("my-lab")
+
+    async with api.connect(LOGIN) as host:
+        lab = await host.run_app(app)
+        [fake] = rig.processes.processes
+
+        workdir = APPS_ROOT / "work" / "my-lab"
+        assert app.name == "My_Lab"
+        assert f"export EZHPCY_WORKDIR={workdir}" in launch_lines(fake)
+        assert rig.server.local_path(workdir).is_dir()
+        assert lab.process.run_dir == PurePosixPath(f"/tmp/ezhpcy-{lab.process.run_id}")
+        remote_paths = rig.server.local_path("/").rglob("*")
+        assert not [path for path in remote_paths if "My_Lab" in path.name]
+        assert not any("My_Lab" in shlex.join(argv) for argv in rig.server.commands_run)
+
+
+async def _run_app_cancelled(host: api.Host, app: api.App, reached: Any) -> None:
+    """Cancel `host.run_app(app)` once it has reached a point, by `reached()`."""
+    running = asyncio.create_task(host.run_app(app))
+    async with asyncio.timeout(WAIT_SECONDS):
+        await reached()
+    running.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await running
+
+
+async def test_an_app_cancelled_while_provisioning_starts_nothing(
+    rig: AppRig, tmp_path: Path
+) -> None:
+    installing = threading.Event()
+
+    def slowly(_manifest: str) -> None:
+        installing.set()
+        time.sleep(0.05)
+
+    rig.pixi.installing = slowly
+
+    async with api.connect(LOGIN) as host:
+        await _run_app_cancelled(
+            host,
+            config_of(tmp_path).app("lab"),
+            lambda: asyncio.to_thread(installing.wait, WAIT_SECONDS),
+        )
+
+        assert host.status == ()
+        assert rig.processes.processes == []
+
+
+async def test_an_app_cancelled_while_waiting_to_be_ready_is_stopped(
+    rig: AppRig, tmp_path: Path
+) -> None:
+    rig.app = None
+
+    async with api.connect(LOGIN) as host:
+        await _run_app_cancelled(
+            host,
+            config_of(tmp_path).app("lab"),
+            lambda: asyncio.to_thread(rig.processes.started.wait, WAIT_SECONDS),
+        )
+
+        [fake] = rig.processes.processes
+        assert fake.signals == ["TERM"]
+        assert not fake.run_dir.exists()
+        assert host.status == ()
+
+
+async def test_an_app_cancelled_while_forwarding_is_stopped_and_its_port_closed(
+    rig: AppRig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ports = SlowPorts(monkeypatch, "forward_local_port")
+
+    async with api.connect(LOGIN) as host:
+        await _run_app_cancelled(
+            host, config_of(tmp_path).app("lab"), ports.opened.wait
+        )
+
+        [fake] = rig.processes.processes
+        assert fake.signals == ["TERM"]
+        assert not fake.run_dir.exists()
+        assert host.status == ()
+        with pytest.raises(urllib.error.URLError):
+            await asyncio.to_thread(fetch, f"http://127.0.0.1:{ports.port}/")
 
 
 async def test_an_app_on_a_jobs_node_is_provisioned_and_served_there(

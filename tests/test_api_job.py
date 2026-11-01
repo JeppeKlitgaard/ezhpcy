@@ -28,6 +28,8 @@ from tests.support.tunnel import (
 )
 from tests.support.worker import NODE, remove_worker_credentials, ssh_through
 
+pytestmark = pytest.mark.usefixtures("quiet_api")
+
 LOGIN = api.Login(host="login.example.com", user="alice")
 JOB = api.JobConfig(
     scheduler=api.SchedulerSettings(

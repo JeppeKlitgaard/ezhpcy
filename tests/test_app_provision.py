@@ -124,6 +124,33 @@ async def test_the_first_run_installs_and_the_second_does_nothing(
     ]
 
 
+async def test_the_users_pixi_files_arrive_unchanged(
+    ssh_server: SSHTestServer, fake_pixi: FakePixi, app: App
+) -> None:
+    provisioned = await provision(ssh_server, app)
+
+    environment = ssh_server.local_path(provisioned.environment)
+    for local in (app.environment.pixi, app.environment.lock):
+        assert (environment / local.name).read_bytes() == local.read_bytes()
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["lock"],
+        ["update"],
+        ["install", "--manifest-path", "pixi.toml"],
+    ],
+    ids=["lock", "update", "not-frozen"],
+)
+async def test_fake_pixi_refuses_what_would_write_the_users_files(
+    ssh_server: SSHTestServer, fake_pixi: FakePixi, args: list[str]
+) -> None:
+    async with connected(ssh_server) as host:
+        with pytest.raises(ssh.CommandFailed, match="FakePixi refuses"):
+            await host.run_pixi(args, REMOTE_STATE)
+
+
 async def test_an_install_that_fails_partway_is_repaired_by_the_next(
     ssh_server: SSHTestServer, fake_pixi: FakePixi, app: App
 ) -> None:

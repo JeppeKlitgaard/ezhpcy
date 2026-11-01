@@ -49,15 +49,15 @@ pc-all:
 pc:
     uv run --group pre-commit prek run
 
-# Runs the test suite
+# Runs the test suite in parallel; `just test -n0` for one process
 [group: 'test']
 test *args:
-    uv run --group test pytest {{args}}
+    uv run --group test pytest -n auto {{args}}
 
 # Runs the test suite and reports coverage; `just coverage --cov-report=html` for htmlcov/
 [group: 'test']
 coverage *args:
-    uv run --group test pytest --cov --cov-report=term-missing {{args}}
+    uv run --group test pytest -n auto --cov --cov-report=term-missing {{args}}
 
 # Runs the type checker
 [group: 'typecheck']

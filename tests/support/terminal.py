@@ -10,14 +10,14 @@ from typing import TextIO
 import pytest
 from rich.logging import RichHandler
 
-from ezhpcy import console as consoles
-from ezhpcy.console import make_console
-from ezhpcy.constants import PACKAGE_NAME
-from ezhpcy.logging import (
+from ezhpcy.cli import _console as consoles
+from ezhpcy.cli._console import make_console
+from ezhpcy.cli._logging import (
     FILE_HANDLER_NAME,
     OUTPUT_HANDLER_NAME,
     TERMINAL_HANDLER_NAME,
 )
+from ezhpcy.constants import PACKAGE_NAME
 
 # Longest a write waits for the terminal, so that a failing test still ends.
 _WAIT_SECONDS = 5

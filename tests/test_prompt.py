@@ -13,8 +13,8 @@ from pathlib import Path
 
 import pytest
 
+from ezhpcy.cli._console import flush_output, make_console
 from ezhpcy.cli.utils.prompt import ask
-from ezhpcy.console import flush_output, make_console
 from tests.support.terminal import SlowLogTerminal, terminal_handler
 
 # How long a test waits for something that should happen at once.

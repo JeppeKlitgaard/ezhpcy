@@ -15,7 +15,7 @@ from rich.console import Console
 from ezhpcy import login as login_module
 from ezhpcy.api import Config
 from ezhpcy.cli import main, tunnel
-from ezhpcy.console import make_console
+from ezhpcy.cli._console import make_console
 from ezhpcy.types import Login, RemoteState
 
 # Wide enough that help and error panels never wrap: at any narrower width, which

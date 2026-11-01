@@ -11,6 +11,7 @@ lazy from pydantic import SecretStr
 
 lazy from ezhpcy.api import Config
 lazy from ezhpcy.cli._errors import CliUsageError, sentence
+lazy from ezhpcy.cli._logging import label_log_file
 lazy from ezhpcy.cli._options import (
     ConnectionOptions,
     ResourceOptions,
@@ -19,7 +20,6 @@ lazy from ezhpcy.cli._options import (
     given_options,
     option_flags,
 )
-lazy from ezhpcy.logging import label_log_file
 lazy from ezhpcy.login import read_password
 lazy from ezhpcy.types import (
     ConfigError,

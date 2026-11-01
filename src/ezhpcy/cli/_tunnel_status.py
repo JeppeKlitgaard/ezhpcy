@@ -1,5 +1,5 @@
 """
-A job's status as a panel, for `ezhpcy.console.live_display`: what the job is
+A job's status as a panel, for `ezhpcy.cli._console.live_display`: what the job is
 doing, what is attached to it, and once it serves, how to connect to it, and
 where each app is.
 """
@@ -23,9 +23,9 @@ lazy from rich.table import Table
 lazy from rich.text import Text
 
 lazy from ezhpcy.app.run import AppState, AppStatus, LinkStatus
+lazy from ezhpcy.cli._messages import duration, rich_text
 lazy from ezhpcy.forward import ForwardStatus
 lazy from ezhpcy.job.status import JobStatus, Phase, PublishedStatus
-lazy from ezhpcy.messages import duration, rich_text
 
 
 class StatusPanel:

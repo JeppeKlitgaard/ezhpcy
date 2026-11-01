@@ -8,18 +8,17 @@ from pathlib import Path
 
 import pytest
 
-from ezhpcy.console import flush_output, make_console
-from ezhpcy.constants import PACKAGE_NAME
-from ezhpcy.logging import (
+from ezhpcy.cli._console import flush_output, make_console
+from ezhpcy.cli._logging import (
     ASYNCSSH_LOGGER_NAME,
     OUTPUT_HANDLER_NAME,
-    REPLAY_ON_ERROR,
     REPLAYED_RECORDS,
     configure_log_file,
     configure_logging,
-    get_logger,
     label_log_file,
 )
+from ezhpcy.constants import PACKAGE_NAME
+from ezhpcy.logging import REPLAY_ON_ERROR, get_logger
 from tests.support.terminal import (
     GatedTerminal,
     SlowLogTerminal,

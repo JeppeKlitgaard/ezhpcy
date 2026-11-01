@@ -9,10 +9,10 @@ lazy from cyclopts import Parameter
 lazy from pydantic import BaseModel
 
 lazy from ezhpcy.api import Config
+lazy from ezhpcy.cli._console import console
+lazy from ezhpcy.cli._messages import rich_text
 lazy from ezhpcy.cli._options import ConfigArg, ShownProfileArg
 lazy from ezhpcy.cli._resolve import check_profile_name
-lazy from ezhpcy.console import console
-lazy from ezhpcy.messages import rich_text
 
 # The top-level table that every profile's connection inherits, as an origin.
 _TOP_LEVEL_CONNECTION = "[connection]"

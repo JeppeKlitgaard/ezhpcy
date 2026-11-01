@@ -1,4 +1,4 @@
-"""The live display in `ezhpcy.console`, under the log, and around prompts."""
+"""The live display in `ezhpcy.cli._console`, under the log, and around prompts."""
 
 import io
 import sys
@@ -8,14 +8,14 @@ import time
 import pytest
 from rich.text import Text
 
-from ezhpcy import console as consoles
-from ezhpcy.cli.utils.prompt import ask
-from ezhpcy.console import (
+from ezhpcy.cli import _console as consoles
+from ezhpcy.cli._console import (
     flush_output,
     hide_live_display,
     live_display,
     make_console,
 )
+from ezhpcy.cli.utils.prompt import ask
 from ezhpcy.logging import get_logger
 from tests.support.terminal import GatedTerminal, use_terminal
 

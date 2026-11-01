@@ -8,9 +8,9 @@ from ezhpcy.cli._options import (
     HostOpt,
     UserOpt,
 )
+lazy from ezhpcy.cli._console import console, error_console
+lazy from ezhpcy.cli._messages import print_error, rich_text
 lazy from ezhpcy.cli._resolve import direct_login_from_cli
-lazy from ezhpcy.console import console, error_console
-lazy from ezhpcy.messages import print_error, rich_text
 
 
 # ruff: ignore[B008]  # See the comment above the option dataclasses in _options.py

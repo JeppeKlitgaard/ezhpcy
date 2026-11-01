@@ -3,8 +3,8 @@ lazy from typing import Annotated
 
 lazy from cyclopts import Parameter
 
+lazy from ezhpcy.api import EZHPCY_VERSION
 lazy from ezhpcy.cli._console import console
-lazy from ezhpcy.constants import EZHPCY_VERSION
 
 
 def version_cmd(

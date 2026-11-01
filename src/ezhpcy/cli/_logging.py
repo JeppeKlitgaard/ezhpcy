@@ -5,7 +5,7 @@ Records are handed to the output thread (see `ezhpcy.cli._console`), which forma
 and writes them, so that logging never waits for the terminal, and the event loop
 with it. `ezhpcy.cli._console.flush_output` waits until they are written.
 
-A record whose message is a template (see `ezhpcy.logging`) carries it as plain
+A record whose message is a template (see `ezhpcy.api.get_logger`) carries it as plain
 text, and the terminal log styles its parts.
 
 Each run can also write its log to a file of its own (`configure_log_file`), at a
@@ -33,7 +33,7 @@ lazy from typing import Any, TextIO
 from rich.logging import RichHandler
 lazy from rich.text import Text
 
-from ezhpcy.logging import get_logger
+from ezhpcy.api import get_logger
 lazy from ezhpcy.cli._console import (
     error_console,
     flush_output,

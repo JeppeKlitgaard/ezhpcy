@@ -22,10 +22,16 @@ lazy from rich.spinner import Spinner
 lazy from rich.table import Table
 lazy from rich.text import Text
 
-lazy from ezhpcy.app.run import AppState, AppStatus, LinkStatus
+lazy from ezhpcy.api import (
+    AppState,
+    AppStatus,
+    ForwardStatus,
+    JobStatus,
+    LinkStatus,
+    Phase,
+    PublishedStatus,
+)
 lazy from ezhpcy.cli._messages import duration, rich_text
-lazy from ezhpcy.forward import ForwardStatus
-lazy from ezhpcy.job.status import JobStatus, Phase, PublishedStatus
 
 
 class StatusPanel:

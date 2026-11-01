@@ -9,7 +9,15 @@ lazy from collections.abc import Mapping
 
 lazy from pydantic import SecretStr
 
-lazy from ezhpcy.api import Config
+lazy from ezhpcy.api import (
+    Config,
+    ConfigError,
+    JobConfig,
+    Login,
+    MissingSetting,
+    SubmissionCommandError,
+    read_password,
+)
 lazy from ezhpcy.cli._errors import CliUsageError, sentence
 lazy from ezhpcy.cli._logging import label_log_file
 lazy from ezhpcy.cli._options import (
@@ -19,15 +27,6 @@ lazy from ezhpcy.cli._options import (
     TimingOptions,
     given_options,
     option_flags,
-)
-lazy from ezhpcy.login import read_password
-lazy from ezhpcy.types import (
-    ConfigError,
-    JobConfig,
-    Login,
-    MissingSetting,
-    SubmissionCommandError,
-    validated,
 )
 
 LIST_PROFILES_HINT = (
@@ -105,15 +104,12 @@ def direct_login_from_cli(
     if options.host is None:
         raise CliUsageError(t"{'host':name} must be set via {'--host':name}.")
     try:
-        login = validated(
-            Login,
-            {
-                "user": options.user,
-                "host": options.host,
-                "password_file": options.password_file,
-                "password_fd": options.password_fd,
-                "password_keyring": options.password_keyring,
-            },
+        login = Config.from_mapping({}).resolve_login(
+            user=options.user,
+            host=options.host,
+            password_file=options.password_file,
+            password_fd=options.password_fd,
+            password_keyring=options.password_keyring,
         )
         if options.password is not None:
             return login, SecretStr(options.password)

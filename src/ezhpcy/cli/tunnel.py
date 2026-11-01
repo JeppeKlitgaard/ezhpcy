@@ -18,14 +18,13 @@ lazy import sys
 lazy from collections.abc import Callable, Generator, Sequence
 lazy from dataclasses import replace
 lazy from pathlib import Path, PurePosixPath
-lazy from string.templatelib import Template
 lazy from types import FrameType
 lazy from typing import Annotated
 
-lazy import asyncssh
 lazy from cyclopts import Parameter, validators
 lazy from pydantic import SecretStr
 
+from ezhpcy.api import get_logger
 from ezhpcy.cli._options import (
     AliasOpt,
     AppOpt,
@@ -38,15 +37,7 @@ from ezhpcy.cli._options import (
     SchedulerOptions,
     TimingOptions,
 )
-from ezhpcy.constants import DEFAULT_WORKER_PORTS
-from ezhpcy.logging import get_logger
 lazy from ezhpcy import api
-lazy from ezhpcy.app.manifest import (
-    builtin_manifests,
-    choose_app,
-    collect_apps,
-)
-lazy from ezhpcy.app.run import log_stderr
 lazy from ezhpcy.cli import _include as include
 lazy from ezhpcy.cli._console import (
     console,
@@ -65,12 +56,8 @@ lazy from ezhpcy.cli._resolve import (
 lazy from ezhpcy.cli._tunnel_status import StatusPanel
 lazy from ezhpcy.cli.utils.interrupts import interrupts_handled_by
 lazy from ezhpcy.cli.utils.ssh import cli_prompts
-lazy from ezhpcy.messages import MessageError, plain
-lazy from ezhpcy.tunnel.ssh_config import WorkerHost
-lazy from ezhpcy.types import alias_digest
-lazy from ezhpcy.worker.job import select_ports
 
-_DEFAULT_WORKER_PORT_RETRIES = DEFAULT_WORKER_PORTS - 1
+_DEFAULT_WORKER_PORT_RETRIES = 5
 # Far fewer than the 16384 dynamic ports `select_ports` draws from.
 _MAX_WORKER_PORT_RETRIES = 100
 # How long the second Ctrl+C waits for the output to be written before quitting.
@@ -90,7 +77,7 @@ def _resolve_alias(
     if alias is None:
         # Identical anonymous options yield the same alias across restarts, so
         # saved hosts (e.g. in VS Code) keep working.
-        alias = profile_name or f"ezhpcy-{alias_digest(login, job)[:12]}"
+        alias = profile_name or f"ezhpcy-{api.alias_digest(login, job)[:12]}"
     if alias != profile_name and alias in config.profile:
         raise CliUsageError(
             t"It is the name of profile {alias:name}; choose another alias.",
@@ -98,8 +85,7 @@ def _resolve_alias(
             value=alias,
         )
     try:
-        # Checks the alias, and that the user can be named in its Host block.
-        WorkerHost.for_endpoint(alias, user=login.user, host=login.host)
+        api.check_alias(alias, login)
     except ValueError as error:
         raise CliUsageError(
             t"{sentence(str(error))}", param_hint="--alias", value=alias
@@ -108,18 +94,18 @@ def _resolve_alias(
 
 
 def _chosen_apps(
-    manifests: Sequence[Path], names: Sequence[str], *, load_builtins: bool
+    config: api.Config,
+    manifests: Sequence[Path],
+    names: Sequence[str],
+    *,
+    load_builtins: bool | None,
 ) -> list[api.App | api.Link]:
     """
     The apps `--app` names, `NAME` or `NAME@VERSION`, of the `--manifest`s, and
-    of the built-in manifests if `load_builtins`.
+    of the built-in manifests if `load_builtins`, by default as `config` says.
     """
-    defaults = builtin_manifests() if load_builtins else []
     try:
-        apps = collect_apps(
-            [api.Manifest.load(path) for path in manifests],
-            [api.Manifest.load(path) for path in defaults],
-        )
+        loaded = config.with_manifests(manifests, load_builtin_manifests=load_builtins)
     except api.ManifestError as error:
         raise CliUsageError(
             t"{sentence(error.message)}", param_hint="--manifest"
@@ -128,7 +114,7 @@ def _chosen_apps(
     for name in names:
         app_name, _, version = name.partition("@")
         try:
-            chosen.append(choose_app(apps, app_name, version or None))
+            chosen.append(loaded.app(app_name, version or None))
         except api.ManifestError as error:
             raise CliUsageError(
                 t"{sentence(error.message)}", param_hint="--app", value=name
@@ -187,9 +173,9 @@ async def tunnel_cmd(
     """
     # Nothing else runs on the event loop until connecting, so the local work up
     # to there (reading local files) may block it.
-    if load_builtin_manifests is None:
-        load_builtin_manifests = config.apps.load_builtin_manifests
-    apps = _chosen_apps(manifest or [], app or [], load_builtins=load_builtin_manifests)
+    apps = _chosen_apps(
+        config, manifest or [], app or [], load_builtins=load_builtin_manifests
+    )
     select_profile(config, profile)
     login, password = login_from_cli(config, connection_options, profile_name=profile)
     job = job_from_cli(
@@ -235,7 +221,7 @@ async def tunnel_cmd(
                     worker_ports=(
                         (worker_port,)
                         if worker_port is not None
-                        else select_ports(worker_port_retries + 1)
+                        else api.select_ports(worker_port_retries + 1)
                     ),
                 )
             )
@@ -260,7 +246,7 @@ async def tunnel_cmd(
         raise login_usage_error(
             error, connection_options, profile_name=profile
         ) from error
-    except (MessageError, RuntimeError, asyncssh.Error, OSError) as error:
+    except (api.MessageError, RuntimeError, OSError) as error:
         # ruff: ignore[TRY401]  # The terminal shows the traceback only at DEBUG
         logger.exception(
             t"{'Tunnel stopped' if run.served else 'Could not start tunnel'}: {error}"
@@ -320,7 +306,7 @@ class TunnelRun:
         """
         try:
             running = await host.run_app(app, apps_root=self.apps_root)
-        except (MessageError, RuntimeError, asyncssh.Error, OSError) as error:
+        except (api.MessageError, RuntimeError, OSError) as error:
             logger.error(
                 t"Could not start app {app!s:name}: {error}. The tunnel keeps serving."
             )
@@ -346,10 +332,10 @@ class TunnelRun:
         )
         _print_url(url)
 
-    def stop(self, why: Template) -> None:
+    def stop(self, why: str) -> None:
         """Stop the tunnel: its job, or connecting, if it hasn't one yet."""
         if self.job is not None:
-            self.job.stop(plain(why))
+            self.job.stop(why)
             return
         if self._stopped_while_connecting or self.serving is None:
             return
@@ -421,11 +407,11 @@ async def _watch_app(running: api.RunningApp) -> None:
     """Say so when an app exits while serving, after the end of its stderr."""
     try:
         exit_status = await running.wait()
-    except (RuntimeError, asyncssh.Error, OSError) as error:
+    except (RuntimeError, OSError) as error:
         # Its host's connection is lost, which ends the job.
         logger.debug(t"Stopped watching app {running.app!s:name}: {error!r}")
         return
-    await log_stderr(running.process)
+    await running.log_stderr()
     logger.error(
         t"App {running.app!s:name} exited with status {exit_status:detail}. The "
         t"tunnel keeps serving."
@@ -433,7 +419,7 @@ async def _watch_app(running: api.RunningApp) -> None:
 
 
 @contextmanager
-def _interrupts_stop(stop: Callable[[Template], object]) -> Generator[None]:
+def _interrupts_stop(stop: Callable[[str], object]) -> Generator[None]:
     """
     Make the first Ctrl+C (or Ctrl+Break, on Windows) call `stop`, which stops
     the job and cleans up, and the second quit at once, without cleaning up.
@@ -448,7 +434,7 @@ def _interrupts_stop(stop: Callable[[Template], object]) -> Generator[None]:
         nonlocal presses
         presses += 1
         if presses == 1:
-            loop.call_soon_threadsafe(stop, t"Ctrl+C")
+            loop.call_soon_threadsafe(stop, "Ctrl+C")
             return
         logger.warning(
             "Quitting without cleaning up. The worker job ends by itself once its "

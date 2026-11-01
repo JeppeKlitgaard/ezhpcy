@@ -250,6 +250,26 @@ async def test_an_app_that_exits_while_serving_ends_only_its_handle(
         assert [status.run_id for status in host.status] == [second.process.run_id]
 
 
+async def test_an_apps_stderr_can_be_logged_for_the_next_error(
+    rig: AppRig, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    rig.processes = FakeProcesses(
+        rig.server,
+        on_start=lambda process: (
+            process.write_stderr("OSError: no GPU\n"),
+            rig.server.allow_socket(process.remote_run_dir / "app.sock", rig.app),
+        ),
+    )
+    caplog.set_level(logging.DEBUG)
+
+    async with api.connect(LOGIN) as host:
+        lab = await host.run_app(config_of(tmp_path).app("lab"))
+
+        assert await lab.log_stderr() == "OSError: no GPU\n"
+
+    assert "  OSError: no GPU" in caplog.messages
+
+
 async def test_another_live_run_of_the_app_is_noted(
     rig: AppRig, tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:

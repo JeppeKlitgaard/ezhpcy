@@ -170,6 +170,13 @@ class RunningApp:
         """The last `lines` lines of its stderr, until it is stopped."""
         return await self.process.stderr(lines)
 
+    async def log_stderr(self) -> str:
+        """
+        The last lines of its stderr, logged at DEBUG for a handler to show with
+        the next error; empty if they can't be read, as it raises nothing for that.
+        """
+        return await log_stderr(self.process)
+
 
 async def run_app(
     host: RemoteHost,

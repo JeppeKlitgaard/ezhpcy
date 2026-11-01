@@ -491,13 +491,30 @@ class Config(BaseSettings, _ConfigValues):
         `ConfigError`, and `ManifestError` for an invalid manifest, or the same
         version of an app in two of `manifests` (or two of the defaults).
         """
-        loaded = cls.from_file(path or cls.default_path())
+        return cls.from_file(path or cls.default_path()).with_manifests(
+            manifests,
+            default_manifests=default_manifests,
+            load_builtin_manifests=load_builtin_manifests,
+        )
+
+    def with_manifests(
+        self,
+        manifests: Sequence[Path] = (),
+        *,
+        default_manifests: Sequence[Path] = (),
+        load_builtin_manifests: bool | None = None,
+    ) -> Self:
+        """
+        A copy with the apps of `manifests` and the defaults instead of its own,
+        as `load` reads them. Raises `ManifestError`, as `load` does.
+        """
         if load_builtin_manifests is None:
-            load_builtin_manifests = loaded.apps.load_builtin_manifests
+            load_builtin_manifests = self.apps.load_builtin_manifests
         defaults = [
             *(builtin_manifests() if load_builtin_manifests else ()),
             *default_manifests,
         ]
+        loaded = self.model_copy()
         loaded._apps = collect_apps(
             [Manifest.load(manifest) for manifest in manifests],
             [Manifest.load(manifest) for manifest in defaults],

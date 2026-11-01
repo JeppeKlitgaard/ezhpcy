@@ -13,19 +13,21 @@ dependencies = [
     "pydantic-settings>=2.14.2",
     "pydantic>=2.13.5",
     # Templates
-    "jinja2>=3.1.6",
+    "minijinja>=3.0.5",
     # SSH
     "asyncssh>=2.24.1",
     # CLI
-    "rich>=15.0.0",
+    "blessed>=1.52.0",
     "cyclopts>=5.2.0",
+    "rich>=15.0.0",
     # Keyring, secretstorage is for keyring on Linux
     "keyring>=25.7.0",
     "secretstorage>=3.5.0 ; sys_platform == 'linux'",
     # Utils
-    "py-machineid>=1.0.0",
-    "platformdirs>=4.9.4",
     "filelock>=4.2.0",
+    "packaging>=26.3",
+    "platformdirs>=4.9.4",
+    "py-machineid>=1.0.0",
 ]
 
 [project.scripts]
@@ -33,14 +35,15 @@ ezhpcy = "ezhpcy.cli:main"
 
 [dependency-groups]
 dev = [
-    { include-group = "format" },
+    { include-group = "lint" },
     { include-group = "pre-commit" },
     { include-group = "test" },
     { include-group = "typecheck" },
 ]
 
-format = [
+lint = [
     "ruff==0.17.1",
+    "import-linter==2.15",
 ]
 pre-commit = [
     "prek==0.5.6", # keep in sync with .github/workflows/pre-commit.yaml
@@ -50,6 +53,7 @@ test = [
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
+    "pytest-xdist>=3.8.0",
 ]
 typecheck = [
     "pyrefly==1.4.0",
@@ -60,6 +64,7 @@ typecheck = [
 # `async def` tests and fixtures run on asyncio without a marker
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+filterwarnings = ["error"]
 markers = [
     "real_machine_id: read this machine's ID instead of the fixed one tests get",
     "real_resolve_alias: run `ssh -G` instead of answering as if ssh were missing",
@@ -108,6 +113,14 @@ isort.combine-as-imports = true
 "scripts/**" = [
     "INP", # no-pep420, scripts are standalone and not part of a package
 ]
+# Examples, run on their own, not part of a package
+"examples/**" = [
+    "INP", # no-pep420
+]
+# Built-in apps' scripts, run on their host in the app's environment
+"src/ezhpcy/app/builtins/**" = [
+    "INP", # no-pep420
+]
 
 # Pyrefly - Type checking
 [tool.pyrefly]
@@ -115,6 +128,28 @@ project-includes = [
     "src/**/*.py*",
     "src/**/*.ipynb",
 ]
+# Built-in apps' scripts import their environment's packages
+project-excludes = [
+    "src/ezhpcy/app/builtins/**",
+]
+
+# Import Linter - Import contracts
+[tool.importlinter]
+root_package = "ezhpcy"
+
+[[tool.importlinter.contracts]]
+name = "The CLI imports only itself and the API"
+type = "forbidden"
+source_modules = ["ezhpcy.cli"]
+forbidden_modules = ["ezhpcy.*"]
+# Everything else in the package is forbidden, and this leaves the API's own imports out
+ignore_imports = ["ezhpcy.cli -> ezhpcy.api", "ezhpcy.cli.** -> ezhpcy.api"]
+
+[[tool.importlinter.contracts]]
+name = "The API does not import the CLI"
+type = "forbidden"
+source_modules = ["ezhpcy.api"]
+forbidden_modules = ["ezhpcy.cli"]
 
 # Build system
 [build-system]

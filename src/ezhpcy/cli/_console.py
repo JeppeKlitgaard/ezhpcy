@@ -6,9 +6,8 @@ Cyclopts and the live display write to too.
 
 A terminal can stop taking output: a selection in a Windows console window,
 Ctrl+S in a POSIX terminal, a pager that stops reading. Written from the event
-loop, that froze the whole tunnel (FINDINGS.md, "Phase 4"). So what mustn't wait
-for the terminal is handed to the output thread (`write_later`), which writes it
-in the order it was handed over: the log's records (see `ezhpcy.logging`), and the
+loop, that would freeze the whole tunnel. So what mustn't wait for the terminal is handed to the output thread (`write_later`), which writes it
+in the order it was handed over: the log's records (see `ezhpcy.cli._logging`), and the
 live display. Another thread waits for it only to flush (`flush_output`), and it
 waits for no other thread, so the two never wait for each other.
 
@@ -49,7 +48,7 @@ class _Console(Console):
 def make_console(**options: Any) -> Console:
     """
     A console like the CLI's, with Rich's `Console` options. Only the parts that
-    a message marks are styled (see `ezhpcy.messages`).
+    a message marks are styled (see `ezhpcy.cli._messages`).
     """
     return _Console(highlight=False, **options)
 
@@ -110,6 +109,9 @@ class _OutputThread(threading.Thread):
             return
         self._live = None
         live.stop()
+
+    def redraw_now(self) -> None:
+        self._next_redraw = 0.0
 
 
 def _call(write: Callable[[], object]) -> bool:
@@ -219,6 +221,28 @@ def live_display_paused() -> Generator[None]:
         yield
     finally:
         write_later(functools.partial(output.show, live))
+
+
+def redraw_live_display() -> None:
+    """Have the live display, if one is shown, drawn now, as it was just changed."""
+    write_later(_output_thread().redraw_now)
+
+
+def print_for_scripts(text: str) -> None:
+    """
+    Print `text` on stdout, for scripts. Where stdout is the terminal the live
+    display is on, it goes above the display through `error_console`, as the log
+    does: written directly, the next redraw would erase it, and leave part of the
+    display behind.
+    """
+    if _live is not None and console.is_terminal:
+        write_later(
+            functools.partial(
+                error_console.print, text, soft_wrap=True, markup=False, highlight=False
+            )
+        )
+        return
+    console.print(text, soft_wrap=True, markup=False, highlight=False)
 
 
 def hide_live_display() -> None:

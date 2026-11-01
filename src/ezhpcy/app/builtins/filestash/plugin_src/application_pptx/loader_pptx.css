@@ -1,0 +1,22 @@
+.component_pptx {
+    width: 100%;
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 20px;
+    box-sizing: border-box;
+}
+
+.component_pptx img.slide {
+    display: block;
+    width: 100%;
+    height: auto;
+    margin-bottom: 20px;
+    background: white;
+    box-shadow: 0 0 3px rgba(0, 0, 0, 0.1);
+    border-radius: 4px;
+}
+
+.component_filedownloader {
+    width: 100%;
+    margin: 0 auto;
+}

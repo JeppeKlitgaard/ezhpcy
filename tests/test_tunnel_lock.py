@@ -12,8 +12,14 @@ from pathlib import Path
 
 import pytest
 
-from ezhpcy.tunnel import TunnelError
-from ezhpcy.tunnel.lock import LOCK_DIRECTORY_NAME, alias_lock, alias_locked, lock_path
+from ezhpcy.tunnel.lock import (
+    LOCK_DIRECTORY_NAME,
+    AliasInUse,
+    alias_lock,
+    alias_locked,
+    lock_path,
+    remove_unless_locked,
+)
 
 # How long the lock holder may take to start or to end once killed.
 PROCESS_SECONDS = 30
@@ -24,10 +30,10 @@ _HOLDER_PROGRAM = textwrap.dedent(
     import os
     import sys
     from pathlib import Path
-    from ezhpcy.config import config
+    from ezhpcy.config import local_files
     from ezhpcy.tunnel.lock import alias_lock
 
-    config.local_file.runtime_dir = Path(sys.argv[1])
+    local_files.runtime_dir = Path(sys.argv[1])
     with alias_lock("gpu"):
         print(os.getpid(), flush=True)
         sys.stdin.read()
@@ -49,13 +55,38 @@ def test_alias_lock_is_held_until_released():
 def test_a_second_lock_for_a_held_alias_is_refused():
     with alias_lock("gpu"):
         with (
-            pytest.raises(TunnelError, match=r"^a tunnel is already running for gpu$"),
+            pytest.raises(AliasInUse, match=r"^a tunnel is already running for gpu$"),
             alias_lock("gpu"),
         ):
             pass
 
         # Closing the refused handle leaves the first one's lock alone.
         assert alias_locked("gpu")
+
+
+def test_taking_a_lock_waits_out_a_moments_hold():
+    """A check of the lock takes it, and mustn't look like a running tunnel."""
+    stack = ExitStack()
+    stack.enter_context(alias_lock("gpu"))
+    releasing = threading.Timer(0.05, stack.close)
+    releasing.start()
+
+    with alias_lock("gpu"):
+        assert alias_locked("gpu")
+
+    releasing.join(PROCESS_SECONDS)
+
+
+def test_remove_unless_locked_keeps_a_running_tunnels_file(tmp_path: Path):
+    block = tmp_path / "block"
+    block.touch()
+
+    with alias_lock("gpu"):
+        assert not remove_unless_locked("gpu", block)
+
+    assert block.exists()
+    assert remove_unless_locked("gpu", block)
+    assert not block.exists()
 
 
 def test_aliases_are_locked_separately():

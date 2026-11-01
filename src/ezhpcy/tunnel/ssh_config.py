@@ -22,11 +22,8 @@ lazy import uuid
 lazy from collections.abc import Generator, Iterable
 lazy from string.templatelib import Template
 
-lazy from rich.text import Text
-
-from ezhpcy.config import config, validate_alias
+from ezhpcy.config import local_files, validate_alias
 from ezhpcy.logging import get_logger
-lazy from ezhpcy.console import console, error_console
 lazy from ezhpcy.constants import (
     LOOPBACK_HOST,
     WINDOWS_CREATION_FLAGS,
@@ -38,7 +35,8 @@ lazy from ezhpcy.permissions import (
     restrict_to_current_user,
 )
 lazy from ezhpcy.provision_local import WorkerCredentials
-lazy from ezhpcy.tunnel.lock import alias_locked
+lazy from ezhpcy.tunnel.lock import alias_locked, remove_unless_locked
+lazy from ezhpcy.types import Login
 lazy from ezhpcy.utils import local_machine_id
 
 logger = get_logger(__name__)
@@ -52,8 +50,9 @@ PROBE_HOST_NAME = "ezhpcy-doctor-probe.invalid"
 _SSH_RESOLVE_TIMEOUT_SECONDS = 10
 
 INCLUDE_HINT = (
-    t"If {'~/.ssh/config':path} does not include EzHPCy's SSH profiles yet, copy "
-    t"the two highlighted lines below to its top, before any Host or Match block:"
+    t"If {'~/.ssh/config':path} does not include EzHPCy's SSH profiles yet, add "
+    t"the Include lines that {'ezhpcy doctor':suggestion} shows to its top, before "
+    t"any Host or Match block."
 )
 
 
@@ -68,6 +67,7 @@ class AliasProblem:
 
     @property
     def hint(self) -> Template:
+        """How to fix it."""
         if self.ssh_failed:
             return (
                 t"Fix what OpenSSH reports, then check with "
@@ -77,14 +77,13 @@ class AliasProblem:
 
     @property
     def explanation(self) -> Template:
-        """The problem and its fix; follow it with `print_include_lines`."""
+        """The problem and its fix."""
         return t"{self.detail}. {self.hint}"
 
-    def print_include_lines(self) -> None:
-        """Print the Include lines to stderr, after a blank line, if they are the fix."""
-        if not self.ssh_failed:
-            error_console.print()
-            echo_include_directive(err=True)
+    @property
+    def include_lines(self) -> str | None:
+        """The lines to add to ~/.ssh/config, if they are the fix."""
+        return None if self.ssh_failed else include_directive()
 
 
 def _config_path(path: Path) -> str:
@@ -94,7 +93,7 @@ def _config_path(path: Path) -> str:
 
 
 def ssh_config_dir() -> Path:
-    return config.local_file.runtime_dir / SSH_CONFIG_DIRECTORY_NAME
+    return local_files.runtime_dir / SSH_CONFIG_DIRECTORY_NAME
 
 
 def include_directive() -> str:
@@ -105,13 +104,12 @@ def include_directive() -> str:
     )
 
 
-def echo_include_directive(*, err: bool = False) -> None:
-    """Print the Include lines followed by a blank line, ready to copy verbatim."""
-    # Unindented and unwrapped, even for long paths; the colour marks what to
-    # copy and is dropped when output is not a terminal.
-    (error_console if err else console).print(
-        Text(include_directive() + "\n", style="bold cyan"), soft_wrap=True
-    )
+def check_alias(alias: str, login: Login) -> None:
+    """
+    Raise `ValueError` if a job on `login`'s node couldn't be published under
+    `alias`: for an alias that isn't valid, or a user a Host block can't name.
+    """
+    WorkerHost.for_endpoint(alias, user=login.user, host=login.host)
 
 
 @dataclass(frozen=True)
@@ -187,11 +185,11 @@ def write_active_host_config(host: WorkerHost, port: int) -> Path:
     return path
 
 
-def publish_host(host: WorkerHost, port: int) -> None:
+def publish_host(host: WorkerHost, port: int) -> AliasProblem | None:
     """
-    Expose a running tunnel's Host block and check that OpenSSH resolves it.
-    Problems are warnings: the tunnel works without the block, through a
-    hand-written one.
+    Expose a running tunnel's Host block and check that OpenSSH resolves it;
+    return why it won't, if it won't. Problems are warnings: the tunnel works
+    without the block, through a hand-written one.
     """
     try:
         prune_stale_active_configs()
@@ -200,14 +198,14 @@ def publish_host(host: WorkerHost, port: int) -> None:
         logger.warning(
             t"Could not write the SSH configuration for {host.alias:name}: {error}"
         )
-        return
+        return None
     problem = check_host_resolution(host, port)
     if problem is not None:
         logger.warning(
             t"{f'ssh {host.alias}':suggestion} will not reach this tunnel: "
             t"{problem.explanation}"
         )
-        problem.print_include_lines()
+    return problem
 
 
 def withdraw_host(host: WorkerHost) -> None:
@@ -226,14 +224,13 @@ def prune_stale_active_configs() -> list[Path]:
     for path in sorted(ssh_config_dir().glob(f"{ACTIVE_FILE_PREFIX}*.conf")):
         alias = path.name.removeprefix(ACTIVE_FILE_PREFIX).removesuffix(".conf")
         try:
-            live = alias_locked(alias)
+            stale = remove_unless_locked(alias, path)
         # Not a name a tunnel writes, so no tunnel's.
         except ValueError:
-            live = False
-        if not live:
-            logger.debug(t"Removing stale SSH host configuration {path:path}.")
-
             path.unlink(missing_ok=True)
+            stale = True
+        if stale:
+            logger.debug(t"Removed stale SSH host configuration {path:path}.")
             removed.append(path)
     return removed
 
@@ -282,8 +279,14 @@ def resolution_problem(alias: str) -> AliasProblem | None:
 def probe_alias(alias: str) -> AliasProblem | None:
     """
     Check, before a tunnel for `alias` starts, that `ssh <alias>` will get the
-    Host block the tunnel writes once it serves (see `resolution_problem`).
+    Host block the tunnel writes once it serves (see `resolution_problem`):
+    why it won't, or None if it will. Blocks while OpenSSH answers.
     """
+    # A killed tunnel's block for the alias would come before the probe's.
+    try:
+        prune_stale_active_configs()
+    except (OSError, FilePermissionError) as error:
+        logger.warning(t"Could not remove stale SSH configuration: {error}")
     with probe_hosts([alias]):
         return resolution_problem(alias)
 

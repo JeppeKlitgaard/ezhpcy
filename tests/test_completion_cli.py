@@ -2,9 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from ezhpcy.cli import _options, app
-from ezhpcy.config import Config
-from tests.support.cli import invoke
+from ezhpcy.cli import app
+from tests.support.cli import invoke, use_settings
 
 
 def test_install_completion_is_listed_with_the_global_options() -> None:
@@ -34,13 +33,19 @@ def test_install_completion_writes_the_script(tmp_path: Path) -> None:
 def test_profiles_complete_with_their_descriptions(
     monkeypatch: pytest.MonkeyPatch, command: str
 ) -> None:
-    config = Config.from_mapping(
-        {"profile": {"gpu": {"description": "GPU jobs"}, "default": {}}}
+    use_settings(
+        monkeypatch,
+        {
+            "profile": {
+                "gpu": {"description": "GPU jobs"},
+                "a100": {"inherit": "gpu"},
+                "default": {},
+            }
+        },
     )
-    monkeypatch.setattr(_options, "config", config)
 
     result = invoke(["__complete", command, ""])
 
     assert result.exit_code == 0, result
     candidates = result.stdout.split("\x1fbegin\n")[1].splitlines()
-    assert candidates == ["gpu\tGPU jobs", "default"]
+    assert candidates == ["gpu\tGPU jobs", "a100\tGPU jobs", "default"]

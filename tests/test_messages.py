@@ -2,12 +2,28 @@ import pytest
 from rich.style import Style
 from rich.text import Text
 
-from ezhpcy.messages import MessageError, duration, plain, rich_text
+from ezhpcy.cli._messages import duration, rich_text
+from ezhpcy.messages import MessageError, message_parts, plain
 
 
 def styled_runs(text: Text) -> list[tuple[str, str | Style]]:
     """Each styled run of `text`, with its style."""
     return [(text.plain[span.start : span.end], span.style) for span in text.spans]
+
+
+def test_a_messages_parts_say_their_kinds_and_quotes() -> None:
+    name, wait = "gpu", "8 min"
+
+    parts = message_parts(t"Run {name:value} {t'after {wait:detail}':aside}.")
+
+    assert list(parts) == [
+        ("Run ", "", ""),
+        ("gpu", "value", '"'),
+        (" ", "", ""),
+        ("after ", "aside", ""),
+        ("8 min", "detail", ""),
+        (".", "", ""),
+    ]
 
 
 def test_a_format_spec_may_follow_the_kind() -> None:
@@ -85,6 +101,14 @@ def test_a_target_is_styled_as_a_suggestion_without_quotes() -> None:
 
     assert text.plain == "Connect with ssh dtu-a100sh"
     assert styled_runs(text) == [("ssh", "bold cyan"), ("dtu-a100sh", "bold green")]
+
+
+def test_a_hint_is_green_but_not_bold() -> None:
+    hint = "Remove-SmbMapping Z:"
+
+    text = rich_text(t"{hint:hint}")
+
+    assert styled_runs(text) == [("Remove-SmbMapping Z:", "green")]
 
 
 def test_an_unknown_kind_is_rejected() -> None:

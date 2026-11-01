@@ -1,0 +1,28 @@
+# Shows the quota of your DTU home directory, by default every 15 minutes, as
+# `19.4/30.0G [18:04]`, the time being when DTU last updated it, in the tunnel's
+# status panel and log, and when you press its key in the panel.
+#
+#   ezhpcy tunnel PROFILE --app zhome-quota --arg zhome-quota.every=60
+#
+# `getquota_zhome.sh` is on DTU HPC's PATH only in a login shell, which apps and
+# actions don't run in, so `quota.py` runs it through one. Elsewhere, the action
+# fails with a warning, and the timer continues.
+
+[ezhpcy]
+schema = 1
+
+[ezhpcy.app.zhome-quota."v0.1.0"]
+description = "The quota of your DTU home directory, every so often"
+environment.pixi = "pixi.toml"
+assets.include = ["quota.py"]
+
+[ezhpcy.app.zhome-quota."v0.1.0".argument.every]
+type = "integer"
+label = "Seconds between checks"
+default = 900 # 15 minutes
+min = 10
+
+[ezhpcy.app.zhome-quota."v0.1.0".action.quota]
+description = "Show the quota"
+run.command = ["python", "{{ assets }}/quota.py"]
+trigger.every = "{{ every }}"

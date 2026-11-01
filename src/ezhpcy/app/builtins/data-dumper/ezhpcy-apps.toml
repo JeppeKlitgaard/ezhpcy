@@ -1,0 +1,20 @@
+# Copies `dump.txt` to a path you give on the host, when you press its key in the
+# tunnel's status panel: an example of an action with an input and an asset.
+#
+#   ezhpcy tunnel PROFILE --app data-dumper
+#
+# It won't overwrite a file that is there already: that fails, and says so. A
+# directory takes the file under its own name.
+
+[ezhpcy]
+schema = 1
+
+[ezhpcy.app.data-dumper."v0.1.0"]
+description = "Copies a file to a path you give"
+environment.pixi = "pixi.toml"
+assets.include = ["dump.txt"]
+
+[ezhpcy.app.data-dumper."v0.1.0".action.dump]
+description = "Copy dump.txt to a path"
+run.command = ["cp", "--update=none-fail", "--", "{{ assets }}/dump.txt", "{{ destination }}"]
+input.destination = { type = "path", label = "Where to copy it" }

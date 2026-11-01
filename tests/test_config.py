@@ -4,12 +4,23 @@ from datetime import timedelta
 from pathlib import Path
 
 import pytest
-from pydantic import ValidationError
-from pydantic_settings import SettingsConfigDict
+from pydantic import BaseModel, ValidationError
 
 from ezhpcy import config as config_module
 from ezhpcy.scheduler.types import SchedulerType
-from ezhpcy.types import PasswordConfig, ResolvedConfig
+from ezhpcy.types import (
+    ConfigError,
+    JobConfig,
+    Login,
+    PasswordConfig,
+    ResourceChanges,
+    Resources,
+    SchedulerChanges,
+    SchedulerSettings,
+    SubmissionMode,
+    TimingChanges,
+    Timings,
+)
 
 
 def test_logging_is_configured_in_its_tables() -> None:
@@ -63,18 +74,34 @@ def test_auto_provision_can_be_disabled_from_the_environment(monkeypatch) -> Non
     assert config.auto_provision is False
 
 
-def test_profile_ssh_keepalive_must_be_positive() -> None:
-    with pytest.raises(ValidationError, match="ssh_keepalive_interval_seconds"):
+@pytest.mark.parametrize("host", ["login.example.com", "10.0.0.1", "::1"])
+def test_a_profiles_login_node_is_a_domain_name_or_an_ip_address(host: str) -> None:
+    config = config_module.Config.from_mapping(
+        {"profile": {"base": {"connection": {"host": host, "user": "alice"}}}}
+    )
+
+    assert config.profiles["base"].login.host == host
+
+
+def test_a_login_node_that_is_neither_is_refused() -> None:
+    with pytest.raises(ValidationError, match="must be a domain name or an IP address"):
         config_module.Config.from_mapping(
-            {"profile": {"base": {"connection": {"ssh_keepalive_interval_seconds": 0}}}}
+            {"profile": {"base": {"connection": {"host": "not a host"}}}}
+        )
+
+
+def test_profile_ssh_keepalive_must_be_positive() -> None:
+    with pytest.raises(ValidationError, match="ssh_keepalive_interval"):
+        config_module.Config.from_mapping(
+            {"profile": {"base": {"connection": {"ssh_keepalive_interval": 0}}}}
         )
 
 
 @pytest.mark.parametrize(
     "field",
     [
-        "job_poll_interval_seconds",
-        "job_monitor_interval_seconds",
+        "job_poll_interval",
+        "job_monitor_interval",
     ],
 )
 def test_profile_job_intervals_must_be_positive(field: str) -> None:
@@ -82,6 +109,37 @@ def test_profile_job_intervals_must_be_positive(field: str) -> None:
         config_module.Config.from_mapping(
             {"profile": {"base": {"timings": {field: 0}}}}
         )
+
+
+@pytest.mark.parametrize(
+    ("table", "key"),
+    [
+        ("connection", "ssh_keepalive_interval_seconds"),
+        ("timings", "queue_timeout_seconds"),
+        ("timings", "worker_heartbeat_timeout_seconds"),
+    ],
+)
+def test_the_old_seconds_settings_are_unknown_keys(table: str, key: str) -> None:
+    with pytest.raises(ValidationError, match=rf"{table}\.{key}\n  Extra inputs"):
+        config_module.Config.from_mapping({"profile": {"base": {table: {key: 30}}}})
+
+
+def test_the_keepalive_interval_reaches_the_login_as_a_duration() -> None:
+    config = config_module.Config.from_mapping(
+        {
+            "profile": {
+                "base": {
+                    "connection": {
+                        "host": "login.example.com",
+                        "user": "alice",
+                        "ssh_keepalive_interval": 7.5,
+                    }
+                }
+            }
+        }
+    )
+
+    assert config.profiles["base"].login.keepalive_interval == timedelta(seconds=7.5)
 
 
 @pytest.mark.parametrize("command", [[], ["a100sh", ""], ["a100sh", "a\0b"]])
@@ -221,17 +279,15 @@ def test_a_stored_password_is_rejected_where_it_is_set(
         config.reject_stored_password(profile_name)
 
 
-def test_local_file_cannot_be_set_in_the_config_file(tmp_path: Path) -> None:
-    config_file = tmp_path / "ezhpcy.toml"
-    config_file.write_text(
-        '[local_file]\nconfig_file = "other.toml"\n', encoding="utf-8"
-    )
+def test_local_file_cannot_be_set_in_the_config_file(
+    isolated_local_files: config_module.LocalFileConfig,
+) -> None:
+    config_file = isolated_local_files.config_file
+    config_file.parent.mkdir(parents=True)
+    config_file.write_text("[local_file]\nconfig_dir = 'elsewhere'\n", encoding="utf-8")
 
-    class FileConfig(config_module.Config):
-        model_config = SettingsConfigDict(toml_file=config_file)
-
-    with pytest.raises(ValidationError, match="local_file cannot be configured"):
-        FileConfig()
+    with pytest.raises(ConfigError, match="local_file cannot be configured"):
+        config_module.Config.from_environment()
 
 
 @pytest.mark.parametrize(
@@ -246,18 +302,15 @@ def test_local_file_cannot_be_set_in_the_config_file(tmp_path: Path) -> None:
     ],
 )
 def test_tables_are_not_read_from_the_environment(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, variable: str, value: str
+    monkeypatch: pytest.MonkeyPatch, variable: str, value: str
 ) -> None:
-    class FileConfig(config_module.Config):
-        model_config = SettingsConfigDict(toml_file=tmp_path / "ezhpcy.toml")
-
     monkeypatch.setenv(variable, value)
     monkeypatch.setenv("EZHPCY_AUTO_PROVISION", "false")
 
-    config = FileConfig()
+    config = config_module.Config.from_environment()
 
     assert config.profile == {}
-    assert config.local_file == config_module.LocalFileConfig()
+    assert config.local_file.config_dir != Path("elsewhere")
     assert config.logging == config_module.LoggingConfig()
     assert config.connection == PasswordConfig()
     # Plain settings still come from the environment.
@@ -375,27 +428,41 @@ def test_invalid_profile_graphs_are_rejected(
         {"host": "login.example.com", "user": ""},
     ],
 )
-def test_resolved_config_requires_host_and_user(connection: dict[str, object]) -> None:
+def test_login_requires_host_and_user(connection: dict[str, object]) -> None:
     with pytest.raises(ValidationError):
-        ResolvedConfig.model_validate(
-            {
-                "connection": connection,
-                "scheduler": {"type": "LSF", "submission_mode": "batch"},
-            }
-        )
+        Login.model_validate(connection)
 
 
 @pytest.mark.parametrize(
     "scheduler",
     [{}, {"type": "LSF"}, {"submission_mode": "batch"}],
 )
-def test_resolved_config_requires_scheduler_type_and_submission_mode(
+def test_job_config_requires_scheduler_type_and_submission_mode(
     scheduler: dict[str, object],
 ) -> None:
     with pytest.raises(ValidationError):
-        ResolvedConfig.model_validate(
-            {
-                "connection": {"host": "login.example.com", "user": "alice"},
-                "scheduler": scheduler,
-            }
+        JobConfig.model_validate({"scheduler": scheduler})
+
+
+@pytest.mark.parametrize(
+    ("changes", "model"),
+    [
+        (ResourceChanges, Resources),
+        (TimingChanges, Timings),
+        (SchedulerChanges, SchedulerSettings),
+    ],
+)
+def test_the_typed_changes_name_every_field_of_their_model(
+    changes: type, model: type[BaseModel]
+) -> None:
+    assert set(changes.__annotations__) == set(model.model_fields)
+
+
+def test_a_memory_change_takes_a_size() -> None:
+    job = JobConfig(
+        scheduler=SchedulerSettings(
+            type=SchedulerType.LSF, submission_mode=SubmissionMode.BATCH
         )
+    )
+
+    assert job.with_resources(memory="2GiB").resources.memory_bytes == 2 * 1024**3

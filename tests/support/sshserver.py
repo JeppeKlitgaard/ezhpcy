@@ -24,11 +24,19 @@ from types import TracebackType
 from typing import Self
 
 import asyncssh
+from asyncssh.forward import SSHForwarder
 
 _HOST = "127.0.0.1"
 # How long starting or stopping the server may take.
 _TIMEOUT_SECONDS = 10
 _RELAY_CHUNK_BYTES = 64 * 1024
+# How many times the server tries to open a file that is being replaced, and how
+# long it waits in between.
+_OPEN_ATTEMPTS = 25
+_OPEN_RETRY_SECONDS = 0.02
+# Iterations of its loop the stopped server lets closing transports finish in: each
+# may close another, and they let go of their sockets on the next iteration.
+_CLOSING_ITERATIONS = 5
 
 
 @functools.cache
@@ -92,6 +100,10 @@ type Handler = Callable[[Invocation], Awaitable[int | None] | int | None]
 type StreamHandler = Callable[
     [asyncio.StreamReader, asyncio.StreamWriter], Awaitable[None]
 ]
+# Serves one channel to a Unix socket, inside the server.
+type SocketHandler = Callable[
+    [asyncssh.SSHReader[bytes], asyncssh.SSHWriter[bytes]], Awaitable[None]
+]
 
 
 def reply(*, stdout: str = "", stderr: str = "", exit_status: int = 0) -> Handler:
@@ -117,6 +129,10 @@ class SSHTestServer:
       with relative paths starting at `home`.
     - `direct-tcpip`: only to ports allowed with `allow_forwarding`, such as those
       of the stand-ins `listen` starts.
+    - `direct-streamlocal@openssh.com`: only to paths allowed with `allow_socket`,
+      served inside the server, so it works where Unix sockets don't (Windows).
+    - `tcpip-forward` (remote forwards): on this machine, at the address asked
+      for, recorded in `remote_listens`.
     - Connection loss: `blackhole` and `drop`.
 
     Use it as a context manager (or `start` and `stop`). Stopping raises the first
@@ -127,20 +143,26 @@ class SSHTestServer:
     user = "alice"
     home = PurePosixPath("/home/alice")
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, host_key: asyncssh.SSHKey | None = None) -> None:
         self.sftp_root = root
-        self.host_key = _generate_key("host")
+        self.host_key = host_key or _generate_key("host")
         # Not in any agent or ~/.ssh, so only tests that pass it can use it.
         self.client_key = _generate_key("client")
         self.auth = Auth(client_keys=[self.client_key])
         self.auth_attempts: list[tuple[str, bool]] = []
         self.commands_run: list[list[str]] = []
+        # The `(host, port)` of each remote forward asked for (`tcpip-forward`).
+        self.remote_listens: list[tuple[str, int]] = []
+        # Whether it refuses to listen, as an sshd that doesn't allow it does.
+        self.refuses_listens = False
         self.errors: list[Exception] = []
         self._commands: dict[tuple[str, ...], Handler] = {}
         self._forwardable: set[tuple[str, int]] = set()
+        self._sockets: dict[str, SocketHandler] = {}
         self._listeners: list[asyncio.Server] = []
         self._connections: set[asyncssh.SSHServerConnection] = set()
         self._links: set[tuple[asyncio.StreamWriter, asyncio.StreamWriter]] = set()
+        self._forwarders: list[SSHForwarder] = []
         self._blackholed = False
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(
@@ -164,13 +186,27 @@ class SSHTestServer:
         """Let clients open `direct-tcpip` channels to `host:port`."""
         self._forwardable.add((host, port))
 
-    def listen(self, handler: StreamHandler) -> int:
+    def allow_socket(
+        self, path: str | PurePosixPath, handler: SocketHandler | None
+    ) -> None:
         """
-        Serve TCP connections to a port on 127.0.0.1 with `handler`, on the server's
-        thread, as a stand-in for something only the login node can reach (such as
-        the worker's sshd). Forwarding to it is allowed. Returns the port.
+        Serve channels to the Unix socket at `path` with `handler`, on the server's
+        thread, as a stand-in for an app listening there; `None` refuses them
+        again, as if nothing listened.
         """
-        listener = self._run(asyncio.start_server(handler, _HOST, 0))
+        if handler is None:
+            self._sockets.pop(str(path), None)
+        else:
+            self._sockets[str(path)] = handler
+
+    def listen(self, handler: StreamHandler, port: int = 0) -> int:
+        """
+        Serve TCP connections to `port` (by default a free one) on 127.0.0.1 with
+        `handler`, on the server's thread, as a stand-in for something only the
+        login node can reach (such as the worker's sshd). Forwarding to it is
+        allowed. Returns the port.
+        """
+        listener = self._run(asyncio.start_server(handler, _HOST, port))
         self._listeners.append(listener)
         port = listener.sockets[0].getsockname()[1]
         self.allow_forwarding(port)
@@ -287,11 +323,17 @@ class SSHTestServer:
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        # asyncssh drops one whose connection closed while it was being opened, and
+        # leaves its TCP connection open.
+        for forwarder in self._forwarders:
+            forwarder.close()
         await self._relay.wait_closed()
         await self._acceptor.wait_closed()
         for listener in self._listeners:
             await listener.wait_closed()
         await self._loop.shutdown_default_executor()
+        for _ in range(_CLOSING_ITERATIONS):
+            await asyncio.sleep(0)
 
     # Commands
 
@@ -421,14 +463,33 @@ class _Server(asyncssh.SSHServer):
 
     def connection_requested(
         self, dest_host: str, dest_port: int, orig_host: str, orig_port: int
-    ) -> bool:
+    ) -> Awaitable[SSHForwarder]:
         if (dest_host, dest_port) not in self._test_server._forwardable:
             raise asyncssh.ChannelOpenError(
                 asyncssh.OPEN_ADMINISTRATIVELY_PROHIBITED,
                 f"{dest_host}:{dest_port} is not allowed by the test",
             )
+        return self._forward(dest_host, dest_port)
+
+    async def _forward(self, dest_host: str, dest_port: int) -> SSHForwarder:
         # asyncssh opens the TCP connection and forwards it.
-        return True
+        forwarder = await self._conn.forward_connection(dest_host, dest_port)
+        self._test_server._forwarders.append(forwarder)
+        return forwarder
+
+    def server_requested(self, listen_host: str, listen_port: int) -> bool:
+        # asyncssh listens there, on this machine, and forwards to the client.
+        self._test_server.remote_listens.append((listen_host, listen_port))
+        return not self._test_server.refuses_listens
+
+    def unix_connection_requested(self, dest_path: str) -> SocketHandler:
+        handler = self._test_server._sockets.get(dest_path)
+        if handler is None:
+            # As OpenSSH's sshd says when nothing listens there.
+            raise asyncssh.ChannelOpenError(
+                asyncssh.OPEN_CONNECT_FAILED, f"connect {dest_path}: No such file"
+            )
+        return handler
 
 
 class _SFTPServer(asyncssh.SFTPServer):
@@ -443,3 +504,15 @@ class _SFTPServer(asyncssh.SFTPServer):
 
     def map_path(self, path: bytes) -> bytes:
         return super().map_path(posixpath.join(self._home, path))
+
+    async def open(self, path: bytes, pflags: int, attrs: asyncssh.SFTPAttrs) -> object:
+        """
+        On Windows a file can't be opened for a moment while it is replaced, which a
+        POSIX server's clients never see. So that is tried again.
+        """
+        for _ in range(_OPEN_ATTEMPTS - 1):
+            try:
+                return super().open(path, pflags, attrs)
+            except PermissionError:
+                await asyncio.sleep(_OPEN_RETRY_SECONDS)
+        return super().open(path, pflags, attrs)

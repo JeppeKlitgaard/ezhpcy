@@ -1,35 +1,64 @@
 import logging
 import os
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
 from pathlib import Path
 
-# `ezhpcy.config` loads the workstation's settings when it's first imported, which
-# is below. Drop every `EZHPCY_*` variable (e.g. from `just`'s dotenv-load) and point
-# EZHPCY_CONFIG_FILE at a file that doesn't exist, so the suite, and the `ezhpcy`
-# processes tests start, run on default settings.
+# `ezhpcy.config` reads `EZHPCY_CONFIG_FILE` when imported, which is below, and the
+# CLI reads the other `EZHPCY_*` variables (`Config.from_environment`). Drop every
+# `EZHPCY_*` variable (e.g. from `just`'s dotenv-load) and point EZHPCY_CONFIG_FILE
+# at a file that doesn't exist, so the suite, and the `ezhpcy` processes tests
+# start, run on default settings.
 for variable in [name for name in os.environ if name.upper().startswith("EZHPCY_")]:
     del os.environ[variable]
+# Rich would fix the CLI's consoles at this width as they are imported, so that
+# `invoke`'s wouldn't apply to them, and the terminal's would wrap their messages.
+os.environ.pop("COLUMNS", None)
 os.environ["EZHPCY_CONFIG_FILE"] = str(
     Path(tempfile.gettempdir()) / f"ezhpcy-tests-{os.getpid()}" / "ezhpcy.toml"
 )
 
 import pytest
 
-from ezhpcy.config import LocalFileConfig, config
-from ezhpcy.logging import (
+from ezhpcy.cli._console import flush_output
+from ezhpcy.cli._logging import (
     ASYNCSSH_LOGGER_NAME,
     OUTPUT_HANDLER_NAME,
     configure_log_file,
     configure_logging,
 )
+from ezhpcy.config import ConsoleLoggingConfig, LocalFileConfig, local_files
+from ezhpcy.constants import PACKAGE_NAME
 from ezhpcy.tunnel import ssh_config
 from tests.support.login import MACHINE_ID, route_login
 from tests.support.sshserver import SSHTestServer
+from tests.support.worker import worker_credentials, worker_sshd
 
 # As the CLI does, so every test sees the same `ezhpcy` logger: one that has the
 # terminal handler and doesn't propagate.
-configure_logging(config.logging.console.level)
+configure_logging(ConsoleLoggingConfig().level)
+
+# Longest a test's end waits for the output thread, as a test that failed may have
+# left it on a terminal that takes no output.
+_FLUSH_SECONDS = 5
+
+
+@pytest.hookimpl(wrapper=True, trylast=True)
+def _flush_output_within_capture() -> Generator[None]:
+    """
+    Have the output thread write what a test logged before pytest stops capturing,
+    around which this wraps: a fixture's teardown is too late, as capture stops
+    between a test's phases, and the terminal log would go to the real stderr.
+    """
+    try:
+        return (yield)
+    finally:
+        flush_output(_FLUSH_SECONDS)
+
+
+pytest_runtest_setup = _flush_output_within_capture
+pytest_runtest_call = _flush_output_within_capture
+pytest_runtest_teardown = _flush_output_within_capture
 
 
 @pytest.fixture
@@ -48,6 +77,17 @@ def login(
     return ssh_server
 
 
+@pytest.fixture
+def worker(login: SSHTestServer, tmp_path: Path) -> Iterator[SSHTestServer]:
+    """
+    The worker's sshd for jobs on `login`: a second in-process SSH server that
+    `login` forwards to, with the worker's credentials as `ezhpcy provision`
+    leaves them (see `tests.support.worker`).
+    """
+    with worker_sshd(login, tmp_path / "worker", worker_credentials()) as server:
+        yield server
+
+
 @pytest.fixture(autouse=True)
 def isolated_local_files(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -55,17 +95,17 @@ def isolated_local_files(
     """Keep every file EzHPCy reads or writes in `tmp_path`: the configuration file,
     worker keys, accepted login-node host keys, the alias locks, and the generated
     SSH configuration that the user's ~/.ssh/config may Include, and the log
-    files."""
-    local_file = LocalFileConfig(
-        cache_dir=tmp_path / "cache",
-        config_dir=tmp_path / "config",
-        data_dir=tmp_path / "data",
-        runtime_dir=tmp_path / "runtime",
-        log_dir=tmp_path / "log",
-        config_file=tmp_path / "config" / "ezhpcy.toml",
-    )
-    monkeypatch.setattr(config, "local_file", local_file)
-    return local_file
+    files. Patched field by field, as modules hold the one `local_files`."""
+    for name, value in {
+        "cache_dir": tmp_path / "cache",
+        "config_dir": tmp_path / "config",
+        "data_dir": tmp_path / "data",
+        "runtime_dir": tmp_path / "runtime",
+        "log_dir": tmp_path / "log",
+        "config_file": tmp_path / "config" / "ezhpcy.toml",
+    }.items():
+        monkeypatch.setattr(local_files, name, value)
+    return local_files
 
 
 @pytest.fixture(autouse=True)
@@ -101,6 +141,31 @@ def no_log_file() -> Iterator[None]:
     """Stop writing the log file a CLI run started, in the test's `tmp_path`."""
     yield
     configure_log_file(None)
+
+
+@pytest.fixture
+def quiet_api(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> Iterator[None]:
+    """
+    Fail a test whose `ezhpcy.api` calls printed or configured logging. Its logger
+    has no terminal handler, as in a library user's program, so that what is
+    printed isn't the CLI's.
+    """
+    root = logging.getLogger()
+    package = logging.getLogger(PACKAGE_NAME)
+    monkeypatch.setattr(package, "handlers", [])
+    monkeypatch.setattr(package, "propagate", True)
+    # It would do nothing here, with pytest's handlers on the root logger.
+    monkeypatch.setattr(
+        logging, "basicConfig", lambda **_: pytest.fail("logging.basicConfig called")
+    )
+    before = (list(root.handlers), root.level, package.level)
+    yield
+    assert capsys.readouterr() == ("", "")
+    assert (list(root.handlers), root.level, package.level) == before
+    assert package.handlers == []
+    assert package.propagate
 
 
 @pytest.fixture

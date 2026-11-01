@@ -1,27 +1,29 @@
-"""The tunnel's status panel, as `ezhpcy tunnel` shows it on a terminal."""
+"""A job's status panel, as `ezhpcy tunnel` shows it on a terminal."""
 
 import io
 from dataclasses import replace
 
 import pytest
 from rich.console import Console
+from rich.panel import Panel
 
+from ezhpcy.app.run import AppState, AppStatus, LinkStatus
 from ezhpcy.cli._tunnel_status import status_panel
+from ezhpcy.job.status import JobStatus, Phase, PublishedStatus
 from ezhpcy.scheduler.base import JobInfo, JobState
-from ezhpcy.tunnel.status import Phase, TunnelStatus
-from ezhpcy.types import ResourcesConfig
+from ezhpcy.types import Resources
 
 NOW = 10_000.0
-STARTING = TunnelStatus(alias="scratch", login="alice@login.example.com", since=NOW)
-SERVING = TunnelStatus(
-    alias="scratch",
-    login="alice@login.example.com",
-    phase=Phase.SERVING,
+TITLE = t"Tunnel {'scratch':name}"
+LOGIN = "alice@login.example.com"
+STARTING = JobStatus(phase=Phase.CONNECTING, since=NOW)
+SERVING = JobStatus(
+    phase=Phase.READY,
     since=NOW - 30,
     job_id="42",
     job=JobInfo(state=JobState.RUNNING, raw_state="RUN", host="n-62-11-19"),
     running_since=NOW - 3725,
-    resources=ResourcesConfig.model_validate(
+    resources=Resources.model_validate(
         {
             "queue": "gpua100",
             "cores": 4,
@@ -32,16 +34,18 @@ SERVING = TunnelStatus(
     ),
     worker="n-62-11-19:40123",
     last_heartbeat=NOW - 3,
-    connections=2,
+    attachments=(PublishedStatus(alias="scratch", port=50123, connections=2),),
 )
 
 
-def shown(status: TunnelStatus, *, width: int = 120) -> list[str]:
+def panel(status: JobStatus) -> Panel:
+    return status_panel(status, title=TITLE, login=LOGIN, now=NOW)
+
+
+def shown(status: JobStatus, *, width: int = 120) -> list[str]:
     """The panel's lines, without its border, each space between words one."""
     stream = io.StringIO()
-    Console(file=stream, width=width, color_system=None).print(
-        status_panel(status, now=NOW)
-    )
+    Console(file=stream, width=width, color_system=None).print(panel(status))
     return [
         " ".join(line.strip("│|").split()) for line in stream.getvalue().splitlines()
     ]
@@ -66,9 +70,7 @@ def test_while_connecting_it_says_where_to() -> None:
 def test_while_queued_it_says_what_the_job_waits_on(
     pending_reason: str, waiting_on: str
 ) -> None:
-    status = TunnelStatus(
-        alias="scratch",
-        login="alice@login.example.com",
+    status = JobStatus(
         phase=Phase.QUEUED,
         since=NOW - 65,
         job_id="42",
@@ -129,16 +131,120 @@ def test_an_interactive_submission_command_is_shown_instead_of_the_resources() -
 
 
 def test_while_stopping_it_says_how_to_force_quit_in_red() -> None:
-    status = TunnelStatus(
-        alias="scratch",
-        login="alice@login.example.com",
-        phase=Phase.STOPPING,
-        since=NOW - 2,
-    )
+    status = JobStatus(phase=Phase.STOPPING, since=NOW - 2)
 
     lines = shown(status)
 
     assert "Stopping (2 s)" in lines
     assert "(press Ctrl+C again to force quit)" in lines
     assert "Press Ctrl+C to stop." not in lines
-    assert status_panel(status, now=NOW).border_style == "red"
+    assert panel(status).border_style == "red"
+
+
+def test_the_first_attachment_says_how_to_reach_it_and_all_count() -> None:
+    status = replace(
+        SERVING,
+        attachments=(
+            AppStatus(
+                name="lab",
+                version="v1.0",
+                state=AppState.READY,
+                url="http://127.0.0.1:8888/lab",
+                connections=1,
+            ),
+            PublishedStatus(alias="scratch", port=50123, connections=2),
+        ),
+    )
+
+    lines = shown(status)
+
+    assert "Open http://127.0.0.1:8888/lab" in lines
+    assert any(line.startswith("Connections 3") for line in lines)
+
+
+def test_ready_with_nothing_attached_is_not_yet_serving() -> None:
+    status = replace(SERVING, attachments=())
+
+    lines = shown(status)
+
+    assert "Ready (30 s)" in lines
+    assert not any(line.startswith("Connections") for line in lines)
+    assert panel(status).border_style == "yellow"
+
+
+def test_each_app_has_a_row_saying_where_it_is() -> None:
+    def app(name: str, **fields: object) -> AppStatus:
+        return AppStatus(name=name, version="v1.0", **fields)  # type: ignore[arg-type]
+
+    status = replace(
+        SERVING,
+        attachments=(
+            *SERVING.attachments,
+            app(
+                "lab", state=AppState.READY, url="http://127.0.0.1:8888/", connections=1
+            ),
+            app("board", state=AppState.READY, url="http://127.0.0.1:6006/"),
+            app(
+                "dash",
+                state=AppState.EXITED,
+                url="http://127.0.0.1:8080/",
+                exit_status=3,
+            ),
+            app("notes", state=AppState.EXITED),
+            app("big"),
+            app("slow", state=AppState.STARTING),
+        ),
+    )
+
+    lines = shown(status)
+
+    # After the job's details, the Host block still first in the headline.
+    assert "Connect with ssh scratch" in lines
+    first = lines.index("lab v1.0 http://127.0.0.1:8888/ (1 connection)")
+    assert lines[first : first + 6] == [
+        "lab v1.0 http://127.0.0.1:8888/ (1 connection)",
+        "board v1.0 http://127.0.0.1:6006/ (0 connections)",
+        "dash v1.0 exited with status 3",
+        "notes v1.0 failed to start",
+        "big v1.0 provisioning",
+        "slow v1.0 starting",
+    ]
+
+
+def test_an_apps_status_hints_are_shown_only_while_it_serves() -> None:
+    hints = ("mount --port 4455",)
+    serving = AppStatus(
+        name="smb",
+        version="v1.0",
+        state=AppState.READY,
+        url="smb://127.0.0.1:4455/files",
+        status_hints=hints,
+    )
+    exited = replace(serving, name="old", state=AppState.EXITED, exit_status=1)
+    status = replace(SERVING, attachments=(*SERVING.attachments, serving, exited))
+
+    lines = shown(status)
+
+    first = lines.index("smb v1.0 smb://127.0.0.1:4455/files (0 connections)")
+    assert lines[first + 1 : first + 3] == [
+        "mount --port 4455",
+        "old v1.0 exited with status 1",
+    ]
+
+
+def test_a_link_has_a_row_with_its_url_and_no_connections() -> None:
+    link = LinkStatus(
+        name="code",
+        version="v1.0",
+        url="vscode://x/ssh-remote+s/",
+        status_hints=("ssh s", "code --remote ssh-remote+s"),
+    )
+    status = replace(SERVING, attachments=(*SERVING.attachments, link))
+
+    lines = shown(status)
+
+    first = lines.index("code v1.0 vscode://x/ssh-remote+s/")
+    # Its status hints, under it.
+    assert lines[first + 1 : first + 3] == ["ssh s", "code --remote ssh-remote+s"]
+    # The headline is still the Host block's.
+    assert "Connect with ssh scratch" in lines

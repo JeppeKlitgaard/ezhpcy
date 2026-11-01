@@ -7,6 +7,7 @@ set windows-shell := ["powershell.exe", "-NoLogo", "-NoProfile", "-Command"]
 all:
     just format
     just lint
+    just lint-imports
     just check
     just test
     just pc-all
@@ -23,40 +24,53 @@ override-config:
 
 
 # Formats the code using ruff
-[group: 'format']
+[group: 'lint']
 format:
-    uv run --group format ruff check . --fix
-    uv run --group format ruff format .
+    uv run --group lint ruff check . --fix
+    uv run --group lint ruff format .
 
 # Checks the code for linting errors
-[group: 'format']
+[group: 'lint']
 lint:
-    uv run --group format ruff check .
+    uv run --group lint ruff check .
+
+# Checks the import contracts
+[group: 'lint']
+lint-imports:
+    uv run --group lint lint-imports
 
 # Runs the pre-commit hooks on all files
-[group: 'format']
+[group: 'lint']
 pc-all:
     uv run --group pre-commit prek run --all-files
 
 # Runs the pre-commit hooks on the changed files
-[group: 'format']
+[group: 'lint']
 pc:
     uv run --group pre-commit prek run
 
-# Runs the test suite
+# Runs the test suite in parallel; `just test -n0` for one process
 [group: 'test']
 test *args:
-    uv run --group test pytest {{args}}
+    uv run --group test pytest -n auto {{args}}
 
 # Runs the test suite and reports coverage; `just coverage --cov-report=html` for htmlcov/
 [group: 'test']
 coverage *args:
-    uv run --group test pytest --cov --cov-report=term-missing {{args}}
+    uv run --group test pytest -n auto --cov --cov-report=term-missing {{args}}
 
 # Runs the type checker
 [group: 'typecheck']
 check:
     uv run --group typecheck pyrefly check
+
+# Counts the lines of code
+[group: 'dev']
+sloc:
+    @echo "src/ezhpcy"
+    @uvx pygount --format=summary src/ezhpcy
+    @echo "tests"
+    @uvx pygount --format=summary tests
 
 # Bumps the version (major, minor, patch, stable, alpha, beta, rc, post or dev; several combine) and commits it
 [group: 'release']

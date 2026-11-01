@@ -3,13 +3,12 @@ lazy from json import dumps as json_dumps
 lazy from rich.table import Table
 lazy from rich.text import Text
 
-lazy from ezhpcy.config import config
-lazy from ezhpcy.console import console
-lazy from ezhpcy.constants import EZHPCY_VERSION
-lazy from ezhpcy.utils import local_machine_id
+lazy from ezhpcy.api import EZHPCY_VERSION, local_machine_id
+lazy from ezhpcy.cli._console import console
+lazy from ezhpcy.cli._options import ConfigArg
 
 
-def info_cmd(*, json: bool = False) -> None:
+def info_cmd(*, config: ConfigArg, json: bool = False) -> None:
     """Show debug information for EzHPCy."""
 
     datas = [

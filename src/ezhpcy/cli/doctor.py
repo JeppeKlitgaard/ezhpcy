@@ -9,10 +9,10 @@ lazy from rich.text import Text
 
 from ezhpcy.config import Config, StoredPasswordError, unless_disabled
 lazy from ezhpcy.cli import _include as include
+lazy from ezhpcy.cli._console import console
 lazy from ezhpcy.cli._errors import sentence
+lazy from ezhpcy.cli._messages import rich_text
 lazy from ezhpcy.cli._options import ConfigArg
-lazy from ezhpcy.console import console
-lazy from ezhpcy.messages import rich_text
 lazy from ezhpcy.permissions import FilePermissionError
 lazy from ezhpcy.tunnel.ssh_config import (
     AliasProblem,

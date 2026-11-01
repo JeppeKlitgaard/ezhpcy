@@ -11,12 +11,12 @@ lazy from rich.prompt import Confirm, Prompt
 
 from ezhpcy.logging import get_logger
 lazy from ezhpcy import login as login_module
+lazy from ezhpcy.cli._console import error_console
+lazy from ezhpcy.cli._messages import print_error, print_warning, rich_text
 lazy from ezhpcy.cli._options import ConnectionOptions
 lazy from ezhpcy.cli._resolve import login_usage_error
 lazy from ezhpcy.cli.utils.prompt import ask
-lazy from ezhpcy.console import error_console
 lazy from ezhpcy.login import PASSWORD_ATTEMPTS, ConnectionFailed, Prompts
-lazy from ezhpcy.messages import print_error, print_warning, rich_text
 lazy from ezhpcy.ssh import RemoteHost
 lazy from ezhpcy.types import ConfigError, Login
 

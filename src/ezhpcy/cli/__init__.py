@@ -18,13 +18,13 @@ lazy from rich.console import Console
 lazy from rich.panel import Panel
 lazy from rich.text import Text
 
-from ezhpcy import console as consoles
+from ezhpcy.cli import _console as consoles
 lazy from ezhpcy.api import Config, ConfigError
+lazy from ezhpcy.cli._console import flush_output
 lazy from ezhpcy.cli._errors import CliUsageError
+lazy from ezhpcy.cli._logging import configure_log_file, configure_logging
+lazy from ezhpcy.cli._messages import print_error, print_warning
 lazy from ezhpcy.cli._options import DEBUG_ENV_VAR
-lazy from ezhpcy.console import flush_output
-lazy from ezhpcy.logging import configure_log_file, configure_logging
-lazy from ezhpcy.messages import print_error, print_warning
 
 
 def _format_error(error: CycloptsError) -> Panel:

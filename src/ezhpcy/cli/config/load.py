@@ -13,10 +13,10 @@ lazy from rich.prompt import Confirm, Prompt
 lazy from rich.text import Text
 
 lazy from ezhpcy.api import Config
+lazy from ezhpcy.cli._console import error_console
 lazy from ezhpcy.cli._errors import CliUsageError
+lazy from ezhpcy.cli._messages import print_aborted, print_success, print_warning
 lazy from ezhpcy.cli._options import UserOpt
-lazy from ezhpcy.console import error_console
-lazy from ezhpcy.messages import print_aborted, print_success, print_warning
 
 PRESET_DIRECTORY = "static/config/presets"
 PRESET_SUFFIX = ".toml.j2"

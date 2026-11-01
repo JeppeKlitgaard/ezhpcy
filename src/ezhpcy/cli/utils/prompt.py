@@ -10,8 +10,8 @@ server's keepalives, which could drop the connection.
 lazy import signal
 lazy from collections.abc import Callable
 
+lazy from ezhpcy.cli._console import flush_output, live_display_paused
 lazy from ezhpcy.cli.utils.interrupts import interrupts_handled_by
-lazy from ezhpcy.console import flush_output, live_display_paused
 
 
 def ask[**P, T](prompt: Callable[P, T], /, *args: P.args, **kwargs: P.kwargs) -> T:

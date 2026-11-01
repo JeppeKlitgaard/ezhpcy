@@ -17,13 +17,13 @@ os.environ["EZHPCY_CONFIG_FILE"] = str(
 
 import pytest
 
-from ezhpcy.config import ConsoleLoggingConfig, LocalFileConfig, local_files
-from ezhpcy.logging import (
+from ezhpcy.cli._logging import (
     ASYNCSSH_LOGGER_NAME,
     OUTPUT_HANDLER_NAME,
     configure_log_file,
     configure_logging,
 )
+from ezhpcy.config import ConsoleLoggingConfig, LocalFileConfig, local_files
 from ezhpcy.tunnel import ssh_config
 from tests.support.login import MACHINE_ID, route_login
 from tests.support.sshserver import SSHTestServer

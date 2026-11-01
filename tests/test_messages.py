@@ -2,7 +2,8 @@ import pytest
 from rich.style import Style
 from rich.text import Text
 
-from ezhpcy.messages import MessageError, duration, plain, rich_text
+from ezhpcy.cli._messages import duration, rich_text
+from ezhpcy.messages import MessageError, plain
 
 
 def styled_runs(text: Text) -> list[tuple[str, str | Style]]:

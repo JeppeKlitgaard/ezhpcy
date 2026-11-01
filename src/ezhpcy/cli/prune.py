@@ -5,11 +5,11 @@ lazy from rich.prompt import Confirm
 
 from ezhpcy.cli._options import ConfigArg, ConnectionOptions, OptionalProfileArg
 from ezhpcy.constants import APPS_DIRECTORY_NAME
+lazy from ezhpcy.cli._console import error_console
+lazy from ezhpcy.cli._messages import print_aborted, print_success, rich_text
 lazy from ezhpcy.cli._resolve import login_from_cli, select_profile
 lazy from ezhpcy.cli.utils.prompt import ask
 lazy from ezhpcy.cli.utils.ssh import connect_or_exit
-lazy from ezhpcy.console import error_console
-lazy from ezhpcy.messages import print_aborted, print_success, rich_text
 lazy from ezhpcy.provision_host import prune_all_remote_data, prune_stale_data
 
 

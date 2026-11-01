@@ -9,7 +9,7 @@ lazy from cyclopts import Parameter
 
 lazy from ezhpcy.api import Config
 lazy from ezhpcy.cli._errors import CliUsageError
-lazy from ezhpcy.messages import print_error
+lazy from ezhpcy.cli._messages import print_error
 
 IS_WINDOWS = os.name == "nt"
 DEFAULT_EDITOR = "notepad" if IS_WINDOWS else "vi"

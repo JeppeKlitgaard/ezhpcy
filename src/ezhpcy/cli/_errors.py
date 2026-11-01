@@ -3,7 +3,7 @@ lazy from string.templatelib import Interpolation, Template
 lazy from rich.text import Text
 
 from ezhpcy.messages import MessageError
-lazy from ezhpcy.messages import rich_text
+lazy from ezhpcy.cli._messages import rich_text
 
 _SENTENCE_ENDINGS = (".", "?", "!")
 

@@ -21,10 +21,10 @@ import keyring
 import pytest
 
 from ezhpcy.api import Config
+from ezhpcy.cli._console import flush_output
+from ezhpcy.cli._logging import TERMINAL_HANDLER_NAME, configure_logging
 from ezhpcy.config import LocalFileConfig, local_files
-from ezhpcy.console import flush_output
 from ezhpcy.constants import EZHPCY_VERSION, PACKAGE_NAME
-from ezhpcy.logging import TERMINAL_HANDLER_NAME, configure_logging
 from ezhpcy.scheduler.types import SchedulerType
 from ezhpcy.types import SubmissionMode
 from tests.support.cli import capture, invoke, use_settings

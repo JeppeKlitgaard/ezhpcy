@@ -4,7 +4,7 @@ it runs.
 
 The job (`ezhpcy.job.lifecycle.JobLifecycle`) replaces its `status` with a new
 `JobStatus` at each step, from the event loop, and a display reads it from a
-thread of its own (see `ezhpcy.console.live_display`). Replaced whole, a status
+thread of its own (as the CLI's status panel does). Replaced whole, a status
 is never seen half updated, and the event loop never waits for the display,
 which waits for the terminal.
 

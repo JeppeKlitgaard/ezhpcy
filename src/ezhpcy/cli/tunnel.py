@@ -48,7 +48,14 @@ lazy from ezhpcy.app.manifest import (
 )
 lazy from ezhpcy.app.run import log_stderr
 lazy from ezhpcy.cli import _include as include
+lazy from ezhpcy.cli._console import (
+    console,
+    flush_output,
+    hide_live_display,
+    live_display,
+)
 lazy from ezhpcy.cli._errors import CliUsageError, sentence
+lazy from ezhpcy.cli._logging import label_log_file
 lazy from ezhpcy.cli._resolve import (
     job_from_cli,
     login_from_cli,
@@ -58,13 +65,6 @@ lazy from ezhpcy.cli._resolve import (
 lazy from ezhpcy.cli._tunnel_status import StatusPanel
 lazy from ezhpcy.cli.utils.interrupts import interrupts_handled_by
 lazy from ezhpcy.cli.utils.ssh import cli_prompts
-lazy from ezhpcy.console import (
-    console,
-    flush_output,
-    hide_live_display,
-    live_display,
-)
-lazy from ezhpcy.logging import label_log_file
 lazy from ezhpcy.messages import MessageError, plain
 lazy from ezhpcy.tunnel.ssh_config import WorkerHost
 lazy from ezhpcy.types import alias_digest

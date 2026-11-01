@@ -21,8 +21,8 @@ import pytest
 
 from ezhpcy import cleanup, login as login_module
 from ezhpcy.cli import tunnel as tunnel_cli
+from ezhpcy.cli._console import flush_output, make_console
 from ezhpcy.config import LocalFileConfig
-from ezhpcy.console import flush_output, make_console
 from ezhpcy.constants import LOOPBACK_HOST
 from ezhpcy.job import lifecycle, publish
 from ezhpcy.job.lifecycle import JobLifecycle

@@ -1,6 +1,6 @@
 """
-Processes started detached (`ezhpcy.process`): the launch script, under bash
-where there is one (in WSL on Windows), and finding a host's run directories.
+Processes started detached (`ezhpcy.process`): the launch script, under bash and
+`setsid` on Linux (in WSL on Windows), and finding a host's run directories.
 The API's tests (`test_api_host.py`) cover the rest, with a fake for bash.
 """
 
@@ -19,7 +19,9 @@ from ezhpcy.types import Login
 from tests.support.sshserver import SSHTestServer
 from tests.support.worker import FakeProcesses, quick_processes
 
-requires_bash = pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell")
+requires_setsid = pytest.mark.skipif(
+    sys.platform in ("win32", "darwin"), reason="bash and setsid, as on Linux"
+)
 WAIT_SECONDS = 5
 
 
@@ -109,7 +111,7 @@ def _status(run_dir: Path) -> int:
     return int(status.read_text(encoding="utf-8"))
 
 
-@requires_bash
+@requires_setsid
 def test_the_launch_ends_once_the_script_has_printed_its_group(
     tmp_path: Path,
 ) -> None:
@@ -128,7 +130,7 @@ def test_the_launch_ends_once_the_script_has_printed_its_group(
     assert not (run_dir / "status.tmp").exists()
 
 
-@requires_bash
+@requires_setsid
 def test_stopping_as_soon_as_the_group_is_known_still_stops_it(
     tmp_path: Path,
 ) -> None:
@@ -146,7 +148,7 @@ def test_stopping_as_soon_as_the_group_is_known_still_stops_it(
         assert _status(run_dir) == 128 + signal.SIGTERM
 
 
-@requires_bash
+@requires_setsid
 def test_a_process_stopped_before_it_began_never_runs(tmp_path: Path) -> None:
     run_dir = tmp_path / "ezhpcy-run"
     ran = tmp_path / "ran"
@@ -159,7 +161,7 @@ def test_a_process_stopped_before_it_began_never_runs(tmp_path: Path) -> None:
     assert not ran.exists()
 
 
-@requires_bash
+@requires_setsid
 def test_the_status_is_the_commands_and_its_output_is_in_the_run_directory(
     tmp_path: Path,
 ) -> None:
@@ -172,7 +174,7 @@ def test_the_status_is_the_commands_and_its_output_is_in_the_run_directory(
     assert (run_dir / "err").read_text(encoding="utf-8") == "err\n"
 
 
-@requires_bash
+@requires_setsid
 def test_awkward_arguments_and_the_environment_reach_the_command_unchanged(
     tmp_path: Path,
 ) -> None:
@@ -193,7 +195,7 @@ def test_awkward_arguments_and_the_environment_reach_the_command_unchanged(
     assert printed == [*awkward, "it's $secret", str(workdir)]
 
 
-@requires_bash
+@requires_setsid
 def test_a_failed_cd_is_the_status(tmp_path: Path) -> None:
     run_dir = tmp_path / "ezhpcy-run"
 
@@ -203,7 +205,7 @@ def test_a_failed_cd_is_the_status(tmp_path: Path) -> None:
     assert "missing" in (run_dir / "err").read_text(encoding="utf-8")
 
 
-@requires_bash
+@requires_setsid
 def test_the_run_directory_and_the_picked_port_are_the_scripts_own(
     tmp_path: Path,
 ) -> None:

@@ -48,6 +48,9 @@ scheduler ended the job, e.g. at its time limit) or `JobFailed` (with the
 failure as its cause). `Job.wait` instead returns a `JobEnd`, or raises
 `JobFailed`. Leaving after `Job.stop` raises nothing.
 
+An SSH failure that has no more specific error is an `SSHError`, so callers never
+need asyncssh.
+
 Values are typed: a `Login`, a `JobConfig`, an `AliasReservation`, `pathlib`
 paths, `timedelta`s. Build them directly, or read them from a configuration file
 (`Config`). The API never prints, prompts or configures logging: it logs to the
@@ -85,6 +88,7 @@ from ezhpcy.provision_local import MissingCredentials, missing_credentials
 from ezhpcy.scheduler.base import JobInfo, JobState
 from ezhpcy.scheduler.types import SchedulerType
 from ezhpcy.ssh import CommandFailed, Destination, SocketDestination, TCPDestination
+from ezhpcy.ssh_errors import SSHError, translating_ssh_errors
 from ezhpcy.tunnel.lock import (
     AliasInUse,
     AliasReservation,
@@ -154,6 +158,7 @@ __all__ = [
     "PublishedStatus",
     "Resources",
     "RunningApp",
+    "SSHError",
     "SchedulerSettings",
     "SchedulerType",
     "SocketDestination",
@@ -241,36 +246,40 @@ class Host:
         """
         return Job(self._host, config, tuple(worker_ports))
 
+    @translating_ssh_errors
     async def run(self, argv: Sequence[str], *, stdin: str | None = None) -> str:
         """
         Run a command, quoted for the host's shell, and return its stdout.
         `stdin`, if given, is sent to it, followed by end-of-file. Not through a
         login shell. Raises `CommandFailed`, with its stderr, unless it exits
-        with status 0. Cancelled, its session is closed; the command may still
+        with status 0, and `SSHError` if it can't be started. Cancelled, its session is closed; the command may still
         run to its end.
         """
         return await self._host.run(list(argv), stdin=stdin)
 
+    @translating_ssh_errors
     async def put(self, local: Path, remote: PurePosixPath) -> None:
         """
         Copy the file `local` here to `remote` on the host, over SFTP. Raises
-        `OSError` if `local` can't be read, and `asyncssh.SFTPError` if
-        `remote` can't be written. Cancelled, it stops, and leaves `remote`
+        `OSError` if `local` can't be read, and `SSHError` if `remote` can't be
+        written. Cancelled, it stops, and leaves `remote`
         partly written.
         """
         async with self._host.sftp() as sftp:
             await sftp.put(local, remote)
 
+    @translating_ssh_errors
     async def get(self, remote: PurePosixPath, local: Path) -> None:
         """
         Copy the file `remote` on the host to `local` here, over SFTP. Raises
-        `asyncssh.SFTPError` if `remote` can't be read, and `OSError` if
-        `local` can't be written. Cancelled, it stops, and leaves `local`
+        `SSHError` if `remote` can't be read, and `OSError` if `local` can't be
+        written. Cancelled, it stops, and leaves `local`
         partly written.
         """
         async with self._host.sftp() as sftp:
             await sftp.get(remote, local)
 
+    @translating_ssh_errors
     async def start(
         self,
         argv: Sequence[str],
@@ -296,12 +305,14 @@ class Host:
         leave the host's block.
 
         Raises `ValueError` for an empty `argv` or a name in `env` that isn't
-        a shell variable's, and `CommandFailed` if the host can't start it.
+        a shell variable's, and `CommandFailed` or `SSHError` if the host can't
+        start it.
         Failing or cancelled, it stops what it started, and removes the run
         directory.
         """
         return await _process.start(self._host, argv, env=env, cwd=cwd)
 
+    @translating_ssh_errors
     async def forward(
         self, destination: Destination, *, local_port: int = 0
     ) -> Forward:
@@ -315,6 +326,7 @@ class Host:
         """
         return await _forward.forward(self._host, destination, local_port=local_port)
 
+    @translating_ssh_errors
     async def reverse_forward(
         self, remote_port: int, destination: Destination
     ) -> Forward:
@@ -322,11 +334,12 @@ class Host:
         Have the host listen on its loopback port `remote_port` (0: a free one,
         then `Forward.port`), and forward each connection to it to
         `destination` from here. Attached to the host until closed. Raises
-        `asyncssh.ChannelListenError` if the host refuses to listen. Cancelled,
+        `SSHError` if the host refuses to listen. Cancelled,
         it leaves nothing listening.
         """
         return await _forward.reverse_forward(self._host, remote_port, destination)
 
+    @translating_ssh_errors
     async def run_app(
         self,
         app: App | Link,
@@ -359,7 +372,8 @@ class Host:
         Several runs of one app may run at once; they share its workdir.
         Raises `ProvisioningError`, and `AppFailed` (with its stderr's last
         lines) if it exits before it is ready or isn't ready in time, once it
-        has been stopped. Raises `TypeError` for a `Link`, which runs nothing.
+        has been stopped; `SSHError` if the connection fails. Raises `TypeError`
+        for a `Link`, which runs nothing.
         Failing or cancelled, it stops what it started; an install it was
         waiting for may still run to its end on the host, and the next one
         repairs what it left.
@@ -465,6 +479,7 @@ class Job:
         """
         self._lifecycle.stop(t"{reason}")
 
+    @translating_ssh_errors
     async def publish(self, reservation: AliasReservation) -> Published:
         """
         Make `ssh <alias>` reach the job, under the reserved alias: forward a
@@ -475,8 +490,9 @@ class Job:
         Raises `ValueError` if the reservation was released, a job is
         published under it already (an alias has one Host block at a time), or
         the login's user can't be named in a Host block; `RuntimeError` before
-        the job is entered; and `OSError` if the Host block can't be written. Failing or cancelled, it withdraws what it had
-        made, and the reservation is free again.
+        the job is entered; `OSError` if the Host block can't be written; and `SSHError` if the port
+        can't be forwarded. Failing or cancelled, it withdraws what it had made,
+        and the reservation is free again.
         """
         self._worker()
         return await _publish.publish(self._lifecycle, reservation)

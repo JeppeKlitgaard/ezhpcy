@@ -1,24 +1,31 @@
 """
-The CLI's side of connecting to the login node (see `ezhpcy.login`): its Rich
+The CLI's side of connecting to the login node (see `ezhpcy.api.connect`): its Rich
 prompts for a password and an unknown host key, and connecting for a command.
 
 The prompts block the event loop while they wait, which is harmless while
 connecting (see `ezhpcy.cli.utils.prompt.ask`).
 """
 
+from contextlib import asynccontextmanager
+lazy from collections.abc import AsyncGenerator
+
 lazy from pydantic import SecretStr
 lazy from rich.prompt import Confirm, Prompt
 
-from ezhpcy.logging import get_logger
-lazy from ezhpcy import login as login_module
+from ezhpcy.api import get_logger
+lazy from ezhpcy import api
+lazy from ezhpcy.api import (
+    PASSWORD_ATTEMPTS,
+    ConfigError,
+    ConnectionFailed,
+    Login,
+    Prompts,
+)
 lazy from ezhpcy.cli._console import error_console
 lazy from ezhpcy.cli._messages import print_error, print_warning, rich_text
 lazy from ezhpcy.cli._options import ConnectionOptions
 lazy from ezhpcy.cli._resolve import login_usage_error
 lazy from ezhpcy.cli.utils.prompt import ask
-lazy from ezhpcy.login import PASSWORD_ATTEMPTS, ConnectionFailed, Prompts
-lazy from ezhpcy.ssh import RemoteHost
-lazy from ezhpcy.types import ConfigError, Login
 
 logger = get_logger(__name__)
 
@@ -61,25 +68,32 @@ def cli_prompts() -> Prompts:
     return Prompts(ask_password=ask_password, accept_host_key=accept_host_key)
 
 
+@asynccontextmanager
 async def connect_or_exit(
     login: Login,
     password: SecretStr | None,
     options: ConnectionOptions,
     *,
     profile_name: str | None,
-) -> RemoteHost:
+) -> AsyncGenerator[api.Host]:
     """
-    Connect for a command, with the CLI's prompts. If it can't connect, print
-    `Error: Could not connect to user@host: …` and exit with status 1; a password
-    source that can't be read is a usage error.
+    Connect for a command's block, with the CLI's prompts. If it can't connect,
+    print `Error: Could not connect to user@host: …` and exit with status 1; a
+    password source that can't be read is a usage error. What the block raises
+    is left alone.
     """
+    connected = False
     try:
-        return await login_module.connect(
-            login, prompts=cli_prompts(), password=password
-        )
+        async with api.connect(login, prompts=cli_prompts(), password=password) as host:
+            connected = True
+            yield host
     except ConfigError as error:
+        if connected:
+            raise
         raise login_usage_error(error, options, profile_name=profile_name) from error
     except ConnectionFailed as error:
+        if connected:
+            raise
         logger.debug("Could not connect.", exc_info=True)
         target = f"{login.user}@{login.host}"
         print_error(t"Could not connect to {target:name}: {error}")

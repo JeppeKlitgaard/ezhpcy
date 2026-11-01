@@ -7,8 +7,8 @@ lazy from string.templatelib import Template
 
 lazy from rich.text import Text
 
+lazy from ezhpcy.api import AliasProblem
 lazy from ezhpcy.cli._console import console, error_console
-lazy from ezhpcy.tunnel.ssh_config import AliasProblem, include_directive
 
 INCLUDE_HINT = (
     t"If {'~/.ssh/config':path} does not include EzHPCy's SSH profiles yet, copy "
@@ -30,13 +30,13 @@ def print_include_lines(problem: AliasProblem) -> None:
     """Print the Include lines to stderr, after a blank line, if they are the fix."""
     if problem.include_lines is not None:
         error_console.print()
-        echo_include_directive(err=True)
+        echo_include_lines(problem.include_lines, err=True)
 
 
-def echo_include_directive(*, err: bool = False) -> None:
+def echo_include_lines(lines: str, *, err: bool = False) -> None:
     """Print the Include lines followed by a blank line, ready to copy verbatim."""
     # Unindented and unwrapped, even for long paths; the colour marks what to
     # copy and is dropped when output is not a terminal.
     (error_console if err else console).print(
-        Text(include_directive() + "\n", style="bold cyan"), soft_wrap=True
+        Text(lines + "\n", style="bold cyan"), soft_wrap=True
     )

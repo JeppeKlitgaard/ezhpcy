@@ -1,231 +1,61 @@
-from dataclasses import dataclass
-from enum import StrEnum
-lazy import secrets
-lazy from collections.abc import Iterator
-lazy from shutil import which
-lazy from string.templatelib import Template
-
 lazy from rich.text import Text
 
-from ezhpcy.config import Config, StoredPasswordError, unless_disabled
+lazy from ezhpcy import api
 lazy from ezhpcy.cli import _include as include
 lazy from ezhpcy.cli._console import console
-lazy from ezhpcy.cli._errors import sentence
 lazy from ezhpcy.cli._messages import rich_text
 lazy from ezhpcy.cli._options import ConfigArg
-lazy from ezhpcy.permissions import FilePermissionError
-lazy from ezhpcy.tunnel.ssh_config import (
-    AliasProblem,
-    probe_hosts,
-    prune_stale_active_configs,
-    resolution_problem,
-)
-
-
-class Status(StrEnum):
-    OK = "ok"
-    WARN = "warn"
-    FAIL = "fail"
-
 
 _STATUS_STYLES = {
-    Status.OK: "bold green",
-    Status.WARN: "bold yellow",
-    Status.FAIL: "bold red",
+    "ok": "bold green",
+    "warn": "bold yellow",
+    "fail": "bold red",
+}
+_SECTION_TITLES = {
+    "configuration": "Configuration",
+    "ssh": "SSH (lets `ssh <alias>` reach running tunnels)",
 }
 
 
-@dataclass(frozen=True)
-class Check:
-    """The outcome of one doctor check."""
-
-    status: Status
-    message: Template
-    hint: Template | None = None
-    show_include: bool = False
-
-
-def _check_profile(source: Config, profile_name: str | None) -> Check:
-    """Check a profile resolves, or with `None` the top-level `connection` table."""
-    subject = (
-        t"Top-level {'connection':name} table"
-        if profile_name is None
-        else t"Profile {profile_name:name}"
-    )
-    try:
-        source.reject_stored_password(profile_name)
-    except StoredPasswordError as error:
-        return Check(
-            Status.FAIL,
-            subject + t" is invalid",
-            hint=sentence(error.message),
-        )
-
-    connection = source.resolve_profile(profile_name).connection
-    password_file = unless_disabled(connection.password_file)
-    # `resolve_password` reads a descriptor first, and then never the file.
-    reads_file = unless_disabled(connection.password_fd) is None
-    if reads_file and password_file is not None and not password_file.is_file():
-        return Check(
-            Status.FAIL,
-            subject + t" is invalid: {'connection.password_file':name} "
-            t"{password_file:path} does not exist",
-        )
-    if connection.user is None or connection.host is None:
-        return Check(Status.OK, subject + t" is valid")
-    return Check(
-        Status.OK,
-        subject + t" is valid: {connection.user}@{connection.host}",
-    )
-
-
-def check_config(source: Config) -> Iterator[Check]:
-    """
-    Check that the configuration file exists, and that its top-level `connection`
-    table and every profile resolve.
-    """
-    config_file = source.local_file.config_file
-    if not config_file.is_file():
-        yield Check(
-            Status.FAIL,
-            t"Config file not found: {config_file:path}",
-            hint=t"Run {'ezhpcy config load <preset>':suggestion} to start from a "
-            t"preset, or {'ezhpcy config edit':suggestion} to write one yourself.",
-        )
-        return
-    yield Check(Status.OK, t"Config file found: {config_file:path}")
-
-    if source.connection.model_fields_set:
-        yield _check_profile(source, None)
-
-    if not source.profile:
-        yield Check(
-            Status.WARN,
-            t"No profiles are configured",
-            hint=t"Add a {'[profile.NAME]':suggestion} table with "
-            t"{'ezhpcy config edit':suggestion}, or load a preset with "
-            t"{'ezhpcy config load <preset>':suggestion}.",
-        )
-        return
-
-    for name in source.profile:
-        yield _check_profile(source, name)
-
-
-def _profile_aliases(source: Config) -> list[str]:
-    """The profiles a tunnel can start from as they are: with a user and a host."""
-    aliases = []
-    for name in source.profile:
-        connection = source.resolve_profile(name).connection
-        if connection.user is not None and connection.host is not None:
-            aliases.append(name)
-    return aliases
-
-
-def check_ssh_config(source: Config) -> Iterator[Check]:
-    """
-    Remove stale Host blocks, then check that OpenSSH gives each profile's alias
-    EzHPCy's Host block, as it does for a running tunnel.
-    """
-    ssh = which("ssh")
-    if ssh is None:
-        yield Check(
-            Status.WARN,
-            t"SSH client not found on PATH, so {'ssh <alias>':suggestion} "
-            t"cannot be checked",
-            hint=t"Install an OpenSSH client to connect to tunnels with "
-            t"{'ssh':suggestion}.",
-        )
-    else:
-        yield Check(Status.OK, t"SSH client found: {ssh:path}")
-
-    try:
-        removed = prune_stale_active_configs()
-    except OSError as error:
-        yield Check(Status.FAIL, t"Could not remove stale SSH hosts: {error}")
-        return
-    if removed:
-        names = ", ".join(path.name for path in removed)
-        yield Check(Status.OK, t"Removed stale SSH configuration: {names}")
-    if ssh is None:
-        return
-
-    aliases = _profile_aliases(source)
-    # Without profiles, a made-up alias still shows whether the Include works.
-    probed = aliases or [f"ezhpcy-doctor-{secrets.token_hex(4)}"]
-    problems: dict[str, AliasProblem | None] = {}
-    try:
-        with probe_hosts(probed):
-            problems = {alias: resolution_problem(alias) for alias in probed}
-    except (OSError, FilePermissionError) as error:
-        yield Check(Status.FAIL, t"Could not write the SSH probe: {error}")
-        return
-
-    for alias, problem in problems.items():
-        if problem is None:
-            yield Check(
-                Status.OK,
-                t"{f'ssh {alias}':suggestion} goes through EzHPCy"
-                if aliases
-                else t"OpenSSH reads EzHPCy's SSH configuration",
-            )
-        elif problem.ssh_failed:
-            yield Check(
-                Status.FAIL,
-                t"OpenSSH cannot resolve {f'ssh {alias}':suggestion}: {problem.detail}",
-                hint=problem.hint,
-            )
-        else:
-            yield Check(
-                Status.FAIL,
-                t"{f'ssh {alias}':suggestion} bypasses EzHPCy: {problem.detail}"
-                if aliases
-                else t"OpenSSH does not read EzHPCy's SSH configuration: "
-                t"{problem.detail}",
-                hint=include.hint(problem),
-                show_include=True,
-            )
-
-
-def _print_check(check: Check, printed_hints: set[str]) -> None:
+def _print_check(check: api.Check, printed_hints: set[str]) -> None:
     status = Text(f"{check.status:<4}", style=_STATUS_STYLES[check.status])
     console.print(Text("  ") + status + Text("  ") + rich_text(check.message))
     if check.hint is None:
         return
     # Several checks share a remedy; repeating it adds noise, not information.
-    hint = rich_text(check.hint)
+    hint = rich_text(
+        check.hint if check.include_lines is None else include.INCLUDE_HINT
+    )
     if hint.plain not in printed_hints:
         printed_hints.add(hint.plain)
         console.print(Text("        ") + hint, style="dim")
-        if check.show_include:
+        if check.include_lines is not None:
             console.print()
-            include.echo_include_directive()
+            include.echo_include_lines(check.include_lines)
 
 
 def doctor_cmd(*, config: ConfigArg) -> None:
     """Check the configuration and that OpenSSH picks up EzHPCy's Host blocks."""
-    # Generators: each runs only as far as it is read.
-    sections = {
-        "Configuration": check_config(config),
-        "SSH (lets `ssh <alias>` reach running tunnels)": check_ssh_config(config),
-    }
     printed_hints: set[str] = set()
     warnings = 0
-    for index, (title, checks) in enumerate(sections.items()):
-        if index > 0:
-            console.print()
-        console.print(Text(title, style="bold"))
-        # Checks run lazily, so later checks never act on a broken earlier step.
-        for check in checks:
-            _print_check(check, printed_hints)
-            if check.status is Status.FAIL:
+    section = None
+    # Checks run as they are read, so later checks never act on a broken earlier
+    # step.
+    for check in api.diagnose(config):
+        if check.section != section:
+            if section is not None:
                 console.print()
-                console.print(
-                    Text("Stopped at the first failure", style="bold red")
-                    + rich_text(t"; fix it and run {'ezhpcy doctor':suggestion} again.")
-                )
-                raise SystemExit(1)
-            warnings += check.status is Status.WARN
+            section = check.section
+            console.print(Text(_SECTION_TITLES[section], style="bold"))
+        _print_check(check, printed_hints)
+        if check.status is api.CheckStatus.FAIL:
+            console.print()
+            console.print(
+                Text("Stopped at the first failure", style="bold red")
+                + rich_text(t"; fix it and run {'ezhpcy doctor':suggestion} again.")
+            )
+            raise SystemExit(1)
+        warnings += check.status is api.CheckStatus.WARN
 
     console.print()
     if warnings:

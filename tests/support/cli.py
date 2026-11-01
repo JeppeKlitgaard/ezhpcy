@@ -126,8 +126,9 @@ class _FakeLogin:
     """Stands in for the login connection, and stops at the first remote operation
     after `remote_state`."""
 
-    def __init__(self, captured: dict[str, object]) -> None:
+    def __init__(self, captured: dict[str, object], login: Login) -> None:
         self._captured = captured
+        self.login = login
 
     async def __aenter__(self) -> Self:
         return self
@@ -197,7 +198,7 @@ def capture(
             ) -> _FakeLogin:
                 captured["login"] = login
                 captured["password"] = password or login_module.read_password(login)
-                return _FakeLogin(captured)
+                return _FakeLogin(captured, login)
 
             monkeypatch.setattr(login_module, "connect", connect)
         case "keyring":

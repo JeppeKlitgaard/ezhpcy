@@ -23,7 +23,7 @@ login node, and a host of its own once it runs (`Job.host`).
                 await job.wait()  # until the job ends, or `job.stop()`
 
 Every host has the same operations: commands (`Host.run`), files (`Host.put`,
-`Host.get`), processes started detached (`Host.start`), forwarded ports
+`Host.get`, `Host.list_directory`), processes started detached (`Host.start`), forwarded ports
 (`Host.forward`, `Host.reverse_forward`), apps (`Host.run_app`), and jobs
 (`Host.job`). Processes, ports and apps are attached to the host they were made
 on, and closed, newest first, when its connection closes, unless they were
@@ -41,6 +41,14 @@ there, and is forwarded to a loopback port here:
     config = api.Config.load()
     lab = await job.host.run_app(config.app("lab"))
     print(lab.url)
+
+An app may have actions: commands run on its host, in its environment, while it
+runs, by hand or by a timer, and may be its actions alone, with no server, and
+so no `url`. `RunningApp.actions` describes them, with their
+inputs, so that any frontend can offer them, and `RunningApp.run_action` runs one:
+
+    result = await lab.run_action("reindex", amount=3)
+    print(result.state, result.stdout)
 
 When the job ends or fails while its block's code runs, as `asyncio.timeout`
 does, that code is cancelled, and leaving the block raises `JobEnded` (the
@@ -74,8 +82,9 @@ lazy from pydantic import SecretStr
 
 from ezhpcy.ssh_errors import translating_ssh_errors
 lazy from ezhpcy import forward as _forward, login as _login, process as _process
-lazy from ezhpcy.app import AppFailed, ManifestError, run as _app_run
-lazy from ezhpcy.app.manifest import App, Link, Manifest
+lazy from ezhpcy.app import ActionError, AppFailed, ManifestError, run as _app_run
+lazy from ezhpcy.app.action import ActionRun, ActionState
+lazy from ezhpcy.app.manifest import Action, ActionInput, App, Link, Manifest
 lazy from ezhpcy.app.run import AppState, AppStatus, LinkStatus, RunningApp
 lazy from ezhpcy.config import Config, Profile
 lazy from ezhpcy.constants import EZHPCY_VERSION, KEYRING_SERVICE_NAME
@@ -111,6 +120,7 @@ lazy from ezhpcy.scheduler.types import SchedulerType
 lazy from ezhpcy.ssh import (
     CommandFailed,
     Destination,
+    DirectoryEntry,
     RemoteHost,
     SocketDestination,
     TCPDestination,
@@ -144,6 +154,11 @@ __all__ = [
     "EZHPCY_VERSION",
     "KEYRING_SERVICE_NAME",
     "PASSWORD_ATTEMPTS",
+    "Action",
+    "ActionError",
+    "ActionInput",
+    "ActionRun",
+    "ActionState",
     "AliasInUse",
     "AliasProblem",
     "AliasReservation",
@@ -159,6 +174,7 @@ __all__ = [
     "ConfigError",
     "ConnectionFailed",
     "Destination",
+    "DirectoryEntry",
     "Forward",
     "ForwardStatus",
     "Host",
@@ -321,6 +337,15 @@ class Host:
             await sftp.get(remote, local)
 
     @translating_ssh_errors
+    async def list_directory(self, path: PurePosixPath) -> tuple[DirectoryEntry, ...]:
+        """
+        What is in the directory `path` on the host, by name, over SFTP, for a
+        frontend to browse a `path` input with. Raises `SSHError` if it can't be
+        read. Cancelled, it stops.
+        """
+        return await self._host.list_directory(path)
+
+    @translating_ssh_errors
     async def start(
         self,
         argv: Sequence[str],
@@ -393,7 +418,8 @@ class Host:
         Run an app from a manifest (`Config.app`, `Manifest`) on the host, and
         return once it is ready and forwarded to `local_port` here (by default
         its `access.local_port`, by default a free one). Attached to the host
-        until stopped. See `RunningApp`.
+        until stopped. See `RunningApp`. Of an app with actions alone, only the
+        first step below happens.
 
         In order:
 

@@ -1,0 +1,7 @@
+[workspace]
+name = "zhome-quota"
+channels = ["conda-forge"]
+platforms = ["linux-64"]
+
+[dependencies]
+python = "3.15.*"

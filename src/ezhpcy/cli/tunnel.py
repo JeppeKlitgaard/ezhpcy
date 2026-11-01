@@ -316,7 +316,8 @@ class TunnelRun:
                 )
             )
             return None
-        _print_url(running.url)
+        if running.url is not None:
+            _print_url(running.url)
         return running
 
     def show_link(self, link: api.Link) -> None:

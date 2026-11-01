@@ -20,23 +20,39 @@ The app's values are rendered in its launch script, written over SFTP: the
 token, in its environment only; the run directory, which only the host knows
 before the start; and for `tcp`, the port the launch script picks.
 
+An app with actions alone has no process and no port: it is ready once its
+environment is, and its actions run until it is stopped.
+
 An app is one attachment of its host, whose parts are its process and, once it
 is ready, its forwarded port. Stopping it, or closing the host's connection,
-closes the port, then stops the process and removes its run directory.
+stops its actions (`ezhpcy.app.action`) and closes the port, then stops the
+process and removes its run directory.
 """
 
 from dataclasses import dataclass
 from enum import Enum, auto
 lazy import asyncio
 lazy import secrets
+lazy from collections.abc import Mapping
+lazy from functools import partial
 lazy from pathlib import PurePosixPath
 
 lazy import asyncssh
 
 from ezhpcy.logging import REPLAY_ON_ERROR, get_logger
+from ezhpcy.ssh_errors import translating_ssh_errors
 lazy from ezhpcy import forward as _forward, process as _process
 lazy from ezhpcy.app import AppFailed
-lazy from ezhpcy.app.manifest import ENVIRONMENT_VARIABLES, App, Link, Ready, render
+lazy from ezhpcy.app.action import ActionRun, AppActions
+lazy from ezhpcy.app.manifest import (
+    ENVIRONMENT_VARIABLES,
+    Action,
+    App,
+    Command,
+    Link,
+    Ready,
+    render,
+)
 lazy from ezhpcy.app.provision import (
     AppsLayout,
     ProvisionedApp,
@@ -90,7 +106,7 @@ class AppStatus:
     name: str
     version: str
     state: AppState = AppState.PROVISIONING
-    # Its process's, once started.
+    # Its process's, once started; one of its own, without a server.
     run_id: str | None = None
     url: str | None = None
     # Shown under its URL (`access.status_hints`), once it has one.
@@ -99,6 +115,8 @@ class AppStatus:
     connections: int = 0
     # Once it has exited: `128+n` for a death by signal n.
     exit_status: int | None = None
+    # Each action's latest run, of those that have run.
+    actions: tuple[ActionRun, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,19 +135,22 @@ class LinkStatus:
 
 class RunningApp:
     """
-    An app served from its host (`Host.run_app`): its `process` there, and the
-    `forward` of a loopback port here to it, at `url`. Attached to its host
-    until stopped; its exit ends only this handle, never its host or job.
+    An app from its host (`Host.run_app`): its `process` there, the `forward` of a
+    loopback port here to it, at `url`, and its `actions`. Attached to its host
+    until stopped; its exit ends only this handle, never its host or job. An app
+    with actions alone has no `process`, `forward` or `url`.
     """
 
     def __init__(
         self,
         app: App,
-        url: str,
+        url: str | None,
         status_hints: tuple[str, ...],
-        process: Process,
-        forward: Forward,
+        process: Process | None,
+        forward: Forward | None,
         attachment: Attachment,
+        actions: AppActions,
+        stopped: asyncio.Future[None] | None = None,
     ) -> None:
         # Use `Host.run_app`.
         self.app = app
@@ -138,11 +159,42 @@ class RunningApp:
         self.process = process
         self.forward = forward
         self._attachment = attachment
+        self._actions = actions
+        # Resolved when it is stopped, if it has no process to wait for.
+        self._stopped = stopped
 
     @property
-    def local_port(self) -> int:
-        """The loopback port here that `url` is on."""
-        return self.forward.port
+    def actions(self) -> Mapping[str, Action]:
+        """
+        Its actions, by name, with everything a frontend needs to offer them:
+        what each does, what runs it, and its inputs, whose `path` defaults are
+        rendered for this run.
+        """
+        return self._actions.actions
+
+    @translating_ssh_errors
+    async def run_action(self, name: str, /, **inputs: object) -> ActionRun:
+        """
+        Run the action `name` on the app's host, with `inputs` as its inputs'
+        values and their defaults for the rest, and return how it ended once it
+        has: an exit status other than 0 is a result, `ActionState.FAILED`. See
+        `ActionRun`; `status` has each action's latest.
+
+        A value is as its type says: `ActionInput.parse` makes one of what a user
+        typed. A `path` is on the host, and its `kind` and `must_exist` are
+        checked there, over SFTP.
+
+        Raises `ActionError` if the action can't run as asked: there is no such
+        action or it runs only by its timer, it is running already, the app
+        isn't, or a value is wrong. Raises `SSHError` if the connection fails.
+        Cancelled, it stops the run's process and removes its run directory.
+        """
+        return await self._actions.run(name, inputs)
+
+    @property
+    def local_port(self) -> int | None:
+        """The loopback port here that `url` is on, if it has one."""
+        return self.forward.port if self.forward is not None else None
 
     @property
     def status(self) -> AppStatus:
@@ -155,9 +207,14 @@ class RunningApp:
         """
         Wait until the app exits, and return its exit status. Raises `SSHError`
         or `RuntimeError` if the host's connection is lost first. Cancelled, only
-        the waiting stops.
+        the waiting stops. An app with actions alone exits only by being stopped,
+        with status 0.
         """
-        return await self.process.wait()
+        if self.process is not None:
+            return await self.process.wait()
+        assert self._stopped is not None
+        await asyncio.shield(self._stopped)
+        return 0
 
     async def stop(self) -> None:
         """
@@ -167,15 +224,15 @@ class RunningApp:
         await self._attachment.close()
 
     async def stderr(self, lines: int = 20) -> str:
-        """The last `lines` lines of its stderr, until it is stopped."""
-        return await self.process.stderr(lines)
+        """The last `lines` lines of its stderr, until it is stopped, if it has one."""
+        return await self.process.stderr(lines) if self.process is not None else ""
 
     async def log_stderr(self) -> str:
         """
         The last lines of its stderr, logged at DEBUG for a handler to show with
         the next error; empty if they can't be read, as it raises nothing for that.
         """
-        return await log_stderr(self.process)
+        return await log_stderr(self.process) if self.process is not None else ""
 
 
 async def run_app(
@@ -188,7 +245,8 @@ async def run_app(
 ) -> RunningApp:
     """
     Run `app` on `host` (see the module), and return once it is ready and
-    forwarded to `local_port` here (by default its `access.local_port`).
+    forwarded to `local_port` here (by default its `access.local_port`), if it
+    has a server.
 
     With `provision`, its environment and assets (and EzHPCy's Pixi) are
     installed on the host first if they aren't; without, they are only
@@ -228,6 +286,10 @@ async def _run(
     async with host.sftp() as sftp:
         await ensure_directory(sftp, workdir)
         await mark_used(sftp, provisioned)
+    if app.endpoint is None:
+        return _without_server(
+            host, app, attachment, remote_state, layout, provisioned, workdir
+        )
     logger.debug(
         t"App run: app={app!s:name} environment={provisioned.environment:path} "
         t"assets={provisioned.assets!s:path} workdir={workdir:path} "
@@ -239,6 +301,7 @@ async def _run(
     state, url, status_hints = AppState.STARTING, None, ()
     process: Process | None = None
     forward: Forward | None = None
+    actions: AppActions | None = None
 
     def changed() -> None:
         """Report the app's status, from its parts' and its own state."""
@@ -255,6 +318,7 @@ async def _run(
                 status_hints=status_hints,
                 connections=forward.connections if forward is not None else 0,
                 exit_status=exit_status,
+                actions=actions.latest if actions is not None else (),
             )
         )
 
@@ -293,9 +357,68 @@ async def _run(
     values = {"token": token, "local_port": str(forward.port)}
     url = render(app.access.url, values)
     status_hints = tuple(render(hint, values) for hint in app.access.status_hints)
+    actions = AppActions(
+        host,
+        app,
+        process,
+        attachment,
+        workdir=workdir,
+        values=_action_values(process, provisioned, workdir, token),
+        command=partial(_through_pixi, app, remote_state, layout, provisioned),
+        on_change=changed,
+    )
+    actions.start()
     changed()
     logger.info(t"App {app!s:name} is ready at {url:target}.")
-    return RunningApp(app, url, status_hints, process, forward, attachment)
+    return RunningApp(app, url, status_hints, process, forward, attachment, actions)
+
+
+def _without_server(
+    host: RemoteHost,
+    app: App,
+    attachment: Attachment,
+    remote_state: RemoteState,
+    layout: AppsLayout,
+    provisioned: ProvisionedApp,
+    workdir: PurePosixPath,
+) -> RunningApp:
+    """An app with actions alone, ready now that its environment is."""
+    run_id = secrets.token_hex(8)
+    stopped = asyncio.get_running_loop().create_future()
+    actions: AppActions | None = None
+
+    def changed() -> None:
+        attachment.report(
+            AppStatus(
+                name=app.name,
+                version=app.version,
+                state=AppState.READY,
+                run_id=run_id,
+                actions=actions.latest if actions is not None else (),
+            )
+        )
+
+    async def stop() -> None:
+        stopped.set_result(None)
+
+    attachment.push("say the app has stopped", stop)
+    values = {"workdir": str(workdir)}
+    if provisioned.assets is not None:
+        values["assets"] = str(provisioned.assets)
+    actions = AppActions(
+        host,
+        app,
+        None,
+        attachment,
+        workdir=workdir,
+        values=values,
+        command=partial(_through_pixi, app, remote_state, layout, provisioned),
+        on_change=changed,
+    )
+    actions.start()
+    changed()
+    logger.info(t"App {app!s:name} is ready, with its actions alone.")
+    return RunningApp(app, None, (), None, None, attachment, actions, stopped)
 
 
 def _command(
@@ -307,6 +430,7 @@ def _command(
     token: str,
 ) -> tuple[list[str], dict[str, str]]:
     """The app's command, through EzHPCy's Pixi, and its environment."""
+    assert app.run is not None and app.endpoint is not None
     values = {"run_dir": _process.RUN_DIR, "workdir": str(workdir), "token": token}
     if app.endpoint.transport == "socket":
         values["socket"] = f"{_process.RUN_DIR}/{SOCKET_NAME}"
@@ -314,6 +438,35 @@ def _command(
         values["port"] = _process.PORT
     if provisioned.assets is not None:
         values["assets"] = str(provisioned.assets)
+    return _through_pixi(app, remote_state, layout, provisioned, app.run, values)
+
+
+def _action_values(
+    process: Process,
+    provisioned: ProvisionedApp,
+    workdir: PurePosixPath,
+    token: str,
+) -> dict[str, str]:
+    """What an action's placeholders are, of the app it reaches, as it runs."""
+    values = {"workdir": str(workdir), "token": token}
+    if process.port is not None:
+        values["port"] = str(process.port)
+    else:
+        values["socket"] = str(process.run_dir / SOCKET_NAME)
+    if provisioned.assets is not None:
+        values["assets"] = str(provisioned.assets)
+    return values
+
+
+def _through_pixi(
+    app: App,
+    remote_state: RemoteState,
+    layout: AppsLayout,
+    provisioned: ProvisionedApp,
+    command: Command,
+    values: Mapping[str, str],
+) -> tuple[list[str], dict[str, str]]:
+    """`command`, through EzHPCy's Pixi in the app's environment, and its environment."""
     argv = remote_state.pixi_command(
         "run",
         "--as-is",
@@ -323,13 +476,17 @@ def _command(
         "--environment",
         app.environment.environment,
         "--",
-        *(render(argument, values) for argument in app.run.command),
+        *(render(argument, values) for argument in command.command),
         cache_dir=layout.pixi_cache,
     )
     # The manifest's own variables after EzHPCy's, which they can't override
     # (`EZHPCY_*` are reserved).
-    env = {ENVIRONMENT_VARIABLES[name]: value for name, value in values.items()}
-    env |= {name: render(value, values) for name, value in app.run.env.items()}
+    env = {
+        variable: values[name]
+        for name, variable in ENVIRONMENT_VARIABLES.items()
+        if name in values
+    }
+    env |= {name: render(value, values) for name, value in command.env.items()}
     return list(argv), env
 
 
@@ -350,6 +507,7 @@ def _warn_if_reachable(app: App) -> None:
     host. Not even an exclusive job's node is counted on to be the user's
     alone.
     """
+    assert app.endpoint is not None
     if app.endpoint.authenticates:
         return
     if app.endpoint.transport == "tcp":

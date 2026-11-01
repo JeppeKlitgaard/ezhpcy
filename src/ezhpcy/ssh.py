@@ -12,9 +12,10 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 lazy import asyncio
 lazy import shlex
+lazy import stat
 lazy from collections.abc import AsyncGenerator, Callable, Coroutine
 lazy from types import TracebackType
-lazy from typing import Self, cast
+lazy from typing import Literal, Self, cast
 
 import asyncssh
 
@@ -159,6 +160,40 @@ def _command_failed(result: asyncssh.SSHCompletedProcess) -> CommandFailed:
     )
 
 
+@dataclass(frozen=True, slots=True)
+class DirectoryEntry:
+    """What is in a directory on a host, from `Host.list_directory`."""
+
+    name: str
+    path: PurePosixPath
+    # A symbolic link counts as what it points to, or as "other" if it's broken.
+    kind: Literal["file", "directory", "other"]
+    # In bytes, if the host says.
+    size: int | None
+
+
+async def _directory_entry(
+    sftp: asyncssh.SFTPClient,
+    directory: PurePosixPath,
+    name: str,
+    attrs: asyncssh.SFTPAttrs,
+) -> DirectoryEntry:
+    path = directory / name
+    if stat.S_ISLNK(attrs.permissions or 0):
+        try:
+            attrs = await sftp.stat(path)
+        except asyncssh.SFTPError:
+            return DirectoryEntry(name, path, "other", None)
+    mode = attrs.permissions or 0
+    if stat.S_ISDIR(mode):
+        kind = "directory"
+    elif stat.S_ISREG(mode):
+        kind = "file"
+    else:
+        kind = "other"
+    return DirectoryEntry(name, path, kind, attrs.size)
+
+
 class RemoteHost:
     """
     A connection to a host: the login node, or the worker's sshd through it.
@@ -274,6 +309,17 @@ class RemoteHost:
         """Open an SFTP session."""
         async with self._conn.start_sftp_client() as sftp:
             yield sftp
+
+    async def list_directory(self, path: PurePosixPath) -> tuple[DirectoryEntry, ...]:
+        """What is in the directory `path`, by name (see `DirectoryEntry`)."""
+        async with self.sftp() as sftp:
+            names = await sftp.readdir(path)
+            entries = [
+                await _directory_entry(sftp, path, str(name.filename), name.attrs)
+                for name in names
+                if name.filename not in (".", "..")
+            ]
+        return tuple(sorted(entries, key=lambda entry: entry.name))
 
     async def open_tcp(
         self, host: str, port: int

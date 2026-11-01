@@ -112,7 +112,8 @@ class AppsLayout:
 
     def workdir(self, app: App) -> PurePosixPath:
         """The app's workdir: its own `run.workdir`, or a default by its name."""
-        return app.run.workdir or self.root / WORK_DIRECTORY / app.normalised_name
+        own = app.run.workdir if app.run is not None else None
+        return own or self.root / WORK_DIRECTORY / app.normalised_name
 
 
 @dataclass(frozen=True, slots=True)

@@ -8,16 +8,20 @@ with the in-process SSH servers and the fakes of `tests.support`.
 import asyncio
 import json
 import socket
+import threading
+import time
 from pathlib import Path, PurePosixPath
 from typing import Any
 
 import pytest
 
-from ezhpcy import api
-from tests.support.api import LOGIN, JobRig
+from ezhpcy import api, process as process_module
+from tests.support.api import LOGIN, JobRig, SlowPorts
 from tests.support.sshserver import Invocation, SSHTestServer, reply
 from tests.support.tunnel import JOB_ID, control_dirs, unused_port
 from tests.support.worker import NODE, FakeProcess, FakeProcesses, quick_processes
+
+pytestmark = pytest.mark.usefixtures("quiet_api")
 
 WAIT_SECONDS = 5
 
@@ -295,6 +299,107 @@ async def test_a_reverse_forward_the_host_refuses_raises_an_ssh_error(
     async with api.connect(LOGIN) as host:
         with pytest.raises(api.SSHError):
             await host.reverse_forward(0, api.TCPDestination("127.0.0.1", 1))
+
+
+# Cancelled midway
+
+
+async def _cancelled(task: asyncio.Task[Any]) -> None:
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+async def _refused(port: int) -> None:
+    """Wait for `port` to refuse connections: a host's may take a round trip."""
+    async with asyncio.timeout(WAIT_SECONDS):
+        while True:
+            try:
+                await asyncio.to_thread(round_trip, port)
+            except ConnectionRefusedError:
+                return
+            await asyncio.sleep(0.01)
+
+
+async def test_a_start_cancelled_before_its_process_runs_removes_its_run_directory(
+    login: SSHTestServer,
+    processes: FakeProcesses,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    writing = asyncio.Event()
+
+    async def wait_forever(*_args: object) -> None:
+        writing.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(process_module, "_write", wait_forever)
+
+    async with api.connect(LOGIN) as host:
+        starting = asyncio.create_task(host.start(["python", "serve.py"]))
+        async with asyncio.timeout(WAIT_SECONDS):
+            await writing.wait()
+        await _cancelled(starting)
+
+        assert host.status == ()
+        assert processes.processes == []
+        assert list(login.local_path("/tmp").iterdir()) == []
+
+
+async def test_a_start_cancelled_while_its_process_starts_stops_it(
+    login: SSHTestServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    starting_up = threading.Event()
+
+    def slowly(_process: FakeProcess) -> None:
+        starting_up.set()
+        time.sleep(0.05)
+
+    quick_processes(monkeypatch)
+    processes = FakeProcesses(login, on_start=slowly)
+
+    async with api.connect(LOGIN) as host:
+        starting = asyncio.create_task(host.start(["python", "serve.py"]))
+        await asyncio.to_thread(starting_up.wait, WAIT_SECONDS)
+        await _cancelled(starting)
+
+        [fake] = processes.processes
+        assert fake.signals == ["TERM"]
+        assert not fake.run_dir.exists()
+        assert host.status == ()
+
+
+async def test_a_forward_cancelled_midway_closes_its_port(
+    login: SSHTestServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ports = SlowPorts(monkeypatch, "forward_local_port")
+
+    async with api.connect(LOGIN) as host:
+        forwarding = asyncio.create_task(
+            host.forward(api.TCPDestination("127.0.0.1", login.listen(_echo)))
+        )
+        async with asyncio.timeout(WAIT_SECONDS):
+            await ports.opened.wait()
+        await _cancelled(forwarding)
+
+        assert host.status == ()
+        await _refused(ports.port)
+
+
+async def test_a_reverse_forward_cancelled_midway_closes_its_port(
+    login: SSHTestServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ports = SlowPorts(monkeypatch, "forward_remote_port")
+
+    async with api.connect(LOGIN) as host:
+        forwarding = asyncio.create_task(
+            host.reverse_forward(0, api.TCPDestination("127.0.0.1", unused_port()))
+        )
+        async with asyncio.timeout(WAIT_SECONDS):
+            await ports.opened.wait()
+        await _cancelled(forwarding)
+
+        assert host.status == ()
+        await _refused(ports.port)
 
 
 # Closing with the host

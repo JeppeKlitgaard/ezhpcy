@@ -17,6 +17,8 @@ from tests.support.login import offer_client_key
 from tests.support.sshserver import SSHTestServer
 from tests.support.tunnel import openssh_resolves
 
+pytestmark = pytest.mark.usefixtures("quiet_api")
+
 
 class Answers:
     """Prompts that answer from what the test sets, and record what was asked."""

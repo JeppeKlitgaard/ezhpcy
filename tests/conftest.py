@@ -24,6 +24,7 @@ from ezhpcy.cli._logging import (
     configure_logging,
 )
 from ezhpcy.config import ConsoleLoggingConfig, LocalFileConfig, local_files
+from ezhpcy.constants import PACKAGE_NAME
 from ezhpcy.tunnel import ssh_config
 from tests.support.login import MACHINE_ID, route_login
 from tests.support.sshserver import SSHTestServer
@@ -114,6 +115,31 @@ def no_log_file() -> Iterator[None]:
     """Stop writing the log file a CLI run started, in the test's `tmp_path`."""
     yield
     configure_log_file(None)
+
+
+@pytest.fixture
+def quiet_api(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> Iterator[None]:
+    """
+    Fail a test whose `ezhpcy.api` calls printed or configured logging. Its logger
+    has no terminal handler, as in a library user's program, so that what is
+    printed isn't the CLI's.
+    """
+    root = logging.getLogger()
+    package = logging.getLogger(PACKAGE_NAME)
+    monkeypatch.setattr(package, "handlers", [])
+    monkeypatch.setattr(package, "propagate", True)
+    # It would do nothing here, with pytest's handlers on the root logger.
+    monkeypatch.setattr(
+        logging, "basicConfig", lambda **_: pytest.fail("logging.basicConfig called")
+    )
+    before = (list(root.handlers), root.level, package.level)
+    yield
+    assert capsys.readouterr() == ("", "")
+    assert (list(root.handlers), root.level, package.level) == before
+    assert package.handlers == []
+    assert package.propagate
 
 
 @pytest.fixture

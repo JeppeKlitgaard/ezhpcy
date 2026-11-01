@@ -15,6 +15,8 @@ from tests.support.apps import MINIMAL_APP, write_project
 from tests.support.login import CACHE, STATE
 from tests.support.sshserver import SSHTestServer, reply
 
+pytestmark = pytest.mark.usefixtures("quiet_api")
+
 
 def commands(server: SSHTestServer, name: str) -> list[list[str]]:
     return [argv for argv in server.commands_run if argv[0] == name]

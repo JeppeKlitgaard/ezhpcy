@@ -16,16 +16,25 @@ against the in-process SSH server and a scheduler fake. Among the outcomes:
 import functools
 import re
 import signal
-from collections.abc import Callable
+from collections.abc import Callable, Generator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
 import pytest
 
+from ezhpcy import login as login_module
 from ezhpcy.cli import tunnel as tunnel_cli
-from ezhpcy.job import publish
-from ezhpcy.scheduler.base import JobInfo, JobSpec, JobState, SchedulerError
+from ezhpcy.job import lifecycle, publish
+from ezhpcy.scheduler.base import (
+    InteractiveJob,
+    JobInfo,
+    JobSpec,
+    JobState,
+    SchedulerError,
+)
 from ezhpcy.ssh import RemoteHost
+from ezhpcy.tunnel import lock
 from ezhpcy.tunnel.lock import alias_locked
 from ezhpcy.worker.control import WorkerControl
 from tests.support.cli import invoke
@@ -172,7 +181,8 @@ class Scenario:
 SCENARIOS = [
     Scenario(
         id="ctrl_c_while_serving",
-        inspections=[RUNNING, interrupt_while(RUNNING)],
+        # Once: a second Ctrl+C, from a poll while it stops, would force quit.
+        inspections=[RUNNING, interrupt_while(RUNNING), RUNNING],
         exit_code=0,
         message=None,
         why="Ctrl+C",
@@ -388,3 +398,130 @@ def test_tunnel_shutdown(
     # A block is only withdrawn if it was published, and never left behind.
     assert rig.published == rig.withdrawn
     assert not alias_locked("base")
+
+
+class Steps:
+    """The steps a tunnel takes, each the first time it is taken, in order."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.monkeypatch = monkeypatch
+        self.taken: list[str] = []
+
+    def take(self, step: str) -> None:
+        if step not in self.taken:
+            self.taken.append(step)
+
+    def before(self, owner: object, attribute: str, step: str) -> None:
+        """Take `step` as `owner.<attribute>` is called."""
+        original = getattr(owner, attribute)
+
+        def recording(*args: Any, **options: Any) -> Any:
+            self.take(step)
+            return original(*args, **options)
+
+        self.monkeypatch.setattr(owner, attribute, recording)
+
+
+def test_tunnel_starts_and_stops_in_order(
+    login: SSHTestServer, worker: SSHTestServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    [ctrl_c] = [
+        scenario for scenario in SCENARIOS if scenario.id.startswith("ctrl_c_w")
+    ]
+    rig = Rig(ctrl_c, login, worker, monkeypatch)
+    configure_tunnel(monkeypatch, login, timings=FAST_TIMINGS)
+    serve_interactive_job(login)
+    use_scheduler(monkeypatch, rig.scheduler)
+    steps = Steps(monkeypatch)
+
+    alias_lock = lock.alias_lock
+
+    @contextmanager
+    def recording_alias_lock(alias: str) -> Generator[None]:
+        with alias_lock(alias):
+            steps.take("reserve the alias")
+            yield
+        steps.take("release the alias")
+
+    monkeypatch.setattr(lock, "alias_lock", recording_alias_lock)
+
+    start_task = lifecycle.JobLifecycle.start_task
+
+    def recording_start_task(job: Any, coroutine: Any, *, name: str, **options: Any):
+        steps.take(f"start the {name}")
+        return start_task(job, coroutine, name=name, **options)
+
+    monkeypatch.setattr(lifecycle.JobLifecycle, "start_task", recording_start_task)
+
+    stop_task = lifecycle._stop_task
+
+    def recording_stop_task(task: Any, stop: Any) -> Any:
+        steps.take(f"stop the {task.get_name()}")
+        return stop_task(task, stop)
+
+    monkeypatch.setattr(lifecycle, "_stop_task", recording_stop_task)
+
+    nodes: list[RemoteHost] = []
+    connect_worker = RemoteHost.connect_worker
+
+    async def recording_connect_worker(host: RemoteHost, *args: Any) -> RemoteHost:
+        steps.take("connect to the node")
+        nodes.append(await connect_worker(host, *args))
+        return nodes[-1]
+
+    monkeypatch.setattr(RemoteHost, "connect_worker", recording_connect_worker)
+
+    close = RemoteHost.close
+
+    def recording_close(host: RemoteHost) -> Any:
+        steps.take(f"close the {'node' if host in nodes else 'login'} connection")
+        return close(host)
+
+    monkeypatch.setattr(RemoteHost, "close", recording_close)
+
+    steps.before(login_module, "connect", "connect")
+    steps.before(lifecycle, "provision_worker_infrastructure", "provision")
+    steps.before(WorkerControl, "create", "create the control directory")
+    steps.before(WorkerControl, "publish_lease", "write the first lease")
+    steps.before(FakeScheduler, "submit_interactive", "submit")
+    steps.before(FakeScheduler, "inspect", "wait for the job")
+    steps.before(WorkerControl, "read_status", "wait for ready")
+    steps.before(publish, "publish_host", "publish the Host block")
+    steps.before(publish, "withdraw_host", "withdraw the Host block")
+    steps.before(FakeScheduler, "cancel", "cancel the job")
+    steps.before(InteractiveJob, "close", "close the interactive job")
+    steps.before(WorkerControl, "close", "remove the control directory")
+
+    result = invoke(["tunnel", "base", "--worker-port", str(rig.worker_port)])
+
+    assert result.exit_code == 0, result
+    assert steps.taken == [
+        "reserve the alias",
+        "connect",
+        "start the connection watcher",
+        "provision",
+        "create the control directory",
+        "write the first lease",
+        "submit",
+        "start the interactive job output",
+        "wait for the job",
+        "wait for ready",
+        "start the worker heartbeats",
+        "start the job monitor",
+        "connect to the node",
+        "start the worker connection watcher",
+        "publish the Host block",
+        # Ctrl+C.
+        "stop the worker connection watcher",
+        "close the node connection",
+        "withdraw the Host block",
+        "stop the job monitor",
+        "stop the worker heartbeats",
+        "cancel the job",
+        "stop the interactive job output",
+        "close the interactive job",
+        "remove the control directory",
+        "stop the connection watcher",
+        "close the login connection",
+        "release the alias",
+    ]

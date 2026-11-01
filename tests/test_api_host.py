@@ -45,13 +45,15 @@ def round_trip(port: int, payload: bytes = b"ping") -> bytes:
     """Send `payload` and EOF to `port` on this machine; return what comes back."""
     received = b""
     with socket.create_connection(("127.0.0.1", port), WAIT_SECONDS) as stream:
-        # A connection closed at once may be reset, or aborted (on Windows).
+        # A connection closed at once may be reset, aborted (on Windows), or no
+        # longer connected, depending on when the other end's reset arrives. What
+        # came back shows whether it was closed too soon.
         try:
             stream.sendall(payload)
             stream.shutdown(socket.SHUT_WR)
             while chunk := stream.recv(64 * 1024):
                 received += chunk
-        except ConnectionResetError, ConnectionAbortedError:
+        except OSError:
             pass
     return received
 

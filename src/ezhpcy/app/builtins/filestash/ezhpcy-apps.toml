@@ -39,7 +39,3 @@ endpoint.transport = "tcp"
 endpoint.authenticates = true
 ready = { check = "http", path = "/healthz" }
 access.url = "http://127.0.0.1:{local_port}/login?type=local&password={token}"
-
-[ezhpcy.app.filestash."v0.1.0".resources]
-cores = 1
-time_limit = "4:00"

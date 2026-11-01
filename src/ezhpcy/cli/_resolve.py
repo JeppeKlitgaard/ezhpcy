@@ -19,7 +19,7 @@ lazy from ezhpcy.cli._options import (
     given_options,
     option_flags,
 )
-lazy from ezhpcy.logging import get_logger, label_log_file
+lazy from ezhpcy.logging import label_log_file
 lazy from ezhpcy.login import read_password
 lazy from ezhpcy.types import (
     ConfigError,
@@ -155,13 +155,10 @@ def job_from_cli(
     resource_options: ResourceOptions,
     timing_options: TimingOptions,
     auto_provision: bool | None,
-    app_resources: Mapping[str, object] | None = None,
 ) -> JobConfig:
     """
-    The worker job, from `profile_name`'s settings (or the top-level ones),
-    `app_resources` (what the apps it runs need) over them, and the CLI's
-    options on top. An interactive submission command decides the resources
-    instead, so then `app_resources` are left out, with a warning.
+    The worker job, from `profile_name`'s settings (or the top-level ones), and
+    the CLI's options on top.
     """
     sections = {
         "scheduler": scheduler_options,
@@ -174,16 +171,6 @@ def job_from_cli(
         for section, options in given.items()
     }
     try:
-        job = config.resolve_job(profile_name, **changes, auto_provision=auto_provision)
-        if not app_resources:
-            return job
-        if job.scheduler.interactive_submission_command is not None:
-            get_logger(__name__).warning(
-                t"Ignoring the apps' resources: "
-                t"{'scheduler.interactive_submission_command':name} decides them."
-            )
-            return job
-        changes["resources"] = {**app_resources, **changes["resources"]}
         return config.resolve_job(
             profile_name, **changes, auto_provision=auto_provision
         )

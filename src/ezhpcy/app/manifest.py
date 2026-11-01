@@ -28,7 +28,6 @@ lazy import stat
 lazy import tomllib
 lazy from collections.abc import Iterable, Iterator, Mapping, Sequence
 lazy from pathlib import Path, PurePosixPath
-lazy from typing import Any
 
 from pydantic import (
     BaseModel,
@@ -46,7 +45,7 @@ lazy from packaging.utils import canonicalize_name
 lazy from packaging.version import InvalidVersion, Version
 lazy from pydantic import ValidationError
 
-from ezhpcy.types import PositiveByteSize, Seconds, TimeLimit
+from ezhpcy.types import Seconds
 lazy from ezhpcy.app import ManifestError
 lazy from ezhpcy.logging import get_logger
 
@@ -313,26 +312,6 @@ def _executable(path: Path) -> bool:
     return bool(path.stat().st_mode & stat.S_IXUSR)
 
 
-class AppResources(_Table):
-    """What the app needs from its job; the profile says which queue."""
-
-    cores: int | None = Field(default=None, ge=1)
-    gpus: int | None = Field(default=None, ge=0)
-    exclusive: bool | None = None
-    time_limit: TimeLimit | None = None
-    memory: PositiveByteSize | None = None
-
-    @model_validator(mode="before")
-    @classmethod
-    def reject_queue(cls, values: object) -> object:
-        if isinstance(values, dict) and "queue" in values:
-            raise ValueError(
-                "queue is not set by an app: it is a fact about the cluster, so "
-                "it belongs in the profile's [resources]"
-            )
-        return values
-
-
 def _check_env_name(name: str) -> str:
     if not _ENV_NAME.fullmatch(name):
         raise ValueError(f"{name!r} is not an environment variable name")
@@ -485,7 +464,6 @@ class App(_Entry):
 
     environment: Environment
     assets: Assets | None = None
-    resources: AppResources = Field(default_factory=AppResources)
     run: Run
     endpoint: Endpoint
     ready: Ready = Field(default_factory=Ready)
@@ -860,21 +838,6 @@ def choose_app(
             t"version: {[f'{name}@{app.version}' for app in choices]:choice}"
         )
     return finals[-1]
-
-
-def combined_resources(apps: Sequence[Entry]) -> dict[str, Any]:
-    """
-    What `apps` need from one job together, by field of `Resources`, for those
-    fields any of them sets: the most any of them asks for, and exclusive if
-    any of them is. Links need nothing.
-    """
-    combined: dict[str, Any] = {}
-    for app in apps:
-        if isinstance(app, Link):
-            continue
-        for name, value in app.resources.model_dump(exclude_unset=True).items():
-            combined[name] = max(combined[name], value) if name in combined else value
-    return combined
 
 
 def environment_key(environment: Environment) -> str:

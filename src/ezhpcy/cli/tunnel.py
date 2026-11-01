@@ -45,7 +45,6 @@ lazy from ezhpcy.app.manifest import (
     builtin_manifests,
     choose_app,
     collect_apps,
-    combined_resources,
 )
 lazy from ezhpcy.app.run import log_stderr
 lazy from ezhpcy.cli import _include as include
@@ -200,7 +199,6 @@ async def tunnel_cmd(
         resource_options=resource_options,
         timing_options=timing_options,
         auto_provision=auto_provision,
-        app_resources=combined_resources(apps),
     )
     alias = _resolve_alias(config, alias, profile_name=profile, login=login, job=job)
     # The tunnel is known by its alias, which is usually the profile name.

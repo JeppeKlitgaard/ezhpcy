@@ -12,10 +12,6 @@ description = "JupyterLab with the project's environment"
 pixi = "pixi.toml"       # pixi.lock is read from beside it
 environment = "default"
 
-[ezhpcy.app.lab."v1.0".resources]   # what the app needs; the profile says which queue
-cores = 2
-time_limit = "4:00"
-
 [ezhpcy.app.lab."v1.0".run]
 command = [
     "jupyter", "lab", "--no-browser",

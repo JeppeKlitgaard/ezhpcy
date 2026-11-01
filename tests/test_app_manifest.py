@@ -14,13 +14,11 @@ import pytest
 from ezhpcy import api
 from ezhpcy.app.manifest import (
     App,
-    AppResources,
     AssetFile,
     Link,
     Manifest,
     assets_key,
     builtin_manifests,
-    combined_resources,
     environment_key,
     placeholders,
     render,
@@ -43,10 +41,6 @@ description = "JupyterLab with the project's environment"
 [ezhpcy.app.lab."v1.0".environment]
 pixi = "pixi.toml"
 environment = "default"
-
-[ezhpcy.app.lab."v1.0".resources]
-gpus = 1
-time_limit = "4:00"
 
 [ezhpcy.app.lab."v1.0".run]
 command = [
@@ -76,7 +70,6 @@ schema = 1
 description = "JupyterLab with the project's environment"
 environment.pixi = "pixi.toml"
 environment.environment = "default"
-resources = { gpus = 1, time_limit = "4:00" }
 run.command = [
     "jupyter", "lab", "--no-browser",
     "--ServerApp.sock={socket}",
@@ -151,7 +144,6 @@ def test_sub_tables_and_dotted_keys_load_alike(tmp_path: Path) -> None:
     assert sub_tables.model_dump(exclude={"environment"}) == dotted.model_dump(
         exclude={"environment"}
     )
-    assert sub_tables.resources == AppResources(gpus=1, time_limit=timedelta(hours=4))
     assert sub_tables.run.env == {
         "JUPYTER_TOKEN": "{token}",
         "JUPYTER_RUNTIME_DIR": "{run_dir}/jupyter",
@@ -290,12 +282,12 @@ def test_a_version_key_that_isnt_one_names_its_app(tmp_path: Path) -> None:
 
 
 def test_every_problem_is_listed(tmp_path: Path) -> None:
-    manifest = MINIMAL_APP + "rnu = 1\nresources.cores = 0\n"
+    manifest = MINIMAL_APP + 'rnu = 1\nrun.workdir = "work"\n'
 
     message = problems(tmp_path, manifest)
 
     assert f"{LAB}.rnu: unknown key" in message
-    assert f"{LAB}.resources.cores:" in message
+    assert f"{LAB}.run.workdir:" in message
 
 
 def test_invalid_toml_is_reported(tmp_path: Path) -> None:
@@ -716,61 +708,13 @@ def test_an_asset_outside_the_directory_through_a_link_is_an_error(
     )
 
 
-# Resources
-
-
-def test_resources_cannot_set_the_queue(tmp_path: Path) -> None:
-    message = problems(tmp_path, MINIMAL_APP + 'resources.queue = "gpu"\n')
-
-    assert f"{LAB}.resources: queue is not set by an app" in message
-
-
-@pytest.mark.parametrize(
-    ("resources", "field"),
-    [
-        ("cores = 0", "cores"),
-        ("gpus = -1", "gpus"),
-        ('time_limit = "4h"', "time_limit"),
-        ('memory = "lots"', "memory"),
-    ],
-)
-def test_resources_are_validated_as_the_profiles_are(
-    tmp_path: Path, resources: str, field: str
-) -> None:
-    message = problems(tmp_path, MINIMAL_APP + f"resources.{resources}\n")
-
-    assert f"{LAB}.resources.{field}:" in message
-
-
-def test_apps_on_one_job_need_the_most_any_of_them_asks_for(tmp_path: Path) -> None:
-    manifest = write_project(
-        tmp_path,
-        MINIMAL_APP
-        + 'resources = { cores = 2, time_limit = "4:00", memory = "8GB" }\n'
-        + MINIMAL_APP.split("\n\n", 1)[1].replace("lab", "board")
-        + "resources = { cores = 4, gpus = 1, exclusive = true }\n",
-    )
-    apps = Manifest.load(manifest).apps
-
-    combined = combined_resources([apps["lab"]["v1.0"], apps["board"]["v1.0"]])
-
-    # Only what they set, for the profile's to stay where they don't.
-    assert combined == {
-        "cores": 4,
-        "gpus": 1,
-        "exclusive": True,
-        "time_limit": timedelta(hours=4),
-        "memory": 8 * 10**9,
-    }
-    assert combined_resources([apps["lab"]["v1.0"]])["cores"] == 2
-
-
 # Other fields
 
 
 @pytest.mark.parametrize(
     ("addition", "message"),
     [
+        ("resources.cores = 2", f"{LAB}.resources: unknown key"),
         ('run.workdir = "work"', f"{LAB}.run.workdir: must be an absolute path"),
         ('run.env.EZHPCY_TOKEN = "x"', "EZHPCY_TOKEN is reserved"),
         ('run.env."A-B" = "x"', "'A-B' is not an environment variable name"),
@@ -926,16 +870,6 @@ def test_a_table_with_nothing_to_run_is_a_link_to_the_alias(tmp_path: Path) -> N
         "code --remote ssh-remote+node-1",
     )
     assert isinstance(manifest.apps["lab"]["v1.0"], App)
-
-
-def test_a_link_needs_nothing_from_a_job(tmp_path: Path) -> None:
-    manifest = MINIMAL_APP + "resources.cores = 2\n" + LINK_TABLE + 'access.url = "x"\n'
-    apps = load(tmp_path, manifest).apps
-
-    assert combined_resources([apps["code"]["v1.0"]]) == {}
-    assert combined_resources([apps["code"]["v1.0"], apps["lab"]["v1.0"]]) == {
-        "cores": 2
-    }
 
 
 @pytest.mark.parametrize(

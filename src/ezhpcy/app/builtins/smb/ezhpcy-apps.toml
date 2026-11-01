@@ -29,7 +29,3 @@ access.url = "smb://ezhpcy:{token}@127.0.0.1:{local_port}/files"
 access.status_hints = [
     'NET USE Z: \\127.0.0.1\files {token} /USER:ezhpcy /TCPPORT:{local_port}',
 ]
-
-[ezhpcy.app.smb."v0.1.0".resources]
-cores = 1
-time_limit = "4:00"

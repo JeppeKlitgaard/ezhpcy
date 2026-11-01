@@ -35,7 +35,7 @@ lazy from ezhpcy.permissions import (
     restrict_to_current_user,
 )
 lazy from ezhpcy.provision_local import WorkerCredentials
-lazy from ezhpcy.tunnel.lock import alias_locked
+lazy from ezhpcy.tunnel.lock import alias_locked, remove_unless_locked
 lazy from ezhpcy.types import Login
 lazy from ezhpcy.utils import local_machine_id
 
@@ -224,14 +224,13 @@ def prune_stale_active_configs() -> list[Path]:
     for path in sorted(ssh_config_dir().glob(f"{ACTIVE_FILE_PREFIX}*.conf")):
         alias = path.name.removeprefix(ACTIVE_FILE_PREFIX).removesuffix(".conf")
         try:
-            live = alias_locked(alias)
+            stale = remove_unless_locked(alias, path)
         # Not a name a tunnel writes, so no tunnel's.
         except ValueError:
-            live = False
-        if not live:
-            logger.debug(t"Removing stale SSH host configuration {path:path}.")
-
             path.unlink(missing_ok=True)
+            stale = True
+        if stale:
+            logger.debug(t"Removed stale SSH host configuration {path:path}.")
             removed.append(path)
     return removed
 
@@ -283,6 +282,11 @@ def probe_alias(alias: str) -> AliasProblem | None:
     Host block the tunnel writes once it serves (see `resolution_problem`):
     why it won't, or None if it will. Blocks while OpenSSH answers.
     """
+    # A killed tunnel's block for the alias would come before the probe's.
+    try:
+        prune_stale_active_configs()
+    except (OSError, FilePermissionError) as error:
+        logger.warning(t"Could not remove stale SSH configuration: {error}")
     with probe_hosts([alias]):
         return resolution_problem(alias)
 

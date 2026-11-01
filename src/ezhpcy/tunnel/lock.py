@@ -31,6 +31,8 @@ lazy from ezhpcy.types import ConfigError
 LOCK_DIRECTORY_NAME = "tunnels"
 # Releasing a lock is a local unlock; the OS releases it at exit anyway.
 _LOCK_RELEASE_SECONDS = 1.0
+# Far longer than a check holds a lock, and short enough for a refusal to feel at once.
+_LOCK_WAIT_SECONDS = 0.2
 
 
 class AliasInUse(MessageError, RuntimeError):
@@ -74,14 +76,15 @@ def _file_lock(path: Path) -> FileLock:
 @contextmanager
 def alias_lock(alias: str) -> Generator[None]:
     """
-    Hold `alias`'s lock for the block. Raises `AliasInUse` at once if another
-    tunnel holds it.
+    Hold `alias`'s lock for the block. Raises `AliasInUse` if another tunnel holds
+    it, after waiting a moment, as `alias_locked` and `remove_unless_locked` hold it
+    for one.
     """
     path = lock_path(alias)
     private_directory(path.parent)
     lock = _file_lock(path)
     try:
-        lock.acquire()
+        lock.acquire(timeout=_LOCK_WAIT_SECONDS, blocking=True)
     except Timeout:
         raise AliasInUse(t"a tunnel is already running for {alias:name}") from None
     try:
@@ -103,6 +106,26 @@ def alias_locked(alias: str) -> bool:
         return True
     lock.release()
     return False
+
+
+def remove_unless_locked(alias: str, path: Path) -> bool:
+    """
+    Remove `path`, a Host block of `alias`, unless a running tunnel holds `alias`;
+    return whether it did. Holds the lock meanwhile: a tunnel takes it before it
+    writes its block, so a block can't be written between the check and the removal.
+    """
+    lock_file = lock_path(alias)
+    private_directory(lock_file.parent)
+    lock = _file_lock(lock_file)
+    try:
+        lock.acquire()
+    except Timeout:
+        return False
+    try:
+        path.unlink(missing_ok=True)
+    finally:
+        lock.release()
+    return True
 
 
 @asynccontextmanager

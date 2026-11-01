@@ -18,6 +18,7 @@ from ezhpcy.tunnel.lock import (
     alias_lock,
     alias_locked,
     lock_path,
+    remove_unless_locked,
 )
 
 # How long the lock holder may take to start or to end once killed.
@@ -61,6 +62,31 @@ def test_a_second_lock_for_a_held_alias_is_refused():
 
         # Closing the refused handle leaves the first one's lock alone.
         assert alias_locked("gpu")
+
+
+def test_taking_a_lock_waits_out_a_moments_hold():
+    """A check of the lock takes it, and mustn't look like a running tunnel."""
+    stack = ExitStack()
+    stack.enter_context(alias_lock("gpu"))
+    releasing = threading.Timer(0.05, stack.close)
+    releasing.start()
+
+    with alias_lock("gpu"):
+        assert alias_locked("gpu")
+
+    releasing.join(PROCESS_SECONDS)
+
+
+def test_remove_unless_locked_keeps_a_running_tunnels_file(tmp_path: Path):
+    block = tmp_path / "block"
+    block.touch()
+
+    with alias_lock("gpu"):
+        assert not remove_unless_locked("gpu", block)
+
+    assert block.exists()
+    assert remove_unless_locked("gpu", block)
+    assert not block.exists()
 
 
 def test_aliases_are_locked_separately():

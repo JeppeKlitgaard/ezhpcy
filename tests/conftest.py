@@ -11,6 +11,9 @@ from pathlib import Path
 # start, run on default settings.
 for variable in [name for name in os.environ if name.upper().startswith("EZHPCY_")]:
     del os.environ[variable]
+# Rich would fix the CLI's consoles at this width as they are imported, so that
+# `invoke`'s wouldn't apply to them, and the terminal's would wrap their messages.
+os.environ.pop("COLUMNS", None)
 os.environ["EZHPCY_CONFIG_FILE"] = str(
     Path(tempfile.gettempdir()) / f"ezhpcy-tests-{os.getpid()}" / "ezhpcy.toml"
 )

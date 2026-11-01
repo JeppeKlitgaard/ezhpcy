@@ -52,6 +52,7 @@ from tests.support.tunnel import (
     serve_lsf_job,
     snapshot,
     tunnel_log,
+    tunnel_runs,
     use_scheduler,
     write_worker_status,
 )
@@ -422,6 +423,7 @@ def test_shutdown_withdraws_the_block_before_closing_the_port(
 
     configure_tunnel(monkeypatch, login)
     serve_interactive_job(login)
+    runs = tunnel_runs(monkeypatch)
     use_scheduler(
         monkeypatch,
         lambda host: FakeScheduler(
@@ -430,7 +432,7 @@ def test_shutdown_withdraws_the_block_before_closing_the_port(
             submitted=lambda _spec: write_worker_status(
                 login, "ready", str(worker_port)
             ),
-            held=lambda: "publish" not in events,
+            held=lambda: not any(run.served for run in runs),
         ),
     )
     monkeypatch.setattr(lock, "alias_lock", recording_lock)
@@ -608,7 +610,7 @@ def test_keepalive_loss_while_serving_stops_the_tunnel(
 
     configure_tunnel(monkeypatch, login)
     serve_interactive_job(login)
-    published = threading.Event()
+    runs = tunnel_runs(monkeypatch)
     schedulers = use_scheduler(
         monkeypatch,
         lambda host: FakeScheduler(
@@ -618,12 +620,10 @@ def test_keepalive_loss_while_serving_stops_the_tunnel(
                 login, "ready", str(worker_port)
             ),
             # Unplugged while serving, once published.
-            held=lambda: not published.is_set(),
+            held=lambda: not any(run.served for run in runs),
         ),
     )
-    monkeypatch.setattr(
-        publish, "publish_host", lambda *_args, **_kwargs: published.set()
-    )
+    monkeypatch.setattr(publish, "publish_host", lambda *_args, **_kwargs: None)
 
     with (
         ssh_options(keepalive_interval=0.1, keepalive_count_max=2),
@@ -823,7 +823,7 @@ def test_a_lock_release_that_hangs_is_given_up_on(
 
     configure_tunnel(monkeypatch, login)
     serve_interactive_job(login)
-    published = threading.Event()
+    runs = tunnel_runs(monkeypatch)
     use_scheduler(
         monkeypatch,
         lambda host: FakeScheduler(
@@ -833,11 +833,11 @@ def test_a_lock_release_that_hangs_is_given_up_on(
                 login, "ready", str(worker_port)
             ),
             # The job ends once it serves.
-            held=lambda: not published.is_set(),
+            held=lambda: not any(run.served for run in runs),
         ),
     )
     monkeypatch.setattr(lock, "alias_lock", slow_lock)
-    monkeypatch.setattr(publish, "publish_host", lambda _host, _port: published.set())
+    monkeypatch.setattr(publish, "publish_host", lambda _host, _port: None)
 
     with tunnel_log() as log:
         result = invoke(["tunnel", "base", "--worker-port", str(worker_port)])

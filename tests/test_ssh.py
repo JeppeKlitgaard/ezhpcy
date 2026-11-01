@@ -452,9 +452,13 @@ async def test_forward_local_port_listens_on_loopback(ssh_server: SSHTestServer)
         await _connect(ssh_server) as host,
     ):
         listener = await host.forward_local_port(TCPDestination(LOOPBACK_HOST, port))
-        _reader, writer = await _open(listener)
+        reader, writer = await _open(listener)
         try:
             assert writer.get_extra_info("peername")[0] == LOOPBACK_HOST
+            # asyncio leaks a connection its listener accepts as it closes, so let
+            # this one reach the destination first.
+            writer.write(b"ping\n")
+            assert await asyncio.wait_for(reader.readline(), WAIT_SECONDS) == b"ping\n"
         finally:
             writer.close()
 

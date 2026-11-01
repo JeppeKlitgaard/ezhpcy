@@ -67,6 +67,7 @@ _RUN_PREFIX = "ezhpcy-"
 _LAUNCH_NAME = "launch.sh"
 _RECORD_NAME = "process.json"
 _STATUS_NAME = "status"
+_STDOUT_NAME = "out"
 _STDERR_NAME = "err"
 _STOP_NAME = "stop"
 # How often to look for the status files: an exit is seen within this long.
@@ -159,14 +160,22 @@ class Process:
         await self._attachment.close()
 
     @translating_ssh_errors
+    async def stdout(self, lines: int = 20) -> str:
+        """As `stderr`, for its stdout."""
+        return await self._tail(_STDOUT_NAME, lines)
+
+    @translating_ssh_errors
     async def stderr(self, lines: int = 20) -> str:
         """
         The last `lines` lines of its stderr, until it is stopped. Raises
         `CommandFailed` once its run directory is removed, and `SSHError` if the
         host's connection is lost.
         """
+        return await self._tail(_STDERR_NAME, lines)
+
+    async def _tail(self, name: str, lines: int) -> str:
         return await self._host.run(
-            ["tail", "-n", str(lines), "--", str(self.run_dir / _STDERR_NAME)]
+            ["tail", "-n", str(lines), "--", str(self.run_dir / name)]
         )
 
 

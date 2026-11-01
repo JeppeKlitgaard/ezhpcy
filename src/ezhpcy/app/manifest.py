@@ -2,7 +2,8 @@
 The apps manifest: a TOML file on this machine whose `[ezhpcy]` table describes
 apps, one table per version of each, `[ezhpcy.app.<name>."<version>"]`. An app
 (`App`) runs on a host; a table without `environment`, `run` or `endpoint` is a
-link (`Link`) instead, which runs nothing and has only a URL. Every
+link (`Link`) instead, which runs nothing and has only a URL. An app with actions
+needs no `run` and `endpoint`: then it is its actions alone, with no server. Every
 other top-level table belongs to other tools and is ignored; inside `[ezhpcy]`,
 unknown keys are errors.
 
@@ -16,18 +17,24 @@ Names follow the rules for a Python package's name, and are compared normalised
 such (`v1.2` is `v1.2.0`). `collect_apps` gathers several manifests' apps, and
 `choose_app` picks one by name and version, the newest by default.
 `builtin_manifests` are the manifests EzHPCy ships.
+
+An app may have actions (`Action`), `[ezhpcy.app.<name>."<version>".action.<name>]`:
+commands run on its host, in its environment, while it runs, by hand or by a
+timer, which may take inputs (`ActionInput`) as placeholders of their own.
 """
 
+import math
 import re
 import string
 from dataclasses import dataclass
 from datetime import timedelta
+from pathlib import PurePosixPath
 from typing import Annotated, Literal, Self
 lazy import hashlib
 lazy import stat
 lazy import tomllib
 lazy from collections.abc import Iterable, Iterator, Mapping, Sequence
-lazy from pathlib import Path, PurePosixPath
+lazy from pathlib import Path
 
 from pydantic import (
     BaseModel,
@@ -78,6 +85,10 @@ ENVIRONMENT_VARIABLES = {
     "token": "EZHPCY_TOKEN",
 }
 _HOST_PLACEHOLDERS = frozenset({"socket", "port", "run_dir", "assets", "workdir"})
+# The app's, not the action's own run: an action has no `run_dir`.
+_ACTION_PLACEHOLDERS = _HOST_PLACEHOLDERS - {"run_dir"}
+# What a `path` input's default may use.
+_PATH_DEFAULT_PLACEHOLDERS = frozenset({"assets", "workdir"})
 # The placeholders each field takes. `{token}` is not in `run.command`: argv can
 # be read by other users on the host.
 FIELD_PLACEHOLDERS = {
@@ -85,6 +96,8 @@ FIELD_PLACEHOLDERS = {
     "run.env": _HOST_PLACEHOLDERS | {"token"},
     "access.url": frozenset({"token", "local_port", "alias"}),
     "access.status_hints": frozenset({"token", "local_port", "alias"}),
+    "action.run.command": _ACTION_PLACEHOLDERS,
+    "action.run.env": _ACTION_PLACEHOLDERS | {"token"},
 }
 _ALL_PLACEHOLDERS = frozenset(ENVIRONMENT_VARIABLES) | {"local_port", "alias"}
 
@@ -320,15 +333,13 @@ def _check_env_name(name: str) -> str:
     return name
 
 
-class Run(_Table):
-    """What runs on the host, never through a shell."""
+class Command(_Table):
+    """A command run on the host, never through a shell."""
 
     command: tuple[str, ...] = Field(min_length=1)
     env: dict[Annotated[str, BeforeValidator(_check_env_name)], str] = Field(
         default_factory=dict
     )
-    # Default: `<apps root>/work/<normalised name>/`.
-    workdir: PurePosixPath | None = None
 
     @field_validator("command", "env")
     @classmethod
@@ -339,6 +350,13 @@ class Run(_Table):
         ):
             raise ValueError("must not contain NUL")
         return value
+
+
+class Run(Command):
+    """What runs on the host as the app."""
+
+    # Default: `<apps root>/work/<normalised name>/`.
+    workdir: PurePosixPath | None = None
 
     @field_validator("workdir")
     @classmethod
@@ -398,6 +416,198 @@ class Access(_Table):
     status_hints: tuple[str, ...] = ()
     # 0 lets the OS pick a free port.
     local_port: int = Field(default=0, ge=0, le=65535)
+
+
+class ActionInput(_Table):
+    """
+    One value an action takes, by `type`; a frontend asks for it as its type
+    suggests. A `path` is an absolute path on the app's host, where the action
+    runs, not on this machine.
+    """
+
+    type: Literal["string", "integer", "number", "boolean", "choice", "path"]
+    label: str | None = Field(default=None, min_length=1)
+    # A `path`'s may use `{workdir}` and `{assets}`, rendered in `RunningApp.actions`.
+    default: bool | int | float | str | None = None
+    # Bounds of an `integer` or a `number`, inclusive.
+    min: int | float | None = None
+    max: int | float | None = None
+    # What a `choice` chooses from.
+    choices: tuple[str, ...] = ()
+    # What a `path` must be, if it exists: by default either.
+    kind: Literal["file", "directory"] | None = None
+    must_exist: bool = False
+
+    def parse(self, text: str) -> object:
+        """
+        What a user typed, as a value of its type, for `check`. Raises `ValueError`
+        if it can't be one.
+        """
+        try:
+            match self.type:
+                case "integer":
+                    return int(text)
+                case "number":
+                    return float(text)
+                case "boolean":
+                    return _BOOLEANS[text.strip().lower()]
+                case _:
+                    return text
+        except KeyError, ValueError:
+            raise ValueError(f"{text!r} is not {_A_TYPE[self.type]}") from None
+
+    def check(self, value: object) -> str:
+        """
+        `value`, checked as far as can be without its host, as the text its
+        placeholder is replaced by. Raises `ValueError`, saying why it can't be.
+        """
+        match self.type:
+            case "integer" if isinstance(value, int) and not isinstance(value, bool):
+                self._check_bounds(value)
+                text = str(value)
+            case "number" if (
+                isinstance(value, int | float)
+                and not isinstance(value, bool)
+                and math.isfinite(value)
+            ):
+                self._check_bounds(value)
+                text = str(value)
+            case "boolean" if isinstance(value, bool):
+                text = "true" if value else "false"
+            case "string" if isinstance(value, str):
+                text = value
+            case "choice" if isinstance(value, str):
+                if value not in self.choices:
+                    raise ValueError(f"{value!r} is none of {list(self.choices)}")
+                text = value
+            case "path" if isinstance(value, str | PurePosixPath):
+                if not PurePosixPath(value).is_absolute():
+                    raise ValueError(f"{str(value)!r} is not an absolute path")
+                text = str(value)
+            case _:
+                raise ValueError(f"{value!r} is not {_A_TYPE[self.type]}")
+        if "\0" in text:
+            raise ValueError("must not contain NUL")
+        return text
+
+    def _check_bounds(self, value: float) -> None:
+        if self.min is not None and value < self.min:
+            raise ValueError(f"{value} is less than the minimum, {self.min}")
+        if self.max is not None and value > self.max:
+            raise ValueError(f"{value} is more than the maximum, {self.max}")
+
+    @model_validator(mode="after")
+    def check_fields(self) -> Self:
+        for fields, types in _INPUT_FIELDS.items():
+            if self.type not in types and (wrong := fields & self.model_fields_set):
+                raise ValueError(
+                    f"{', '.join(sorted(wrong))} only apply to type = "
+                    + " or ".join(repr(name) for name in sorted(types))
+                )
+        for bound in (self.min, self.max):
+            if self.type == "integer" and isinstance(bound, float):
+                raise ValueError("min and max of an integer must be integers")
+        if self.min is not None and self.max is not None and self.min > self.max:
+            raise ValueError("min must not be more than max")
+        if self.type == "choice":
+            if not self.choices:
+                raise ValueError("type = 'choice' needs choices")
+            if len(set(self.choices)) != len(self.choices):
+                raise ValueError("choices must differ")
+        # A path's may have placeholders, which `App` checks.
+        if self.default is not None and self.type != "path":
+            try:
+                self.check(self.default)
+            except ValueError as error:
+                raise ValueError(f"default: {error}") from None
+        return self
+
+
+_A_TYPE = {
+    "string": "a string",
+    "integer": "an integer",
+    "number": "a number",
+    "boolean": "true or false",
+    "choice": "a string",
+    "path": "a path",
+}
+_BOOLEANS = {"true": True, "yes": True, "false": False, "no": False}
+_INPUT_FIELDS = {
+    frozenset({"min", "max"}): frozenset({"integer", "number"}),
+    frozenset({"choices"}): frozenset({"choice"}),
+    frozenset({"kind", "must_exist"}): frozenset({"path"}),
+}
+
+
+def _check_input_name(name: object) -> object:
+    if isinstance(name, str):
+        if not name.isidentifier():
+            raise ValueError(f"{name!r} can't be a placeholder's name")
+        if name in _ALL_PLACEHOLDERS:
+            raise ValueError(f"{name!r} is the name of a built-in placeholder")
+    return name
+
+
+class Trigger(_Table):
+    """What runs an action: the user, a timer, or both."""
+
+    manual: bool = True
+    # Timers run in the client, while the app runs.
+    every: Seconds | None = Field(default=None, gt=timedelta(0))
+
+    @model_validator(mode="after")
+    def check_some_trigger(self) -> Self:
+        if not self.manual and self.every is None:
+            raise ValueError("needs manual = true, or every")
+        return self
+
+
+class Action(_Table):
+    """A command run on an app's host, in its environment, while it runs."""
+
+    description: str | None = Field(default=None, min_length=1)
+    run: Command
+    trigger: Trigger = Field(default_factory=Trigger)
+    input: dict[Annotated[str, BeforeValidator(_check_input_name)], ActionInput] = (
+        Field(default_factory=dict)
+    )
+
+    @model_validator(mode="after")
+    def check_timer_has_values(self) -> Self:
+        if self.trigger.every is not None:
+            for name, action_input in self.input.items():
+                if action_input.default is None:
+                    raise ValueError(
+                        f"input {name!r} needs a default, as a timer asks nobody"
+                    )
+        return self
+
+    def templates(self) -> Iterator[tuple[str, str, str]]:
+        """Its fields that take placeholders: (field, path, template)."""
+        for index, argument in enumerate(self.run.command):
+            yield "action.run.command", f"run.command[{index}]", argument
+        for name, value in self.run.env.items():
+            yield "action.run.env", f"run.env.{name}", value
+
+    def with_rendered_defaults(self, values: Mapping[str, str]) -> Action:
+        """It with its `path` inputs' defaults rendered, from `values`."""
+        rendered = {
+            name: action_input.model_copy(
+                update={"default": render(str(action_input.default), values)}
+            )
+            if action_input.type == "path" and action_input.default is not None
+            else action_input
+            for name, action_input in self.input.items()
+        }
+        return self.model_copy(update={"input": rendered})
+
+
+def _check_action_name(name: object) -> object:
+    if isinstance(name, str) and not _BARE_KEY.fullmatch(name):
+        raise ValueError(
+            f"invalid action name {name!r}: letters, digits, '_' and '-' only"
+        )
+    return name
 
 
 class _Entry(_Table):
@@ -460,16 +670,90 @@ class _Entry(_Table):
 
 
 class App(_Entry):
-    """An app: a server run on a host, and forwarded to this machine."""
+    """
+    An app: a server run on a host, and forwarded to this machine, with actions
+    if it has any; or actions alone, without `run` and `endpoint`.
+    """
 
     environment: Environment
     assets: Assets | None = None
-    run: Run
-    endpoint: Endpoint
+    run: Run | None = None
+    endpoint: Endpoint | None = None
     ready: Ready = Field(default_factory=Ready)
     access: Access = Field(default_factory=Access)
+    action: dict[Annotated[str, BeforeValidator(_check_action_name)], Action] = Field(
+        default_factory=dict
+    )
+
+    @model_validator(mode="after")
+    def check_server_or_actions(self) -> Self:
+        if (self.run is None) != (self.endpoint is None):
+            raise ValueError("run and endpoint go together: give both, or neither")
+        if self.run is None:
+            if not self.action:
+                raise ValueError("needs run and endpoint, or an action")
+            if wrong := sorted(self.model_fields_set & {"ready", "access"}):
+                raise ValueError(f"{', '.join(wrong)} only apply with run and endpoint")
+        return self
+
+    def placeholder_problems(self) -> Iterator[tuple[str, str]]:
+        yield from super().placeholder_problems()
+        for name, action in self.action.items():
+            for path, why in self._action_problems(action):
+                yield f"action.{name}.{path}", why
+
+    def _action_problems(self, action: Action) -> Iterator[tuple[str, str]]:
+        """
+        As `placeholder_problems`, for one action, whose inputs are placeholders
+        too, each of which it must use.
+        """
+        available = self.available()
+        used: set[str] = set()
+        readable = True
+        for field, path, template in action.templates():
+            try:
+                names = placeholders(template)
+            except ValueError as error:
+                readable = False
+                yield path, str(error)
+                continue
+            used |= names
+            for name in sorted(names - action.input.keys()):
+                if name not in _ALL_PLACEHOLDERS:
+                    yield path, f"unknown placeholder {{{name}}}"
+                elif name not in FIELD_PLACEHOLDERS[field]:
+                    yield path, f"{field} does not take {{{name}}}"
+                elif name not in available:
+                    yield path, f"{{{name}}} {self.unavailable(name)}"
+        for name, action_input in action.input.items():
+            if readable and name not in used:
+                yield f"input.{name}", "is not used by run.command or run.env"
+            if action_input.type == "path" and action_input.default is not None:
+                yield from self._path_default_problems(
+                    f"input.{name}.default", str(action_input.default)
+                )
+
+    def _path_default_problems(
+        self, path: str, default: str
+    ) -> Iterator[tuple[str, str]]:
+        try:
+            names = placeholders(default)
+        except ValueError as error:
+            yield path, str(error)
+            return
+        for name in sorted(names):
+            if name not in _PATH_DEFAULT_PLACEHOLDERS:
+                yield path, f"a path's default does not take {{{name}}}"
+            elif name not in self.available():
+                yield path, f"{{{name}}} {self.unavailable(name)}"
+        if names <= _PATH_DEFAULT_PLACEHOLDERS:
+            rendered = render(default, dict.fromkeys(names, "/absolute"))
+            if not PurePosixPath(rendered).is_absolute():
+                yield path, "must be an absolute path on the host"
 
     def templates(self) -> Iterator[tuple[str, str, str]]:
+        if self.run is None:
+            return
         for index, argument in enumerate(self.run.command):
             yield "run.command", f"run.command[{index}]", argument
         for name, value in self.run.env.items():
@@ -478,14 +762,22 @@ class App(_Entry):
 
     def available(self) -> set[str]:
         available = set(_ALL_PLACEHOLDERS) - {"alias"}
-        available.discard("port" if self.endpoint.transport == "socket" else "socket")
+        if self.endpoint is None:
+            available -= {"socket", "port", "token", "local_port"}
+        else:
+            available.discard(
+                "port" if self.endpoint.transport == "socket" else "socket"
+            )
         if self.assets is None:
             available.discard("assets")
         return available
 
     def unavailable(self, name: str) -> str:
+        if self.endpoint is None and name in {"socket", "port", "token", "local_port"}:
+            return "is not set without run and endpoint"
         match name:
             case "socket" | "port":
+                assert self.endpoint is not None
                 return (
                     f"is not set for endpoint.transport = {self.endpoint.transport!r}"
                 )

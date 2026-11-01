@@ -4,10 +4,12 @@ a configuration's manifests, rendering placeholders, and its keys.
 """
 
 import hashlib
+import importlib.util
 import json
 import re
 from datetime import timedelta
 from pathlib import Path, PurePosixPath
+from types import ModuleType
 
 import pytest
 
@@ -962,3 +964,33 @@ def test_the_apps_root_must_be_absolute() -> None:
     )
     with pytest.raises(ValueError, match="root must be an absolute path"):
         AppsConfig(root=PurePosixPath("apps"))
+
+
+def _quota_script() -> ModuleType:
+    spec = importlib.util.spec_from_file_location(
+        "quota", BUILTINS / "zhome-quota" / "quota.py"
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize(
+    ("usage", "shown"),
+    [
+        ("19.38G of 30.00G", "19.4/30.0G [18:04]"),
+        ("512.00M of 30.00G", "512.0M/30.0G [18:04]"),
+    ],
+)
+def test_the_quota_is_said_tersely(usage: str, shown: str) -> None:
+    output = (
+        f"You are using {usage} quota\n\n(Information updated ca. every 240 "
+        "minutes. Last Update: 2026-11-01 18:04:17)\n"
+    )
+
+    assert _quota_script().terse(output) == shown
+
+
+def test_quota_output_that_cant_be_read_is_not_said_tersely() -> None:
+    assert _quota_script().terse("Something else entirely\n") is None

@@ -115,6 +115,10 @@ class FakeProcess:
         """Exit with `status`, as the launch script reports it."""
         write_atomically(self.run_dir / "status", f"{status}\n")
 
+    def write_stdout(self, text: str) -> None:
+        with (self.run_dir / "out").open("a", encoding="utf-8") as stdout:
+            stdout.write(text)
+
     def write_stderr(self, text: str) -> None:
         with (self.run_dir / "err").open("a", encoding="utf-8") as stderr:
             stderr.write(text)

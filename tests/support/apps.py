@@ -8,6 +8,7 @@ import re
 import shlex
 import shutil
 import stat
+import threading
 from collections.abc import Callable
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -15,6 +16,7 @@ from typing import Any
 import asyncssh
 import pytest
 
+from ezhpcy import process
 from ezhpcy.app import run as app_run
 from tests.support.sshserver import Invocation, SSHTestServer, reply
 from tests.support.worker import FakeProcess, FakeProcesses, quick_processes
@@ -186,8 +188,21 @@ class AppRig:
         quick_apps(monkeypatch)
         self.app: Callable[..., Any] | None = http_app()
         self.processes = FakeProcesses(server, on_start=self._serve)
+        # While set, a process being started waits for it, on the server's thread.
+        self.hold_starts: threading.Event | None = None
+        # How many processes `Host.start` and the like have finished starting.
+        self.started = 0
+        original = process.Process.__init__
+
+        def started(*args: Any, **kwargs: Any) -> None:
+            original(*args, **kwargs)
+            self.started += 1
+
+        monkeypatch.setattr(process.Process, "__init__", started)
 
     def _serve(self, process: FakeProcess) -> None:
+        if self.hold_starts is not None:
+            self.hold_starts.wait(5)
         if self.app is not None:
             self.server.allow_socket(process.remote_run_dir / "app.sock", self.app)
 

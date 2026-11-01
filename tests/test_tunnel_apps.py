@@ -30,13 +30,11 @@ from tests.support.worker import FakeProcess, FakeProcesses
 WAIT_SECONDS = 5
 APPS = (
     MINIMAL_APP
-    + 'resources = { cores = 2, time_limit = "4:00" }\n'
     + """
 [ezhpcy.app.board."v2.18"]
 environment.pixi = "pixi.toml"
 run.command = ["tensorboard", "--port", "{port}"]
 endpoint.transport = "tcp"
-resources.gpus = 1
 
 [ezhpcy.app.board."v2.19rc1"]
 environment.pixi = "pixi.toml"
@@ -335,7 +333,7 @@ def captured(settings: dict, monkeypatch: pytest.MonkeyPatch) -> dict:
     return capture(monkeypatch, "tunnel")
 
 
-def test_the_apps_resources_are_over_the_profiles_and_the_clis_over_both(
+def test_the_job_has_the_profiles_resources_and_the_clis_over_them_whatever_the_apps(
     captured: dict, tmp_path: Path
 ) -> None:
     manifest = write_project(tmp_path / "project", APPS)
@@ -352,32 +350,10 @@ def test_the_apps_resources_are_over_the_profiles_and_the_clis_over_both(
         "board v2.18",
     ]
     resources = captured["job"].resources
-    assert (resources.queue, resources.cores, resources.gpus) == ("hpc", 2, 1)
+    assert (resources.queue, resources.cores, resources.gpus) == ("hpc", 8, 0)
     assert resources.memory_bytes == 32 * 10**9
     assert resources.time_limit == timedelta(hours=1)
     assert captured["apps_root"] == PurePosixPath("/work3/alice/apps")
-
-
-def test_an_interactive_submission_command_decides_the_resources_alone(
-    login: SSHTestServer, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    configure_tunnel(monkeypatch, login)
-    captured = capture(monkeypatch, "tunnel")
-    manifest = write_project(tmp_path / "project", APPS)
-
-    with tunnel_log() as log:
-        result = invoke(
-            ["tunnel", "base", "--manifest", str(manifest), "--app", "lab"]
-            + ["--interactive-submission-command", "a100sh"]
-        )
-
-    assert result.exit_code == 0, result
-    resources = captured["job"].resources
-    assert (resources.cores, resources.time_limit) == (1, None)
-    assert (
-        "Ignoring the apps' resources: scheduler.interactive_submission_command "
-        "decides them." in log.messages(logging.WARNING)
-    )
 
 
 def test_an_unknown_app_fails_before_connecting_listing_the_apps(

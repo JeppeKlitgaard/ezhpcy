@@ -34,11 +34,18 @@ def test_profiles_complete_with_their_descriptions(
     monkeypatch: pytest.MonkeyPatch, command: str
 ) -> None:
     use_settings(
-        monkeypatch, {"profile": {"gpu": {"description": "GPU jobs"}, "default": {}}}
+        monkeypatch,
+        {
+            "profile": {
+                "gpu": {"description": "GPU jobs"},
+                "a100": {"inherit": "gpu"},
+                "default": {},
+            }
+        },
     )
 
     result = invoke(["__complete", command, ""])
 
     assert result.exit_code == 0, result
     candidates = result.stdout.split("\x1fbegin\n")[1].splitlines()
-    assert candidates == ["gpu\tGPU jobs", "default"]
+    assert candidates == ["gpu\tGPU jobs", "a100\tGPU jobs", "default"]

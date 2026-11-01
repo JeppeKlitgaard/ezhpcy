@@ -9,9 +9,10 @@ import pytest
 
 from ezhpcy.config import LocalFileConfig
 from ezhpcy.messages import plain
+from ezhpcy.permissions import FilePermissionError
 from ezhpcy.provision_local import WorkerCredentials
 from ezhpcy.tunnel import ssh_config
-from ezhpcy.tunnel.lock import alias_lock
+from ezhpcy.tunnel.lock import alias_lock, alias_locked
 from ezhpcy.tunnel.ssh_config import (
     PROBE_HOST_NAME,
     AliasProblem,
@@ -145,6 +146,25 @@ def test_prune_keeps_only_the_blocks_of_running_tunnels() -> None:
 
     assert removed == [stale]
     assert live.exists()
+
+
+def test_prune_holds_the_alias_while_it_removes_a_block(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """So that a tunnel starting meanwhile can't write a block that is then removed."""
+    write_active_host_config(worker_host("gone"), PORT)
+    unlink = Path.unlink
+    held: list[bool] = []
+
+    def unlink_noting_the_lock(path: Path, **options: bool) -> None:
+        held.append(alias_locked("gone"))
+        unlink(path, **options)
+
+    monkeypatch.setattr(Path, "unlink", unlink_noting_the_lock)
+
+    prune_stale_active_configs()
+
+    assert held == [True]
 
 
 def test_prune_removes_a_block_whose_name_no_tunnel_writes(
@@ -440,6 +460,21 @@ def test_probe_alias_accepts_a_running_tunnels_block(
         assert probe_alias("gpu") is None
 
 
+@pytest.mark.parametrize(
+    "error", [OSError("read-only"), FilePermissionError("not ours")], ids=repr
+)
+def test_probe_alias_goes_on_if_it_cannot_prune(
+    monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> None:
+    def refuse() -> None:
+        raise error
+
+    monkeypatch.setattr(ssh_config, "prune_stale_active_configs", refuse)
+    monkeypatch.setattr(ssh_config, "resolve_alias", resolving_to(PROBE_HOST_NAME))
+
+    assert probe_alias("gpu") is None
+
+
 requires_openssh = pytest.mark.skipif(
     shutil.which("ssh") is None, reason="OpenSSH client is not installed"
 )
@@ -517,6 +552,39 @@ def test_openssh_ignores_a_later_proxy_jump_for_the_block(tmp_path: Path) -> Non
 
     assert "proxyjump" not in resolved
     assert resolved["hostname"] == "127.0.0.1"
+
+
+def _resolve_through_openssh(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    def resolve(alias: str) -> dict[str, list[str]]:
+        resolved = resolve_with_openssh(tmp_path, alias)
+        return {key: [value] for key, value in resolved.items()}
+
+    monkeypatch.setattr(ssh_config, "resolve_alias", resolve)
+
+
+@requires_openssh
+def test_a_killed_tunnels_block_doesnt_keep_the_next_tunnel_from_starting(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Its lock is free, as the OS frees it however a tunnel ends.
+    stale = write_active_host_config(worker_host("gpu"), PORT)
+    _resolve_through_openssh(monkeypatch, tmp_path)
+
+    assert probe_alias("gpu") is None
+    assert not stale.exists()
+
+
+@requires_openssh
+def test_a_running_tunnels_block_survives_another_tunnels_probe(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    running = write_active_host_config(worker_host("gpu"), PORT)
+    _resolve_through_openssh(monkeypatch, tmp_path)
+
+    with alias_lock("gpu"):
+        assert probe_alias("cpu") is None
+        assert probe_alias("gpu") is None
+        assert running.exists()
 
 
 @requires_openssh

@@ -145,7 +145,7 @@ def _check_ssh_config(source: Config) -> Iterator[Check]:
 
     try:
         removed = prune_stale_active_configs()
-    except OSError as error:
+    except (OSError, FilePermissionError) as error:
         yield Check(CheckStatus.FAIL, t"Could not remove stale SSH hosts: {error}")
         return
     if removed:

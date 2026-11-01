@@ -9,6 +9,7 @@ dist/
 # Tools
 .ruff_cache/
 .pytest_cache/
+.import_linter_cache/
 
 # Test coverage
 .coverage

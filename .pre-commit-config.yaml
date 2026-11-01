@@ -26,14 +26,14 @@ repos:
         # Shared test helpers, not test modules
         exclude: ^tests/support/
 
-  # Ruff and Pyrefly run through uv so their versions come from the dependency
-  # groups in pyproject.toml (pinned by uv.lock)
+  # Ruff, Pyrefly and Import Linter run through uv so their versions come from
+  # the dependency groups in pyproject.toml (pinned by uv.lock)
   - repo: local
     hooks:
       # Ruff: run the linter and fix what is possible
       - id: ruff-check
         name: Ruff (lint)
-        entry: uv run --group format ruff check --force-exclude --fix
+        entry: uv run --group lint ruff check --force-exclude --fix
         language: system
         types_or: [python, pyi, jupyter]
         require_serial: true
@@ -41,7 +41,7 @@ repos:
       # Ruff: run the formatter and fix code styling
       - id: ruff-format
         name: Ruff (format)
-        entry: uv run --group format ruff format --force-exclude
+        entry: uv run --group lint ruff format --force-exclude
         language: system
         types_or: [python, pyi, jupyter]
         require_serial: true
@@ -53,3 +53,11 @@ repos:
         language: system
         types_or: [python, pyi, jupyter]
         pass_filenames: false  # Full repo check, matching `just check`
+
+      # Import Linter: check the import contracts in pyproject.toml
+      - id: import-linter
+        name: Import Linter (import contracts)
+        entry: uv run --group lint lint-imports
+        language: system
+        types_or: [python, pyi]
+        pass_filenames: false  # Contracts hold for the whole import graph

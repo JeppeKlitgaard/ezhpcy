@@ -7,6 +7,7 @@ set windows-shell := ["powershell.exe", "-NoLogo", "-NoProfile", "-Command"]
 all:
     just format
     just lint
+    just lint-imports
     just check
     just test
     just pc-all
@@ -23,23 +24,28 @@ override-config:
 
 
 # Formats the code using ruff
-[group: 'format']
+[group: 'lint']
 format:
-    uv run --group format ruff check . --fix
-    uv run --group format ruff format .
+    uv run --group lint ruff check . --fix
+    uv run --group lint ruff format .
 
 # Checks the code for linting errors
-[group: 'format']
+[group: 'lint']
 lint:
-    uv run --group format ruff check .
+    uv run --group lint ruff check .
+
+# Checks the import contracts
+[group: 'lint']
+lint-imports:
+    uv run --group lint lint-imports
 
 # Runs the pre-commit hooks on all files
-[group: 'format']
+[group: 'lint']
 pc-all:
     uv run --group pre-commit prek run --all-files
 
 # Runs the pre-commit hooks on the changed files
-[group: 'format']
+[group: 'lint']
 pc:
     uv run --group pre-commit prek run
 

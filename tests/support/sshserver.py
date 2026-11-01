@@ -30,6 +30,10 @@ _HOST = "127.0.0.1"
 # How long starting or stopping the server may take.
 _TIMEOUT_SECONDS = 10
 _RELAY_CHUNK_BYTES = 64 * 1024
+# How many times the server tries to open a file that is being replaced, and how
+# long it waits in between.
+_OPEN_ATTEMPTS = 25
+_OPEN_RETRY_SECONDS = 0.02
 # Iterations of its loop the stopped server lets closing transports finish in: each
 # may close another, and they let go of their sockets on the next iteration.
 _CLOSING_ITERATIONS = 5
@@ -500,3 +504,15 @@ class _SFTPServer(asyncssh.SFTPServer):
 
     def map_path(self, path: bytes) -> bytes:
         return super().map_path(posixpath.join(self._home, path))
+
+    async def open(self, path: bytes, pflags: int, attrs: asyncssh.SFTPAttrs) -> object:
+        """
+        On Windows a file can't be opened for a moment while it is replaced, which a
+        POSIX server's clients never see. So that is tried again.
+        """
+        for _ in range(_OPEN_ATTEMPTS - 1):
+            try:
+                return super().open(path, pflags, attrs)
+            except PermissionError:
+                await asyncio.sleep(_OPEN_RETRY_SECONDS)
+        return super().open(path, pflags, attrs)

@@ -24,7 +24,6 @@ from typing import Any, Literal
 import pytest
 
 from ezhpcy import login as login_module
-from ezhpcy.cli import tunnel as tunnel_cli
 from ezhpcy.job import lifecycle, publish
 from ezhpcy.scheduler.base import (
     InteractiveJob,
@@ -49,6 +48,7 @@ from tests.support.tunnel import (
     serve_interactive_job,
     snapshot,
     tunnel_log,
+    tunnel_runs,
     unused_port,
     use_scheduler,
     write_worker_status,
@@ -78,16 +78,7 @@ class Rig:
             self.worker_port = server.listen(banner(scenario.banner))
         else:
             self.worker_port = worker.port
-        self.runs: list[tunnel_cli.TunnelRun] = []
-        init = tunnel_cli.TunnelRun.__init__
-
-        def recording_init(
-            run: tunnel_cli.TunnelRun, *args: Any, **options: Any
-        ) -> None:
-            init(run, *args, **options)
-            self.runs.append(run)
-
-        monkeypatch.setattr(tunnel_cli.TunnelRun, "__init__", recording_init)
+        self.runs = tunnel_runs(monkeypatch)
 
     def scheduler(self, host: RemoteHost) -> FakeScheduler:
         inspections = [

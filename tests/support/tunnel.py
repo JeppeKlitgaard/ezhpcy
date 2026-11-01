@@ -16,9 +16,11 @@ import time
 from collections.abc import Awaitable, Callable, Generator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+from ezhpcy.cli import tunnel as tunnel_cli
 from ezhpcy.constants import EZHPCY_VERSION
 from ezhpcy.job import lifecycle
 from ezhpcy.scheduler.base import InteractiveJob, JobInfo, JobSpec, JobState
@@ -65,6 +67,23 @@ def configure_tunnel(
     server.command("bash -c", reply())
     server.command("env", reply())
     return configured
+
+
+def tunnel_runs(monkeypatch: pytest.MonkeyPatch) -> list[tunnel_cli.TunnelRun]:
+    """
+    The `ezhpcy tunnel` runs started from now on. Once one's `served` is set, its
+    Host block is published: Ctrl+C no longer lands in the middle of that, where
+    publishing would clean up after itself, before the job is left.
+    """
+    runs: list[tunnel_cli.TunnelRun] = []
+    init = tunnel_cli.TunnelRun.__init__
+
+    def recording_init(run: tunnel_cli.TunnelRun, *args: Any, **options: Any) -> None:
+        init(run, *args, **options)
+        runs.append(run)
+
+    monkeypatch.setattr(tunnel_cli.TunnelRun, "__init__", recording_init)
+    return runs
 
 
 def serve_login_shell(server: SSHTestServer, **fakes: Handler) -> None:

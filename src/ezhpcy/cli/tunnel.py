@@ -11,7 +11,7 @@ order (printing a link's URL, for the alias, in its place), and wait. An app
 that fails to start, or exits, leaves the tunnel serving.
 """
 
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 lazy import asyncio
 lazy import os
 lazy import sys
@@ -40,10 +40,11 @@ from ezhpcy.cli._options import (
 lazy from ezhpcy import api
 lazy from ezhpcy.cli import _include as include
 lazy from ezhpcy.cli._console import (
-    console,
     flush_output,
     hide_live_display,
     live_display,
+    print_for_scripts,
+    redraw_live_display,
 )
 lazy from ezhpcy.cli._errors import CliUsageError, sentence
 lazy from ezhpcy.cli._logging import label_log_file
@@ -53,8 +54,10 @@ lazy from ezhpcy.cli._resolve import (
     login_usage_error,
     select_profile,
 )
+lazy from ezhpcy.cli._tunnel_actions import ActionMenu
 lazy from ezhpcy.cli._tunnel_status import StatusPanel
 lazy from ezhpcy.cli.utils.interrupts import interrupts_handled_by
+lazy from ezhpcy.cli.utils.keys import read_keys, restore_terminal
 lazy from ezhpcy.cli.utils.ssh import cli_prompts
 
 _DEFAULT_WORKER_PORT_RETRIES = 5
@@ -276,6 +279,8 @@ class TunnelRun:
         self.apps = tuple(apps)
         self.apps_root = apps_root
         self.job: api.Job | None = None
+        # The actions of its apps, as keys in its status panel.
+        self.menu = ActionMenu(on_change=redraw_live_display)
         # Whether its Host block was published.
         self.served = False
         # What connects and serves, once started; stopping cancels it until
@@ -301,7 +306,7 @@ class TunnelRun:
 
     async def start_app(self, host: api.Host, app: api.App) -> api.RunningApp | None:
         """
-        Run `app` on `host`, and print its URL once it is ready; or say why it
+        Run `app` on `host`, and print its URL, if any, once it is ready; or say why it
         couldn't start, and return None.
         """
         try:
@@ -316,8 +321,9 @@ class TunnelRun:
                 )
             )
             return None
+        self.menu.add(running)
         if running.url is not None:
-            _print_url(running.url)
+            print_for_scripts(running.url)
         return running
 
     def show_link(self, link: api.Link) -> None:
@@ -331,10 +337,11 @@ class TunnelRun:
                 status_hints=link.status_hints(self.alias),
             )
         )
-        _print_url(url)
+        print_for_scripts(url)
 
     def stop(self, why: str) -> None:
         """Stop the tunnel: its job, or connecting, if it hasn't one yet."""
+        self.menu.close()
         if self.job is not None:
             self.job.stop(why)
             return
@@ -363,8 +370,9 @@ async def serve(
         lambda: run.status,
         title=t"Tunnel {run.alias:name}",
         login=f"{login.user}@{login.host}",
+        menu=run.menu,
     )
-    with live_display(panel), _interrupts_stop(run.stop):
+    with live_display(panel) as shown, _interrupts_stop(run.stop):
         async with api.connect(
             login, prompts=cli_prompts(), password=password
         ) as login_node:
@@ -390,18 +398,20 @@ async def serve(
                                 watchers.append(
                                     asyncio.create_task(_watch_app(running))
                                 )
-                        await job.wait()
+                        # Only where the panel can show what they do.
+                        async with (
+                            read_keys(run.menu.on_key)
+                            if shown and run.menu.has_keys
+                            else nullcontext()
+                        ):
+                            await job.wait()
                     finally:
                         # Before the apps stop with the job.
                         for watcher in watchers:
                             watcher.cancel()
+                        await run.menu.stop()
             except api.JobEnded:
                 pass
-
-
-def _print_url(url: str) -> None:
-    # On stdout, for scripts; the log and the status are on stderr.
-    console.print(url, soft_wrap=True, markup=False, highlight=False)
 
 
 async def _watch_app(running: api.RunningApp) -> None:
@@ -444,6 +454,7 @@ def _interrupts_stop(stop: Callable[[str], object]) -> Generator[None]:
         # Hidden, the live display gives the terminal its cursor back. Briefly: a
         # terminal that doesn't take output mustn't keep it running.
         hide_live_display()
+        restore_terminal()
         flush_output(_EXIT_FLUSH_SECONDS)
         sys.stdout.flush()
         sys.stderr.flush()

@@ -20,6 +20,7 @@ import pytest
 
 from ezhpcy import api
 from ezhpcy.cli import tunnel as tunnel_cli
+from ezhpcy.cli.utils.keys import ENTER
 from tests.support.apps import MINIMAL_APP, AppRig, http_app, write_project
 from tests.support.cli import Result, capture, invoke
 from tests.support.login import remote_state_json
@@ -454,3 +455,86 @@ def test_an_invalid_manifest_fails_before_connecting(
     assert "Invalid value for --manifest." in result.stderr
     assert "unknown key" in result.stderr
     assert captured == {}
+
+
+def test_a_key_runs_an_action_while_the_tunnel_serves(
+    apps: TunnelApps, tmp_path: Path
+) -> None:
+    apps.manifest = write_project(
+        tmp_path / "with-action",
+        MINIMAL_APP
+        + '[ezhpcy.app.lab."v1.0".action.go]\n'
+        + 'run.command = ["go", "{amount}"]\n'
+        + 'input.amount = { type = "integer" }\n',
+    )
+    results: list[api.ActionRun] = []
+
+    def press_keys(serving: Serving) -> None:
+        for key in ("1", "4", "2", ENTER):
+            serving.loop.call_soon_threadsafe(serving.run.menu.on_key, key)
+        wait_until(lambda: len(apps.rig.processes.processes) == 2)
+        fake = apps.rig.processes.processes[1]
+        serving.launched = [fake.launch_script]
+        wait_until((fake.run_dir / "process.json").exists)
+        fake.write_stdout("done\n")
+        fake.exit(0)
+
+        def finished() -> bool:
+            [status] = serving.app_statuses()
+            results[:] = status.actions
+            return bool(results) and results[0].finished is not None
+
+        wait_until(finished)
+
+    apps.then = press_keys
+
+    with tunnel_log() as log:
+        result = apps.tunnel("--app", "lab")
+
+    assert result.exit_code == 0, result
+    assert apps.serving is not None
+    assert apps.serving.launched[0].count("-- go 42") == 1
+    assert results[0].state is api.ActionState.SUCCEEDED
+    assert results[0].stdout == "done\n"
+    messages = log.messages()
+    assert any("Action go of app lab v1.0 succeeded" in text for text in messages)
+    assert "  done" in messages
+
+
+def test_a_tunnel_connects_and_publishes_with_an_app_of_actions_alone(
+    apps: TunnelApps, tmp_path: Path
+) -> None:
+    apps.manifest = write_project(
+        tmp_path / "actions-alone",
+        '[ezhpcy]\nschema = 1\n\n[ezhpcy.app.lab."v1.0"]\n'
+        'environment.pixi = "pixi.toml"\n'
+        '[ezhpcy.app.lab."v1.0".action.go]\nrun.command = ["go"]\n',
+    )
+    seen: list[api.JobStatus] = []
+
+    def press(serving: Serving) -> None:
+        seen.append(serving.run.status)
+        serving.loop.call_soon_threadsafe(serving.run.menu.on_key, "1")
+        wait_until(lambda: len(apps.rig.processes.processes) == 1)
+        fake = apps.rig.processes.processes[0]
+        wait_until((fake.run_dir / "process.json").exists)
+        fake.exit(0)
+
+        def finished() -> bool:
+            [status] = serving.app_statuses()
+            return bool(status.actions) and status.actions[0].finished is not None
+
+        wait_until(finished)
+
+    apps.then = press
+
+    with tunnel_log():
+        result = apps.tunnel("--app", "lab")
+
+    assert result.exit_code == 0, result
+    # No URL to print, and its alias published all the same.
+    assert result.stdout == ""
+    assert apps.serving is not None
+    assert apps.serving.run.served
+    [status] = seen
+    assert any(isinstance(item, api.PublishedStatus) for item in status.attachments)

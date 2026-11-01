@@ -1,7 +1,7 @@
 """
 A job's status as a panel, for `ezhpcy.cli._console.live_display`: what the job is
-doing, what is attached to it, and once it serves, how to connect to it, and
-where each app is.
+doing, what is attached to it, and once it serves, how to connect to it, where
+each app is, and the keys that run its actions.
 """
 
 lazy import shlex
@@ -23,6 +23,8 @@ lazy from rich.table import Table
 lazy from rich.text import Text
 
 lazy from ezhpcy.api import (
+    ActionRun,
+    ActionState,
     AppState,
     AppStatus,
     ForwardStatus,
@@ -32,6 +34,7 @@ lazy from ezhpcy.api import (
     PublishedStatus,
 )
 lazy from ezhpcy.cli._messages import duration, rich_text
+lazy from ezhpcy.cli._tunnel_actions import ActionMenu, MenuEntry
 
 
 class StatusPanel:
@@ -43,11 +46,17 @@ class StatusPanel:
     """
 
     def __init__(
-        self, status: Callable[[], JobStatus], *, title: Template, login: str
+        self,
+        status: Callable[[], JobStatus],
+        *,
+        title: Template,
+        login: str,
+        menu: ActionMenu | None = None,
     ) -> None:
         self._status = status
         self._title = title
         self._login = login
+        self._menu = menu
         self._spinner = Spinner("dots", style="cyan")
 
     def __call__(self) -> RenderableType:
@@ -57,6 +66,7 @@ class StatusPanel:
             login=self._login,
             now=time.monotonic(),
             spinner=self._spinner,
+            menu=self._menu,
         )
 
 
@@ -67,6 +77,7 @@ def status_panel(
     login: str,
     now: float,
     spinner: Spinner | None = None,
+    menu: ActionMenu | None = None,
 ) -> Panel:
     """`status` at `now` (a `time.monotonic()` reading), as a panel."""
     serving = _serving(status)
@@ -81,14 +92,13 @@ def status_panel(
     parts: list[RenderableType] = [top]
     if details := _details(status, now):
         parts.extend([Text(), details])
-    if apps := _apps(status):
+    if apps := _apps(status, menu, now):
         parts.extend([Text(), _grid(apps)])
-    hint = (
-        "(press Ctrl+C again to force quit)"
-        if status.phase is Phase.STOPPING
-        else "Press Ctrl+C to stop."
-    )
-    parts.extend([Text(), rich_text(t"{hint:aside}")])
+    parts.append(Text())
+    if menu is not None and menu.prompt:
+        parts.extend(rich_text(line) for line in menu.prompt)
+    else:
+        parts.append(rich_text(t"{_hint(status, menu):aside}"))
     return Panel(
         Group(*parts),
         title=rich_text(title),
@@ -97,6 +107,14 @@ def status_panel(
         expand=False,
         padding=(0, 1),
     )
+
+
+def _hint(status: JobStatus, menu: ActionMenu | None) -> str:
+    if status.phase is Phase.STOPPING:
+        return "(press Ctrl+C again to force quit)"
+    if menu is not None and menu.has_keys:
+        return "Press an action's key to run it, or Ctrl+C to stop."
+    return "Press Ctrl+C to stop."
 
 
 def _serving(status: JobStatus) -> bool:
@@ -249,10 +267,11 @@ def _requested(status: JobStatus) -> _Rows:
     return rows
 
 
-def _apps(status: JobStatus) -> _Rows:
+def _apps(status: JobStatus, menu: ActionMenu | None, now: float) -> _Rows:
     """
     Each app and link, a row: where it serves, or where it is if it doesn't,
-    then its status hints while it serves. A link has no connections to count.
+    then its status hints while it serves, and its actions while it runs. A link
+    has no connections to count.
     """
     rows: _Rows = []
     for attachment in status.attachments:
@@ -271,11 +290,51 @@ def _apps(status: JobStatus) -> _Rows:
                 where = t"{url:target} {f'({connections} connection{plural})':aside}"
             case AppStatus(state=AppState.PROVISIONING):
                 where = t"provisioning"
+            case AppStatus(state=AppState.READY):
+                where = t"ready"
             case _:
                 where = t"starting"
         rows.append((f"{attachment.name} {attachment.version}", where))
         rows.extend(("", t"{hint:hint}") for hint in hints)
+        if (
+            menu is not None
+            and isinstance(attachment, AppStatus)
+            and attachment.state is AppState.READY
+        ):
+            latest = {run.action: run for run in attachment.actions}
+            rows.extend(
+                _action_row(entry, latest.get(entry.name), now)
+                for entry in menu.of(attachment.run_id)
+            )
     return rows
+
+
+def _action_row(
+    entry: MenuEntry, run: ActionRun | None, now: float
+) -> tuple[str, Template]:
+    """An action: its key if it has one, what it does, and its latest run."""
+    key = entry.key or " "
+    about: Template = t""
+    if entry.action.description is not None:
+        about += t"{entry.action.description} "
+    if (every := entry.action.trigger.every) is not None:
+        about += t"{f'(every {duration(every.total_seconds())})':aside} "
+    return (f"  {key}  {entry.name}", about + _latest_run(run, now))
+
+
+def _latest_run(run: ActionRun | None, now: float) -> Template:
+    if run is None:
+        return t""
+    if run.finished is None:
+        return t"{'running':detail} {f'({duration(now - run.started)})':aside}"
+    ago = duration(now - run.finished)
+    if run.state is ActionState.SUCCEEDED:
+        # A line is the result itself, such as a figure; more belong in the log.
+        lines = run.stdout.splitlines()
+        result = lines[0] if len(lines) == 1 else "succeeded"
+        return t"{result:hint} {f'({ago} ago)':aside}"
+    status = "" if run.exit_status is None else f" with status {run.exit_status}"
+    return t"{f'failed{status}':emphasis} {f'({ago} ago)':aside}"
 
 
 def _time_limit(status: JobStatus) -> str | None:

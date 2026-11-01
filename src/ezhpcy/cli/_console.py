@@ -110,6 +110,9 @@ class _OutputThread(threading.Thread):
         self._live = None
         live.stop()
 
+    def redraw_now(self) -> None:
+        self._next_redraw = 0.0
+
 
 def _call(write: Callable[[], object]) -> bool:
     """Call `write`, and return whether it succeeded; if not, print why."""
@@ -218,6 +221,28 @@ def live_display_paused() -> Generator[None]:
         yield
     finally:
         write_later(functools.partial(output.show, live))
+
+
+def redraw_live_display() -> None:
+    """Have the live display, if one is shown, drawn now, as it was just changed."""
+    write_later(_output_thread().redraw_now)
+
+
+def print_for_scripts(text: str) -> None:
+    """
+    Print `text` on stdout, for scripts. Where stdout is the terminal the live
+    display is on, it goes above the display through `error_console`, as the log
+    does: written directly, the next redraw would erase it, and leave part of the
+    display behind.
+    """
+    if _live is not None and console.is_terminal:
+        write_later(
+            functools.partial(
+                error_console.print, text, soft_wrap=True, markup=False, highlight=False
+            )
+        )
+        return
+    console.print(text, soft_wrap=True, markup=False, highlight=False)
 
 
 def hide_live_display() -> None:

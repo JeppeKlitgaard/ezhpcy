@@ -17,16 +17,17 @@ dependencies = [
     # SSH
     "asyncssh>=2.24.1",
     # CLI
-    "rich>=15.0.0",
+    "blessed>=1.52.0",
     "cyclopts>=5.2.0",
+    "rich>=15.0.0",
     # Keyring, secretstorage is for keyring on Linux
     "keyring>=25.7.0",
     "secretstorage>=3.5.0 ; sys_platform == 'linux'",
     # Utils
-    "py-machineid>=1.0.0",
-    "platformdirs>=4.9.4",
     "filelock>=4.2.0",
     "packaging>=26.3",
+    "platformdirs>=4.9.4",
+    "py-machineid>=1.0.0",
 ]
 
 [project.scripts]

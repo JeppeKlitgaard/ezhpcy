@@ -1,7 +1,7 @@
 import logging
 import os
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Generator, Iterator
 from pathlib import Path
 
 # `ezhpcy.config` reads `EZHPCY_CONFIG_FILE` when imported, which is below, and the
@@ -20,6 +20,7 @@ os.environ["EZHPCY_CONFIG_FILE"] = str(
 
 import pytest
 
+from ezhpcy.cli._console import flush_output
 from ezhpcy.cli._logging import (
     ASYNCSSH_LOGGER_NAME,
     OUTPUT_HANDLER_NAME,
@@ -36,6 +37,28 @@ from tests.support.worker import worker_credentials, worker_sshd
 # As the CLI does, so every test sees the same `ezhpcy` logger: one that has the
 # terminal handler and doesn't propagate.
 configure_logging(ConsoleLoggingConfig().level)
+
+# Longest a test's end waits for the output thread, as a test that failed may have
+# left it on a terminal that takes no output.
+_FLUSH_SECONDS = 5
+
+
+@pytest.hookimpl(wrapper=True, trylast=True)
+def _flush_output_within_capture() -> Generator[None]:
+    """
+    Have the output thread write what a test logged before pytest stops capturing,
+    around which this wraps: a fixture's teardown is too late, as capture stops
+    between a test's phases, and the terminal log would go to the real stderr.
+    """
+    try:
+        return (yield)
+    finally:
+        flush_output(_FLUSH_SECONDS)
+
+
+pytest_runtest_setup = _flush_output_within_capture
+pytest_runtest_call = _flush_output_within_capture
+pytest_runtest_teardown = _flush_output_within_capture
 
 
 @pytest.fixture

@@ -20,12 +20,14 @@ such (`v1.2` is `v1.2.0`). `collect_apps` gathers several manifests' apps, and
 
 An app may have actions (`Action`), `[ezhpcy.app.<name>."<version>".action.<name>]`:
 commands run on its host, in its environment, while it runs, by hand or by a
-timer, which may take inputs (`ActionInput`) as placeholders of their own.
+timer, which may take inputs as placeholders of their own. An app may take
+arguments, `[ezhpcy.app.<name>."<version>".argument.<name>]`, given as it starts,
+as placeholders for all of it. Both are described by a `Parameter`.
 """
 
+import functools
 import math
 import re
-import string
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import PurePosixPath
@@ -33,7 +35,7 @@ from typing import Annotated, Literal, Self
 lazy import hashlib
 lazy import stat
 lazy import tomllib
-lazy from collections.abc import Iterable, Iterator, Mapping, Sequence
+lazy from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
 lazy from pathlib import Path
 
 from pydantic import (
@@ -48,6 +50,7 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+lazy import minijinja
 lazy from packaging.utils import canonicalize_name
 lazy from packaging.version import InvalidVersion, Version
 lazy from pydantic import ValidationError
@@ -89,7 +92,11 @@ _HOST_PLACEHOLDERS = frozenset({"socket", "port", "run_dir", "assets", "workdir"
 _ACTION_PLACEHOLDERS = _HOST_PLACEHOLDERS - {"run_dir"}
 # What a `path` input's default may use.
 _PATH_DEFAULT_PLACEHOLDERS = frozenset({"assets", "workdir"})
-# The placeholders each field takes. `{token}` is not in `run.command`: argv can
+# As `{{ flag }}` renders, for a command line, not as Python spells them.
+_BOOLEAN_TEXT = {True: "true", False: "false"}
+# Far more than a manifest's template needs, and an end to one that never would.
+_TEMPLATE_FUEL = 1_000_000
+# The placeholders each field takes. `{{ token }}` is not in `run.command`: argv can
 # be read by other users on the host.
 FIELD_PLACEHOLDERS = {
     "run.command": _HOST_PLACEHOLDERS,
@@ -98,45 +105,64 @@ FIELD_PLACEHOLDERS = {
     "access.status_hints": frozenset({"token", "local_port", "alias"}),
     "action.run.command": _ACTION_PLACEHOLDERS,
     "action.run.env": _ACTION_PLACEHOLDERS | {"token"},
+    # Known before anything starts, so arguments alone.
+    "action.trigger.every": frozenset[str](),
 }
 _ALL_PLACEHOLDERS = frozenset(ENVIRONMENT_VARIABLES) | {"local_port", "alias"}
 
 
+@functools.cache
+def _environment() -> minijinja.Environment:
+    return minijinja.Environment(
+        undefined_behavior="strict",
+        auto_escape_callback=lambda _name: False,
+        # What a template may do is bounded: it has no way to reach Python.
+        fuel=_TEMPLATE_FUEL,
+        finalizer=lambda value: (
+            _BOOLEAN_TEXT.get(value, value) if isinstance(value, bool) else value
+        ),
+    )
+
+
+def _why(error: minijinja.TemplateError) -> str:
+    return str(error.message).removesuffix(" (in <string>:1)")
+
+
 def placeholders(template: str) -> set[str]:
     """
-    The placeholders in `template`. Raises `ValueError` for broken braces, and for
-    anything but a bare name: `{}`, `{0}`, `{a.b}`, `{a!r}`, `{a:>5}`.
+    The placeholders `template` uses, in its blocks too. Raises `ValueError` if it
+    isn't a valid template.
     """
-    names = set()
-    for _literal, name, format_spec, conversion in _parse(template):
-        if name is None:
-            continue
-        if not name.isidentifier():
-            raise ValueError(f"{{{name}}} is not a placeholder name")
-        if format_spec or conversion:
-            raise ValueError(f"placeholder {{{name}}} must not have a format")
-        names.add(name)
-    return names
-
-
-def render(template: str, values: Mapping[str, str]) -> str:
-    """
-    Fill `template`'s placeholders from `values`, with `{{` and `}}` as literal
-    braces. Every field that takes placeholders is rendered here.
-    """
-    rendered = []
-    for literal, name, _format_spec, _conversion in _parse(template):
-        rendered.append(literal)
-        if name is not None:
-            rendered.append(values[name])
-    return "".join(rendered)
-
-
-def _parse(template: str) -> list[tuple[str, str | None, str | None, str | None]]:
     try:
-        return list(string.Formatter().parse(template))
-    except ValueError as error:
-        raise ValueError(f"invalid braces: {error}") from None
+        return set(_environment().undeclared_variables_in_str(template))
+    except minijinja.TemplateError as error:
+        raise ValueError(_why(error)) from None
+
+
+def render(template: str, values: Mapping[str, object]) -> str:
+    """
+    Render `template` with `values`, which aren't rendered in turn. Every field
+    that takes placeholders is rendered here. Raises `ValueError` if it can't be,
+    such as for a value it uses that has none.
+    """
+    try:
+        return _environment().render_str(template, **values)
+    except minijinja.TemplateError as error:
+        raise ValueError(_why(error)) from None
+
+
+def render_command(templates: Iterable[str], values: Mapping[str, object]) -> list[str]:
+    """
+    The arguments of a command. One with a block that renders empty is left out, so
+    that `{% if verbose %}--verbose{% endif %}` is one argument or none; an empty
+    value alone stays, as an empty argument.
+    """
+    rendered = ((template, render(template, values)) for template in templates)
+    return [text for template, text in rendered if text or "{%" not in template]
+
+
+def _shown(name: str) -> str:
+    return f"{{{{ {name} }}}}"
 
 
 class _Table(BaseModel):
@@ -410,7 +436,7 @@ class Ready(_Table):
 class Access(_Table):
     """How the user reaches the app on this machine."""
 
-    url: str = "http://127.0.0.1:{local_port}/"
+    url: str = "http://127.0.0.1:{{ local_port }}/"
     # Lines shown under the URL in a tunnel's status, such as a command that
     # mounts it; they take the URL's placeholders.
     status_hints: tuple[str, ...] = ()
@@ -418,17 +444,20 @@ class Access(_Table):
     local_port: int = Field(default=0, ge=0, le=65535)
 
 
-class ActionInput(_Table):
+class Parameter(_Table):
     """
-    One value an action takes, by `type`; a frontend asks for it as its type
-    suggests. A `path` is an absolute path on the app's host, where the action
-    runs, not on this machine.
+    One value an app takes as it starts (an argument), or an action as it runs (an
+    input), by `type`; a frontend asks for it as its type suggests. A `path` is an
+    absolute path on the app's host, not on this machine.
     """
 
     type: Literal["string", "integer", "number", "boolean", "choice", "path"]
     label: str | None = Field(default=None, min_length=1)
-    # A `path`'s may use `{workdir}` and `{assets}`, rendered in `RunningApp.actions`.
+    # A `path`'s may use `{{ workdir }}` and `{{ assets }}`, and an input's the
+    # arguments, rendered in `RunningApp.actions`.
     default: bool | int | float | str | None = None
+    # If not, it may have no value: `{% if name is defined %}` tells.
+    required: bool = True
     # Bounds of an `integer` or a `number`, inclusive.
     min: int | float | None = None
     max: int | float | None = None
@@ -456,24 +485,25 @@ class ActionInput(_Table):
         except KeyError, ValueError:
             raise ValueError(f"{text!r} is not {_A_TYPE[self.type]}") from None
 
-    def check(self, value: object) -> str:
+    def check(self, value: object) -> object:
         """
-        `value`, checked as far as can be without its host, as the text its
-        placeholder is replaced by. Raises `ValueError`, saying why it can't be.
+        `value`, checked as far as can be without its host, as its placeholder's
+        value, which a template may compare or calculate with. Raises `ValueError`,
+        saying why it can't be.
         """
         match self.type:
             case "integer" if isinstance(value, int) and not isinstance(value, bool):
                 self._check_bounds(value)
-                text = str(value)
+                return value
             case "number" if (
                 isinstance(value, int | float)
                 and not isinstance(value, bool)
                 and math.isfinite(value)
             ):
                 self._check_bounds(value)
-                text = str(value)
+                return value
             case "boolean" if isinstance(value, bool):
-                text = "true" if value else "false"
+                return value
             case "string" if isinstance(value, str):
                 text = value
             case "choice" if isinstance(value, str):
@@ -498,7 +528,7 @@ class ActionInput(_Table):
 
     @model_validator(mode="after")
     def check_fields(self) -> Self:
-        for fields, types in _INPUT_FIELDS.items():
+        for fields, types in _PARAMETER_FIELDS.items():
             if self.type not in types and (wrong := fields & self.model_fields_set):
                 raise ValueError(
                     f"{', '.join(sorted(wrong))} only apply to type = "
@@ -514,6 +544,8 @@ class ActionInput(_Table):
                 raise ValueError("type = 'choice' needs choices")
             if len(set(self.choices)) != len(self.choices):
                 raise ValueError("choices must differ")
+        if not self.required and self.default is not None:
+            raise ValueError("required = false is for a value with no default")
         # A path's may have placeholders, which `App` checks.
         if self.default is not None and self.type != "path":
             try:
@@ -532,28 +564,44 @@ _A_TYPE = {
     "path": "a path",
 }
 _BOOLEANS = {"true": True, "yes": True, "false": False, "no": False}
-_INPUT_FIELDS = {
+_PARAMETER_FIELDS = {
     frozenset({"min", "max"}): frozenset({"integer", "number"}),
     frozenset({"choices"}): frozenset({"choice"}),
     frozenset({"kind", "must_exist"}): frozenset({"path"}),
 }
 
 
-def _check_input_name(name: object) -> object:
+def _check_parameter_name(name: object) -> object:
     if isinstance(name, str):
-        if not name.isidentifier():
+        # `self` is what templates are rendered with a method of.
+        if not name.isidentifier() or name == "self":
             raise ValueError(f"{name!r} can't be a placeholder's name")
         if name in _ALL_PLACEHOLDERS:
             raise ValueError(f"{name!r} is the name of a built-in placeholder")
     return name
 
 
+type _Parameters = dict[
+    Annotated[str, BeforeValidator(_check_parameter_name)], Parameter
+]
+
+
 class Trigger(_Table):
     """What runs an action: the user, a timer, or both."""
 
     manual: bool = True
-    # Timers run in the client, while the app runs.
-    every: Seconds | None = Field(default=None, gt=timedelta(0))
+    # Timers run in the client, while the app runs. A template takes the app's
+    # arguments, and gives seconds.
+    every: Seconds | str | None = None
+
+    @field_validator("every")
+    @classmethod
+    def check_every(cls, value: timedelta | str | None) -> timedelta | str | None:
+        if isinstance(value, str) and "{{" not in value:
+            raise ValueError("must be a number of seconds, or a template giving one")
+        if isinstance(value, timedelta) and value <= timedelta(0):
+            raise ValueError("must be more than 0 seconds")
+        return value
 
     @model_validator(mode="after")
     def check_some_trigger(self) -> Self:
@@ -562,21 +610,32 @@ class Trigger(_Table):
         return self
 
 
+def _rendered_every(template: str, values: Mapping[str, object]) -> timedelta:
+    text = render(template, values)
+    try:
+        seconds = float(text)
+    except ValueError:
+        seconds = 0.0
+    if not (math.isfinite(seconds) and seconds > 0):
+        raise ValueError(
+            f"trigger.every gives {text!r}, not a number of seconds above 0"
+        )
+    return timedelta(seconds=seconds)
+
+
 class Action(_Table):
     """A command run on an app's host, in its environment, while it runs."""
 
     description: str | None = Field(default=None, min_length=1)
     run: Command
     trigger: Trigger = Field(default_factory=Trigger)
-    input: dict[Annotated[str, BeforeValidator(_check_input_name)], ActionInput] = (
-        Field(default_factory=dict)
-    )
+    input: _Parameters = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def check_timer_has_values(self) -> Self:
         if self.trigger.every is not None:
-            for name, action_input in self.input.items():
-                if action_input.default is None:
+            for name, parameter in self.input.items():
+                if parameter.required and parameter.default is None:
                     raise ValueError(
                         f"input {name!r} needs a default, as a timer asks nobody"
                     )
@@ -589,17 +648,24 @@ class Action(_Table):
         for name, value in self.run.env.items():
             yield "action.run.env", f"run.env.{name}", value
 
-    def with_rendered_defaults(self, values: Mapping[str, str]) -> Action:
-        """It with its `path` inputs' defaults rendered, from `values`."""
-        rendered = {
-            name: action_input.model_copy(
-                update={"default": render(str(action_input.default), values)}
+    def rendered(self, values: Mapping[str, object]) -> Action:
+        """
+        It as a run of its app has it, from `values`: its `path` inputs' defaults
+        and its timer's interval rendered.
+        """
+        inputs = {
+            name: parameter.model_copy(
+                update={"default": render(str(parameter.default), values)}
             )
-            if action_input.type == "path" and action_input.default is not None
-            else action_input
-            for name, action_input in self.input.items()
+            if parameter.type == "path" and parameter.default is not None
+            else parameter
+            for name, parameter in self.input.items()
         }
-        return self.model_copy(update={"input": rendered})
+        trigger = self.trigger
+        if isinstance(trigger.every, str):
+            every = _rendered_every(trigger.every, values)
+            trigger = trigger.model_copy(update={"every": every})
+        return self.model_copy(update={"input": inputs, "trigger": trigger})
 
 
 def _check_action_name(name: object) -> object:
@@ -651,9 +717,26 @@ class _Entry(_Table):
         """Why the placeholder `name` has no value for it."""
         raise NotImplementedError
 
+    def own_placeholders(self) -> set[str]:
+        """The placeholders it defines itself."""
+        return set()
+
+    def placeholder_problem(
+        self, field: str, name: str, own: Collection[str]
+    ) -> str | None:
+        """What is wrong with `field` using the placeholder `name`, if anything."""
+        if name in own:
+            return None
+        if name not in _ALL_PLACEHOLDERS:
+            return f"unknown placeholder {_shown(name)}"
+        if name not in FIELD_PLACEHOLDERS[field]:
+            return f"{field} does not take {_shown(name)}"
+        if name not in self.available():
+            return f"{_shown(name)} {self.unavailable(name)}"
+        return None
+
     def placeholder_problems(self) -> Iterator[tuple[str, str]]:
         """Each field whose placeholders are wrong: (path, why)."""
-        available = self.available()
         for field, path, template in self.templates():
             try:
                 names = placeholders(template)
@@ -661,12 +744,9 @@ class _Entry(_Table):
                 yield path, str(error)
                 continue
             for name in sorted(names):
-                if name not in _ALL_PLACEHOLDERS:
-                    yield path, f"unknown placeholder {{{name}}}"
-                elif name not in FIELD_PLACEHOLDERS[field]:
-                    yield path, f"{field} does not take {{{name}}}"
-                elif name not in available:
-                    yield path, f"{{{name}}} {self.unavailable(name)}"
+                problem = self.placeholder_problem(field, name, self.own_placeholders())
+                if problem is not None:
+                    yield path, problem
 
 
 class App(_Entry):
@@ -681,6 +761,7 @@ class App(_Entry):
     endpoint: Endpoint | None = None
     ready: Ready = Field(default_factory=Ready)
     access: Access = Field(default_factory=Access)
+    argument: _Parameters = Field(default_factory=dict)
     action: dict[Annotated[str, BeforeValidator(_check_action_name)], Action] = Field(
         default_factory=dict
     )
@@ -696,18 +777,86 @@ class App(_Entry):
                 raise ValueError(f"{', '.join(wrong)} only apply with run and endpoint")
         return self
 
+    def checked_arguments(self, given: Mapping[str, object]) -> dict[str, object]:
+        """
+        The values of its arguments for a run: those `given`, checked as far as can
+        be without its host, and the defaults, but for those of `path`s, which only
+        the host can render. Raises `ManifestError` for a value it can't take, so
+        that a frontend can tell before connecting.
+        """
+        for unknown in given.keys() - self.argument.keys():
+            raise ManifestError(
+                t"app {self!s:name} has no argument {unknown:value}; choose from: "
+                t"{sorted(self.argument):choice}"
+            )
+        values: dict[str, object] = {}
+        for name, parameter in self.argument.items():
+            value = given.get(name, parameter.default)
+            if value is None:
+                if parameter.required:
+                    raise ManifestError(
+                        t"app {self!s:name} needs a value for argument {name:name}"
+                    )
+            elif name in given or parameter.type != "path":
+                try:
+                    values[name] = parameter.check(value)
+                except ValueError as error:
+                    raise ManifestError(
+                        t"argument {name:name} of app {self!s:name}: {error}"
+                    ) from error
+        for name, action in self.action.items():
+            if isinstance(every := action.trigger.every, str):
+                try:
+                    _rendered_every(every, values)
+                except ValueError as error:
+                    raise ManifestError(
+                        t"action {name:name} of app {self!s:name}: {error}"
+                    ) from error
+        return values
+
+    def own_placeholders(self) -> set[str]:
+        return set(self.argument)
+
     def placeholder_problems(self) -> Iterator[tuple[str, str]]:
         yield from super().placeholder_problems()
         for name, action in self.action.items():
             for path, why in self._action_problems(action):
                 yield f"action.{name}.{path}", why
+        for name, parameter in self.argument.items():
+            if name not in self._names_used():
+                yield f"argument.{name}", "is not used by anything"
+            if parameter.type == "path" and parameter.default is not None:
+                yield from self._path_default_problems(
+                    f"argument.{name}.default", str(parameter.default), ()
+                )
+
+    def _names_used(self) -> set[str]:
+        """Every placeholder its templates that can be read use."""
+        templates = [template for _field, _path, template in self.templates()]
+        for action in self.action.values():
+            templates += [template for _field, _path, template in action.templates()]
+            if isinstance(action.trigger.every, str):
+                templates.append(action.trigger.every)
+            templates += [
+                str(parameter.default)
+                for parameter in action.input.values()
+                if parameter.type == "path" and parameter.default is not None
+            ]
+        used: set[str] = set()
+        for template in templates:
+            try:
+                used |= placeholders(template)
+            except ValueError:
+                # Reported as what it is, not as what it might have used.
+                return set(self.argument)
+        return used
 
     def _action_problems(self, action: Action) -> Iterator[tuple[str, str]]:
         """
         As `placeholder_problems`, for one action, whose inputs are placeholders
         too, each of which it must use.
         """
-        available = self.available()
+        own = self.own_placeholders() | action.input.keys()
         used: set[str] = set()
         readable = True
         for field, path, template in action.templates():
@@ -718,35 +867,46 @@ class App(_Entry):
                 yield path, str(error)
                 continue
             used |= names
-            for name in sorted(names - action.input.keys()):
-                if name not in _ALL_PLACEHOLDERS:
-                    yield path, f"unknown placeholder {{{name}}}"
-                elif name not in FIELD_PLACEHOLDERS[field]:
-                    yield path, f"{field} does not take {{{name}}}"
-                elif name not in available:
-                    yield path, f"{{{name}}} {self.unavailable(name)}"
-        for name, action_input in action.input.items():
+            for name in sorted(names):
+                if (problem := self.placeholder_problem(field, name, own)) is not None:
+                    yield path, problem
+        if isinstance(every := action.trigger.every, str):
+            try:
+                for name in sorted(placeholders(every)):
+                    problem = self.placeholder_problem(
+                        "action.trigger.every", name, self.own_placeholders()
+                    )
+                    if problem is not None:
+                        yield "trigger.every", problem
+            except ValueError as error:
+                yield "trigger.every", str(error)
+        for name, parameter in action.input.items():
+            if name in self.argument:
+                yield f"input.{name}", "is the name of an argument of the app"
             if readable and name not in used:
                 yield f"input.{name}", "is not used by run.command or run.env"
-            if action_input.type == "path" and action_input.default is not None:
+            if parameter.type == "path" and parameter.default is not None:
                 yield from self._path_default_problems(
-                    f"input.{name}.default", str(action_input.default)
+                    f"input.{name}.default",
+                    str(parameter.default),
+                    self.own_placeholders(),
                 )
 
     def _path_default_problems(
-        self, path: str, default: str
+        self, path: str, default: str, own: Collection[str]
     ) -> Iterator[tuple[str, str]]:
         try:
             names = placeholders(default)
         except ValueError as error:
             yield path, str(error)
             return
+        allowed = _PATH_DEFAULT_PLACEHOLDERS | set(own)
         for name in sorted(names):
-            if name not in _PATH_DEFAULT_PLACEHOLDERS:
-                yield path, f"a path's default does not take {{{name}}}"
-            elif name not in self.available():
-                yield path, f"{{{name}}} {self.unavailable(name)}"
-        if names <= _PATH_DEFAULT_PLACEHOLDERS:
+            if name not in allowed:
+                yield path, f"a path's default does not take {_shown(name)}"
+            elif name not in own and name not in self.available():
+                yield path, f"{_shown(name)} {self.unavailable(name)}"
+        if names <= allowed:
             rendered = render(default, dict.fromkeys(names, "/absolute"))
             if not PurePosixPath(rendered).is_absolute():
                 yield path, "must be an absolute path on the host"
@@ -798,7 +958,7 @@ class LinkAccess(_Table):
 class Link(_Entry):
     """
     A link: an app with nothing to run, only a URL, such as one that opens the
-    host its tunnel publishes in an editor (`{alias}`, the Host alias).
+    host its tunnel publishes in an editor (`{{ alias }}`, the Host alias).
     """
 
     access: LinkAccess

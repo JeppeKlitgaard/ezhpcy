@@ -34,12 +34,12 @@ APPS = (
     + """
 [ezhpcy.app.board."v2.18"]
 environment.pixi = "pixi.toml"
-run.command = ["tensorboard", "--port", "{port}"]
+run.command = ["tensorboard", "--port", "{{ port }}"]
 endpoint.transport = "tcp"
 
 [ezhpcy.app.board."v2.19rc1"]
 environment.pixi = "pixi.toml"
-run.command = ["tensorboard", "--port", "{port}"]
+run.command = ["tensorboard", "--port", "{{ port }}"]
 endpoint.transport = "tcp"
 """
 )
@@ -206,7 +206,7 @@ def test_a_link_is_printed_for_the_alias_in_its_place(
         tmp_path / "project",
         APPS
         + '[ezhpcy.app.code."v1.0"]\n'
-        + 'access.url = "vscode://vscode-remote/ssh-remote+{alias}/"\n',
+        + 'access.url = "vscode://vscode-remote/ssh-remote+{{ alias }}/"\n',
     )
     apps.rig.serve_port()
 
@@ -464,7 +464,7 @@ def test_a_key_runs_an_action_while_the_tunnel_serves(
         tmp_path / "with-action",
         MINIMAL_APP
         + '[ezhpcy.app.lab."v1.0".action.go]\n'
-        + 'run.command = ["go", "{amount}"]\n'
+        + 'run.command = ["go", "{{ amount }}"]\n'
         + 'input.amount = { type = "integer" }\n',
     )
     results: list[api.ActionRun] = []
@@ -538,3 +538,54 @@ def test_a_tunnel_connects_and_publishes_with_an_app_of_actions_alone(
     assert apps.serving.run.served
     [status] = seen
     assert any(isinstance(item, api.PublishedStatus) for item in status.attachments)
+
+
+def _with_argument(apps: TunnelApps, tmp_path: Path) -> None:
+    apps.manifest = write_project(
+        tmp_path / "with-argument",
+        MINIMAL_APP.replace(
+            '"--ServerApp.sock={{ socket }}"',
+            '"--ServerApp.sock={{ socket }}", "--limit={{ limit }}"',
+        )
+        + '[ezhpcy.app.lab."v1.0".argument.limit]\n'
+        + 'type = "integer"\ndefault = 5\nmin = 1\n',
+    )
+
+
+def test_arg_gives_an_app_its_argument(apps: TunnelApps, tmp_path: Path) -> None:
+    _with_argument(apps, tmp_path)
+    launched: list[str] = []
+
+    def record(serving: Serving) -> None:
+        launched.append(apps.rig.processes.processes[0].launch_script)
+
+    apps.then = record
+
+    with tunnel_log():
+        result = apps.tunnel("--app", "lab", "--arg", "lab.limit=9")
+
+    assert result.exit_code == 0, result
+    assert "--limit=9" in launched[0]
+
+
+@pytest.mark.parametrize(
+    ("argument", "message"),
+    [
+        ("nothing", "APP.NAME=VALUE"),
+        ("limit=9", "APP.NAME=VALUE"),
+        ("other.limit=9", "isn't for an app"),
+        ("lab.nope=9", "takes"),
+        ("lab.limit=x", "is not an integer"),
+        ("lab.limit=0", "less than the minimum"),
+    ],
+)
+def test_a_wrong_arg_is_refused_before_connecting(
+    apps: TunnelApps, tmp_path: Path, argument: str, message: str
+) -> None:
+    _with_argument(apps, tmp_path)
+
+    result = apps.tunnel("--app", "lab", "--arg", argument)
+
+    assert result.exit_code == 2, result
+    assert message in " ".join(result.stderr.split())
+    assert apps.serving is None

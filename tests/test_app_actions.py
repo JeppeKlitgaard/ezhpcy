@@ -7,10 +7,12 @@ app. The fake processes play an action's run as they play an app's.
 import asyncio
 import json
 import logging
+import re
 import shlex
 import sys
 import threading
 from collections.abc import Callable
+from datetime import timedelta
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -33,9 +35,9 @@ assets.include = ["script.py"]
 
 [ezhpcy.app.lab."v1.0".action.reindex]
 description = "Reindex the notebooks"
-run.command = ["python", "{assets}/script.py", "--amount", "{amount}", "--to", "{socket}"]
-run.env.TARGET = "{where}"
-run.env.TOKEN = "{token}"
+run.command = ["python", "{{ assets }}/script.py", "--amount", "{{ amount }}", "--to", "{{ socket }}"]
+run.env.TARGET = "{{ where }}"
+run.env.TOKEN = "{{ token }}"
 
 [ezhpcy.app.lab."v1.0".action.reindex.input.amount]
 type = "integer"
@@ -46,14 +48,14 @@ max = 10
 
 [ezhpcy.app.lab."v1.0".action.reindex.input.where]
 type = "path"
-default = "{workdir}/index"
+default = "{{ workdir }}/index"
 
 [ezhpcy.app.lab."v1.0".action.name]
-run.command = ["echo", "{name}"]
+run.command = ["echo", "{{ name }}"]
 input.name = { type = "string" }
 
 [ezhpcy.app.lab."v1.0".action.choose]
-run.command = ["echo", "{colour}", "{ratio}", "{flag}", "{target}"]
+run.command = ["echo", "{{ colour }}", "{{ ratio }}", "{{ flag }}", "{{ target }}"]
 input.colour = { type = "choice", choices = ["red", "blue"], default = "red" }
 input.ratio = { type = "number", min = 0, max = 1, default = 0.5 }
 input.flag = { type = "boolean", default = false }
@@ -125,31 +127,31 @@ def test_a_manifest_describes_actions_fully(tmp_path: Path) -> None:
     amount = action.input["amount"]
     assert (amount.type, amount.label, amount.default) == ("integer", "How many", 3)
     assert (amount.min, amount.max) == (1, 10)
-    assert action.input["where"].default == "{workdir}/index"
+    assert action.input["where"].default == "{{ workdir }}/index"
 
 
 @pytest.mark.parametrize(
     ("addition", "message"),
     [
-        ('run.command = ["x", "{nope}"]', "unknown placeholder {nope}"),
-        ('run.command = ["{"]', "run.command[0]: invalid braces"),
+        ('run.command = ["x", "{{ nope }}"]', "unknown placeholder {{ nope }}"),
+        ('run.command = ["{{"]', "run.command[0]: syntax error"),
         (
-            'run.command = ["{run_dir}"]',
-            "run.command[0]: action.run.command does not take {run_dir}",
+            'run.command = ["{{ run_dir }}"]',
+            "run.command[0]: action.run.command does not take {{ run_dir }}",
         ),
         (
-            'run.command = ["{token}"]',
-            "run.command[0]: action.run.command does not take {token}",
+            'run.command = ["{{ token }}"]',
+            "run.command[0]: action.run.command does not take {{ token }}",
         ),
         (
-            'run.command = ["x"]\nrun.env.X = "{local_port}"',
-            "run.env.X: action.run.env does not take {local_port}",
+            'run.command = ["x"]\nrun.env.X = "{{ local_port }}"',
+            "run.env.X: action.run.env does not take {{ local_port }}",
         ),
         (
-            'run.command = ["{port}"]',
-            "{port} is not set for endpoint.transport = 'socket'",
+            'run.command = ["{{ port }}"]',
+            "{{ port }} is not set for endpoint.transport = 'socket'",
         ),
-        ('run.command = ["{assets}"]', "{assets} is not set without [assets]"),
+        ('run.command = ["{{ assets }}"]', "{{ assets }} is not set without [assets]"),
         (
             'run.command = ["x"]\nrun.env.EZHPCY_X = "y"',
             "EZHPCY_X is reserved for EzHPCy's own variables",
@@ -159,7 +161,7 @@ def test_a_manifest_describes_actions_fully(tmp_path: Path) -> None:
             "input.a: is not used by run.command or run.env",
         ),
         (
-            'run.command = ["{socket}"]\ninput.socket = { type = "string" }',
+            'run.command = ["{{ socket }}"]\ninput.socket = { type = "string" }',
             "'socket' is the name of a built-in placeholder",
         ),
         (
@@ -171,74 +173,74 @@ def test_a_manifest_describes_actions_fully(tmp_path: Path) -> None:
             "'a-b' can't be a placeholder's name",
         ),
         (
-            'run.command = ["{a}"]\ntrigger.every = 60\ninput.a = { type = "string" }',
+            'run.command = ["{{ a }}"]\ntrigger.every = 60\ninput.a = { type = "string" }',
             "input 'a' needs a default",
         ),
         (
             'run.command = ["x"]\ntrigger.manual = false',
             "needs manual = true, or every",
         ),
-        ('run.command = ["x"]\ntrigger.every = 0', "should be greater than"),
+        ('run.command = ["x"]\ntrigger.every = 0', "must be more than 0 seconds"),
         ("description = 'no command'", "run: Field required"),
         (
-            'run.command = ["{a}"]\ninput.a = { type = "string", min = 1 }',
+            'run.command = ["{{ a }}"]\ninput.a = { type = "string", min = 1 }',
             "min only apply to type = 'integer' or 'number'",
         ),
         (
-            'run.command = ["{a}"]\ninput.a = { type = "string", choices = ["x"] }',
+            'run.command = ["{{ a }}"]\ninput.a = { type = "string", choices = ["x"] }',
             "choices only apply to type = 'choice'",
         ),
         (
-            'run.command = ["{a}"]\ninput.a = { type = "number", kind = "file" }',
+            'run.command = ["{{ a }}"]\ninput.a = { type = "number", kind = "file" }',
             "kind only apply to type = 'path'",
         ),
         (
-            'run.command = ["{a}"]\ninput.a = { type = "choice" }',
+            'run.command = ["{{ a }}"]\ninput.a = { type = "choice" }',
             "type = 'choice' needs choices",
         ),
         (
-            'run.command = ["{a}"]\ninput.a = { type = "choice", choices = ["x", "x"] }',
+            'run.command = ["{{ a }}"]\ninput.a = { type = "choice", choices = ["x", "x"] }',
             "choices must differ",
         ),
         (
-            'run.command = ["{a}"]\ninput.a = { type = "integer", min = 2, max = 1 }',
+            'run.command = ["{{ a }}"]\ninput.a = { type = "integer", min = 2, max = 1 }',
             "min must not be more than max",
         ),
         (
-            'run.command = ["{a}"]\ninput.a = { type = "integer", min = 0.5 }',
+            'run.command = ["{{ a }}"]\ninput.a = { type = "integer", min = 0.5 }',
             "min and max of an integer must be integers",
         ),
         (
-            'run.command = ["{a}"]\ninput.a = { type = "integer", default = "x" }',
+            'run.command = ["{{ a }}"]\ninput.a = { type = "integer", default = "x" }',
             "default: 'x' is not an integer",
         ),
         (
-            'run.command = ["{a}"]\ninput.a = { type = "integer", default = true }',
+            'run.command = ["{{ a }}"]\ninput.a = { type = "integer", default = true }',
             "default: True is not an integer",
         ),
         (
-            'run.command = ["{a}"]\ninput.a = { type = "integer", default = 5, max = 1 }',
+            'run.command = ["{{ a }}"]\ninput.a = { type = "integer", default = 5, max = 1 }',
             "default: 5 is more than the maximum, 1",
         ),
         (
-            'run.command = ["{a}"]\ninput.a = { type = "choice", choices = ["x"], default = "y" }',
+            'run.command = ["{{ a }}"]\ninput.a = { type = "choice", choices = ["x"], default = "y" }',
             "default: 'y' is none of ['x']",
         ),
         (
-            'run.command = ["{a}"]\ninput.a = { type = "path", default = "relative" }',
+            'run.command = ["{{ a }}"]\ninput.a = { type = "path", default = "relative" }',
             "input.a.default: must be an absolute path on the host",
         ),
         (
-            'run.command = ["{a}"]\ninput.a = { type = "path", default = "{token}/x" }',
-            "input.a.default: a path's default does not take {token}",
+            'run.command = ["{{ a }}"]\ninput.a = { type = "path", default = "{{ token }}/x" }',
+            "input.a.default: a path's default does not take {{ token }}",
         ),
         (
-            'run.command = ["{a}"]\ninput.a = { type = "path", default = "{assets}/x" }',
-            "input.a.default: {assets} is not set without [assets]",
+            'run.command = ["{{ a }}"]\ninput.a = { type = "path", default = "{{ assets }}/x" }',
+            "input.a.default: {{ assets }} is not set without [assets]",
         ),
         (
-            'run.command = ["{a}"]\ninput.a = { type = "path", default = "{workdir" }',
-            "input.a.default: invalid braces",
+            'run.command = ["{{ a }}"]\ninput.a = { type = "path", default = "{{ workdir" }',
+            "input.a.default: syntax error",
         ),
     ],
 )
@@ -289,7 +291,7 @@ def test_a_link_has_no_actions(tmp_path: Path) -> None:
 def test_parsing_what_a_user_typed(
     fields: dict[str, object], text: str, value: object
 ) -> None:
-    assert api.ActionInput.model_validate(fields).parse(text) == value
+    assert api.Parameter.model_validate(fields).parse(text) == value
 
 
 @pytest.mark.parametrize(
@@ -298,7 +300,7 @@ def test_parsing_what_a_user_typed(
 )
 def test_parsing_what_a_user_mistyped(kind: str, text: str) -> None:
     with pytest.raises(ValueError, match="is not"):
-        api.ActionInput.model_validate({"type": kind}).parse(text)
+        api.Parameter.model_validate({"type": kind}).parse(text)
 
 
 @pytest.mark.usefixtures("quiet_api")
@@ -746,7 +748,7 @@ environment.pixi = "pixi.toml"
 assets.include = ["script.py"]
 
 [ezhpcy.app.lab."v1.0".action.go]
-run.command = ["python", "{assets}/script.py", "{workdir}"]
+run.command = ["python", "{{ assets }}/script.py", "{{ workdir }}"]
 """
 NOTHING_AT_ALL = """\
 [ezhpcy]
@@ -796,8 +798,9 @@ def test_what_an_app_without_a_server_may_not_say(
 def test_an_app_without_a_server_has_none_of_its_placeholders(
     tmp_path: Path, field: str, name: str
 ) -> None:
-    command = '"x"' if field == "run.env.X" else f'"{{{name}}}"'
-    env = f'run.env.X = "{{{name}}}"\n' if field == "run.env.X" else ""
+    template = "{{ " + name + " }}"
+    command = '"x"' if field == "run.env.X" else f'"{template}"'
+    env = f'run.env.X = "{template}"\n' if field == "run.env.X" else ""
     manifest = (
         NOTHING_AT_ALL
         + f'[ezhpcy.app.lab."v1.0".action.go]\nrun.command = [{command}]\n{env}'
@@ -806,7 +809,7 @@ def test_an_app_without_a_server_has_none_of_its_placeholders(
     with pytest.raises(api.ManifestError) as raised:
         Manifest.load(manifest_path(tmp_path, manifest))
 
-    assert f"{{{name}}} is not set without run and endpoint" in str(raised.value)
+    assert f"{template} is not set without run and endpoint" in str(raised.value)
 
 
 @pytest.mark.usefixtures("quiet_api")
@@ -883,3 +886,281 @@ def test_the_quota_builtin_is_its_action_alone(tmp_path: Path) -> None:
     assert isinstance(app, api.App)
     assert app.run is None
     assert app.action["quota"].trigger.every is not None
+
+
+WITH_ARGUMENTS = """\
+[ezhpcy]
+schema = 1
+
+[ezhpcy.app.lab."v1.0"]
+environment.pixi = "pixi.toml"
+run.command = ["serve", "--limit={{ limit }}", "{% if verbose %}--verbose{% endif %}", "--socket={{ socket }}"]
+endpoint.transport = "socket"
+access.url = "http://127.0.0.1:{{ local_port }}/{{ page }}"
+access.status_hints = ["at most {{ limit }}"]
+
+[ezhpcy.app.lab."v1.0".argument.limit]
+type = "integer"
+default = 5
+min = 1
+
+[ezhpcy.app.lab."v1.0".argument.verbose]
+type = "boolean"
+default = false
+
+[ezhpcy.app.lab."v1.0".argument.page]
+type = "choice"
+choices = ["home", "lab"]
+default = "home"
+
+[ezhpcy.app.lab."v1.0".argument.minutes]
+type = "integer"
+default = 60
+
+[ezhpcy.app.lab."v1.0".argument.where]
+type = "path"
+default = "{{ workdir }}/data"
+
+[ezhpcy.app.lab."v1.0".action.go]
+run.command = ["go", "{{ limit }}", "{{ where }}", "{{ amount }}"]
+input.amount = { type = "integer", default = 1 }
+
+[ezhpcy.app.lab."v1.0".action.tick]
+run.command = ["tick", "{{ limit }}"]
+trigger = { manual = false, every = "{{ minutes * 60 }}" }
+"""
+
+
+def test_arguments_are_checked_without_running_anything(tmp_path: Path) -> None:
+    app = app_of(tmp_path, WITH_ARGUMENTS)
+
+    assert app.checked_arguments({}) == {
+        "limit": 5,
+        "verbose": False,
+        "page": "home",
+        "minutes": 60,
+    }
+    assert app.checked_arguments({"limit": 9, "where": "/x"})["where"] == "/x"
+    for given, message in (
+        ({"nope": 1}, "has no argument"),
+        ({"limit": 0}, "less than the minimum"),
+        ({"limit": "3"}, "is not an integer"),
+        ({"page": "other"}, "is none of"),
+        ({"where": "relative"}, "is not an absolute path"),
+        ({"minutes": 0}, "not a number of seconds above 0"),
+    ):
+        with pytest.raises(api.ManifestError, match=message):
+            app.checked_arguments(given)
+
+
+@pytest.mark.parametrize(
+    ("addition", "message"),
+    [
+        (
+            '[ezhpcy.app.lab."v1.0".argument.a]\ntype = "string"\n',
+            "argument.a: is not used by anything",
+        ),
+        (
+            '[ezhpcy.app.lab."v1.0".argument.socket]\ntype = "string"\n',
+            "'socket' is the name of a built-in placeholder",
+        ),
+        (
+            '[ezhpcy.app.lab."v1.0".argument.self]\ntype = "string"\n',
+            "'self' can't be a placeholder's name",
+        ),
+        (
+            (
+                '[ezhpcy.app.lab."v1.0".argument.a]\ntype = "path"\n'
+                'default = "{{ token }}/x"\n'
+            ),
+            "argument.a.default: a path's default does not take {{ token }}",
+        ),
+        (
+            (
+                '[ezhpcy.app.lab."v1.0".action.go]\nrun.command = ["x"]\n'
+                'trigger.every = "{{ socket }}"\n'
+            ),
+            "trigger.every: action.trigger.every does not take {{ socket }}",
+        ),
+        (
+            (
+                '[ezhpcy.app.lab."v1.0".action.go]\nrun.command = ["x"]\n'
+                'trigger.every = "soon"\n'
+            ),
+            "must be a number of seconds, or a template giving one",
+        ),
+        (
+            (
+                '[ezhpcy.app.lab."v1.0".argument.a]\ntype = "string"\ndefault = "x"\n'
+                '[ezhpcy.app.lab."v1.0".action.go]\nrun.command = ["{{ a }}"]\n'
+                'input.a = { type = "string" }\n'
+            ),
+            "input.a: is the name of an argument of the app",
+        ),
+        (
+            (
+                '[ezhpcy.app.lab."v1.0".argument.a]\ntype = "string"\nrequired = false\n'
+                'default = "x"\n'
+            ),
+            "required = false is for a value with no default",
+        ),
+    ],
+)
+def test_what_a_manifest_may_not_say_of_an_argument(
+    tmp_path: Path, addition: str, message: str
+) -> None:
+    with pytest.raises(api.ManifestError) as raised:
+        Manifest.load(manifest_path(tmp_path, MINIMAL_APP + addition))
+
+    assert message in str(raised.value)
+
+
+@pytest.mark.usefixtures("quiet_api")
+async def test_arguments_reach_every_template_of_the_app(
+    rig: AppRig, tmp_path: Path
+) -> None:
+    async with api.connect(LOGIN) as host:
+        lab = await host.run_app(
+            app_of(tmp_path, WITH_ARGUMENTS),
+            arguments={"limit": 7, "verbose": True, "page": "lab", "minutes": 2},
+        )
+        [fake, *_timed] = rig.processes.processes
+
+        [command] = [
+            line
+            for line in fake.launch_script.splitlines()
+            if "exec env PIXI_HOME" in line
+        ]
+        assert 'serve --limit=7 --verbose --socket="$run_dir"/app.sock' in command
+        assert lab.url == f"http://127.0.0.1:{lab.local_port}/lab"
+        assert lab.status_hints == ("at most 7",)
+        assert lab.actions["tick"].trigger.every == timedelta(seconds=120)
+        assert lab.actions["go"].run.command == (
+            "go",
+            "{{ limit }}",
+            "{{ where }}",
+            "{{ amount }}",
+        )
+
+        tick = await next_process(rig, 2)
+        assert "-- tick 7\n" in tick.launch_script + "\n"
+        tick.exit(0)
+        going = asyncio.create_task(lab.run_action("go", amount=4))
+        run = await next_process(rig, 3)
+        assert f"-- go 7 {WORKDIR}/data 4" in run.launch_script
+        run.exit(0)
+        await going
+
+
+@pytest.mark.usefixtures("quiet_api")
+async def test_an_argument_not_given_leaves_out_what_depends_on_it(
+    rig: AppRig, tmp_path: Path
+) -> None:
+    async with api.connect(LOGIN) as host:
+        await host.run_app(app_of(tmp_path, WITH_ARGUMENTS))
+        fake = rig.processes.processes[0]
+
+        assert "--verbose" not in fake.launch_script
+        assert "--limit=5 --socket=" in fake.launch_script
+
+
+@pytest.mark.usefixtures("quiet_api")
+async def test_a_wrong_argument_runs_nothing(rig: AppRig, tmp_path: Path) -> None:
+    async with api.connect(LOGIN) as host:
+        with pytest.raises(api.ManifestError, match="less than the minimum"):
+            await host.run_app(app_of(tmp_path, WITH_ARGUMENTS), arguments={"limit": 0})
+
+        assert rig.processes.processes == []
+        assert rig.pixi.installs == []
+        assert host.status == ()
+
+
+@pytest.mark.usefixtures("quiet_api")
+async def test_an_argument_path_is_checked_on_the_host(
+    rig: AppRig, tmp_path: Path
+) -> None:
+    manifest = ACTIONS_ALONE.replace("{{ workdir }}", "{{ where }}") + (
+        '[ezhpcy.app.lab."v1.0".argument.where]\n'
+        'type = "path"\nkind = "directory"\nmust_exist = true\ndefault = "/tmp"\n'
+    )
+
+    async with api.connect(LOGIN) as host:
+        with pytest.raises(api.AppFailed, match="doesn't exist on the host"):
+            await host.run_app(
+                app_of(tmp_path, manifest), arguments={"where": "/tmp/nope"}
+            )
+
+        assert host.status == ()
+
+
+@pytest.mark.usefixtures("quiet_api")
+async def test_an_optional_input_may_have_no_value(rig: AppRig, tmp_path: Path) -> None:
+    manifest = ACTIONS_ALONE + (
+        'input.limit = { type = "integer", required = false }\n'
+    )
+    manifest = manifest.replace(
+        'run.command = ["python", "{{ assets }}/script.py", "{{ workdir }}"]',
+        'run.command = ["run", "{% if limit is defined %}--limit={{ limit }}{% endif %}"]',
+    )
+
+    async with api.connect(LOGIN) as host:
+        lab = await host.run_app(app_of(tmp_path, manifest))
+
+        running = asyncio.create_task(lab.run_action("go"))
+        fake = await next_process(rig, 1)
+        assert "-- run\n" in fake.launch_script + "\n"
+        fake.exit(0)
+        await running
+
+        running = asyncio.create_task(lab.run_action("go", limit=0))
+        fake = await next_process(rig, 2)
+        assert "-- run --limit=0" in fake.launch_script
+        fake.exit(0)
+        await running
+
+
+def test_the_quota_builtin_takes_its_interval_as_an_argument(tmp_path: Path) -> None:
+    config_file = tmp_path / "ezhpcy.toml"
+    config_file.write_text("", encoding="utf-8")
+
+    app = api.Config.load(config_file).app("zhome-quota")
+
+    assert isinstance(app, api.App)
+    assert app.checked_arguments({})["every"] == app.argument["every"].default
+    action = app.action["quota"]
+    assert action.rendered({"every": 60}).trigger.every == timedelta(seconds=60)
+    with pytest.raises(api.ManifestError, match="less than the minimum"):
+        app.checked_arguments({"every": 1})
+
+
+@pytest.mark.usefixtures("quiet_api")
+async def test_the_data_dumper_builtin_copies_its_asset_to_the_path_given(
+    rig: AppRig, tmp_path: Path
+) -> None:
+    config_file = tmp_path / "ezhpcy.toml"
+    config_file.write_text("", encoding="utf-8")
+    app = api.Config.load(config_file).app("data-dumper")
+
+    async with api.connect(LOGIN) as host:
+        dumper = await host.run_app(app)
+        # The asset's key, a symbolic link, and the directory it points to.
+        assets = rig.server.local_path(CACHE / "ezhpcy-apps" / "assets")
+        [file] = {path.resolve() for path in assets.glob("*/dump.txt")}
+        assert file.read_text(encoding="utf-8") == "Hello world!\n"
+
+        with pytest.raises(api.ActionError, match="is not an absolute path"):
+            await dumper.run_action("dump", destination="relative/path")
+        with pytest.raises(api.ActionError, match="needs a value"):
+            await dumper.run_action("dump")
+
+        running = asyncio.create_task(
+            dumper.run_action("dump", destination="/data/it's here.txt")
+        )
+        fake = await next_process(rig, 1)
+        assert re.search(
+            r"-- cp --update=none-fail -- \S+/assets/[^/ ]+/dump\.txt "
+            r"'/data/it'\"'\"'s here\.txt'",
+            fake.launch_script,
+        )
+        fake.exit(0)
+        assert (await running).state is api.ActionState.SUCCEEDED

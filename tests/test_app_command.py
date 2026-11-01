@@ -49,11 +49,6 @@ AWKWARD = [
 ]
 
 
-def _escaped(part: str) -> str:
-    """`part` as a manifest writes it: braces doubled, as they aren't placeholders."""
-    return part.replace("{", "{{").replace("}", "}}")
-
-
 pytestmark = pytest.mark.skipif(
     sys.platform in ("win32", "darwin") or PIXI is None,
     reason="bash, setsid and a real pixi",
@@ -79,10 +74,8 @@ def test_awkward_arguments_reach_the_app_through_pixi_unchanged(
     manifest = write_project(
         tmp_path / "project",
         MINIMAL_APP.replace(
-            'run.command = ["jupyter", "lab", "--ServerApp.sock={socket}"]',
-            "run.command = ["
-            + ", ".join(f"'''{_escaped(part)}'''" for part in command)
-            + "]",
+            'run.command = ["jupyter", "lab", "--ServerApp.sock={{ socket }}"]',
+            "run.command = [" + ", ".join(f"'''{part}'''" for part in command) + "]",
         ),
     )
     app = Manifest.load(manifest).apps["lab"]["v1.0"]

@@ -24,6 +24,7 @@ from ezhpcy.app.manifest import (
     environment_key,
     placeholders,
     render,
+    render_command,
 )
 from ezhpcy.types import AppsConfig
 from tests.support.apps import MINIMAL_APP, lock_file, write_project
@@ -47,10 +48,10 @@ environment = "default"
 [ezhpcy.app.lab."v1.0".run]
 command = [
     "jupyter", "lab", "--no-browser",
-    "--ServerApp.sock={socket}",
+    "--ServerApp.sock={{ socket }}",
     "--KernelManager.transport=ipc",
 ]
-env = { JUPYTER_TOKEN = "{token}", JUPYTER_RUNTIME_DIR = "{run_dir}/jupyter" }
+env = { JUPYTER_TOKEN = "{{ token }}", JUPYTER_RUNTIME_DIR = "{{ run_dir }}/jupyter" }
 
 [ezhpcy.app.lab."v1.0".endpoint]
 transport = "socket"
@@ -62,7 +63,7 @@ path = "/api"
 timeout = 180
 
 [ezhpcy.app.lab."v1.0".access]
-url = "http://127.0.0.1:{local_port}/lab?token={token}"
+url = "http://127.0.0.1:{{ local_port }}/lab?token={{ token }}"
 """
 LAB_DOTTED_KEYS = """\
 [ezhpcy]
@@ -74,16 +75,16 @@ environment.pixi = "pixi.toml"
 environment.environment = "default"
 run.command = [
     "jupyter", "lab", "--no-browser",
-    "--ServerApp.sock={socket}",
+    "--ServerApp.sock={{ socket }}",
     "--KernelManager.transport=ipc",
 ]
-run.env.JUPYTER_TOKEN = "{token}"
-run.env.JUPYTER_RUNTIME_DIR = "{run_dir}/jupyter"
+run.env.JUPYTER_TOKEN = "{{ token }}"
+run.env.JUPYTER_RUNTIME_DIR = "{{ run_dir }}/jupyter"
 endpoint = { transport = "socket", authenticates = true }
 ready.check = "http"
 ready.path = "/api"
 ready.timeout = 180
-access.url = "http://127.0.0.1:{local_port}/lab?token={token}"
+access.url = "http://127.0.0.1:{{ local_port }}/lab?token={{ token }}"
 """
 
 
@@ -147,8 +148,8 @@ def test_sub_tables_and_dotted_keys_load_alike(tmp_path: Path) -> None:
         exclude={"environment"}
     )
     assert sub_tables.run.env == {
-        "JUPYTER_TOKEN": "{token}",
-        "JUPYTER_RUNTIME_DIR": "{run_dir}/jupyter",
+        "JUPYTER_TOKEN": "{{ token }}",
+        "JUPYTER_RUNTIME_DIR": "{{ run_dir }}/jupyter",
     }
     assert sub_tables.ready.accepts(200)
     assert sub_tables.ready.accepts(399)
@@ -764,58 +765,128 @@ def test_the_ready_timeout_is_a_duration_in_seconds(tmp_path: Path) -> None:
 def test_render_fills_placeholders_and_keeps_literal_braces() -> None:
     values = {"socket": "/tmp/ezhpcy-1/app.sock", "token": "abc"}
 
-    assert render("--sock={socket}", values) == "--sock=/tmp/ezhpcy-1/app.sock"
-    assert render('{{"token": "{token}"}}', values) == '{"token": "abc"}'
+    assert render("--sock={{ socket }}", values) == "--sock=/tmp/ezhpcy-1/app.sock"
+    assert render('{"token": "{{ token }}"}', values) == '{"token": "abc"}'
+    assert render("{not a placeholder}", values) == "{not a placeholder}"
+    assert render("{% raw %}{{ .Names }}{% endraw %}", values) == "{{ .Names }}"
     assert render("plain", values) == "plain"
 
 
 @pytest.mark.parametrize(
-    ("template", "message"),
+    ("template", "values", "rendered"),
     [
-        ("{}", "{} is not a placeholder name"),
-        ("{0}", "{0} is not a placeholder name"),
-        ("{token.real}", "{token.real} is not a placeholder name"),
-        ("{token!r}", "must not have a format"),
-        ("{token:>5}", "must not have a format"),
-        ("{token", "invalid braces"),
-        ("token}", "invalid braces"),
+        ("{{ v }}", {"v": "a&b<c>'\""}, "a&b<c>'\""),
+        ("{{ v }}", {"v": True}, "true"),
+        ("{{ v }}", {"v": False}, "false"),
+        ("{{ v }}", {"v": 3}, "3"),
+        ("{{ v }}", {"v": 0.5}, "0.5"),
+        ("{{ v * 60 }}", {"v": 3}, "180"),
+        ("{{ {'fast': '-O3'}[v] }}", {"v": "fast"}, "-O3"),
+        ("{% if v %}yes{% endif %}", {"v": False}, ""),
+        ("{% if v is defined %}={{ v }}{% endif %}", {"v": 0}, "=0"),
+        ("{% if v is defined %}={{ v }}{% endif %}", {}, ""),
+        # What it is given isn't a template in turn.
+        ("{{ v }}", {"v": "{{ 7 * 7 }} $(rm -rf /)"}, "{{ 7 * 7 }} $(rm -rf /)"),
+        ("{{ v }}", {"name": "n", "source": "s", "v": "\0run_dir\0"}, "\0run_dir\0"),
     ],
 )
-def test_placeholders_are_bare_names(template: str, message: str) -> None:
-    with pytest.raises(ValueError, match=re.escape(message)):
+def test_what_templates_can_do(
+    template: str, values: dict[str, object], rendered: str
+) -> None:
+    assert render(template, values) == rendered
+
+
+def test_a_value_named_as_the_renderers_parameters_is_rendered() -> None:
+    assert render("{{ name }} {{ source }}", {"name": "n", "source": "s"}) == "n s"
+
+
+@pytest.mark.parametrize(
+    "template",
+    [
+        "{{ ''.__class__.__mro__ }}",
+        "{{ cycler.__init__.__globals__ }}",
+        "{{ range.__class__ }}",
+        "{{ self }}",
+    ],
+)
+def test_a_template_cant_reach_python(template: str) -> None:
+    with pytest.raises(ValueError, match="undefined"):
+        render(template, {})
+
+
+def test_a_template_that_would_never_end_runs_out_of_fuel() -> None:
+    forever = (
+        "{% for i in range(100000) %}{% for j in range(100000) %}x{% endfor %}"
+        "{% endfor %}"
+    )
+
+    with pytest.raises(ValueError, match="fuel"):
+        render(forever, {})
+
+
+def test_a_template_with_an_undefined_value_fails() -> None:
+    with pytest.raises(ValueError, match="undefined"):
+        render("{{ nope }}", {})
+
+
+def test_a_command_leaves_out_arguments_whose_blocks_render_empty() -> None:
+    command = ["a", "{% if flag %}--flag{% endif %}", "{{ empty }}", "{{ value }}"]
+
+    assert render_command(command, {"flag": False, "empty": "", "value": "v"}) == [
+        "a",
+        "",
+        "v",
+    ]
+    assert render_command(command, {"flag": True, "empty": "", "value": "v"}) == [
+        "a",
+        "--flag",
+        "",
+        "v",
+    ]
+
+
+def test_placeholders_are_found_in_blocks_too() -> None:
+    assert placeholders(
+        "{% if a %}{{ b | upper }}{% endif %}{% for i in c %}{{ i }}{% endfor %}"
+    ) == {"a", "b", "c"}
+    assert placeholders("{not one} plain") == set()
+
+
+@pytest.mark.parametrize("template", ["{{", "{% if a %}", "{{ a b }}"])
+def test_a_broken_template_is_said_to_be(template: str) -> None:
+    with pytest.raises(ValueError, match="syntax error"):
         placeholders(template)
 
 
 @pytest.mark.parametrize(
     ("addition", "message"),
     [
-        ('run.env.X = "{sockt}"', "run.env.X: unknown placeholder {sockt}"),
+        ('run.env.X = "{{ sockt }}"', "run.env.X: unknown placeholder {{ sockt }}"),
         (
-            'run.command = ["app", "--token={token}"]',
-            "run.command[1]: run.command does not take {token}",
+            'run.command = ["app", "--token={{ token }}"]',
+            "run.command[1]: run.command does not take {{ token }}",
         ),
         (
-            'run.command = ["app", "{local_port}"]',
-            "run.command[1]: run.command does not take {local_port}",
+            'run.command = ["app", "{{ local_port }}"]',
+            "run.command[1]: run.command does not take {{ local_port }}",
         ),
         (
-            'access.url = "http://x/{run_dir}"',
-            "access.url: access.url does not take {run_dir}",
+            'access.url = "http://x/{{ run_dir }}"',
+            "access.url: access.url does not take {{ run_dir }}",
         ),
         (
-            'access.status_hints = ["{token}", "{workdir}"]',
-            "access.status_hints[1]: access.status_hints does not take {workdir}",
+            'access.status_hints = ["{{ token }}", "{{ workdir }}"]',
+            "access.status_hints[1]: access.status_hints does not take {{ workdir }}",
         ),
         (
-            'run.env.X = "{port}"',
-            "run.env.X: {port} is not set for endpoint.transport = 'socket'",
+            'run.env.X = "{{ port }}"',
+            "run.env.X: {{ port }} is not set for endpoint.transport = 'socket'",
         ),
-        ('run.env.X = "{assets}"', "run.env.X: {assets} is not set without [assets]"),
         (
-            'access.url = "http://x/{token:x}"',
-            "access.url: placeholder {token} must not have a format",
+            'run.env.X = "{{ assets }}"',
+            "run.env.X: {{ assets }} is not set without [assets]",
         ),
-        ('run.env.X = "{"', "run.env.X: invalid braces"),
+        ('run.env.X = "{{"', "run.env.X: syntax error"),
     ],
 )
 def test_placeholders_are_checked_for_every_field(
@@ -824,7 +895,7 @@ def test_placeholders_are_checked_for_every_field(
     manifest = MINIMAL_APP
     if addition.startswith("run.command"):
         manifest = manifest.replace(
-            'run.command = ["jupyter", "lab", "--ServerApp.sock={socket}"]\n', ""
+            'run.command = ["jupyter", "lab", "--ServerApp.sock={{ socket }}"]\n', ""
         )
 
     assert f"{LAB}.{message}" in problems(tmp_path, manifest + addition + "\n")
@@ -833,18 +904,18 @@ def test_placeholders_are_checked_for_every_field(
 def test_socket_is_not_set_for_tcp(tmp_path: Path) -> None:
     manifest = MINIMAL_APP.replace('"socket"', '"tcp"')
 
-    assert "{socket} is not set for endpoint.transport = 'tcp'" in problems(
+    assert "{{ socket }} is not set for endpoint.transport = 'tcp'" in problems(
         tmp_path, manifest
     )
 
 
 def test_every_placeholder_problem_is_listed(tmp_path: Path) -> None:
-    manifest = MINIMAL_APP + 'run.env.A = "{nope}"\naccess.url = "{port}"\n'
+    manifest = MINIMAL_APP + 'run.env.A = "{{ nope }}"\naccess.url = "{{ port }}"\n'
 
     message = problems(tmp_path, manifest)
 
-    assert f"{LAB}.run.env.A: unknown placeholder {{nope}}" in message
-    assert f"{LAB}.access.url: access.url does not take {{port}}" in message
+    assert f"{LAB}.run.env.A: unknown placeholder {{{{ nope }}}}" in message
+    assert f"{LAB}.access.url: access.url does not take {{{{ port }}}}" in message
 
 
 # Links
@@ -855,8 +926,8 @@ LINK_AND_LAB = (
     MINIMAL_APP
     + "\n"
     + LINK_TABLE
-    + 'access.url = "vscode://vscode-remote/ssh-remote+{alias}/"\n'
-    + 'access.status_hints = ["ssh {alias}", "code --remote ssh-remote+{alias}"]\n'
+    + 'access.url = "vscode://vscode-remote/ssh-remote+{{ alias }}/"\n'
+    + 'access.status_hints = ["ssh {{ alias }}", "code --remote ssh-remote+{{ alias }}"]\n'
 )
 
 
@@ -881,16 +952,16 @@ def test_a_table_with_nothing_to_run_is_a_link_to_the_alias(tmp_path: Path) -> N
         ('access.url = "x"\naccess.local_port = 1', "access.local_port: unknown key"),
         ('access.url = "x"\nassets.include = ["x"]', "assets: unknown key"),
         (
-            'access.url = "{token}"',
-            "access.url: {token} is not set for a link, which runs nothing",
+            'access.url = "{{ token }}"',
+            "access.url: {{ token }} is not set for a link, which runs nothing",
         ),
         (
-            'access.url = "{local_port}"',
-            "access.url: {local_port} is not set for a link, which runs nothing",
+            'access.url = "{{ local_port }}"',
+            "access.url: {{ local_port }} is not set for a link, which runs nothing",
         ),
         (
-            'access.url = "x"\naccess.status_hints = ["{alias}", "{token}"]',
-            "access.status_hints[1]: {token} is not set for a link, which runs nothing",
+            'access.url = "x"\naccess.status_hints = ["{{ alias }}", "{{ token }}"]',
+            "access.status_hints[1]: {{ token }} is not set for a link, which runs nothing",
         ),
     ],
 )
@@ -903,10 +974,10 @@ def test_a_link_has_only_a_url_to_the_alias(
 
 
 def test_an_app_has_no_alias(tmp_path: Path) -> None:
-    manifest = MINIMAL_APP + 'access.url = "http://{alias}/"\n'
+    manifest = MINIMAL_APP + 'access.url = "http://{{ alias }}/"\n'
 
     assert (
-        f"{LAB}.access.url: {{alias}} is set only for links, which have no [run]"
+        f"{LAB}.access.url: {{{{ alias }}}} is set only for links, which have no [run]"
     ) in problems(tmp_path, manifest)
 
 

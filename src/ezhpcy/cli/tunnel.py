@@ -15,19 +15,21 @@ from contextlib import contextmanager, nullcontext
 lazy import asyncio
 lazy import os
 lazy import sys
-lazy from collections.abc import Callable, Generator, Sequence
+lazy from collections.abc import Callable, Generator, Mapping, Sequence
 lazy from dataclasses import replace
 lazy from pathlib import Path, PurePosixPath
 lazy from types import FrameType
 lazy from typing import Annotated
 
 lazy from cyclopts import Parameter, validators
+lazy from packaging.utils import canonicalize_name
 lazy from pydantic import SecretStr
 
 from ezhpcy.api import get_logger
 from ezhpcy.cli._options import (
     AliasOpt,
     AppOpt,
+    ArgOpt,
     ConfigArg,
     ConnectionOptions,
     LoadBuiltinManifestsOpt,
@@ -125,6 +127,55 @@ def _chosen_apps(
     return chosen
 
 
+def _chosen_arguments(
+    apps: Sequence[api.App | api.Link], given: Sequence[str]
+) -> dict[str, dict[str, object]]:
+    """
+    The values of `--arg APP.NAME=VALUE`, by the normalised name of the app they are
+    for, checked, so that a wrong one fails before connecting.
+    """
+    by_name = {app.normalised_name: app for app in apps if isinstance(app, api.App)}
+    values: dict[str, dict[str, object]] = {}
+    for item in given:
+        target, equals, text = item.partition("=")
+        app_name, dot, name = target.rpartition(".")
+        if not equals or not dot:
+            raise CliUsageError(
+                t"Write it as {'APP.NAME=VALUE':suggestion}.",
+                param_hint="--arg",
+                value=item,
+            )
+        app = by_name.get(canonicalize_name(app_name))
+        if app is None:
+            raise CliUsageError(
+                t"It isn't for an app given with --app that runs: "
+                t"{sorted(by_name):choice}.",
+                param_hint="--arg",
+                value=item,
+            )
+        if name not in app.argument:
+            raise CliUsageError(
+                t"App {app!s:name} takes: {sorted(app.argument):choice}.",
+                param_hint="--arg",
+                value=item,
+            )
+        try:
+            value = app.argument[name].parse(text)
+        except ValueError as error:
+            raise CliUsageError(
+                t"{sentence(str(error))}", param_hint="--arg", value=item
+            ) from error
+        values.setdefault(app.normalised_name, {})[name] = value
+    for app in by_name.values():
+        try:
+            app.checked_arguments(values.get(app.normalised_name, {}))
+        except api.ManifestError as error:
+            raise CliUsageError(
+                t"{sentence(error.message)}", param_hint="--arg"
+            ) from error
+    return values
+
+
 # ruff: ignore[B008]  # See the comment above the option dataclasses in _options.py
 async def tunnel_cmd(
     profile: OptionalProfileArg = None,
@@ -169,6 +220,7 @@ async def tunnel_cmd(
     manifest: ManifestOpt = None,
     load_builtin_manifests: LoadBuiltinManifestsOpt = None,
     app: AppOpt = None,
+    arg: ArgOpt = None,
 ) -> None:
     """
     Allocate a compute node and expose its SSH service through a tunnel, with
@@ -179,6 +231,7 @@ async def tunnel_cmd(
     apps = _chosen_apps(
         config, manifest or [], app or [], load_builtins=load_builtin_manifests
     )
+    arguments = _chosen_arguments(apps, arg or [])
     select_profile(config, profile)
     login, password = login_from_cli(config, connection_options, profile_name=profile)
     job = job_from_cli(
@@ -206,6 +259,7 @@ async def tunnel_cmd(
         job,
         apps=apps,
         apps_root=config.resolve_profile(profile).apps.root,
+        arguments=arguments,
     )
     try:
         # Before connecting, so the user isn't asked for a password first.
@@ -272,12 +326,15 @@ class TunnelRun:
         *,
         apps: Sequence[api.App | api.Link] = (),
         apps_root: PurePosixPath | None = None,
+        arguments: Mapping[str, Mapping[str, object]] | None = None,
     ) -> None:
         self.alias = alias
         self.login = login
         self.config = config
         self.apps = tuple(apps)
         self.apps_root = apps_root
+        # The values of its apps' arguments, by normalised name.
+        self.arguments = arguments or {}
         self.job: api.Job | None = None
         # The actions of its apps, as keys in its status panel.
         self.menu = ActionMenu(on_change=redraw_live_display)
@@ -310,7 +367,11 @@ class TunnelRun:
         couldn't start, and return None.
         """
         try:
-            running = await host.run_app(app, apps_root=self.apps_root)
+            running = await host.run_app(
+                app,
+                apps_root=self.apps_root,
+                arguments=self.arguments.get(app.normalised_name),
+            )
         except (api.MessageError, RuntimeError, OSError) as error:
             logger.error(
                 t"Could not start app {app!s:name}: {error}. The tunnel keeps serving."

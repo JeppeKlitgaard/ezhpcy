@@ -13,7 +13,7 @@ dependencies = [
     "pydantic-settings>=2.14.2",
     "pydantic>=2.13.5",
     # Templates
-    "jinja2>=3.1.6",
+    "minijinja>=3.0.5",
     # SSH
     "asyncssh>=2.24.1",
     # CLI

@@ -9,6 +9,6 @@ schema = 1
 description = "A NiceGUI dashboard"
 environment.pixi = "pixi.toml"
 assets.include = ["main.py"]
-run.command = ["python", "{assets}/main.py"]
+run.command = ["python", "{{ assets }}/main.py"]
 endpoint.transport = "socket"
 ready = { check = "http", path = "/" }

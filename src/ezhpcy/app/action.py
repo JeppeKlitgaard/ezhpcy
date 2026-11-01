@@ -19,11 +19,11 @@ would add one for each tick.
 
 import time
 from dataclasses import dataclass, field
+from datetime import timedelta
 from enum import Enum, auto
 lazy import asyncio
 lazy from collections.abc import Awaitable, Callable, Mapping
 lazy from dataclasses import replace
-lazy from datetime import timedelta
 lazy from pathlib import PurePosixPath
 
 lazy import asyncssh
@@ -31,7 +31,7 @@ lazy import asyncssh
 from ezhpcy.logging import get_logger
 lazy from ezhpcy import process as _process
 lazy from ezhpcy.app import ActionError
-lazy from ezhpcy.app.manifest import Action, App, Command
+lazy from ezhpcy.app.manifest import Action, App, Command, Parameter
 lazy from ezhpcy.attachments import Attachment
 lazy from ezhpcy.messages import MessageError
 lazy from ezhpcy.process import Process
@@ -89,15 +89,14 @@ class AppActions:
         attachment: Attachment,
         *,
         workdir: PurePosixPath,
-        values: Mapping[str, str],
+        values: Mapping[str, object],
         command: Callable[
-            [Command, Mapping[str, str]], tuple[list[str], dict[str, str]]
+            [Command, Mapping[str, object]], tuple[list[str], dict[str, str]]
         ],
         on_change: Callable[[], object],
     ) -> None:
         self.actions = {
-            name: action.with_rendered_defaults(values)
-            for name, action in app.action.items()
+            name: action.rendered(values) for name, action in app.action.items()
         }
         self._host = host
         self._app = app
@@ -126,7 +125,7 @@ class AppActions:
         """Start the timers; closing the attachment stops them, and all runs."""
         self._attachment.push("stop the app's actions", self._stop)
         for name, action in self.actions.items():
-            if (every := action.trigger.every) is not None:
+            if isinstance(every := action.trigger.every, timedelta):
                 self._timers.append(
                     asyncio.create_task(self._timer(name, action, every))
                 )
@@ -153,7 +152,11 @@ class AppActions:
     async def _run(
         self, name: str, action: Action, inputs: Mapping[str, object]
     ) -> ActionRun:
-        texts = self._checked(name, action, inputs)
+        values = self._checked(name, action, inputs)
+        try:
+            command = self._command(action.run, {**self._values, **values})
+        except ValueError as error:
+            raise ActionError(t"action {name:name}: {error}") from error
         if self._attachment.closed or self._app_exited:
             raise ActionError(
                 t"action {name:name} needs app {self._app!s:name} running, and it isn't"
@@ -162,77 +165,61 @@ class AppActions:
             raise ActionError(t"action {name:name} is running already")
         finished = self._runs[name] = asyncio.get_running_loop().create_future()
         try:
-            await self._check_on_host(name, action, texts)
-            return await self._execute(name, action, texts)
+            await self._check_on_host(name, action, values)
+            return await self._execute(name, command)
         finally:
             del self._runs[name]
             finished.set_result(None)
 
     def _checked(
         self, name: str, action: Action, inputs: Mapping[str, object]
-    ) -> dict[str, str]:
-        """Every input's value as its placeholder's text, with the defaults."""
+    ) -> dict[str, object]:
+        """Every input's value for its placeholder, with the defaults."""
         for unknown in inputs.keys() - action.input.keys():
             raise ActionError(
                 t"action {name:name} has no input {unknown:value}; choose from: "
                 t"{sorted(action.input):choice}",
                 input_name=unknown,
             )
-        texts = {}
-        for input_name, action_input in action.input.items():
-            value = inputs.get(input_name, action_input.default)
+        values = {}
+        for input_name, parameter in action.input.items():
+            value = inputs.get(input_name, parameter.default)
             if value is None:
+                if not parameter.required:
+                    continue
                 raise ActionError(
                     t"action {name:name} needs a value for input {input_name:name}",
                     input_name=input_name,
                 )
             try:
-                texts[input_name] = action_input.check(value)
+                values[input_name] = parameter.check(value)
             except ValueError as error:
                 raise ActionError(
                     t"input {input_name:name} of action {name:name}: {error}",
                     input_name=input_name,
                 ) from error
-        return texts
+        return values
 
     async def _check_on_host(
-        self, name: str, action: Action, texts: Mapping[str, str]
+        self, name: str, action: Action, values: Mapping[str, object]
     ) -> None:
-        """Check what `path` inputs ask of what is on the host, over SFTP."""
-        paths = {
-            input_name: action_input
-            for input_name, action_input in action.input.items()
-            if action_input.type == "path"
-            and (action_input.kind is not None or action_input.must_exist)
-        }
-        if not paths:
-            return
-        async with self._host.sftp() as sftp:
-            for input_name, action_input in paths.items():
-                path = texts[input_name]
-                if not await sftp.exists(path):
-                    problem = "doesn't exist" if action_input.must_exist else None
-                elif action_input.kind == "file" and not await sftp.isfile(path):
-                    problem = "isn't a file"
-                elif action_input.kind == "directory" and not await sftp.isdir(path):
-                    problem = "isn't a directory"
-                else:
-                    problem = None
-                if problem is not None:
-                    raise ActionError(
-                        t"input {input_name:name} of action {name:name}: "
-                        t"{path:path} {problem} on the host",
-                        input_name=input_name,
-                    )
+        problem = await path_problem(self._host, action.input, values)
+        if problem is not None:
+            input_name, path, why = problem
+            raise ActionError(
+                t"input {input_name:name} of action {name:name}: "
+                t"{path:path} {why} on the host",
+                input_name=input_name,
+            )
 
     async def _execute(
-        self, name: str, action: Action, texts: Mapping[str, str]
+        self, name: str, command: tuple[list[str], dict[str, str]]
     ) -> ActionRun:
         run = ActionRun(action=name)
         self._report(run)
         part = Attachment(on_change=lambda: None)
         try:
-            argv, env = self._command(action.run, {**self._values, **texts})
+            argv, env = command
             process = await _process.start(
                 self._host,
                 argv,
@@ -344,6 +331,35 @@ class AppActions:
             await asyncio.wait(runs)
         if timed_runs := list(self._timed_runs):
             await asyncio.wait(timed_runs)
+
+
+async def path_problem(
+    host: RemoteHost, parameters: Mapping[str, Parameter], values: Mapping[str, object]
+) -> tuple[str, str, str] | None:
+    """
+    The first `path` that isn't what its parameter asks of what is on the host, over
+    SFTP, if any: its name, its value, and why.
+    """
+    paths = {
+        name: parameter
+        for name, parameter in parameters.items()
+        if parameter.type == "path"
+        and name in values
+        and (parameter.kind is not None or parameter.must_exist)
+    }
+    if not paths:
+        return None
+    async with host.sftp() as sftp:
+        for name, parameter in paths.items():
+            path = str(values[name])
+            if not await sftp.exists(path):
+                if parameter.must_exist:
+                    return name, path, "doesn't exist"
+            elif parameter.kind == "file" and not await sftp.isfile(path):
+                return name, path, "isn't a file"
+            elif parameter.kind == "directory" and not await sftp.isdir(path):
+                return name, path, "isn't a directory"
+    return None
 
 
 async def _read(reader: Callable[[int], Awaitable[str]]) -> str:

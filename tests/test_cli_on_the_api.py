@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 import ezhpcy
+from ezhpcy import api
 
 PACKAGE = Path(ezhpcy.__file__).parent
 CLI = PACKAGE / "cli"
@@ -56,6 +57,12 @@ def test_nothing_below_the_cli_imports_it(path: Path) -> None:
     assert not [
         module for module in imported_modules(path) if within(module, "ezhpcy.cli")
     ]
+
+
+@pytest.mark.parametrize("name", api.__all__)
+def test_every_public_name_resolves(name: str) -> None:
+    # The names are lazy, so one that is broken would otherwise fail only on use.
+    assert getattr(api, name) is not None
 
 
 def test_the_api_loads_nothing_only_a_terminal_needs() -> None:

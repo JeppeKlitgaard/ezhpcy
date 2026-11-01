@@ -24,11 +24,15 @@ from types import TracebackType
 from typing import Self
 
 import asyncssh
+from asyncssh.forward import SSHForwarder
 
 _HOST = "127.0.0.1"
 # How long starting or stopping the server may take.
 _TIMEOUT_SECONDS = 10
 _RELAY_CHUNK_BYTES = 64 * 1024
+# Iterations of its loop the stopped server lets closing transports finish in: each
+# may close another, and they let go of their sockets on the next iteration.
+_CLOSING_ITERATIONS = 5
 
 
 @functools.cache
@@ -154,6 +158,7 @@ class SSHTestServer:
         self._listeners: list[asyncio.Server] = []
         self._connections: set[asyncssh.SSHServerConnection] = set()
         self._links: set[tuple[asyncio.StreamWriter, asyncio.StreamWriter]] = set()
+        self._forwarders: list[SSHForwarder] = []
         self._blackholed = False
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(
@@ -314,11 +319,17 @@ class SSHTestServer:
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        # asyncssh drops one whose connection closed while it was being opened, and
+        # leaves its TCP connection open.
+        for forwarder in self._forwarders:
+            forwarder.close()
         await self._relay.wait_closed()
         await self._acceptor.wait_closed()
         for listener in self._listeners:
             await listener.wait_closed()
         await self._loop.shutdown_default_executor()
+        for _ in range(_CLOSING_ITERATIONS):
+            await asyncio.sleep(0)
 
     # Commands
 
@@ -448,14 +459,19 @@ class _Server(asyncssh.SSHServer):
 
     def connection_requested(
         self, dest_host: str, dest_port: int, orig_host: str, orig_port: int
-    ) -> bool:
+    ) -> Awaitable[SSHForwarder]:
         if (dest_host, dest_port) not in self._test_server._forwardable:
             raise asyncssh.ChannelOpenError(
                 asyncssh.OPEN_ADMINISTRATIVELY_PROHIBITED,
                 f"{dest_host}:{dest_port} is not allowed by the test",
             )
+        return self._forward(dest_host, dest_port)
+
+    async def _forward(self, dest_host: str, dest_port: int) -> SSHForwarder:
         # asyncssh opens the TCP connection and forwards it.
-        return True
+        forwarder = await self._conn.forward_connection(dest_host, dest_port)
+        self._test_server._forwarders.append(forwarder)
+        return forwarder
 
     def server_requested(self, listen_host: str, listen_port: int) -> bool:
         # asyncssh listens there, on this machine, and forwards to the client.

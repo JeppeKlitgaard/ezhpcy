@@ -55,7 +55,8 @@ def _escaped(part: str) -> str:
 
 
 pytestmark = pytest.mark.skipif(
-    sys.platform == "win32" or PIXI is None, reason="bash and a real pixi"
+    sys.platform in ("win32", "darwin") or PIXI is None,
+    reason="bash, setsid and a real pixi",
 )
 
 

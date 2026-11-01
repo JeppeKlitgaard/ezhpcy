@@ -51,8 +51,7 @@ def _complete_profiles(_context: object) -> dict[str, str]:
     except ConfigError:
         return {}
     return {
-        name: profile_config.description or ""
-        for name, profile_config in config.profile.items()
+        name: profile.description or "" for name, profile in config.profiles.items()
     }
 
 
@@ -325,7 +324,8 @@ AppOpt = Annotated[
     list[str] | None,
     Parameter(
         name="--app",
-        metavar="NAME[@VERSION]",
+        # Escaped, as Rich would otherwise read `[@VERSION]` as markup.
+        metavar=r"NAME\[@VERSION]",
         help=(
             "An app of the manifests to run on the compute node once the tunnel "
             "serves, provisioned there if needed: its newest version, or "

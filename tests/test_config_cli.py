@@ -206,6 +206,7 @@ def test_list_profiles_shows_local_profile_metadata(
             "profile": {
                 "gpu": {"description": "GPU jobs [a100]", "inherit": "default"},
                 "default": {"description": "General login"},
+                "inherited": {"inherit": "default"},
             },
         },
     )
@@ -218,6 +219,7 @@ def test_list_profiles_shows_local_profile_metadata(
         "Profile Description",
         "gpu GPU jobs [a100]",
         "default General login",
+        "inherited General login",
     ]
 
 

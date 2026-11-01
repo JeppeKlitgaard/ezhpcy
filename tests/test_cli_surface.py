@@ -546,6 +546,13 @@ def test_debug_enables_debug_logging_with_timestamps(
     assert re.match(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} ", rendered), rendered
 
 
+def test_help_shows_an_apps_optional_version_rather_than_reading_it_as_markup() -> None:
+    result = invoke(["tunnel", "--help"])
+
+    assert result.exit_code == 0, result
+    assert "--app NAME[@VERSION]" in result.stdout
+
+
 def test_help_shows_the_debug_default_as_auto() -> None:
     """The configuration decides, and help doesn't load it to show its value."""
     result = invoke(["--help"])

@@ -48,8 +48,8 @@ scheduler ended the job, e.g. at its time limit) or `JobFailed` (with the
 failure as its cause). `Job.wait` instead returns a `JobEnd`, or raises
 `JobFailed`. Leaving after `Job.stop` raises nothing.
 
-An SSH failure that has no more specific error is an `SSHError`, so callers never
-need asyncssh.
+`diagnose` says whether EzHPCy is set up on this machine. An SSH failure that has
+no more specific error is an `SSHError`, so callers never need asyncssh.
 
 Values are typed: a `Login`, a `JobConfig`, an `AliasReservation`, `pathlib`
 paths, `timedelta`s. Build them directly, or read them from a configuration file
@@ -76,12 +76,21 @@ from ezhpcy.app import AppFailed, ManifestError
 from ezhpcy.app.manifest import App, Link, Manifest
 from ezhpcy.app.run import AppState, AppStatus, LinkStatus, RunningApp
 from ezhpcy.config import Config, Profile
+from ezhpcy.constants import EZHPCY_VERSION, KEYRING_SERVICE_NAME
+from ezhpcy.diagnose import Check, CheckStatus, diagnose
 from ezhpcy.forward import Forward, ForwardStatus
 from ezhpcy.job import JobEnd, JobEnded, JobFailed
 from ezhpcy.job.publish import Published
 from ezhpcy.job.status import JobStatus, Phase, PublishedStatus
-from ezhpcy.login import ConnectionFailed, Prompts, terminal_prompts
-from ezhpcy.messages import MessageError
+from ezhpcy.logging import get_logger
+from ezhpcy.login import (
+    PASSWORD_ATTEMPTS,
+    ConnectionFailed,
+    Prompts,
+    read_password,
+    terminal_prompts,
+)
+from ezhpcy.messages import MessageError, message_parts
 from ezhpcy.process import Process, ProcessStatus
 from ezhpcy.provision_host import ProvisioningError
 from ezhpcy.provision_local import MissingCredentials, missing_credentials
@@ -95,26 +104,40 @@ from ezhpcy.tunnel.lock import (
     AliasUnreachable,
     reserve_alias,
 )
-from ezhpcy.tunnel.ssh_config import AliasProblem, probe_alias
+from ezhpcy.tunnel.ssh_config import AliasProblem, check_alias, probe_alias
 from ezhpcy.types import (
     ConfigError,
     JobConfig,
     Login,
     LSFOptions,
+    MissingSetting,
     PBSOptions,
     Resources,
     SchedulerSettings,
+    SubmissionCommandError,
     SubmissionMode,
     Timings,
+    alias_digest,
 )
+from ezhpcy.utils import local_machine_id
+from ezhpcy.worker.job import select_ports
 lazy from ezhpcy import forward as _forward, login as _login, process as _process
 lazy from ezhpcy.app import run as _app_run
 lazy from ezhpcy.job import publish as _publish
 lazy from ezhpcy.job.lifecycle import JobLifecycle, RunningWorker
 lazy from ezhpcy.job.status import AttachmentStatus
+lazy from ezhpcy.provision_host import (
+    provision_worker_infrastructure,
+    prune_all_remote_data,
+    prune_stale_data,
+)
+lazy from ezhpcy.provision_local import WorkerCredentials
 lazy from ezhpcy.ssh import RemoteHost
 
 __all__ = [
+    "EZHPCY_VERSION",
+    "KEYRING_SERVICE_NAME",
+    "PASSWORD_ATTEMPTS",
     "AliasInUse",
     "AliasProblem",
     "AliasReservation",
@@ -123,6 +146,8 @@ __all__ = [
     "AppFailed",
     "AppState",
     "AppStatus",
+    "Check",
+    "CheckStatus",
     "CommandFailed",
     "Config",
     "ConfigError",
@@ -147,6 +172,7 @@ __all__ = [
     "ManifestError",
     "MessageError",
     "MissingCredentials",
+    "MissingSetting",
     "PBSOptions",
     "Phase",
     "Process",
@@ -162,13 +188,22 @@ __all__ = [
     "SchedulerSettings",
     "SchedulerType",
     "SocketDestination",
+    "SubmissionCommandError",
     "SubmissionMode",
     "TCPDestination",
     "Timings",
+    "alias_digest",
+    "check_alias",
     "connect",
+    "diagnose",
+    "get_logger",
+    "local_machine_id",
+    "message_parts",
     "missing_credentials",
     "probe_alias",
+    "read_password",
     "reserve_alias",
+    "select_ports",
     "terminal_prompts",
 ]
 
@@ -384,6 +419,44 @@ class Host:
             local_port=local_port,
             provision=provision,
             apps_root=apps_root,
+        )
+
+    @translating_ssh_errors
+    async def provision(self) -> None:
+        """
+        Install or repair what a worker job needs on the host, as a job that
+        provisions does: EzHPCy's Pixi and OpenSSH, and the worker's credentials,
+        here and there. Raises `ProvisioningError`, `CommandFailed`, and `SSHError`
+        if the connection fails. Cancelled, it stops; the next one
+        repairs what it left.
+        """
+        credentials = WorkerCredentials.for_login(
+            self.login, machine_id=await asyncio.to_thread(local_machine_id)
+        )
+        remote_state = await self._host.remote_state()
+        await provision_worker_infrastructure(self._host, remote_state, credentials)
+
+    @translating_ssh_errors
+    async def prune_stale(self) -> tuple[PurePosixPath, ...]:
+        """
+        Remove EzHPCy's and Pixi's data on the host other than the current
+        versions', and return what it removed. Raises `CommandFailed`, and
+        `SSHError` if the connection fails. Cancelled, it stops; what it hadn't
+        removed stays, for the next one.
+        """
+        return await prune_stale_data(self._host, await self._host.remote_state())
+
+    @translating_ssh_errors
+    async def prune_all(self, *, apps_root: PurePosixPath | None = None) -> None:
+        """
+        Remove everything EzHPCy made on the host: its cache and state, and apps'
+        environments, assets and workdirs under `apps_root` (as for `run_app`),
+        with whatever apps wrote there. Raises `CommandFailed`, and `SSHError` if
+        the connection fails. Cancelled, it stops; what it hadn't removed stays.
+        """
+        remote_state = await self._host.remote_state()
+        await prune_all_remote_data(
+            self._host, remote_state, remote_state.apps_root(apps_root)
         )
 
 

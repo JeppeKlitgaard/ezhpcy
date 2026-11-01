@@ -36,6 +36,7 @@ lazy from ezhpcy.permissions import (
 )
 lazy from ezhpcy.provision_local import WorkerCredentials
 lazy from ezhpcy.tunnel.lock import alias_locked
+lazy from ezhpcy.types import Login
 lazy from ezhpcy.utils import local_machine_id
 
 logger = get_logger(__name__)
@@ -101,6 +102,14 @@ def include_directive() -> str:
     return (
         f'# Load EzHPCy static and dynamic SSH profiles\nInclude "{directory}/*.conf"'
     )
+
+
+def check_alias(alias: str, login: Login) -> None:
+    """
+    Raise `ValueError` if a job on `login`'s node couldn't be published under
+    `alias`: for an alias that isn't valid, or a user a Host block can't name.
+    """
+    WorkerHost.for_endpoint(alias, user=login.user, host=login.host)
 
 
 @dataclass(frozen=True)

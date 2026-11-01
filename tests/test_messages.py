@@ -3,12 +3,27 @@ from rich.style import Style
 from rich.text import Text
 
 from ezhpcy.cli._messages import duration, rich_text
-from ezhpcy.messages import MessageError, plain
+from ezhpcy.messages import MessageError, message_parts, plain
 
 
 def styled_runs(text: Text) -> list[tuple[str, str | Style]]:
     """Each styled run of `text`, with its style."""
     return [(text.plain[span.start : span.end], span.style) for span in text.spans]
+
+
+def test_a_messages_parts_say_their_kinds_and_quotes() -> None:
+    name, wait = "gpu", "8 min"
+
+    parts = message_parts(t"Run {name:value} {t'after {wait:detail}':aside}.")
+
+    assert list(parts) == [
+        ("Run ", "", ""),
+        ("gpu", "value", '"'),
+        (" ", "", ""),
+        ("after ", "aside", ""),
+        ("8 min", "detail", ""),
+        (".", "", ""),
+    ]
 
 
 def test_a_format_spec_may_follow_the_kind() -> None:

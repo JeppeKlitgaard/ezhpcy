@@ -312,14 +312,26 @@ async def _cancelled(task: asyncio.Task[Any]) -> None:
         await task
 
 
+def _connects(port: int) -> bool:
+    """
+    Whether `port` takes a connection. One made as it closes may be reset, or
+    accepted and never answered, so that isn't a refusal, nor worth waiting on.
+    """
+    try:
+        # On Windows, a refusal takes about 2 seconds.
+        with socket.create_connection(("127.0.0.1", port), WAIT_SECONDS):
+            return True
+    except ConnectionRefusedError:
+        return False
+    except OSError:
+        return True
+
+
 async def _refused(port: int) -> None:
     """Wait for `port` to refuse connections: a host's may take a round trip."""
-    async with asyncio.timeout(WAIT_SECONDS):
-        while True:
-            try:
-                await asyncio.to_thread(round_trip, port)
-            except ConnectionRefusedError:
-                return
+    async with asyncio.timeout(2 * WAIT_SECONDS):
+        # ruff: ignore[ASYNC110]  # What it waits for changes on the server's thread
+        while await asyncio.to_thread(_connects, port):
             await asyncio.sleep(0.01)
 
 

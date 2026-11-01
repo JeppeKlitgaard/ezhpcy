@@ -101,6 +101,19 @@ async def test_put_and_get_copy_files(login: SSHTestServer, tmp_path: Path) -> N
     assert (tmp_path / "back.yaml").read_text(encoding="utf-8") == "cores: 4\n"
 
 
+async def test_put_and_get_raise_ssh_errors(
+    login: SSHTestServer, tmp_path: Path
+) -> None:
+    local = tmp_path / "params.yaml"
+    local.write_text("cores: 4\n", encoding="utf-8")
+
+    async with api.connect(LOGIN) as host:
+        with pytest.raises(api.SSHError):
+            await host.put(local, PurePosixPath("/home/alice/no/such/dir/params.yaml"))
+        with pytest.raises(api.SSHError):
+            await host.get(PurePosixPath("/home/alice/missing"), tmp_path / "back")
+
+
 # Processes
 
 
@@ -272,6 +285,16 @@ async def test_a_reverse_forward_listens_on_the_hosts_loopback(
         assert forward.port != 0
         assert forward.status.reverse
         assert await asyncio.to_thread(round_trip, forward.port) == b"ping"
+
+
+async def test_a_reverse_forward_the_host_refuses_raises_an_ssh_error(
+    login: SSHTestServer,
+) -> None:
+    login.refuses_listens = True
+
+    async with api.connect(LOGIN) as host:
+        with pytest.raises(api.SSHError):
+            await host.reverse_forward(0, api.TCPDestination("127.0.0.1", 1))
 
 
 # Closing with the host

@@ -145,6 +145,8 @@ class SSHTestServer:
         self.commands_run: list[list[str]] = []
         # The `(host, port)` of each remote forward asked for (`tcpip-forward`).
         self.remote_listens: list[tuple[str, int]] = []
+        # Whether it refuses to listen, as an sshd that doesn't allow it does.
+        self.refuses_listens = False
         self.errors: list[Exception] = []
         self._commands: dict[tuple[str, ...], Handler] = {}
         self._forwardable: set[tuple[str, int]] = set()
@@ -458,7 +460,7 @@ class _Server(asyncssh.SSHServer):
     def server_requested(self, listen_host: str, listen_port: int) -> bool:
         # asyncssh listens there, on this machine, and forwards to the client.
         self._test_server.remote_listens.append((listen_host, listen_port))
-        return True
+        return not self._test_server.refuses_listens
 
     def unix_connection_requested(self, dest_path: str) -> SocketHandler:
         handler = self._test_server._sockets.get(dest_path)

@@ -55,6 +55,7 @@ lazy from ezhpcy.ssh import (
     TCPDestination,
     ensure_directory,
 )
+lazy from ezhpcy.ssh_errors import SSHError
 lazy from ezhpcy.types import RemoteState
 
 logger = get_logger(__name__)
@@ -152,7 +153,8 @@ class RunningApp:
 
     async def wait(self) -> int:
         """
-        Wait until the app exits, and return its exit status. Cancelled, only
+        Wait until the app exits, and return its exit status. Raises `SSHError`
+        or `RuntimeError` if the host's connection is lost first. Cancelled, only
         the waiting stops.
         """
         return await self.process.wait()
@@ -403,7 +405,7 @@ async def log_stderr(process: Process) -> str:
     try:
         async with asyncio.timeout(_ATTEMPT_SECONDS):
             output = await process.stderr(_STDERR_LINES)
-    except (TimeoutError, CommandFailed, asyncssh.Error, OSError) as error:
+    except (TimeoutError, CommandFailed, SSHError, OSError) as error:
         logger.debug(t"Could not read the app's stderr: {error!r}")
         return ""
     if lines := output.splitlines():

@@ -54,6 +54,7 @@ lazy from typing import Any
 lazy import asyncssh
 
 from ezhpcy.logging import get_logger
+from ezhpcy.ssh_errors import translating_ssh_errors
 lazy from ezhpcy.attachments import Attachment
 lazy from ezhpcy.cleanup import finish
 lazy from ezhpcy.ssh import CommandFailed, RemoteHost, private_directory
@@ -138,11 +139,13 @@ class Process:
             return None
         return exited.result()
 
+    @translating_ssh_errors
     async def wait(self) -> int:
         """
         Wait until the process exits, and return its exit status: `128+n` for a
         death by signal n (137 when `stop` had to kill it). An exit is seen
-        within about a second. Raises if the host's connection is lost first.
+        within about a second. Raises `SSHError` or `RuntimeError` if the host's
+        connection is lost first.
         Cancelled, only the waiting stops.
         """
         return await asyncio.shield(self._exited)
@@ -155,10 +158,12 @@ class Process:
         """
         await self._attachment.close()
 
+    @translating_ssh_errors
     async def stderr(self, lines: int = 20) -> str:
         """
         The last `lines` lines of its stderr, until it is stopped. Raises
-        `CommandFailed` once its run directory is removed.
+        `CommandFailed` once its run directory is removed, and `SSHError` if the
+        host's connection is lost.
         """
         return await self._host.run(
             ["tail", "-n", str(lines), "--", str(self.run_dir / _STDERR_NAME)]

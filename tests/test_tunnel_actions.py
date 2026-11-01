@@ -44,8 +44,8 @@ RUN_ID = "abc"
 WAIT_SECONDS = 5
 
 
-def amount_input(**fields: Any) -> api.ActionInput:
-    return api.ActionInput(type="integer", min=1, max=10, **fields)
+def amount_input(**fields: Any) -> api.Parameter:
+    return api.Parameter(type="integer", min=1, max=10, **fields)
 
 
 def action(**fields: Any) -> api.Action:
@@ -552,7 +552,7 @@ async def test_a_key_nothing_has_does_nothing() -> None:
 async def test_inputs_are_asked_for_in_the_panel_one_at_a_time() -> None:
     menu, running = menu_of(
         go=action(
-            run={"command": ["{amount}", "{note}"]},
+            run={"command": ["{{ amount }}", "{{ note }}"]},
             input={
                 "amount": amount_input(label="How many"),
                 "note": {"type": "string"},
@@ -578,7 +578,7 @@ async def test_inputs_are_asked_for_in_the_panel_one_at_a_time() -> None:
 
 async def test_a_wrong_value_is_said_and_can_be_corrected() -> None:
     menu, running = menu_of(
-        go=action(run={"command": ["{amount}"]}, input={"amount": amount_input()})
+        go=action(run={"command": ["{{ amount }}"]}, input={"amount": amount_input()})
     )
 
     await press(menu, "1", "x", ENTER)
@@ -595,7 +595,7 @@ async def test_a_wrong_value_is_said_and_can_be_corrected() -> None:
 async def test_enter_takes_the_default_and_nothing_is_no_value_without_one() -> None:
     menu, running = menu_of(
         go=action(
-            run={"command": ["{a}", "{b}"]},
+            run={"command": ["{{ a }}", "{{ b }}"]},
             input={"a": amount_input(default=3), "b": amount_input()},
         )
     )
@@ -611,7 +611,7 @@ async def test_enter_takes_the_default_and_nothing_is_no_value_without_one() -> 
 
 async def test_esc_cancels_asking() -> None:
     menu, running = menu_of(
-        go=action(run={"command": ["{amount}"]}, input={"amount": amount_input()})
+        go=action(run={"command": ["{{ amount }}"]}, input={"amount": amount_input()})
     )
 
     await press(menu, "1", "5", ESCAPE)
@@ -642,7 +642,7 @@ async def test_a_running_action_or_a_stopped_app_runs_nothing_and_says_so(
 
 async def test_closing_takes_no_more_keys_and_stops_asking() -> None:
     menu, running = menu_of(
-        go=action(run={"command": ["{amount}"]}, input={"amount": amount_input()})
+        go=action(run={"command": ["{{ amount }}"]}, input={"amount": amount_input()})
     )
     await press(menu, "1")
 
@@ -694,7 +694,7 @@ async def test_stopping_cancels_the_runs_it_began() -> None:
 def test_what_an_input_takes_is_described(
     fields: dict[str, object], words: str
 ) -> None:
-    assert describe(api.ActionInput.model_validate(fields)) == words
+    assert describe(api.Parameter.model_validate(fields)) == words
 
 
 def test_the_panel_shows_actions_their_keys_and_latest_runs() -> None:

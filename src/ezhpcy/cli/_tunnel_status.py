@@ -4,6 +4,7 @@ doing, what is attached to it, and once it serves, how to connect to it, where
 each app is, and the keys that run its actions.
 """
 
+from datetime import timedelta
 lazy import shlex
 lazy import time
 lazy from collections.abc import Callable
@@ -317,7 +318,7 @@ def _action_row(
     about: Template = t""
     if entry.action.description is not None:
         about += t"{entry.action.description} "
-    if (every := entry.action.trigger.every) is not None:
+    if isinstance(every := entry.action.trigger.every, timedelta):
         about += t"{f'(every {duration(every.total_seconds())})':aside} "
     return (f"  {key}  {entry.name}", about + _latest_run(run, now))
 

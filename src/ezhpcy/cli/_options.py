@@ -337,6 +337,21 @@ AppOpt = Annotated[
 ]
 
 
+ArgOpt = Annotated[
+    list[str] | None,
+    Parameter(
+        name="--arg",
+        negative=(),
+        metavar="APP.NAME=VALUE",
+        help=(
+            "A value for an argument of an app given with --app, such as "
+            "zhome-quota.every=60. May be repeated."
+        ),
+        group=APPS_PANEL,
+    ),
+]
+
+
 def _split_command(_type: type, tokens: Sequence[Token]) -> list[str]:
     """Split a command with shell-style quoting, without running a shell."""
     # A list option collects every occurrence; this one takes one command. Worded

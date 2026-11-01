@@ -33,9 +33,9 @@ schema = 1
 description = "Filestash, a web file manager over the node's files"
 environment.pixi = "pixi.toml"
 assets.include = ["start.sh", "config.json", "filestash_linux_x86_64.bin", "plugins/*.zip"]
-run.command = ["bash", "{assets}/start.sh"]
-run.env = { FILESTASH_PATH = "{run_dir}/data", FILESTASH_PORT = "{port}", LOCAL_BACKEND_SECRET = "{token}" }
+run.command = ["bash", "{{ assets }}/start.sh"]
+run.env = { FILESTASH_PATH = "{{ run_dir }}/data", FILESTASH_PORT = "{{ port }}", LOCAL_BACKEND_SECRET = "{{ token }}" }
 endpoint.transport = "tcp"
 endpoint.authenticates = true
 ready = { check = "http", path = "/healthz" }
-access.url = "http://127.0.0.1:{local_port}/login?type=local&password={token}"
+access.url = "http://127.0.0.1:{{ local_port }}/login?type=local&password={{ token }}"

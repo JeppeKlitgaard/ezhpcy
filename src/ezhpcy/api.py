@@ -84,7 +84,7 @@ from ezhpcy.ssh_errors import translating_ssh_errors
 lazy from ezhpcy import forward as _forward, login as _login, process as _process
 lazy from ezhpcy.app import ActionError, AppFailed, ManifestError, run as _app_run
 lazy from ezhpcy.app.action import ActionRun, ActionState
-lazy from ezhpcy.app.manifest import Action, ActionInput, App, Link, Manifest
+lazy from ezhpcy.app.manifest import Action, App, Link, Manifest, Parameter
 lazy from ezhpcy.app.run import AppState, AppStatus, LinkStatus, RunningApp
 lazy from ezhpcy.config import Config, Profile
 lazy from ezhpcy.constants import EZHPCY_VERSION, KEYRING_SERVICE_NAME
@@ -156,7 +156,6 @@ __all__ = [
     "PASSWORD_ATTEMPTS",
     "Action",
     "ActionError",
-    "ActionInput",
     "ActionRun",
     "ActionState",
     "AliasInUse",
@@ -196,6 +195,7 @@ __all__ = [
     "MissingCredentials",
     "MissingSetting",
     "PBSOptions",
+    "Parameter",
     "Phase",
     "Process",
     "ProcessStatus",
@@ -413,13 +413,15 @@ class Host:
         local_port: int | None = None,
         provision: bool = True,
         apps_root: PurePosixPath | None = None,
+        arguments: Mapping[str, object] | None = None,
     ) -> RunningApp:
         """
         Run an app from a manifest (`Config.app`, `Manifest`) on the host, and
         return once it is ready and forwarded to `local_port` here (by default
         its `access.local_port`, by default a free one). Attached to the host
         until stopped. See `RunningApp`. Of an app with actions alone, only the
-        first step below happens.
+        first step below happens. `arguments` are the values of its arguments
+        (`App.argument`), for all of its templates.
 
         In order:
 
@@ -437,7 +439,9 @@ class Host:
            in the process's run directory, or to `127.0.0.1` on the host.
 
         Several runs of one app may run at once; they share its workdir.
-        Raises `ProvisioningError`, and `AppFailed` (with its stderr's last
+        Raises `ManifestError` first for an argument it can't take
+        (`App.checked_arguments` says so without running anything);
+        `ProvisioningError`; and `AppFailed` (with its stderr's last
         lines) if it exits before it is ready or isn't ready in time, once it
         has been stopped; `SSHError` if the connection fails. Raises `TypeError`
         for a `Link`, which runs nothing.
@@ -451,6 +455,7 @@ class Host:
             local_port=local_port,
             provision=provision,
             apps_root=apps_root,
+            arguments=arguments,
         )
 
     @translating_ssh_errors

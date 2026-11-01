@@ -43,7 +43,7 @@ from ezhpcy.logging import REPLAY_ON_ERROR, get_logger
 from ezhpcy.ssh_errors import translating_ssh_errors
 lazy from ezhpcy import forward as _forward, process as _process
 lazy from ezhpcy.app import AppFailed
-lazy from ezhpcy.app.action import ActionRun, AppActions
+lazy from ezhpcy.app.action import ActionRun, AppActions, path_problem
 lazy from ezhpcy.app.manifest import (
     ENVIRONMENT_VARIABLES,
     Action,
@@ -52,6 +52,7 @@ lazy from ezhpcy.app.manifest import (
     Link,
     Ready,
     render,
+    render_command,
 )
 lazy from ezhpcy.app.provision import (
     AppsLayout,
@@ -180,7 +181,7 @@ class RunningApp:
         has: an exit status other than 0 is a result, `ActionState.FAILED`. See
         `ActionRun`; `status` has each action's latest.
 
-        A value is as its type says: `ActionInput.parse` makes one of what a user
+        A value is as its type says: `Parameter.parse` makes one of what a user
         typed. A `path` is on the host, and its `kind` and `must_exist` are
         checked there, over SFTP.
 
@@ -242,31 +243,39 @@ async def run_app(
     local_port: int | None = None,
     provision: bool = True,
     apps_root: PurePosixPath | None = None,
+    arguments: Mapping[str, object] | None = None,
 ) -> RunningApp:
     """
     Run `app` on `host` (see the module), and return once it is ready and
     forwarded to `local_port` here (by default its `access.local_port`), if it
-    has a server.
+    has a server. `arguments` are the values of its arguments.
 
     With `provision`, its environment and assets (and EzHPCy's Pixi) are
     installed on the host first if they aren't; without, they are only
     checked. They live under `apps_root`, by default `ezhpcy-apps` in the
     host's XDG cache directory.
 
-    Raises `ProvisioningError`, and `AppFailed` if the app exits before it is
-    ready, or isn't within `ready.timeout`, after stopping it. Raises
-    `TypeError` for a link, which has nothing to run.
+    Raises `ManifestError` for an argument it can't take, before anything else;
+    `ProvisioningError`; and `AppFailed` if the app exits before it is ready, or
+    isn't within `ready.timeout`, or a path it was given isn't there, or a template
+    can't be rendered, after stopping it. Raises `TypeError` for a link, which has
+    nothing to run.
     """
     if isinstance(app, Link):
         raise TypeError(f"{app} is a link, which has nothing to run")
+    checked = app.checked_arguments(arguments or {})
     # Before the app, so that it is closed after it.
     _process.watcher(host)
     attachment = host.attachments.attach()
     attachment.report(AppStatus(name=app.name, version=app.version))
     try:
-        return await _run(host, app, attachment, local_port, provision, apps_root)
-    except BaseException:
+        return await _run(
+            host, app, attachment, local_port, provision, apps_root, checked
+        )
+    except BaseException as error:
         await attachment.close()
+        if isinstance(error, ValueError):
+            raise AppFailed(t"app {app!s:name}: {error}") from error
         raise
 
 
@@ -277,6 +286,7 @@ async def _run(
     local_port: int | None,
     provision: bool,
     apps_root: PurePosixPath | None,
+    arguments: Mapping[str, object],
 ) -> RunningApp:
     remote_state = await host.remote_state()
     layout = AppsLayout(apps_root or remote_state.apps_root())
@@ -286,9 +296,10 @@ async def _run(
     async with host.sftp() as sftp:
         await ensure_directory(sftp, workdir)
         await mark_used(sftp, provisioned)
+    arguments = await _arguments_on_host(host, app, arguments, provisioned, workdir)
     if app.endpoint is None:
         return _without_server(
-            host, app, attachment, remote_state, layout, provisioned, workdir
+            host, app, attachment, remote_state, layout, provisioned, workdir, arguments
         )
     logger.debug(
         t"App run: app={app!s:name} environment={provisioned.environment:path} "
@@ -323,7 +334,9 @@ async def _run(
         )
 
     token = secrets.token_hex(16)
-    argv, env = _command(app, remote_state, layout, provisioned, workdir, token)
+    argv, env = _command(
+        app, remote_state, layout, provisioned, workdir, token, arguments
+    )
     process = await _process.start(
         host,
         argv,
@@ -354,7 +367,7 @@ async def _run(
         attachment=attachment.attach(on_change=changed),
     )
     state = AppState.READY
-    values = {"token": token, "local_port": str(forward.port)}
+    values = {"token": token, "local_port": forward.port, **arguments}
     url = render(app.access.url, values)
     status_hints = tuple(render(hint, values) for hint in app.access.status_hints)
     actions = AppActions(
@@ -363,7 +376,7 @@ async def _run(
         process,
         attachment,
         workdir=workdir,
-        values=_action_values(process, provisioned, workdir, token),
+        values=_action_values(process, provisioned, workdir, token, arguments),
         command=partial(_through_pixi, app, remote_state, layout, provisioned),
         on_change=changed,
     )
@@ -381,6 +394,7 @@ def _without_server(
     layout: AppsLayout,
     provisioned: ProvisionedApp,
     workdir: PurePosixPath,
+    arguments: Mapping[str, object],
 ) -> RunningApp:
     """An app with actions alone, ready now that its environment is."""
     run_id = secrets.token_hex(8)
@@ -402,16 +416,13 @@ def _without_server(
         stopped.set_result(None)
 
     attachment.push("say the app has stopped", stop)
-    values = {"workdir": str(workdir)}
-    if provisioned.assets is not None:
-        values["assets"] = str(provisioned.assets)
     actions = AppActions(
         host,
         app,
         None,
         attachment,
         workdir=workdir,
-        values=values,
+        values={**_places(provisioned, workdir), **arguments},
         command=partial(_through_pixi, app, remote_state, layout, provisioned),
         on_change=changed,
     )
@@ -421,6 +432,38 @@ def _without_server(
     return RunningApp(app, None, (), None, None, attachment, actions, stopped)
 
 
+def _places(provisioned: ProvisionedApp, workdir: PurePosixPath) -> dict[str, str]:
+    """Where the app's work is on its host, for any field to use."""
+    values = {"workdir": str(workdir)}
+    if provisioned.assets is not None:
+        values["assets"] = str(provisioned.assets)
+    return values
+
+
+async def _arguments_on_host(
+    host: RemoteHost,
+    app: App,
+    arguments: Mapping[str, object],
+    provisioned: ProvisionedApp,
+    workdir: PurePosixPath,
+) -> dict[str, object]:
+    """
+    `arguments`, with the defaults of `path`s, which only now can be rendered, and
+    what they ask of what is on the host checked.
+    """
+    values = dict(arguments)
+    for name, parameter in app.argument.items():
+        if name not in values and parameter.default is not None:
+            values[name] = render(str(parameter.default), _places(provisioned, workdir))
+    problem = await path_problem(host, app.argument, values)
+    if problem is not None:
+        name, path, why = problem
+        raise AppFailed(
+            t"argument {name:name} of app {app!s:name}: {path:path} {why} on the host"
+        )
+    return values
+
+
 def _command(
     app: App,
     remote_state: RemoteState,
@@ -428,16 +471,20 @@ def _command(
     provisioned: ProvisionedApp,
     workdir: PurePosixPath,
     token: str,
+    arguments: Mapping[str, object] | None = None,
 ) -> tuple[list[str], dict[str, str]]:
     """The app's command, through EzHPCy's Pixi, and its environment."""
     assert app.run is not None and app.endpoint is not None
-    values = {"run_dir": _process.RUN_DIR, "workdir": str(workdir), "token": token}
+    values: dict[str, object] = {
+        **_places(provisioned, workdir),
+        **(arguments or {}),
+        "run_dir": _process.RUN_DIR,
+        "token": token,
+    }
     if app.endpoint.transport == "socket":
         values["socket"] = f"{_process.RUN_DIR}/{SOCKET_NAME}"
     else:
         values["port"] = _process.PORT
-    if provisioned.assets is not None:
-        values["assets"] = str(provisioned.assets)
     return _through_pixi(app, remote_state, layout, provisioned, app.run, values)
 
 
@@ -446,15 +493,18 @@ def _action_values(
     provisioned: ProvisionedApp,
     workdir: PurePosixPath,
     token: str,
-) -> dict[str, str]:
+    arguments: Mapping[str, object],
+) -> dict[str, object]:
     """What an action's placeholders are, of the app it reaches, as it runs."""
-    values = {"workdir": str(workdir), "token": token}
+    values: dict[str, object] = {
+        **_places(provisioned, workdir),
+        **arguments,
+        "token": token,
+    }
     if process.port is not None:
         values["port"] = str(process.port)
     else:
         values["socket"] = str(process.run_dir / SOCKET_NAME)
-    if provisioned.assets is not None:
-        values["assets"] = str(provisioned.assets)
     return values
 
 
@@ -464,7 +514,7 @@ def _through_pixi(
     layout: AppsLayout,
     provisioned: ProvisionedApp,
     command: Command,
-    values: Mapping[str, str],
+    values: Mapping[str, object],
 ) -> tuple[list[str], dict[str, str]]:
     """`command`, through EzHPCy's Pixi in the app's environment, and its environment."""
     argv = remote_state.pixi_command(
@@ -476,13 +526,13 @@ def _through_pixi(
         "--environment",
         app.environment.environment,
         "--",
-        *(render(argument, values) for argument in command.command),
+        *render_command(command.command, values),
         cache_dir=layout.pixi_cache,
     )
     # The manifest's own variables after EzHPCy's, which they can't override
     # (`EZHPCY_*` are reserved).
     env = {
-        variable: values[name]
+        variable: str(values[name])
         for name, variable in ENVIRONMENT_VARIABLES.items()
         if name in values
     }

@@ -10,4 +10,4 @@ schema = 1
 
 [ezhpcy.app.vscode-remote."v0.1.0"]
 description = "Open the node in VS Code (Remote - SSH)"
-access.url = "vscode://vscode-remote/ssh-remote+{alias}/?windowId=_blank"
+access.url = "vscode://vscode-remote/ssh-remote+{{ alias }}/?windowId=_blank"

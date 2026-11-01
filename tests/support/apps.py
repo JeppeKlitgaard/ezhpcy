@@ -103,7 +103,7 @@ schema = 1
 
 [ezhpcy.app.lab."v1.0"]
 environment.pixi = "pixi.toml"
-run.command = ["jupyter", "lab", "--ServerApp.sock={socket}"]
+run.command = ["jupyter", "lab", "--ServerApp.sock={{ socket }}"]
 endpoint.transport = "socket"
 """
 

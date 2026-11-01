@@ -33,10 +33,10 @@ pytestmark = pytest.mark.usefixtures("quiet_api")
 WAIT_SECONDS = 5
 APPS_ROOT = CACHE / "ezhpcy-apps"
 LAB = MINIMAL_APP + (
-    'run.env.JUPYTER_TOKEN = "{token}"\n'
-    'run.env.JUPYTER_RUNTIME_DIR = "{run_dir}/jupyter"\n'
-    'access.url = "http://127.0.0.1:{local_port}/lab?token={token}"\n'
-    'access.status_hints = ["lab --port {local_port} --token {token}"]\n'
+    'run.env.JUPYTER_TOKEN = "{{ token }}"\n'
+    'run.env.JUPYTER_RUNTIME_DIR = "{{ run_dir }}/jupyter"\n'
+    'access.url = "http://127.0.0.1:{{ local_port }}/lab?token={{ token }}"\n'
+    'access.status_hints = ["lab --port {{ local_port }} --token {{ token }}"]\n'
     'ready = { check = "http", path = "/api" }\n'
 )
 BOARD = """\
@@ -45,7 +45,7 @@ schema = 1
 
 [ezhpcy.app.board."v2.18"]
 environment.pixi = "pixi.toml"
-run.command = ["tensorboard", "--logdir", "{workdir}/runs", "--port", "{port}"]
+run.command = ["tensorboard", "--logdir", "{{ workdir }}/runs", "--port", "{{ port }}"]
 endpoint.transport = "tcp"
 ready.check = "tcp"
 """

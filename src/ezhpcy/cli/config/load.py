@@ -7,7 +7,7 @@ lazy from pathlib import Path
 lazy from typing import Annotated
 
 lazy from cyclopts import Parameter
-lazy from jinja2 import Environment, StrictUndefined, TemplateError
+lazy from minijinja import Environment, TemplateError
 lazy from pydantic import ValidationError
 lazy from rich.prompt import Confirm, Prompt
 lazy from rich.text import Text
@@ -41,11 +41,11 @@ Preset = Enum("Preset", {name: name for name in _PRESETS})
 
 def _render_preset(template_text: str, *, preset: str, user: str) -> str:
     environment = Environment(
-        autoescape=False,
+        auto_escape_callback=lambda _name: False,
         keep_trailing_newline=True,
-        undefined=StrictUndefined,
+        undefined_behavior="strict",
     )
-    return environment.from_string(template_text).render(preset=preset, user=user)
+    return environment.render_str(template_text, preset=preset, user=user)
 
 
 def _diff_text(

@@ -42,7 +42,7 @@ class _Asking:
     """An action being asked for its inputs: those left, and the values so far."""
 
     entry: MenuEntry
-    left: list[tuple[str, api.ActionInput]]
+    left: list[tuple[str, api.Parameter]]
     values: dict[str, object] = field(default_factory=dict)
     text: str = ""
     problem: str | None = None
@@ -86,9 +86,9 @@ class ActionMenu:
         """The lines that ask for an input, if one is being asked for."""
         if (asking := self._asking) is None:
             return ()
-        input_name, action_input = asking.left[0]
-        label = action_input.label or input_name
-        about = describe(action_input)
+        input_name, parameter = asking.left[0]
+        label = parameter.label or input_name
+        about = describe(parameter)
         lines = [
             t"{asking.entry.name:name}: {label} {f'({about})':aside}: {asking.text}█"
         ]
@@ -137,19 +137,23 @@ class ActionMenu:
             asking.problem = None
 
     def _accept(self, asking: _Asking) -> None:
-        input_name, action_input = asking.left[0]
+        input_name, parameter = asking.left[0]
         try:
             if asking.text:
-                value = action_input.parse(asking.text)
-            elif action_input.default is not None:
-                value = action_input.default
-            else:
+                value = parameter.parse(asking.text)
+            elif parameter.default is not None:
+                value = parameter.default
+            elif parameter.required:
                 raise ValueError("it needs a value")
-            action_input.check(value)
+            else:
+                value = None
+            if value is not None:
+                parameter.check(value)
         except ValueError as error:
             asking.problem = sentence(str(error))
             return
-        asking.values[input_name] = value
+        if value is not None:
+            asking.values[input_name] = value
         asking.left.pop(0)
         asking.text, asking.problem = "", None
         if not asking.left:
@@ -176,30 +180,32 @@ class ActionMenu:
             await asyncio.wait(runs)
 
 
-def describe(action_input: api.ActionInput) -> str:
+def describe(parameter: api.Parameter) -> str:
     """What an input takes, in a few words, and its default."""
-    match action_input.type:
+    match parameter.type:
         case "integer" | "number":
-            words = action_input.type
-            if action_input.min is not None and action_input.max is not None:
-                words += f", {action_input.min} to {action_input.max}"
-            elif action_input.min is not None:
-                words += f", at least {action_input.min}"
-            elif action_input.max is not None:
-                words += f", at most {action_input.max}"
+            words = parameter.type
+            if parameter.min is not None and parameter.max is not None:
+                words += f", {parameter.min} to {parameter.max}"
+            elif parameter.min is not None:
+                words += f", at least {parameter.min}"
+            elif parameter.max is not None:
+                words += f", at most {parameter.max}"
         case "boolean":
             words = "yes or no"
         case "choice":
-            words = " or ".join(action_input.choices)
+            words = " or ".join(parameter.choices)
         case "path":
-            what = action_input.kind or "path"
+            what = parameter.kind or "path"
             words = f"{what} on the host"
-            if action_input.must_exist:
+            if parameter.must_exist:
                 words += ", which must exist"
         case _:
             words = "text"
-    if action_input.default is not None:
-        words += f", default {action_input.default}"
+    if parameter.default is not None:
+        words += f", default {parameter.default}"
+    if not parameter.required:
+        words += ", optional"
     return words
 
 

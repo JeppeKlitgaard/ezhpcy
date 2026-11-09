@@ -16,6 +16,7 @@ from datetime import timedelta
 from pathlib import Path, PurePosixPath
 
 import pytest
+from pydantic import TypeAdapter
 
 from ezhpcy import api
 from ezhpcy.app.manifest import Manifest
@@ -196,7 +197,11 @@ def test_a_manifest_describes_actions_fully(tmp_path: Path) -> None:
         ),
         (
             'run.command = ["{{ a }}"]\ninput.a = { type = "choice" }',
-            "type = 'choice' needs choices",
+            "input.a.choices: Field required",
+        ),
+        (
+            'run.command = ["{{ a }}"]\ninput.a = { type = "text" }',
+            "input.a: type must be one of 'string', 'integer'",
         ),
         (
             'run.command = ["{{ a }}"]\ninput.a = { type = "choice", choices = ["x", "x"] }',
@@ -208,15 +213,15 @@ def test_a_manifest_describes_actions_fully(tmp_path: Path) -> None:
         ),
         (
             'run.command = ["{{ a }}"]\ninput.a = { type = "integer", min = 0.5 }',
-            "min and max of an integer must be integers",
+            "input.a.min: Input should be a valid integer",
         ),
         (
             'run.command = ["{{ a }}"]\ninput.a = { type = "integer", default = "x" }',
-            "default: 'x' is not an integer",
+            "input.a.default: Input should be a valid integer",
         ),
         (
             'run.command = ["{{ a }}"]\ninput.a = { type = "integer", default = true }',
-            "default: True is not an integer",
+            "input.a.default: Input should be a valid integer",
         ),
         (
             'run.command = ["{{ a }}"]\ninput.a = { type = "integer", default = 5, max = 1 }',
@@ -291,7 +296,17 @@ def test_a_link_has_no_actions(tmp_path: Path) -> None:
 def test_parsing_what_a_user_typed(
     fields: dict[str, object], text: str, value: object
 ) -> None:
-    assert api.Parameter.model_validate(fields).parse(text) == value
+    assert TypeAdapter(api.Parameter).validate_python(fields).parse(text) == value
+
+
+def test_a_numbers_values_are_floats_even_when_whole() -> None:
+    number = api.NumberParameter.model_validate(
+        {"type": "number", "min": 0, "max": 2, "default": 1}
+    )
+
+    values = [number.min, number.max, number.default, number.check(1)]
+    assert all(type(value) is float for value in values)
+    assert values == [0.0, 2.0, 1.0, 1.0]
 
 
 @pytest.mark.parametrize(
@@ -300,7 +315,7 @@ def test_parsing_what_a_user_typed(
 )
 def test_parsing_what_a_user_mistyped(kind: str, text: str) -> None:
     with pytest.raises(ValueError, match="is not"):
-        api.Parameter.model_validate({"type": kind}).parse(text)
+        TypeAdapter(api.Parameter).validate_python({"type": kind}).parse(text)
 
 
 @pytest.mark.usefixtures("quiet_api")

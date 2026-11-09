@@ -50,6 +50,7 @@ lazy from ezhpcy.app.manifest import (
     App,
     Command,
     Link,
+    PathParameter,
     Ready,
     render,
     render_command,
@@ -181,7 +182,7 @@ class RunningApp:
         has: an exit status other than 0 is a result, `ActionState.FAILED`. See
         `ActionRun`; `status` has each action's latest.
 
-        A value is as its type says: `Parameter.parse` makes one of what a user
+        A value is as its type says: a parameter's `parse` makes one of what a user
         typed. A `path` is on the host, and its `kind` and `must_exist` are
         checked there, over SFTP.
 
@@ -453,8 +454,12 @@ async def _arguments_on_host(
     """
     values = dict(arguments)
     for name, parameter in app.argument.items():
-        if name not in values and parameter.default is not None:
-            values[name] = render(str(parameter.default), _places(provisioned, workdir))
+        if (
+            name not in values
+            and isinstance(parameter, PathParameter)
+            and parameter.default is not None
+        ):
+            values[name] = render(parameter.default, _places(provisioned, workdir))
     problem = await path_problem(host, app.argument, values)
     if problem is not None:
         name, path, why = problem

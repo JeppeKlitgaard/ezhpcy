@@ -22,6 +22,7 @@ from typing import Any, ClassVar
 import blessed
 import pytest
 from blessed.keyboard import Keystroke
+from pydantic import TypeAdapter
 from rich.console import Console
 
 import ezhpcy
@@ -44,8 +45,8 @@ RUN_ID = "abc"
 WAIT_SECONDS = 5
 
 
-def amount_input(**fields: Any) -> api.Parameter:
-    return api.Parameter(type="integer", min=1, max=10, **fields)
+def amount_input(**fields: Any) -> api.IntegerParameter:
+    return api.IntegerParameter(type="integer", min=1, max=10, **fields)
 
 
 def action(**fields: Any) -> api.Action:
@@ -681,7 +682,7 @@ async def test_stopping_cancels_the_runs_it_began() -> None:
         ({"type": "integer"}, "integer"),
         ({"type": "integer", "min": 1}, "integer, at least 1"),
         ({"type": "number", "max": 1.5}, "number, at most 1.5"),
-        ({"type": "number", "min": 0, "max": 1}, "number, 0 to 1"),
+        ({"type": "number", "min": 0, "max": 1}, "number, 0.0 to 1.0"),
         ({"type": "boolean", "default": True}, "yes or no, default True"),
         ({"type": "choice", "choices": ("a", "b")}, "a or b"),
         ({"type": "path"}, "path on the host"),
@@ -694,7 +695,7 @@ async def test_stopping_cancels_the_runs_it_began() -> None:
 def test_what_an_input_takes_is_described(
     fields: dict[str, object], words: str
 ) -> None:
-    assert describe(api.Parameter.model_validate(fields)) == words
+    assert describe(TypeAdapter(api.Parameter).validate_python(fields)) == words
 
 
 def test_the_panel_shows_actions_their_keys_and_latest_runs() -> None:

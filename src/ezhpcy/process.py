@@ -57,7 +57,7 @@ from ezhpcy.logging import get_logger
 from ezhpcy.ssh_errors import translating_ssh_errors
 lazy from ezhpcy.attachments import Attachment
 lazy from ezhpcy.cleanup import finish
-lazy from ezhpcy.ssh import CommandFailed, RemoteHost, private_directory
+lazy from ezhpcy.ssh import CommandFailed, RemoteHost, open_file, private_directory
 
 logger = get_logger(__name__)
 
@@ -419,7 +419,7 @@ class ProcessWatcher:
         self, sftp: asyncssh.SFTPClient, status_path: PurePosixPath
     ) -> None:
         try:
-            async with sftp.open(status_path) as file:
+            async with open_file(sftp, status_path) as file:
                 content = str(await file.read())
         except asyncssh.SFTPNoSuchFile:
             return
@@ -465,7 +465,7 @@ async def list_runs(host: RemoteHost) -> dict[PurePosixPath, dict[str, Any]]:
             continue
         run_dir = _RUN_ROOT / name
         try:
-            async with sftp.open(run_dir / _RECORD_NAME) as file:
+            async with open_file(sftp, run_dir / _RECORD_NAME) as file:
                 runs[run_dir] = json.loads(str(await file.read()))
         except (asyncssh.SFTPError, ValueError) as error:
             logger.debug(t"Not a run directory of ours: {run_dir:path} {error!r}")
@@ -487,8 +487,8 @@ async def live_runs(host: RemoteHost) -> dict[PurePosixPath, dict[str, Any]]:
 
 async def _write(sftp: asyncssh.SFTPClient, path: PurePosixPath, content: str) -> None:
     """Write a file only the user can read."""
-    async with sftp.open(
-        path, "w", attrs=asyncssh.SFTPAttrs(permissions=0o600)
+    async with open_file(
+        sftp, path, "w", attrs=asyncssh.SFTPAttrs(permissions=0o600)
     ) as file:
         await file.write(content)
 

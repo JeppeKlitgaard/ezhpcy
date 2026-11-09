@@ -56,6 +56,7 @@ lazy from ezhpcy.ssh import (
     CommandFailed,
     RemoteHost,
     ensure_directory,
+    open_file,
     private_directory,
 )
 lazy from ezhpcy.types import RemoteState
@@ -203,7 +204,7 @@ async def mark_used(sftp: asyncssh.SFTPClient, provisioned: ProvisionedApp) -> N
             await sftp.utime(path, (now, now))
         except asyncssh.SFTPNoSuchFile:
             try:
-                async with sftp.open(path, "w"):
+                async with open_file(sftp, path, "w"):
                     pass
             except asyncssh.SFTPError as error:
                 logger.debug(t"Could not mark {directory:path} used: {error!r}")
@@ -253,7 +254,7 @@ async def _install(
                 remote_state,
                 cache_dir=layout.pixi_cache,
             )
-            async with sftp.open(installed, "w"):
+            async with open_file(sftp, installed, "w"):
                 pass
         except (CommandFailed, asyncssh.Error, OSError) as error:
             free = await _free_space(host, directory)
@@ -299,7 +300,7 @@ async def publish_once(
         await sftp.mkdir(attempt, attrs=private_directory())
         try:
             # First, while the attempt's directory is writable (see `mark_used`).
-            async with sftp.open(attempt / LAST_USED_NAME, "w"):
+            async with open_file(sftp, attempt / LAST_USED_NAME, "w"):
                 pass
             await build(attempt)
             await sftp.symlink(attempt.name, entry)

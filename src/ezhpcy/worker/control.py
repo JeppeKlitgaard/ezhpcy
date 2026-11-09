@@ -7,7 +7,7 @@ lazy from pathlib import PurePosixPath
 lazy import asyncssh
 
 from ezhpcy.logging import get_logger
-lazy from ezhpcy.ssh import ensure_directory
+lazy from ezhpcy.ssh import ensure_directory, open_file
 lazy from ezhpcy.worker import WorkerError
 
 logger = get_logger(__name__)
@@ -99,8 +99,8 @@ class WorkerControl:
         """
         temporary = self.directory / f".{name}.tmp"
         try:
-            async with self._sftp.open(
-                temporary, "w", attrs=asyncssh.SFTPAttrs(permissions=0o600)
+            async with open_file(
+                self._sftp, temporary, "w", attrs=asyncssh.SFTPAttrs(permissions=0o600)
             ) as file:
                 await file.write(content)
             await self._sftp.posix_rename(temporary, self.directory / name)
@@ -114,8 +114,8 @@ class WorkerControl:
         try:
             # Bytes that aren't UTF-8 are replaced rather than raise, so a garbled
             # record reads as an invalid one.
-            async with self._sftp.open(
-                self.directory / "status", errors="replace"
+            async with open_file(
+                self._sftp, self.directory / "status", errors="replace"
             ) as file:
                 fields = str(await file.read()).split()
         except asyncssh.SFTPNoSuchFile:

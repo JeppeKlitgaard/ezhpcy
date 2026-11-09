@@ -19,7 +19,12 @@ from rich.prompt import Confirm, Prompt
 from ezhpcy import login as login_module
 from ezhpcy.cli.utils.ssh import cli_prompts
 from ezhpcy.config import local_files
-from ezhpcy.login import ConnectionFailed
+from ezhpcy.login import (
+    AuthenticationFailed,
+    HostKeyChanged,
+    HostKeyUnknown,
+    PasswordRequired,
+)
 from ezhpcy.ssh import RemoteHost
 from ezhpcy.types import Login
 from tests.support.login import ssh_options
@@ -91,10 +96,7 @@ async def _connect(
     password_prompt: bool = True,
     **options: object,
 ) -> RemoteHost:
-    """
-    Connect with the CLI's prompts. Raises what made connecting fail, rather
-    than the `ConnectionFailed` around it.
-    """
+    """Connect with the CLI's prompts."""
     login = Login(
         user=server.user,
         host=server.host,
@@ -104,16 +106,12 @@ async def _connect(
     if host is not None:
         # `Login.host` accepts no single-label name, such as `localhost`.
         login = login.model_copy(update={"host": host})
-    try:
-        with ssh_options(client_keys=[server.client_key], agent_path=None, **options):
-            return await login_module.connect(
-                login,
-                prompts=cli_prompts(),
-                password=SecretStr(password) if password is not None else None,
-            )
-    except ConnectionFailed as error:
-        assert error.__cause__ is not None
-        raise error.__cause__ from None
+    with ssh_options(client_keys=[server.client_key], agent_path=None, **options):
+        return await login_module.connect(
+            login,
+            prompts=cli_prompts(),
+            password=SecretStr(password) if password is not None else None,
+        )
 
 
 def _trust(server: SSHTestServer, file: Path) -> None:
@@ -205,10 +203,11 @@ async def test_three_wrong_passwords_fail(
     _only_passwords(ssh_server)
     prompts.answers = ["wrong", "wrong", "wrong"]
 
-    with pytest.raises(asyncssh.PermissionDenied):
+    with pytest.raises(AuthenticationFailed) as raised:
         async with await _connect(ssh_server):
             pass
 
+    assert raised.type is AuthenticationFailed
     assert len(prompts.asked) == 3
     assert _password_attempts(ssh_server) == [False, False, False]
     output = capsys.readouterr().err
@@ -240,10 +239,11 @@ async def test_each_password_is_tried_once_whatever_the_methods(
     ssh_server.auth.kbdint = [KbdintPrompt("Password: ", "secret")]
     prompts.answers = ["wrong", "wrong", "wrong"]
 
-    with pytest.raises(asyncssh.PermissionDenied):
+    with pytest.raises(AuthenticationFailed) as raised:
         async with await _connect(ssh_server):
             pass
 
+    assert raised.type is AuthenticationFailed
     assert len(prompts.asked) == 3
     assert _password_attempts(ssh_server) == [False, False, False]
 
@@ -262,7 +262,8 @@ async def test_a_profile_password_is_tried_once_without_a_prompt(
     try:
         async with await _connect(ssh_server, password=password):
             pass
-    except asyncssh.PermissionDenied:
+    except AuthenticationFailed as error:
+        assert type(error) is AuthenticationFailed
         assert not connects
     else:
         assert connects
@@ -292,7 +293,7 @@ async def test_no_prompt_when_prompting_is_off(
     _only_passwords(ssh_server)
     ssh_server.auth.kbdint = [KbdintPrompt("Password: ", "secret")]
 
-    with pytest.raises(asyncssh.PermissionDenied):
+    with pytest.raises(PasswordRequired, match="asking for it is turned off"):
         async with await _connect(ssh_server, password_prompt=False):
             pass
 
@@ -392,7 +393,7 @@ async def test_a_rejected_host_key_is_not_saved(
 ):
     prompts.answers = [False]
 
-    with pytest.raises(asyncssh.HostKeyNotVerifiable, match="rejected by user"):
+    with pytest.raises(HostKeyUnknown, match="rejected by user"):
         async with await _connect(ssh_server):
             pass
 
@@ -451,7 +452,7 @@ async def test_a_changed_host_key_is_refused_without_a_prompt(
     file.parent.mkdir(parents=True, exist_ok=True)
     file.write_text(_other_key_line(f"[{ssh_server.host}]:{ssh_server.port}"))
 
-    with pytest.raises(asyncssh.HostKeyNotVerifiable) as raised:
+    with pytest.raises(HostKeyChanged) as raised:
         async with await _connect(ssh_server):
             pass
 

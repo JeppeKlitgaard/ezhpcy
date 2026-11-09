@@ -10,7 +10,8 @@ lazy from typing import get_type_hints
 from cyclopts import Group, Parameter, validators
 lazy from cyclopts import Token
 
-from ezhpcy.api import KEYRING_SERVICE_NAME, Config, SchedulerType, SubmissionMode
+from ezhpcy.api import Config, SchedulerType, SubmissionMode
+from ezhpcy.api.frontend import KEYRING_SERVICE_NAME
 lazy from ezhpcy.api import ConfigError
 
 DEBUG_ENV_VAR = "EZHPCY_DEBUG"

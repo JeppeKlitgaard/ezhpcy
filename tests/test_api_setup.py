@@ -10,6 +10,7 @@ from pathlib import Path, PurePosixPath
 import pytest
 
 from ezhpcy import api
+from ezhpcy.api import frontend
 from tests.support.api import LOGIN
 from tests.support.apps import MINIMAL_APP, write_project
 from tests.support.login import CACHE, STATE
@@ -90,12 +91,12 @@ def test_diagnose_says_how_each_check_went_by_section(
 
 
 def test_check_alias_refuses_what_a_host_block_cannot_name() -> None:
-    api.check_alias("gpu", LOGIN)
+    frontend.check_alias("gpu", LOGIN)
 
     with pytest.raises(ValueError, match="invalid host alias"):
-        api.check_alias("not an alias", LOGIN)
+        frontend.check_alias("not an alias", LOGIN)
     with pytest.raises(ValueError, match="non-whitespace"):
-        api.check_alias("gpu", LOGIN.model_copy(update={"user": "al ice"}))
+        frontend.check_alias("gpu", LOGIN.model_copy(update={"user": "al ice"}))
 
 
 def test_with_manifests_is_a_copy_with_their_apps(tmp_path: Path) -> None:

@@ -1,5 +1,5 @@
 """
-Messages (`ezhpcy.api.MessageError`, `ezhpcy.api.message_parts`) on the terminal: each part styled by its kind.
+Messages (`ezhpcy.api.MessageError`, `ezhpcy.api.frontend.message_parts`) on the terminal: each part styled by its kind.
 
 Printed, errors, warnings and aborts go to stderr with Cyclopts' usage errors,
 prompts and the log.
@@ -18,7 +18,7 @@ from cyclopts.exceptions import (
 lazy from rich.console import Console
 lazy from rich.text import Text
 
-lazy from ezhpcy.api import message_parts
+lazy from ezhpcy.api.frontend import message_parts
 lazy from ezhpcy.cli._console import console, error_console
 
 

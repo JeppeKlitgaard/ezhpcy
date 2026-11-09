@@ -5,11 +5,11 @@ Records are handed to the output thread (see `ezhpcy.cli._console`), which forma
 and writes them, so that logging never waits for the terminal, and the event loop
 with it. `ezhpcy.cli._console.flush_output` waits until they are written.
 
-A record whose message is a template (see `ezhpcy.api.get_logger`) carries it as plain
+A record whose message is a template (see `ezhpcy.api.frontend.get_logger`) carries it as plain
 text, and the terminal log styles its parts.
 
 Each run can also write its log to a file of its own (`configure_log_file`, with
-`ezhpcy.api.LogFile`), at a level of its own. What a log shows is up to the log,
+`ezhpcy.api.frontend.LogFile`), at a level of its own. What a log shows is up to the log,
 never the code that logs: tracebacks are shown only at DEBUG, and asyncssh's
 records by the terminal only with debug logging (`--debug`), and by the file at
 DEBUG.
@@ -30,7 +30,7 @@ lazy from typing import Any, TextIO
 from rich.logging import RichHandler
 lazy from rich.text import Text
 
-from ezhpcy.api import LogFile
+from ezhpcy.api.frontend import LogFile
 lazy from ezhpcy.cli._console import (
     error_console,
     flush_output,

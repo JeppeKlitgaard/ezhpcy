@@ -25,7 +25,7 @@ lazy from cyclopts import Parameter, validators
 lazy from packaging.utils import canonicalize_name
 lazy from pydantic import SecretStr
 
-from ezhpcy.api import get_logger
+from ezhpcy.api.frontend import get_logger
 from ezhpcy.cli._options import (
     AliasOpt,
     AppOpt,
@@ -40,6 +40,7 @@ from ezhpcy.cli._options import (
     TimingOptions,
 )
 lazy from ezhpcy import api
+lazy from ezhpcy.api.frontend import alias_digest, check_alias
 lazy from ezhpcy.cli import _include as include
 lazy from ezhpcy.cli._console import (
     flush_output,
@@ -82,7 +83,7 @@ def _resolve_alias(
     if alias is None:
         # Identical anonymous options yield the same alias across restarts, so
         # saved hosts (e.g. in VS Code) keep working.
-        alias = profile_name or f"ezhpcy-{api.alias_digest(login, job)[:12]}"
+        alias = profile_name or f"ezhpcy-{alias_digest(login, job)[:12]}"
     if alias != profile_name and alias in config.profile:
         raise CliUsageError(
             t"It is the name of profile {alias:name}; choose another alias.",
@@ -90,7 +91,7 @@ def _resolve_alias(
             value=alias,
         )
     try:
-        api.check_alias(alias, login)
+        check_alias(alias, login)
     except ValueError as error:
         raise CliUsageError(
             t"{sentence(str(error))}", param_hint="--alias", value=alias

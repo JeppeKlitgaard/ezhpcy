@@ -15,7 +15,7 @@ lazy import time
 lazy from collections.abc import Callable
 lazy from string.templatelib import Template
 
-from ezhpcy.api import get_logger
+from ezhpcy.api.frontend import get_logger
 lazy from ezhpcy import api
 lazy from ezhpcy.cli._errors import sentence
 lazy from ezhpcy.cli._messages import duration

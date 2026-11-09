@@ -13,6 +13,7 @@ import pytest
 from pydantic import SecretStr
 
 from ezhpcy import api
+from ezhpcy.api import frontend
 from tests.support import sshserver
 from tests.support.login import offer_client_key, ssh_options
 from tests.support.sshserver import SSHTestServer
@@ -513,7 +514,7 @@ async def test_an_alias_ssh_would_not_reach_is_not_reserved(
     assert "ezhpcy doctor" in str(caught.value)
     assert caught.value.problem.include_lines is not None
     assert "Include" in caught.value.problem.include_lines
-    assert api.probe_alias("gpu") == caught.value.problem
+    assert frontend.probe_alias("gpu") == caught.value.problem
 
 
 async def test_a_name_that_cant_be_an_alias_is_a_config_error() -> None:

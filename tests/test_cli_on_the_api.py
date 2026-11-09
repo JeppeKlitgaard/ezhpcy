@@ -1,6 +1,7 @@
 """
-The CLI is a client of `ezhpcy.api`: it imports nothing else of the package, and
-nothing below it imports the CLI, or what only a terminal needs.
+The CLI is a client of `ezhpcy.api` and `ezhpcy.api.frontend`: it imports nothing
+else of the package, and nothing below it imports the CLI, or what only a terminal
+needs.
 """
 
 import ast
@@ -8,11 +9,13 @@ import subprocess
 import sys
 from collections.abc import Iterator
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
 import ezhpcy
 from ezhpcy import api
+from ezhpcy.api import frontend
 
 PACKAGE = Path(ezhpcy.__file__).parent
 CLI = PACKAGE / "cli"
@@ -59,18 +62,31 @@ def test_nothing_below_the_cli_imports_it(path: Path) -> None:
     ]
 
 
-@pytest.mark.parametrize("name", api.__all__)
-def test_every_public_name_resolves(name: str) -> None:
+PUBLIC_MODULES = [api, frontend]
+
+
+@pytest.mark.parametrize(
+    ("module", "name"),
+    [(module, name) for module in PUBLIC_MODULES for name in module.__all__],
+    ids=lambda value: value if isinstance(value, str) else value.__name__,
+)
+def test_every_public_name_resolves(module: ModuleType, name: str) -> None:
     # The names are lazy, so one that is broken would otherwise fail only on use.
-    assert getattr(api, name) is not None
+    assert getattr(module, name) is not None
+
+
+def test_no_name_is_public_twice() -> None:
+    assert not set(api.__all__) & set(frontend.__all__)
 
 
 def test_the_api_loads_nothing_only_a_terminal_needs() -> None:
     script = (
         "import sys\n"
         "from ezhpcy import api\n"
-        "for name in api.__all__:\n"
-        "    getattr(api, name)\n"
+        "from ezhpcy.api import frontend\n"
+        "for module in (api, frontend):\n"
+        "    for name in module.__all__:\n"
+        "        getattr(module, name)\n"
         "print(*[m for m in ('cyclopts', 'rich', 'ezhpcy.cli') if m in sys.modules])\n"
     )
 

@@ -146,8 +146,8 @@ def test_a_rejected_login_is_one_error_line(login: SSHTestServer) -> None:
     assert result.exit_code == 1, result
     assert result.exception is None
     assert result.stderr == (
-        "Error: Could not connect to alice@login.example.com: Permission denied for user "
-        "alice on host 127.0.0.1\n"
+        "Error: Could not connect to alice@login.example.com: The login node accepted "
+        "no SSH key from this machine, and offers no password without one.\n"
     )
 
 

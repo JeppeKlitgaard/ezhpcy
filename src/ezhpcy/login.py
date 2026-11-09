@@ -9,6 +9,12 @@ offers `password` or `keyboard-interactive`, is the caller's
 asks for a password with it. A password given or read is tried once, and never
 asked for.
 
+A server may want a key before a password, as OpenSSH does with
+`AuthenticationMethods publickey,password`: it offers a password only once a
+key is accepted. So when no key is accepted, and the server never offered a
+password, connecting fails with `KeyRequired`, without a password tried: a
+password, given or asked for, couldn't have helped.
+
 Host keys are checked against ~/.ssh/known_hosts and EzHPCy's own known hosts
 file. For an unknown host the caller's `Prompts.accept_host_key` is awaited; a
 key it accepts is appended to EzHPCy's file, and EzHPCy connects again;
@@ -85,6 +91,22 @@ class ConnectionFailed(MessageError, RuntimeError):
         self.__cause__ = cause
 
 
+class KeyRequired(ConnectionFailed):
+    """
+    Could not connect: the login node accepted no SSH key from this machine, and
+    offered no password without one, so no password was tried. The cause is
+    asyncssh's `PermissionDenied`.
+    """
+
+    def __init__(self, cause: Exception) -> None:
+        MessageError.__init__(
+            self,
+            t"The login node accepted no SSH key from this machine, and offers no "
+            t"password without one.",
+        )
+        self.__cause__ = cause
+
+
 def terminal_prompts() -> Prompts:
     """
     Prompts for a script at a terminal: the password with `getpass`, and the host
@@ -123,8 +145,9 @@ async def connect(
 
     Use the result with `async with` to close it.
 
-    Raises `ConnectionFailed` when it can't connect, `ConfigError` when a
-    password source can't be read, and whatever a prompt raises.
+    Raises `ConnectionFailed` when it can't connect (`KeyRequired` when the
+    server wanted a key it would accept before any password), `ConfigError` when
+    a password source can't be read, and whatever a prompt raises.
     """
     known_hosts_file = local_files.login_known_hosts_file
     if password is None:
@@ -139,7 +162,7 @@ async def connect(
             if not known_hosts.files_knowing(login.host, login.port):
                 connect_options["server_host_key_algs"] = list(_UNKNOWN_HOST_KEY_ALGS)
             if password is not None:
-                connect_options["password"] = password.get_secret_value()
+                connect_options["password"] = client.sending(password)
             try:
                 return await ssh.connect(login, client=client, **connect_options)
             except asyncssh.HostKeyNotVerifiable:
@@ -151,12 +174,13 @@ async def connect(
                     prompts, *client.unknown_host_key, known_hosts_file
                 )
                 known_hosts.add(known_hosts_file, line)
-            except asyncssh.PermissionDenied:
+            except asyncssh.PermissionDenied as error:
+                if not client.password_offered:
+                    raise KeyRequired(error) from error
                 # A password given or read is tried once, and never asked for.
                 if (
                     given is not None
                     or not login.password_prompt
-                    or not client.password_offered
                     or password_attempts == PASSWORD_ATTEMPTS
                 ):
                     raise
@@ -317,7 +341,8 @@ class _LoginClient(ssh.SSHClient):
     """
     Records what `connect` needs to know after a failed attempt: host keys it
     couldn't trust, and whether the server offered password or
-    keyboard-interactive authentication.
+    keyboard-interactive authentication (`password_offered`). If it never did,
+    only a key could have got in.
     """
 
     def __init__(self, known_hosts: _KnownHosts) -> None:
@@ -352,6 +377,20 @@ class _LoginClient(ssh.SSHClient):
     # password, and answer a single keyboard-interactive password prompt with the
     # password given to `connect`, once; `connect` asks for a password and
     # connects again.
+
+    def sending(self, password: SecretStr) -> Callable[[], str]:
+        """
+        `password`, for asyncssh's `password` option, recording that it was sent.
+        asyncssh calls it only when the server offers a password, and doesn't
+        call `password_auth_requested` then; the server may hang up after
+        refusing it, without offering one again.
+        """
+
+        def send() -> str:
+            self.password_offered = True
+            return password.get_secret_value()
+
+        return send
 
     def password_auth_requested(self) -> str | Awaitable[str | None] | None:
         self.password_offered = True

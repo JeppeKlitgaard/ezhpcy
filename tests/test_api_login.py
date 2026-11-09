@@ -13,6 +13,7 @@ import pytest
 from pydantic import SecretStr
 
 from ezhpcy import api
+from tests.support import sshserver
 from tests.support.login import offer_client_key
 from tests.support.sshserver import SSHTestServer
 from tests.support.tunnel import openssh_resolves
@@ -77,6 +78,13 @@ def only_passwords(server: SSHTestServer, password: str = "secret") -> None:
     server.auth.password = password
 
 
+def password_attempts(server: SSHTestServer) -> list[bool]:
+    """Whether each password tried was accepted."""
+    return [
+        accepted for method, accepted in server.auth_attempts if method == "password"
+    ]
+
+
 async def test_key_authentication_asks_nothing(server: SSHTestServer) -> None:
     trust(server)
     answers = Answers()
@@ -124,16 +132,109 @@ async def test_a_password_given_is_tried_once_and_never_asked_for(
     only_passwords(server, "right")
     answers = Answers()
 
-    with pytest.raises(api.ConnectionFailed):
+    with pytest.raises(api.ConnectionFailed) as raised:
         async with api.connect(
             login_to(server), prompts=answers.prompts(), password=SecretStr("wrong")
         ):
             pass
 
+    assert not isinstance(raised.value, api.KeyRequired)
     assert answers.asked == []
-    assert [
-        accepted for method, accepted in server.auth_attempts if method == "password"
-    ] == [False]
+    assert password_attempts(server) == [False]
+
+
+async def test_a_wrong_password_the_server_hangs_up_on_is_not_a_missing_key(
+    server: SSHTestServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """As OpenSSH does at `MaxAuthTries`: it offers no password again."""
+    trust(server)
+    only_passwords(server, "right")
+    validate_password = sshserver._Server.validate_password
+
+    def hang_up(self: sshserver._Server, username: str, password: str) -> bool:
+        accepted = validate_password(self, username, password)
+        self._conn.disconnect(
+            asyncssh.DISC_NO_MORE_AUTH_METHODS_AVAILABLE,
+            "Too many authentication failures",
+        )
+        return accepted
+
+    monkeypatch.setattr(sshserver._Server, "validate_password", hang_up)
+
+    with pytest.raises(api.ConnectionFailed) as raised:
+        async with api.connect(login_to(server), password=SecretStr("wrong")):
+            pytest.fail("connected")
+
+    assert not isinstance(raised.value, api.KeyRequired)
+    assert password_attempts(server) == [False]
+
+
+# A key before a password, as OpenSSH's `AuthenticationMethods publickey,password`
+
+
+def key_before_password(server: SSHTestServer, password: str = "secret") -> None:
+    server.auth.key_before_password = True
+    server.auth.password = password
+
+
+@pytest.mark.parametrize("password", [None, "secret"])
+async def test_a_refused_key_is_key_required_and_no_password_is_tried(
+    server: SSHTestServer, password: str | None
+) -> None:
+    trust(server)
+    key_before_password(server)
+    server.auth.client_keys = [asyncssh.generate_private_key("ssh-ed25519")]
+    answers = Answers()
+
+    with pytest.raises(api.KeyRequired, match="accepted no SSH key"):
+        async with api.connect(
+            login_to(server),
+            prompts=answers.prompts(),
+            password=SecretStr(password) if password is not None else None,
+        ):
+            pytest.fail("connected")
+
+    assert answers.asked == []
+    assert password_attempts(server) == []
+
+
+async def test_an_accepted_key_and_a_password_given_connect(
+    server: SSHTestServer,
+) -> None:
+    trust(server)
+    key_before_password(server)
+
+    async with api.connect(login_to(server), password=SecretStr("secret")):
+        pass
+
+    assert server.auth_attempts == [("publickey", True), ("password", True)]
+
+
+async def test_after_an_accepted_key_the_password_is_asked_for(
+    server: SSHTestServer,
+) -> None:
+    trust(server)
+    key_before_password(server)
+    answers = Answers()
+
+    async with api.connect(login_to(server), prompts=answers.prompts()):
+        pass
+
+    assert answers.asked == [("password", server.user, server.host, "1")]
+
+
+async def test_a_wrong_password_after_an_accepted_key_is_not_a_missing_key(
+    server: SSHTestServer,
+) -> None:
+    trust(server)
+    key_before_password(server, "right")
+
+    with pytest.raises(api.ConnectionFailed) as raised:
+        async with api.connect(login_to(server), password=SecretStr("wrong")):
+            pytest.fail("connected")
+
+    assert not isinstance(raised.value, api.KeyRequired)
+    assert password_attempts(server) == [False]
 
 
 async def test_password_prompt_false_never_asks(server: SSHTestServer) -> None:

@@ -24,9 +24,13 @@ without asking.
 Nothing is asked during authentication itself, so a prompt may block the event
 loop, and the server's login timeout doesn't run while the user types. Without
 `Prompts`, what would need an answer fails with `ConnectionFailed` instead.
+
+A caller that shows progress is told each `LoginStage` reached, by every
+attempt: connecting again for a host key or a password reaches them again.
 """
 
 from dataclasses import dataclass
+from enum import Enum, auto
 lazy import asyncio
 lazy import getpass
 lazy import os
@@ -133,15 +137,28 @@ def terminal_prompts() -> Prompts:
     return Prompts(ask_password=ask_password, accept_host_key=accept_host_key)
 
 
+class LoginStage(Enum):
+    """How far connecting to the login node has come, for `connect`'s `progress`."""
+
+    # The login node accepted the connection; checking its host key, and
+    # authenticating, follow.
+    REACHED = auto()
+    # Authenticated: the connection is ready.
+    AUTHENTICATED = auto()
+
+
 async def connect(
     login: Login,
     *,
     prompts: Prompts | None = None,
     password: SecretStr | None = None,
+    progress: Callable[[LoginStage], None] | None = None,
 ) -> ssh.RemoteHost:
     """
     Connect to the login node, with `password`, or one read from the `login`'s
-    sources, and asking `prompts` as needed (see the module).
+    sources, and asking `prompts` as needed (see the module). `progress`, if
+    given, is called with each `LoginStage` reached, from asyncssh's callbacks:
+    it must return at once and not raise.
 
     Use the result with `async with` to close it.
 
@@ -157,7 +174,7 @@ async def connect(
     password_attempts = 0
     try:
         while True:
-            client = _LoginClient(known_hosts)
+            client = _LoginClient(known_hosts, progress)
             connect_options: dict[str, object] = {"known_hosts": known_hosts.combined()}
             if not known_hosts.files_knowing(login.host, login.port):
                 connect_options["server_host_key_algs"] = list(_UNKNOWN_HOST_KEY_ALGS)
@@ -342,15 +359,31 @@ class _LoginClient(ssh.SSHClient):
     Records what `connect` needs to know after a failed attempt: host keys it
     couldn't trust, and whether the server offered password or
     keyboard-interactive authentication (`password_offered`). If it never did,
-    only a key could have got in.
+    only a key could have got in. Tells `progress` each `LoginStage` reached.
     """
 
-    def __init__(self, known_hosts: _KnownHosts) -> None:
+    def __init__(
+        self,
+        known_hosts: _KnownHosts,
+        progress: Callable[[LoginStage], None] | None = None,
+    ) -> None:
         super().__init__()
         self._known_hosts = known_hosts
+        self._progress = progress
         self.unknown_host_key: tuple[str, int, asyncssh.SSHKey] | None = None
         self.changed_host_key: asyncssh.HostKeyNotVerifiable | None = None
         self.password_offered = False
+
+    def connection_made(self, conn: asyncssh.SSHClientConnection) -> None:
+        # Once the TCP connection is up, before key exchange.
+        super().connection_made(conn)
+        if self._progress is not None:
+            self._progress(LoginStage.REACHED)
+
+    def auth_completed(self) -> None:
+        super().auth_completed()
+        if self._progress is not None:
+            self._progress(LoginStage.AUTHENTICATED)
 
     def validate_host_public_key(
         self, host: str, addr: str, port: int, key: asyncssh.SSHKey

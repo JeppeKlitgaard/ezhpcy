@@ -45,6 +45,9 @@ from pydantic import (
     Discriminator,
     Field,
     PrivateAttr,
+    StrictBool,
+    StrictFloat,
+    StrictInt,
     Tag,
     ValidationInfo,
     field_validator,
@@ -444,46 +447,24 @@ class Access(_Table):
     local_port: int = Field(default=0, ge=0, le=65535)
 
 
-class Parameter(_Table):
+class _Parameter(_Table):
     """
     One value an app takes as it starts (an argument), or an action as it runs (an
-    input), by `type`; a frontend asks for it as its type suggests. A `path` is an
-    absolute path on the app's host, not on this machine.
+    input); a frontend asks for it as its type suggests.
     """
 
-    type: Literal["string", "integer", "number", "boolean", "choice", "path"]
     label: str | None = Field(default=None, min_length=1)
-    # A `path`'s may use `{{ workdir }}` and `{{ assets }}`, and an input's the
-    # arguments, rendered in `RunningApp.actions`.
-    default: bool | int | float | str | None = None
+    # Of its type, in each type's own.
+    default: object = None
     # If not, it may have no value: `{% if name is defined %}` tells.
     required: bool = True
-    # Bounds of an `integer` or a `number`, inclusive.
-    min: int | float | None = None
-    max: int | float | None = None
-    # What a `choice` chooses from.
-    choices: tuple[str, ...] = ()
-    # What a `path` must be, if it exists: by default either.
-    kind: Literal["file", "directory"] | None = None
-    must_exist: bool = False
 
     def parse(self, text: str) -> object:
         """
         What a user typed, as a value of its type, for `check`. Raises `ValueError`
         if it can't be one.
         """
-        try:
-            match self.type:
-                case "integer":
-                    return int(text)
-                case "number":
-                    return float(text)
-                case "boolean":
-                    return _BOOLEANS[text.strip().lower()]
-                case _:
-                    return text
-        except KeyError, ValueError:
-            raise ValueError(f"{text!r} is not {_A_TYPE[self.type]}") from None
+        return text
 
     def check(self, value: object) -> object:
         """
@@ -491,63 +472,26 @@ class Parameter(_Table):
         value, which a template may compare or calculate with. Raises `ValueError`,
         saying why it can't be.
         """
-        match self.type:
-            case "integer" if isinstance(value, int) and not isinstance(value, bool):
-                self._check_bounds(value)
-                return value
-            case "number" if (
-                isinstance(value, int | float)
-                and not isinstance(value, bool)
-                and math.isfinite(value)
-            ):
-                self._check_bounds(value)
-                return value
-            case "boolean" if isinstance(value, bool):
-                return value
-            case "string" if isinstance(value, str):
-                text = value
-            case "choice" if isinstance(value, str):
-                if value not in self.choices:
-                    raise ValueError(f"{value!r} is none of {list(self.choices)}")
-                text = value
-            case "path" if isinstance(value, str | PurePosixPath):
-                if not PurePosixPath(value).is_absolute():
-                    raise ValueError(f"{str(value)!r} is not an absolute path")
-                text = str(value)
-            case _:
-                raise ValueError(f"{value!r} is not {_A_TYPE[self.type]}")
-        if "\0" in text:
-            raise ValueError("must not contain NUL")
-        return text
+        raise NotImplementedError
 
-    def _check_bounds(self, value: float) -> None:
-        if self.min is not None and value < self.min:
-            raise ValueError(f"{value} is less than the minimum, {self.min}")
-        if self.max is not None and value > self.max:
-            raise ValueError(f"{value} is more than the maximum, {self.max}")
+    @model_validator(mode="before")
+    @classmethod
+    def refuse_fields_of_other_types(cls, data: object) -> object:
+        if isinstance(data, dict):
+            for fields, types in _PARAMETER_FIELDS.items():
+                if data.get("type") not in types and (wrong := fields & data.keys()):
+                    raise ValueError(
+                        f"{', '.join(sorted(wrong))} only apply to type = "
+                        + " or ".join(repr(name) for name in sorted(types))
+                    )
+        return data
 
     @model_validator(mode="after")
-    def check_fields(self) -> Self:
-        for fields, types in _PARAMETER_FIELDS.items():
-            if self.type not in types and (wrong := fields & self.model_fields_set):
-                raise ValueError(
-                    f"{', '.join(sorted(wrong))} only apply to type = "
-                    + " or ".join(repr(name) for name in sorted(types))
-                )
-        for bound in (self.min, self.max):
-            if self.type == "integer" and isinstance(bound, float):
-                raise ValueError("min and max of an integer must be integers")
-        if self.min is not None and self.max is not None and self.min > self.max:
-            raise ValueError("min must not be more than max")
-        if self.type == "choice":
-            if not self.choices:
-                raise ValueError("type = 'choice' needs choices")
-            if len(set(self.choices)) != len(self.choices):
-                raise ValueError("choices must differ")
+    def check_default(self) -> Self:
         if not self.required and self.default is not None:
             raise ValueError("required = false is for a value with no default")
         # A path's may have placeholders, which `App` checks.
-        if self.default is not None and self.type != "path":
+        if self.default is not None and not isinstance(self, PathParameter):
             try:
                 self.check(self.default)
             except ValueError as error:
@@ -555,20 +499,212 @@ class Parameter(_Table):
         return self
 
 
-_A_TYPE = {
-    "string": "a string",
-    "integer": "an integer",
-    "number": "a number",
-    "boolean": "true or false",
-    "choice": "a string",
-    "path": "a path",
-}
+def _text(value: object, what: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{value!r} is not {what}")
+    if "\0" in value:
+        raise ValueError("must not contain NUL")
+    return value
+
+
+class StringParameter(_Parameter):
+    """A parameter that takes any text."""
+
+    type: Literal["string"]
+    default: str | None = None
+
+    def check(self, value: object) -> str:
+        return _text(value, "a string")
+
+
+def _within(value: float, low: float | None, high: float | None) -> None:
+    """Raise `ValueError` unless `value` is within `low` and `high`, inclusive."""
+    if low is not None and value < low:
+        raise ValueError(f"{value} is less than the minimum, {low}")
+    if high is not None and value > high:
+        raise ValueError(f"{value} is more than the maximum, {high}")
+
+
+def _check_order(low: float | None, high: float | None) -> None:
+    if low is not None and high is not None and low > high:
+        raise ValueError("min must not be more than max")
+
+
+class IntegerParameter(_Parameter):
+    """A parameter that takes a whole number, within its bounds."""
+
+    type: Literal["integer"]
+    default: StrictInt | None = None
+    # Inclusive.
+    min: StrictInt | None = None
+    max: StrictInt | None = None
+
+    def parse(self, text: str) -> int:
+        try:
+            return int(text)
+        except ValueError:
+            raise ValueError(f"{text!r} is not an integer") from None
+
+    def check(self, value: object) -> int:
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise ValueError(f"{value!r} is not an integer")
+        _within(value, self.min, self.max)
+        return value
+
+    @model_validator(mode="after")
+    def check_bounds(self) -> Self:
+        _check_order(self.min, self.max)
+        return self
+
+
+def _float(value: object) -> object:
+    """An integer as a float; anything else as it is, for pydantic to check."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        return float(value)
+    return value
+
+
+# A whole number in a manifest, such as `min = 0`, is a number too.
+type _Float = Annotated[StrictFloat, BeforeValidator(_float)]
+
+
+class NumberParameter(_Parameter):
+    """
+    A parameter that takes a finite number, within its bounds. Its values are
+    floats, even those given as whole numbers.
+    """
+
+    type: Literal["number"]
+    default: _Float | None = None
+    # Inclusive.
+    min: _Float | None = None
+    max: _Float | None = None
+
+    def parse(self, text: str) -> float:
+        try:
+            return float(text)
+        except ValueError:
+            raise ValueError(f"{text!r} is not a number") from None
+
+    def check(self, value: object) -> float:
+        if (
+            not isinstance(value, int | float)
+            or isinstance(value, bool)
+            or not math.isfinite(value)
+        ):
+            raise ValueError(f"{value!r} is not a number")
+        _within(value, self.min, self.max)
+        return float(value)
+
+    @model_validator(mode="after")
+    def check_bounds(self) -> Self:
+        _check_order(self.min, self.max)
+        return self
+
+
+class BooleanParameter(_Parameter):
+    """A parameter that is true or false."""
+
+    type: Literal["boolean"]
+    default: StrictBool | None = None
+
+    def parse(self, text: str) -> bool:
+        try:
+            return _BOOLEANS[text.strip().lower()]
+        except KeyError:
+            raise ValueError(f"{text!r} is not true or false") from None
+
+    def check(self, value: object) -> bool:
+        if not isinstance(value, bool):
+            raise ValueError(f"{value!r} is not true or false")
+        return value
+
+
+class ChoiceParameter(_Parameter):
+    """A parameter that takes one of its `choices`."""
+
+    type: Literal["choice"]
+    choices: tuple[str, ...] = Field(min_length=1)
+    default: str | None = None
+
+    def check(self, value: object) -> str:
+        text = _text(value, "a string")
+        if text not in self.choices:
+            raise ValueError(f"{text!r} is none of {list(self.choices)}")
+        return text
+
+    @field_validator("choices")
+    @classmethod
+    def require_different(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(set(value)) != len(value):
+            raise ValueError("choices must differ")
+        return value
+
+
+class PathParameter(_Parameter):
+    """
+    A parameter that takes an absolute path on the app's host, not on this
+    machine.
+    """
+
+    type: Literal["path"]
+    # May use `{{ workdir }}` and `{{ assets }}`, and an input's the arguments,
+    # rendered in `RunningApp.actions`.
+    default: str | None = None
+    # What it must be, if it exists: by default either.
+    kind: Literal["file", "directory"] | None = None
+    must_exist: bool = False
+
+    def check(self, value: object) -> str:
+        if isinstance(value, PurePosixPath):
+            value = str(value)
+        text = _text(value, "a path")
+        if not PurePosixPath(text).is_absolute():
+            raise ValueError(f"{text!r} is not an absolute path")
+        return text
+
+
 _BOOLEANS = {"true": True, "yes": True, "false": False, "no": False}
 _PARAMETER_FIELDS = {
     frozenset({"min", "max"}): frozenset({"integer", "number"}),
     frozenset({"choices"}): frozenset({"choice"}),
     frozenset({"kind", "must_exist"}): frozenset({"path"}),
 }
+_PARAMETER_TYPES = {
+    "string": StringParameter,
+    "integer": IntegerParameter,
+    "number": NumberParameter,
+    "boolean": BooleanParameter,
+    "choice": ChoiceParameter,
+    "path": PathParameter,
+}
+
+
+# A parameter's tag, in a validation error's location, as the tags of an app and
+# of a link are.
+def _parameter_tag(value: object) -> str | None:
+    kind = (
+        value.get("type") if isinstance(value, dict) else getattr(value, "type", None)
+    )
+    return f"<{kind}>" if isinstance(kind, str) and kind in _PARAMETER_TYPES else None
+
+
+_PARAMETER_TAGS = {f"<{kind}>" for kind in _PARAMETER_TYPES}
+
+type Parameter = Annotated[
+    Annotated[StringParameter, Tag("<string>")]
+    | Annotated[IntegerParameter, Tag("<integer>")]
+    | Annotated[NumberParameter, Tag("<number>")]
+    | Annotated[BooleanParameter, Tag("<boolean>")]
+    | Annotated[ChoiceParameter, Tag("<choice>")]
+    | Annotated[PathParameter, Tag("<path>")],
+    Discriminator(
+        _parameter_tag,
+        custom_error_type="parameter_type",
+        custom_error_message="type must be one of "
+        + ", ".join(repr(kind) for kind in _PARAMETER_TYPES),
+    ),
+]
 
 
 def _check_parameter_name(name: object) -> object:
@@ -655,9 +791,9 @@ class Action(_Table):
         """
         inputs = {
             name: parameter.model_copy(
-                update={"default": render(str(parameter.default), values)}
+                update={"default": render(parameter.default, values)}
             )
-            if parameter.type == "path" and parameter.default is not None
+            if isinstance(parameter, PathParameter) and parameter.default is not None
             else parameter
             for name, parameter in self.input.items()
         }
@@ -797,7 +933,7 @@ class App(_Entry):
                     raise ManifestError(
                         t"app {self!s:name} needs a value for argument {name:name}"
                     )
-            elif name in given or parameter.type != "path":
+            elif name in given or not isinstance(parameter, PathParameter):
                 try:
                     values[name] = parameter.check(value)
                 except ValueError as error:
@@ -825,9 +961,9 @@ class App(_Entry):
         for name, parameter in self.argument.items():
             if name not in self._names_used():
                 yield f"argument.{name}", "is not used by anything"
-            if parameter.type == "path" and parameter.default is not None:
+            if isinstance(parameter, PathParameter) and parameter.default is not None:
                 yield from self._path_default_problems(
-                    f"argument.{name}.default", str(parameter.default), ()
+                    f"argument.{name}.default", parameter.default, ()
                 )
 
     def _names_used(self) -> set[str]:
@@ -838,9 +974,10 @@ class App(_Entry):
             if isinstance(action.trigger.every, str):
                 templates.append(action.trigger.every)
             templates += [
-                str(parameter.default)
+                parameter.default
                 for parameter in action.input.values()
-                if parameter.type == "path" and parameter.default is not None
+                if isinstance(parameter, PathParameter)
+                and parameter.default is not None
             ]
         used: set[str] = set()
         for template in templates:
@@ -885,10 +1022,10 @@ class App(_Entry):
                 yield f"input.{name}", "is the name of an argument of the app"
             if readable and name not in used:
                 yield f"input.{name}", "is not used by run.command or run.env"
-            if parameter.type == "path" and parameter.default is not None:
+            if isinstance(parameter, PathParameter) and parameter.default is not None:
                 yield from self._path_default_problems(
                     f"input.{name}.default",
-                    str(parameter.default),
+                    parameter.default,
                     self.own_placeholders(),
                 )
 
@@ -1197,8 +1334,8 @@ def _location(loc: Iterable[int | str]) -> str:
         if isinstance(part, int):
             location += f"[{part}]"
         # Pydantic's marker for a dict's key, which the path names already, and
-        # the tag of an app or a link.
-        elif part not in {"[key]", _APP_TAG, _LINK_TAG}:
+        # the tag of an app, a link or a parameter.
+        elif part not in {"[key]", _APP_TAG, _LINK_TAG, *_PARAMETER_TAGS}:
             key = part if _BARE_KEY.fullmatch(part) else f'"{part}"'
             location += f".{key}" if location else key
     return location

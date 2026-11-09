@@ -31,7 +31,7 @@ lazy import asyncssh
 from ezhpcy.logging import get_logger
 lazy from ezhpcy import process as _process
 lazy from ezhpcy.app import ActionError
-lazy from ezhpcy.app.manifest import Action, App, Command, Parameter
+lazy from ezhpcy.app.manifest import Action, App, Command, Parameter, PathParameter
 lazy from ezhpcy.attachments import Attachment
 lazy from ezhpcy.messages import MessageError
 lazy from ezhpcy.process import Process
@@ -181,7 +181,7 @@ class AppActions:
                 t"{sorted(action.input):choice}",
                 input_name=unknown,
             )
-        values = {}
+        values: dict[str, object] = {}
         for input_name, parameter in action.input.items():
             value = inputs.get(input_name, parameter.default)
             if value is None:
@@ -343,7 +343,7 @@ async def path_problem(
     paths = {
         name: parameter
         for name, parameter in parameters.items()
-        if parameter.type == "path"
+        if isinstance(parameter, PathParameter)
         and name in values
         and (parameter.kind is not None or parameter.must_exist)
     }

@@ -182,8 +182,8 @@ class ActionMenu:
 
 def describe(parameter: api.Parameter) -> str:
     """What an input takes, in a few words, and its default."""
-    match parameter.type:
-        case "integer" | "number":
+    match parameter:
+        case api.IntegerParameter() | api.NumberParameter():
             words = parameter.type
             if parameter.min is not None and parameter.max is not None:
                 words += f", {parameter.min} to {parameter.max}"
@@ -191,16 +191,16 @@ def describe(parameter: api.Parameter) -> str:
                 words += f", at least {parameter.min}"
             elif parameter.max is not None:
                 words += f", at most {parameter.max}"
-        case "boolean":
+        case api.BooleanParameter():
             words = "yes or no"
-        case "choice":
+        case api.ChoiceParameter():
             words = " or ".join(parameter.choices)
-        case "path":
+        case api.PathParameter():
             what = parameter.kind or "path"
             words = f"{what} on the host"
             if parameter.must_exist:
                 words += ", which must exist"
-        case _:
+        case api.StringParameter():
             words = "text"
     if parameter.default is not None:
         words += f", default {parameter.default}"

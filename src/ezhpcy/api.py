@@ -90,7 +90,19 @@ from ezhpcy.ssh_errors import translating_ssh_errors
 lazy from ezhpcy import forward as _forward, login as _login, process as _process
 lazy from ezhpcy.app import ActionError, AppFailed, ManifestError, run as _app_run
 lazy from ezhpcy.app.action import ActionRun, ActionState
-lazy from ezhpcy.app.manifest import Action, App, Link, Manifest, Parameter
+lazy from ezhpcy.app.manifest import (
+    Action,
+    App,
+    BooleanParameter,
+    ChoiceParameter,
+    IntegerParameter,
+    Link,
+    Manifest,
+    NumberParameter,
+    Parameter,
+    PathParameter,
+    StringParameter,
+)
 lazy from ezhpcy.app.run import AppState, AppStatus, LinkStatus, RunningApp
 lazy from ezhpcy.config import Config, Profile
 lazy from ezhpcy.constants import EZHPCY_VERSION, KEYRING_SERVICE_NAME
@@ -174,8 +186,10 @@ __all__ = [
     "AppFailed",
     "AppState",
     "AppStatus",
+    "BooleanParameter",
     "Check",
     "CheckStatus",
+    "ChoiceParameter",
     "CommandFailed",
     "Config",
     "ConfigError",
@@ -185,6 +199,7 @@ __all__ = [
     "Forward",
     "ForwardStatus",
     "Host",
+    "IntegerParameter",
     "Job",
     "JobConfig",
     "JobEnd",
@@ -204,8 +219,10 @@ __all__ = [
     "MessageError",
     "MissingCredentials",
     "MissingSetting",
+    "NumberParameter",
     "PBSOptions",
     "Parameter",
+    "PathParameter",
     "Phase",
     "Process",
     "ProcessStatus",
@@ -220,6 +237,7 @@ __all__ = [
     "SchedulerSettings",
     "SchedulerType",
     "SocketDestination",
+    "StringParameter",
     "SubmissionCommandError",
     "SubmissionMode",
     "TCPDestination",

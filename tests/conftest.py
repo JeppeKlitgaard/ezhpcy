@@ -109,6 +109,26 @@ def isolated_local_files(
 
 
 @pytest.fixture(autouse=True)
+def isolated_home(
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Path | None:
+    """
+    Give every test an empty home directory of its own, so that asyncssh reads no
+    ~/.ssh/config, keys or known hosts of the workstation's, except in tests
+    marked `real_resolve_alias`, which ask the workstation's OpenSSH. A test may
+    set HOME again. Outside `tmp_path`, which some tests list.
+    """
+    if request.node.get_closest_marker("real_resolve_alias"):
+        return None
+    home = tmp_path_factory.mktemp("home")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    return home
+
+
+@pytest.fixture(autouse=True)
 def fixed_machine_id(
     request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
 ) -> None:

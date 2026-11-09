@@ -14,7 +14,7 @@ from pydantic import SecretStr
 
 from ezhpcy import api
 from tests.support import sshserver
-from tests.support.login import offer_client_key
+from tests.support.login import offer_client_key, ssh_options
 from tests.support.sshserver import SSHTestServer
 from tests.support.tunnel import openssh_resolves
 
@@ -93,6 +93,27 @@ async def test_key_authentication_asks_nothing(server: SSHTestServer) -> None:
         assert cluster.login.user == server.user
 
     assert answers.asked == []
+
+
+async def test_the_identity_file_in_ssh_config_is_offered(
+    ssh_server: SSHTestServer, isolated_home: Path
+) -> None:
+    """A key that only ~/.ssh/config names, as `ssh` would offer it."""
+    ssh_dir = isolated_home / ".ssh"
+    ssh_dir.mkdir()
+    key_file = ssh_dir / "hpc_key"
+    key_file.write_bytes(ssh_server.client_key.export_private_key())
+    (ssh_dir / "config").write_text(
+        f'Host {ssh_server.host}\n    IdentityFile "{key_file.as_posix()}"\n',
+        encoding="utf-8",
+    )
+    trust(ssh_server)
+
+    with ssh_options(agent_path=None):
+        async with api.connect(login_to(ssh_server)):
+            pass
+
+    assert ssh_server.auth_attempts == [("publickey", True)]
 
 
 async def test_without_prompts_a_password_the_server_wants_fails_saying_so(

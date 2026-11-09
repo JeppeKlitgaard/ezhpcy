@@ -112,7 +112,7 @@ lazy from ezhpcy.job import JobEnd, JobEnded, JobFailed, publish as _publish
 lazy from ezhpcy.job.lifecycle import JobLifecycle, RunningWorker
 lazy from ezhpcy.job.publish import Published
 lazy from ezhpcy.job.status import AttachmentStatus, JobStatus, Phase, PublishedStatus
-lazy from ezhpcy.logging import get_logger
+lazy from ezhpcy.logging import LogFile, get_logger
 lazy from ezhpcy.login import (
     PASSWORD_ATTEMPTS,
     ConnectionFailed,
@@ -212,6 +212,7 @@ __all__ = [
     "LSFOptions",
     "Link",
     "LinkStatus",
+    "LogFile",
     "Login",
     "LoginStage",
     "Manifest",

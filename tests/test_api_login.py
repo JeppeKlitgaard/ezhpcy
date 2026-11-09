@@ -95,6 +95,47 @@ async def test_key_authentication_asks_nothing(server: SSHTestServer) -> None:
     assert answers.asked == []
 
 
+async def test_progress_is_told_each_stage(server: SSHTestServer) -> None:
+    trust(server)
+    stages: list[api.LoginStage] = []
+
+    async with api.connect(login_to(server), progress=stages.append):
+        assert stages == [api.LoginStage.REACHED, api.LoginStage.AUTHENTICATED]
+
+
+async def test_progress_starts_over_with_each_attempt(server: SSHTestServer) -> None:
+    trust(server)
+    only_passwords(server)
+    stages: list[api.LoginStage] = []
+
+    async with api.connect(
+        login_to(server), prompts=Answers().prompts(), progress=stages.append
+    ):
+        pass
+
+    # Keys failed, then the asked-for password got in on a second connection.
+    assert stages == [
+        api.LoginStage.REACHED,
+        api.LoginStage.REACHED,
+        api.LoginStage.AUTHENTICATED,
+    ]
+
+
+async def test_progress_stops_where_authentication_fails(
+    server: SSHTestServer,
+) -> None:
+    trust(server)
+    key_before_password(server)
+    server.auth.client_keys = []
+    stages: list[api.LoginStage] = []
+
+    with pytest.raises(api.KeyRequired):
+        async with api.connect(login_to(server), progress=stages.append):
+            pytest.fail("connected")
+
+    assert stages == [api.LoginStage.REACHED]
+
+
 async def test_the_identity_file_in_ssh_config_is_offered(
     ssh_server: SSHTestServer, isolated_home: Path
 ) -> None:

@@ -73,7 +73,13 @@ behind that its cleanup would miss; each says what cancelling it does.
 
 from contextlib import asynccontextmanager
 lazy import asyncio
-lazy from collections.abc import AsyncGenerator, Awaitable, Mapping, Sequence
+lazy from collections.abc import (
+    AsyncGenerator,
+    Awaitable,
+    Callable,
+    Mapping,
+    Sequence,
+)
 lazy from pathlib import Path, PurePosixPath
 lazy from types import TracebackType
 lazy from typing import Self
@@ -99,6 +105,7 @@ lazy from ezhpcy.login import (
     PASSWORD_ATTEMPTS,
     ConnectionFailed,
     KeyRequired,
+    LoginStage,
     Prompts,
     read_password,
     terminal_prompts,
@@ -191,6 +198,7 @@ __all__ = [
     "Link",
     "LinkStatus",
     "Login",
+    "LoginStage",
     "Manifest",
     "ManifestError",
     "MessageError",
@@ -238,10 +246,13 @@ async def connect(
     *,
     prompts: Prompts | None = None,
     password: SecretStr | None = None,
+    progress: Callable[[LoginStage], None] | None = None,
 ) -> AsyncGenerator[Host]:
     """
     Connect to `login`'s node, and close the connection when the block is left,
-    after what is attached to it, newest first.
+    after what is attached to it, newest first. `progress`, for a display, is
+    called with each `LoginStage` reached, again each time connecting starts
+    over for a host key or a password; it must return at once and not raise.
 
     The password is `password`, else the first of `login`'s sources that has
     one, read now. Public-key authentication is tried first; a password given or
@@ -258,7 +269,9 @@ async def connect(
     tried, so it wasn't the password that was wrong. Cancelled while connecting,
     it leaves no connection open.
     """
-    host = await _login.connect(login, prompts=prompts, password=password)
+    host = await _login.connect(
+        login, prompts=prompts, password=password, progress=progress
+    )
     async with host:
         yield Host(host)
 

@@ -22,6 +22,7 @@ import asyncssh
 from ezhpcy.logging import get_logger
 from ezhpcy.messages import MessageError
 lazy from ezhpcy.attachments import Attachments
+lazy from ezhpcy.cleanup import cleanup, finish
 lazy from ezhpcy.constants import LOOPBACK_HOST, WORKER_HOST_ALIAS
 lazy from ezhpcy.process import ProcessWatcher
 lazy from ezhpcy.provision_local import WorkerCredentials
@@ -116,6 +117,37 @@ async def ensure_directory(sftp: asyncssh.SFTPClient, path: PurePosixPath) -> No
     """
     if not await sftp.isdir(path):
         await sftp.makedirs(path, attrs=private_directory(), exist_ok=True)
+
+
+@asynccontextmanager
+async def open_file(
+    sftp: asyncssh.SFTPClient,
+    path: PurePosixPath,
+    mode: str = "r",
+    *,
+    attrs: asyncssh.SFTPAttrs | None = None,
+    errors: str = "strict",
+) -> AsyncGenerator[asyncssh.SFTPClientFile]:
+    """
+    Open a file on a host, as `SFTPClient.open` does, and close it afterwards.
+
+    Cancelled while the server opens it, the open still finishes and the file is
+    closed, as otherwise the server would hold it open until the session ends:
+    an open file descriptor, and on Windows a file that can't be removed.
+    """
+    opened: list[asyncssh.SFTPClientFile] = []
+    try:
+        file = await finish(
+            f"open {path}",
+            sftp.open(path, mode, attrs or asyncssh.SFTPAttrs(), errors=errors),
+            then=opened.append,
+        )
+    except asyncio.CancelledError:
+        for file in opened:
+            await cleanup(f"close {path}", file.close)
+        raise
+    async with file:
+        yield file
 
 
 class CommandFailed(MessageError, RuntimeError):

@@ -360,6 +360,45 @@ async def test_ensure_directory_refuses_a_file(ssh_server: SSHTestServer):
             await ssh.ensure_directory(sftp, PurePosixPath(".cache/ezhpcy"))
 
 
+async def test_open_file_cancelled_while_the_server_opens_it_closes_it(
+    ssh_server: SSHTestServer, monkeypatch: pytest.MonkeyPatch
+):
+    opening = threading.Event()
+    proceed = threading.Event()
+    opened: list[object] = []
+    closed: list[object] = []
+    server_open = asyncssh.SFTPServer.open
+    server_close = asyncssh.SFTPServer.close
+
+    def open_slowly(server: asyncssh.SFTPServer, *args: Any) -> object:
+        opening.set()
+        proceed.wait(WAIT_SECONDS)
+        opened.append(server_open(server, *args))
+        return opened[-1]
+
+    def close(server: asyncssh.SFTPServer, file: object) -> object:
+        closed.append(file)
+        return server_close(server, file)
+
+    monkeypatch.setattr(asyncssh.SFTPServer, "open", open_slowly)
+    monkeypatch.setattr(asyncssh.SFTPServer, "close", close)
+
+    async def write() -> None:
+        async with ssh.open_file(sftp, PurePosixPath("record"), "w"):
+            pass
+
+    async with await _connect(ssh_server) as host, host.sftp() as sftp:
+        writing = asyncio.create_task(write())
+        assert await _wait_for(opening)
+        writing.cancel()
+        proceed.set()
+        with pytest.raises(asyncio.CancelledError):
+            await writing
+
+        assert len(opened) == 1
+        assert closed == opened
+
+
 # Forwarding
 
 

@@ -16,8 +16,8 @@ lazy from ezhpcy.api import (
     Login,
     MissingSetting,
     SubmissionCommandError,
-    read_password,
 )
+lazy from ezhpcy.api.frontend import read_password
 lazy from ezhpcy.cli._errors import CliUsageError, sentence
 lazy from ezhpcy.cli._logging import label_log_file
 lazy from ezhpcy.cli._options import (

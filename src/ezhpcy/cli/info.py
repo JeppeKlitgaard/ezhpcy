@@ -3,7 +3,8 @@ lazy from json import dumps as json_dumps
 lazy from rich.table import Table
 lazy from rich.text import Text
 
-lazy from ezhpcy.api import EZHPCY_VERSION, local_machine_id
+lazy from ezhpcy.api import EZHPCY_VERSION
+lazy from ezhpcy.api.frontend import local_machine_id
 lazy from ezhpcy.cli._console import console
 lazy from ezhpcy.cli._options import ConfigArg
 

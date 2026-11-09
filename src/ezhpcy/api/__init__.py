@@ -63,7 +63,8 @@ Values are typed: a `Login`, a `JobConfig`, an `AliasReservation`, `pathlib`
 paths, `timedelta`s. Build them directly, or read them from a configuration file
 (`Config`). The API never prints, prompts or configures logging: it logs to the
 `ezhpcy` logger, raises exceptions (all `MessageError`s), and asks for passwords
-and host keys only through the `Prompts` it is given.
+and host keys only through the `Prompts` it is given. `ezhpcy.api.frontend` has
+what a frontend needs besides, to talk to its user as EzHPCy's CLI does.
 
 Async throughout: run it with `asyncio.run`. Cancelling a call leaves nothing
 behind that its cleanup would miss; each says what cancelling it does.
@@ -105,24 +106,21 @@ lazy from ezhpcy.app.manifest import (
 )
 lazy from ezhpcy.app.run import AppState, AppStatus, LinkStatus, RunningApp
 lazy from ezhpcy.config import Config, Profile
-lazy from ezhpcy.constants import EZHPCY_VERSION, KEYRING_SERVICE_NAME
+lazy from ezhpcy.constants import EZHPCY_VERSION
 lazy from ezhpcy.diagnose import Check, CheckStatus, diagnose
 lazy from ezhpcy.forward import Forward, ForwardStatus
 lazy from ezhpcy.job import JobEnd, JobEnded, JobFailed, publish as _publish
 lazy from ezhpcy.job.lifecycle import JobLifecycle, RunningWorker
 lazy from ezhpcy.job.publish import Published
 lazy from ezhpcy.job.status import AttachmentStatus, JobStatus, Phase, PublishedStatus
-lazy from ezhpcy.logging import LogFile, get_logger
 lazy from ezhpcy.login import (
-    PASSWORD_ATTEMPTS,
     ConnectionFailed,
     KeyRequired,
     LoginStage,
     Prompts,
-    read_password,
     terminal_prompts,
 )
-lazy from ezhpcy.messages import MessageError, message_parts
+lazy from ezhpcy.messages import MessageError
 lazy from ezhpcy.process import Process, ProcessStatus
 lazy from ezhpcy.provision_host import (
     ProvisioningError,
@@ -152,7 +150,6 @@ lazy from ezhpcy.tunnel.lock import (
     AliasUnreachable,
     reserve_alias,
 )
-lazy from ezhpcy.tunnel.ssh_config import AliasProblem, check_alias, probe_alias
 lazy from ezhpcy.types import (
     ConfigError,
     JobConfig,
@@ -165,21 +162,17 @@ lazy from ezhpcy.types import (
     SubmissionCommandError,
     SubmissionMode,
     Timings,
-    alias_digest,
 )
 lazy from ezhpcy.utils import local_machine_id
 lazy from ezhpcy.worker.job import select_ports
 
 __all__ = [
     "EZHPCY_VERSION",
-    "KEYRING_SERVICE_NAME",
-    "PASSWORD_ATTEMPTS",
     "Action",
     "ActionError",
     "ActionRun",
     "ActionState",
     "AliasInUse",
-    "AliasProblem",
     "AliasReservation",
     "AliasUnreachable",
     "App",
@@ -212,7 +205,6 @@ __all__ = [
     "LSFOptions",
     "Link",
     "LinkStatus",
-    "LogFile",
     "Login",
     "LoginStage",
     "Manifest",
@@ -243,16 +235,9 @@ __all__ = [
     "SubmissionMode",
     "TCPDestination",
     "Timings",
-    "alias_digest",
-    "check_alias",
     "connect",
     "diagnose",
-    "get_logger",
-    "local_machine_id",
-    "message_parts",
     "missing_credentials",
-    "probe_alias",
-    "read_password",
     "reserve_alias",
     "select_ports",
     "terminal_prompts",

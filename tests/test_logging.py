@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from ezhpcy import api
+from ezhpcy.api import frontend
 from ezhpcy.cli._console import flush_output, make_console
 from ezhpcy.cli._logging import (
     ASYNCSSH_LOGGER_NAME,
@@ -554,7 +554,7 @@ def test_a_program_writes_a_log_file_without_the_cli(tmp_path: Path) -> None:
     logger = logging.getLogger("tests.log_file")
     logger.propagate = False
     logger.setLevel(logging.INFO)
-    handler = api.LogFile(tmp_path / "logs", keep=2)
+    handler = frontend.LogFile(tmp_path / "logs", keep=2)
     logger.addHandler(handler)
     try:
         handler.relabel("gui")

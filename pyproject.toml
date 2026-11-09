@@ -144,7 +144,11 @@ type = "forbidden"
 source_modules = ["ezhpcy.cli"]
 forbidden_modules = ["ezhpcy.*"]
 # Everything else in the package is forbidden, and this leaves the API's own imports out
-ignore_imports = ["ezhpcy.cli -> ezhpcy.api", "ezhpcy.cli.** -> ezhpcy.api"]
+ignore_imports = [
+    "ezhpcy.cli -> ezhpcy.api",
+    "ezhpcy.cli.** -> ezhpcy.api",
+    "ezhpcy.cli.** -> ezhpcy.api.frontend",
+]
 
 [[tool.importlinter.contracts]]
 name = "The API does not import the CLI"

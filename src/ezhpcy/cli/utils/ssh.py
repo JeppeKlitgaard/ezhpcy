@@ -12,15 +12,15 @@ lazy from collections.abc import AsyncGenerator
 lazy from pydantic import SecretStr
 lazy from rich.prompt import Confirm, Prompt
 
-from ezhpcy.api import get_logger
+from ezhpcy.api.frontend import get_logger
 lazy from ezhpcy import api
 lazy from ezhpcy.api import (
-    PASSWORD_ATTEMPTS,
     ConfigError,
     ConnectionFailed,
     Login,
     Prompts,
 )
+lazy from ezhpcy.api.frontend import PASSWORD_ATTEMPTS
 lazy from ezhpcy.cli._console import error_console
 lazy from ezhpcy.cli._messages import print_error, print_warning, rich_text
 lazy from ezhpcy.cli._options import ConnectionOptions

@@ -7,7 +7,7 @@ lazy from string.templatelib import Template
 
 lazy from rich.text import Text
 
-lazy from ezhpcy.api import AliasProblem
+lazy from ezhpcy.api.frontend import AliasProblem
 lazy from ezhpcy.cli._console import console, error_console
 
 INCLUDE_HINT = (

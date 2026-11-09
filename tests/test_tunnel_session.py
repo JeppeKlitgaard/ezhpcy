@@ -1004,4 +1004,6 @@ def test_a_failed_login_is_reported(
 
     assert result.exit_code == 1, result
     [error] = log.command_errors()
-    assert error.startswith("Could not start tunnel: Permission denied")
+    assert error.startswith(
+        "Could not start tunnel: The login node accepted no SSH key"
+    )

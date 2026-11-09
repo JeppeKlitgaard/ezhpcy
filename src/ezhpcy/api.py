@@ -98,6 +98,7 @@ lazy from ezhpcy.logging import get_logger
 lazy from ezhpcy.login import (
     PASSWORD_ATTEMPTS,
     ConnectionFailed,
+    KeyRequired,
     Prompts,
     read_password,
     terminal_prompts,
@@ -185,6 +186,7 @@ __all__ = [
     "JobInfo",
     "JobState",
     "JobStatus",
+    "KeyRequired",
     "LSFOptions",
     "Link",
     "LinkStatus",
@@ -251,7 +253,10 @@ async def connect(
 
     Raises `ConnectionFailed`, saying what was missing if `prompts` were needed,
     `ConfigError` if a password source can't be read, and whatever the prompts
-    raise. Cancelled while connecting, it leaves no connection open.
+    raise. A server that offers a password only once a key is accepted, and
+    accepted none, raises `KeyRequired`, a `ConnectionFailed`: no password was
+    tried, so it wasn't the password that was wrong. Cancelled while connecting,
+    it leaves no connection open.
     """
     host = await _login.connect(login, prompts=prompts, password=password)
     async with host:

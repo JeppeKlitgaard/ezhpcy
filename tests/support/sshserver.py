@@ -66,6 +66,10 @@ class Auth:
     password: str | None = None
     # One challenge with all these prompts; every answer must match.
     kbdint: list[KbdintPrompt] | None = None
+    # A key, then a password, as OpenSSH's `AuthenticationMethods
+    # publickey,password`: `password` and `kbdint` are offered only once a key
+    # is accepted, and then a key alone doesn't get in.
+    key_before_password: bool = False
 
 
 @dataclass(frozen=True)
@@ -409,6 +413,7 @@ class _Server(asyncssh.SSHServer):
         self._test_server = test_server
         self._auth = test_server.auth
         self._keys_offered: set[bytes] = set()
+        self._key_accepted = False
 
     def connection_made(self, conn: asyncssh.SSHServerConnection) -> None:
         self._conn = conn
@@ -422,7 +427,7 @@ class _Server(asyncssh.SSHServer):
         return True
 
     def public_key_auth_supported(self) -> bool:
-        return bool(self._auth.client_keys)
+        return bool(self._auth.client_keys) and not self._key_accepted
 
     def validate_public_key(self, username: str, key: asyncssh.SSHKey) -> bool:
         accepted = username == self._test_server.user and any(
@@ -434,10 +439,20 @@ class _Server(asyncssh.SSHServer):
         if key.public_data not in self._keys_offered:
             self._keys_offered.add(key.public_data)
             self._test_server.auth_attempts.append(("publickey", accepted))
+        if accepted and self._auth.key_before_password:
+            # asyncssh's server has no partial success: refuse the key, and offer
+            # the password methods instead of keys. The client sees what an
+            # OpenSSH server's partial success shows it, as asyncssh ignores the
+            # flag itself.
+            self._key_accepted = True
+            return False
         return accepted
 
+    def _password_methods_offered(self) -> bool:
+        return self._key_accepted or not self._auth.key_before_password
+
     def password_auth_supported(self) -> bool:
-        return self._auth.password is not None
+        return self._auth.password is not None and self._password_methods_offered()
 
     def validate_password(self, username: str, password: str) -> bool:
         accepted = (
@@ -447,7 +462,7 @@ class _Server(asyncssh.SSHServer):
         return accepted
 
     def kbdint_auth_supported(self) -> bool:
-        return self._auth.kbdint is not None
+        return self._auth.kbdint is not None and self._password_methods_offered()
 
     def get_kbdint_challenge(
         self, username: str, lang: str, submethods: str

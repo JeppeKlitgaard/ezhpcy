@@ -9,6 +9,7 @@ on:
       - master
     paths-ignore:
       - 'docs/**'
+  workflow_dispatch:
 
 jobs:
   test:

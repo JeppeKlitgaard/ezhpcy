@@ -82,21 +82,18 @@ async def test_connect_keeps_alive_as_configured(
     assert received["keepalive_count_max"] == ssh.SERVER_ALIVE_COUNT_MAX == 3
 
 
-async def test_connect_ignores_the_users_openssh_config(
-    ssh_server: SSHTestServer, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+async def test_connect_follows_the_users_openssh_config(
+    ssh_server: SSHTestServer, isolated_home: Path
 ):
-    home = tmp_path / "home"
-    (home / ".ssh").mkdir(parents=True)
-    # Would send the connection through a command that doesn't exist.
-    (home / ".ssh" / "config").write_text(
+    """As `ssh` does: a `Host *` block applies to the login node too."""
+    (isolated_home / ".ssh").mkdir()
+    # Sends the connection through a command that doesn't exist.
+    (isolated_home / ".ssh" / "config").write_text(
         "Host *\n    ProxyCommand ezhpcy-test-no-such-command %h %p\n"
     )
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("USERPROFILE", str(home))
-    ssh_server.command("true", reply())
 
-    async with await _connect(ssh_server) as host:
-        assert await host.run(["true"]) == ""
+    with pytest.raises(OSError):
+        await _connect(ssh_server)
 
 
 # Running commands

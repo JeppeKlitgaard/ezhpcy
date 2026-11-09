@@ -77,17 +77,19 @@ async def connect(
     login: Login, *, client: SSHClient | None = None, **options: object
 ) -> RemoteHost:
     """
-    Connect to the login node. Keepalive follows `login`, and ~/.ssh/config is
-    never read. `options` are passed on to `asyncssh.connect`, overriding these
-    defaults. See `ezhpcy.login` for passwords and host keys.
+    Connect to the login node. Keepalive follows `login`. asyncssh reads
+    ~/.ssh/config, as `ssh` does, so its `IdentityFile`, `IdentitiesOnly` and
+    `IdentityAgent` for the login node's host name pick the keys offered, and a
+    `ProxyJump` there is followed; `login`'s user and port, and what `options`
+    give, win over it. EzHPCy's own Host blocks, which a ~/.ssh/config may
+    Include, name tunnel aliases, not the login node. `options` are passed on to
+    `asyncssh.connect`, overriding these defaults. See `ezhpcy.login` for
+    passwords and host keys.
     """
     client = client or SSHClient()
     defaults: dict[str, object] = {
         "username": login.user,
         "port": login.port,
-        # Never apply the user's OpenSSH configuration to the login connection:
-        # it may hold EzHPCy's own Host blocks, which point at running tunnels.
-        "config": None,
         "keepalive_interval": login.keepalive_interval.total_seconds(),
         "keepalive_count_max": SERVER_ALIVE_COUNT_MAX,
     }

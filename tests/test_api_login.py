@@ -17,7 +17,7 @@ from ezhpcy.api import frontend
 from tests.support import sshserver
 from tests.support.login import offer_client_key, ssh_options
 from tests.support.sshserver import SSHTestServer
-from tests.support.tunnel import openssh_resolves
+from tests.support.tunnel import openssh_resolves, unused_port
 
 pytestmark = pytest.mark.usefixtures("quiet_api")
 
@@ -164,7 +164,7 @@ async def test_without_prompts_a_password_the_server_wants_fails_saying_so(
     trust(server)
     only_passwords(server)
 
-    with pytest.raises(api.ConnectionFailed, match="password"):
+    with pytest.raises(api.PasswordRequired, match="nor a prompt"):
         async with api.connect(login_to(server)):
             pytest.fail("connected")
 
@@ -172,8 +172,16 @@ async def test_without_prompts_a_password_the_server_wants_fails_saying_so(
 async def test_without_prompts_an_unknown_host_key_fails_saying_so(
     server: SSHTestServer,
 ) -> None:
-    with pytest.raises(api.ConnectionFailed, match="no prompt to accept it"):
+    with pytest.raises(api.HostKeyUnknown, match="no prompt to accept it"):
         async with api.connect(login_to(server)):
+            pytest.fail("connected")
+
+
+async def test_a_port_nothing_listens_on_is_unreachable() -> None:
+    login = api.Login(user="alice", host="127.0.0.1", port=unused_port())
+
+    with pytest.raises(api.HostUnreachable):
+        async with api.connect(login):
             pytest.fail("connected")
 
 
@@ -195,13 +203,13 @@ async def test_a_password_given_is_tried_once_and_never_asked_for(
     only_passwords(server, "right")
     answers = Answers()
 
-    with pytest.raises(api.ConnectionFailed) as raised:
+    with pytest.raises(api.AuthenticationFailed) as raised:
         async with api.connect(
             login_to(server), prompts=answers.prompts(), password=SecretStr("wrong")
         ):
             pass
 
-    assert not isinstance(raised.value, api.KeyRequired)
+    assert raised.type is api.AuthenticationFailed
     assert answers.asked == []
     assert password_attempts(server) == [False]
 
@@ -224,11 +232,11 @@ async def test_a_wrong_password_the_server_hangs_up_on_is_not_a_missing_key(
 
     monkeypatch.setattr(sshserver._Server, "validate_password", hang_up)
 
-    with pytest.raises(api.ConnectionFailed) as raised:
+    with pytest.raises(api.AuthenticationFailed) as raised:
         async with api.connect(login_to(server), password=SecretStr("wrong")):
             pytest.fail("connected")
 
-    assert not isinstance(raised.value, api.KeyRequired)
+    assert raised.type is api.AuthenticationFailed
     assert password_attempts(server) == [False]
 
 
@@ -292,11 +300,11 @@ async def test_a_wrong_password_after_an_accepted_key_is_not_a_missing_key(
     trust(server)
     key_before_password(server, "right")
 
-    with pytest.raises(api.ConnectionFailed) as raised:
+    with pytest.raises(api.AuthenticationFailed) as raised:
         async with api.connect(login_to(server), password=SecretStr("wrong")):
             pytest.fail("connected")
 
-    assert not isinstance(raised.value, api.KeyRequired)
+    assert raised.type is api.AuthenticationFailed
     assert password_attempts(server) == [False]
 
 
@@ -305,7 +313,7 @@ async def test_password_prompt_false_never_asks(server: SSHTestServer) -> None:
     only_passwords(server)
     answers = Answers()
 
-    with pytest.raises(api.ConnectionFailed):
+    with pytest.raises(api.PasswordRequired, match="turned off"):
         async with api.connect(
             login_to(server, password_prompt=False), prompts=answers.prompts()
         ):
@@ -336,7 +344,7 @@ async def test_a_rejected_host_key_fails_and_is_not_saved(
 ) -> None:
     answers = Answers(accept=False)
 
-    with pytest.raises(api.ConnectionFailed, match="rejected"):
+    with pytest.raises(api.HostKeyUnknown, match="rejected"):
         async with api.connect(login_to(server), prompts=answers.prompts()):
             pass
 
@@ -354,7 +362,7 @@ async def test_a_changed_host_key_is_refused_without_asking(
     )
     answers = Answers()
 
-    with pytest.raises(api.ConnectionFailed, match="does not match"):
+    with pytest.raises(api.HostKeyChanged, match="does not match"):
         async with api.connect(login_to(server), prompts=answers.prompts()):
             pass
 

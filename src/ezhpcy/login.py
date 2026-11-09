@@ -23,7 +23,8 @@ without asking.
 
 Nothing is asked during authentication itself, so a prompt may block the event
 loop, and the server's login timeout doesn't run while the user types. Without
-`Prompts`, what would need an answer fails with `ConnectionFailed` instead.
+`Prompts`, what would need an answer fails instead: with `PasswordRequired` or
+`HostKeyUnknown`.
 
 A caller that shows progress is told each `LoginStage` reached, by every
 attempt: connecting again for a host key or a password reaches them again.
@@ -86,29 +87,56 @@ class Prompts:
 
 
 class ConnectionFailed(MessageError, RuntimeError):
-    """Could not connect to the login node; the cause, whose message this is, says why."""
+    """
+    Could not connect to the login node. A subclass says why, where EzHPCy can
+    tell; this class itself is for what SSH reported otherwise, such as a failed
+    key exchange.
+    """
 
-    def __init__(self, cause: Exception) -> None:
+
+class HostUnreachable(ConnectionFailed):
+    """
+    Could not reach the login node, or the network failed before connecting
+    finished: its name didn't resolve, it refused the connection, or it timed out.
+    """
+
+
+class HostKeyUnknown(ConnectionFailed):
+    """
+    The login node's host key is in no known hosts file, and no prompt accepted
+    it: there were no `Prompts`, or the user refused it.
+    """
+
+
+class HostKeyChanged(ConnectionFailed):
+    """
+    A known hosts file has another key for the login node: its key changed, or
+    something is pretending to be it. Refused without asking.
+    """
+
+
+class AuthenticationFailed(ConnectionFailed):
+    """The login node accepted neither a key nor a password."""
+
+
+class KeyRequired(AuthenticationFailed):
+    """
+    The login node accepted no SSH key from this machine, and offered no password
+    without one, so no password was tried.
+    """
+
+    def __init__(self) -> None:
         super().__init__(
-            cause.message if isinstance(cause, MessageError) else t"{cause}"
-        )
-        self.__cause__ = cause
-
-
-class KeyRequired(ConnectionFailed):
-    """
-    Could not connect: the login node accepted no SSH key from this machine, and
-    offered no password without one, so no password was tried. The cause is
-    asyncssh's `PermissionDenied`.
-    """
-
-    def __init__(self, cause: Exception) -> None:
-        MessageError.__init__(
-            self,
             t"The login node accepted no SSH key from this machine, and offers no "
-            t"password without one.",
+            t"password without one."
         )
-        self.__cause__ = cause
+
+
+class PasswordRequired(AuthenticationFailed):
+    """
+    The login node accepted no key and asked for a password, and none was given,
+    nor read from the `Login`'s sources, nor could be asked for.
+    """
 
 
 def terminal_prompts() -> Prompts:
@@ -162,9 +190,9 @@ async def connect(
 
     Use the result with `async with` to close it.
 
-    Raises `ConnectionFailed` when it can't connect (`KeyRequired` when the
-    server wanted a key it would accept before any password), `ConfigError` when
-    a password source can't be read, and whatever a prompt raises.
+    Raises a `ConnectionFailed` when it can't connect, of the subclass that says
+    why where there is one; `ConfigError` when a password source can't be read;
+    and whatever a prompt raises.
     """
     known_hosts_file = local_files.login_known_hosts_file
     if password is None:
@@ -182,9 +210,9 @@ async def connect(
                 connect_options["password"] = client.sending(password)
             try:
                 return await ssh.connect(login, client=client, **connect_options)
-            except asyncssh.HostKeyNotVerifiable:
+            except asyncssh.HostKeyNotVerifiable as error:
                 if client.changed_host_key is not None:
-                    raise client.changed_host_key from None
+                    raise client.changed_host_key from error
                 if client.unknown_host_key is None:
                     raise
                 line = await _accept_host_key(
@@ -193,27 +221,30 @@ async def connect(
                 known_hosts.add(known_hosts_file, line)
             except asyncssh.PermissionDenied as error:
                 if not client.password_offered:
-                    raise KeyRequired(error) from error
+                    raise KeyRequired() from error
                 # A password given or read is tried once, and never asked for.
-                if (
-                    given is not None
-                    or not login.password_prompt
-                    or password_attempts == PASSWORD_ATTEMPTS
-                ):
-                    raise
+                if given is not None or password_attempts == PASSWORD_ATTEMPTS:
+                    raise AuthenticationFailed(t"{error}") from error
+                if not login.password_prompt:
+                    raise PasswordRequired(
+                        t"The login node asks for {login.user:name}'s password, "
+                        t"and none was given, and asking for it is turned off."
+                    ) from error
                 if prompts is None:
-                    raise asyncssh.PermissionDenied(
-                        f"The login node asks for {login.user}'s password, and none "
-                        "was given, nor a prompt to ask for it."
-                    ) from None
+                    raise PasswordRequired(
+                        t"The login node asks for {login.user:name}'s password, "
+                        t"and none was given, nor a prompt to ask for it."
+                    ) from error
                 password_attempts += 1
                 password = SecretStr(
                     await prompts.ask_password(
                         login.user, login.host, password_attempts
                     )
                 )
-    except (asyncssh.Error, OSError) as error:
-        raise ConnectionFailed(error) from error
+    except OSError as error:
+        raise HostUnreachable(t"{error}") from error
+    except asyncssh.Error as error:
+        raise ConnectionFailed(t"{error}") from error
 
 
 def read_password(login: Login) -> SecretStr | None:
@@ -371,7 +402,7 @@ class _LoginClient(ssh.SSHClient):
         self._known_hosts = known_hosts
         self._progress = progress
         self.unknown_host_key: tuple[str, int, asyncssh.SSHKey] | None = None
-        self.changed_host_key: asyncssh.HostKeyNotVerifiable | None = None
+        self.changed_host_key: HostKeyChanged | None = None
         self.password_offered = False
 
     def connection_made(self, conn: asyncssh.SSHClientConnection) -> None:
@@ -395,11 +426,11 @@ class _LoginClient(ssh.SSHClient):
         if not files:
             self.unknown_host_key = (host, port, key)
             return False
-        self.changed_host_key = asyncssh.HostKeyNotVerifiable(
-            f"The {key.get_algorithm()} host key of {host} "
-            f"({key.get_fingerprint()}) does not match the key for it in "
-            f"{files[0]}. If the host's key was changed on purpose, remove the "
-            "old key from that file."
+        self.changed_host_key = HostKeyChanged(
+            t"The {key.get_algorithm()} host key of {host} "
+            t"({key.get_fingerprint()}) does not match the key for it in "
+            t"{files[0]:path}. If the host's key was changed on purpose, remove the "
+            t"old key from that file."
         )
         return False
 
@@ -447,16 +478,16 @@ async def _accept_host_key(
     only trusted for this connection.
     """
     if prompts is None:
-        raise asyncssh.HostKeyNotVerifiable(
-            f"The {key.get_algorithm()} host key of {host} "
-            f"({key.get_fingerprint()}) is not in any known hosts file, and there "
-            "is no prompt to accept it."
+        raise HostKeyUnknown(
+            t"The {key.get_algorithm()} host key of {host} "
+            t"({key.get_fingerprint()}) is not in any known hosts file, and there "
+            t"is no prompt to accept it."
         )
     accepted = await prompts.accept_host_key(
         host, port, key.get_algorithm(), key.get_fingerprint()
     )
     if not accepted:
-        raise asyncssh.HostKeyNotVerifiable(f"Host key for {host} rejected by user.")
+        raise HostKeyUnknown(t"Host key for {host} rejected by user.")
 
     pattern = host if port == _DEFAULT_PORT else f"[{host}]:{port}"
     key_type, key_data, *_ = key.export_public_key("openssh").decode().split()

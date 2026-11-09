@@ -114,9 +114,14 @@ lazy from ezhpcy.job.lifecycle import JobLifecycle, RunningWorker
 lazy from ezhpcy.job.publish import Published
 lazy from ezhpcy.job.status import AttachmentStatus, JobStatus, Phase, PublishedStatus
 lazy from ezhpcy.login import (
+    AuthenticationFailed,
     ConnectionFailed,
+    HostKeyChanged,
+    HostKeyUnknown,
+    HostUnreachable,
     KeyRequired,
     LoginStage,
+    PasswordRequired,
     Prompts,
     terminal_prompts,
 )
@@ -179,6 +184,7 @@ __all__ = [
     "AppFailed",
     "AppState",
     "AppStatus",
+    "AuthenticationFailed",
     "BooleanParameter",
     "Check",
     "CheckStatus",
@@ -192,6 +198,9 @@ __all__ = [
     "Forward",
     "ForwardStatus",
     "Host",
+    "HostKeyChanged",
+    "HostKeyUnknown",
+    "HostUnreachable",
     "IntegerParameter",
     "Job",
     "JobConfig",
@@ -215,6 +224,7 @@ __all__ = [
     "NumberParameter",
     "PBSOptions",
     "Parameter",
+    "PasswordRequired",
     "PathParameter",
     "Phase",
     "Process",
@@ -266,12 +276,15 @@ async def connect(
     `prompts.accept_host_key` accepts it, and is then saved to EzHPCy's known
     hosts file; a host key that changed is always refused.
 
-    Raises `ConnectionFailed`, saying what was missing if `prompts` were needed,
+    Raises a `ConnectionFailed` if it can't connect: `HostUnreachable` if the
+    network failed; `HostKeyUnknown` if no prompt accepted an unknown host key,
+    and `HostKeyChanged` for a changed one; `AuthenticationFailed` if neither a
+    key nor a password was accepted. Of those, `PasswordRequired` is a password
+    wanted that wasn't given and couldn't be asked for, and `KeyRequired` a
+    server that offers a password only once a key is accepted, and accepted
+    none: no password was tried, so it wasn't the password that was wrong. Raises
     `ConfigError` if a password source can't be read, and whatever the prompts
-    raise. A server that offers a password only once a key is accepted, and
-    accepted none, raises `KeyRequired`, a `ConnectionFailed`: no password was
-    tried, so it wasn't the password that was wrong. Cancelled while connecting,
-    it leaves no connection open.
+    raise. Cancelled while connecting, it leaves no connection open.
     """
     host = await _login.connect(
         login, prompts=prompts, password=password, progress=progress

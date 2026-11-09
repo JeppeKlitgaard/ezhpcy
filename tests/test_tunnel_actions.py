@@ -316,7 +316,9 @@ def on_key(key):
 async def main():
     global stopping
     stopping = asyncio.Event()
-    signal.signal(signal.SIGINT, lambda *_: say("interrupted"))
+    # On the loop: a handler of its own that prints could interrupt a print, and
+    # fail as reentrant.
+    asyncio.get_running_loop().add_signal_handler(signal.SIGINT, say, "interrupted")
     async with read_keys(on_key) as reading:
         say("reading", reading)
         await stopping.wait()

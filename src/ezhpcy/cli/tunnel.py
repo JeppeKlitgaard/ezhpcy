@@ -14,7 +14,9 @@ that fails to start, or exits, leaves the tunnel serving.
 from contextlib import contextmanager, nullcontext
 lazy import asyncio
 lazy import os
+lazy import queue
 lazy import sys
+lazy import threading
 lazy from collections.abc import Callable, Generator, Mapping, Sequence
 lazy from dataclasses import replace
 lazy from pathlib import Path, PurePosixPath
@@ -499,28 +501,49 @@ def _interrupts_stop(stop: Callable[[str], object]) -> Generator[None]:
 
     It replaces asyncio's handler, whose second Ctrl+C would interrupt whichever
     cleanup step is running, and possibly leave the job queued or running.
+
+    The second quits from a thread of its own: a signal handler runs in the middle
+    of whatever the main thread was doing, so writing output from it could fail
+    as a reentrant write, or wait forever for a lock the main thread holds.
     """
     loop = asyncio.get_running_loop()
     presses = 0
+    # Whether to quit at once; put from the signal handler, which only this
+    # queue's `put` is safe for.
+    quitting: queue.SimpleQueue[bool] = queue.SimpleQueue()
+    quitter = threading.Thread(
+        target=lambda: quitting.get() and _quit_at_once(),
+        name="force-quit",
+        daemon=True,
+    )
+    quitter.start()
 
     def interrupt(_signum: int, _frame: FrameType | None) -> None:
         nonlocal presses
         presses += 1
         if presses == 1:
             loop.call_soon_threadsafe(stop, "Ctrl+C")
-            return
-        logger.warning(
-            "Quitting without cleaning up. The worker job ends by itself once its "
-            "heartbeats stop."
-        )
-        # Hidden, the live display gives the terminal its cursor back. Briefly: a
-        # terminal that doesn't take output mustn't keep it running.
-        hide_live_display()
-        restore_terminal()
-        flush_output(_EXIT_FLUSH_SECONDS)
-        sys.stdout.flush()
-        sys.stderr.flush()
-        os._exit(130)
+        else:
+            quitting.put(True)
 
-    with interrupts_handled_by(interrupt):
-        yield
+    try:
+        with interrupts_handled_by(interrupt):
+            yield
+    finally:
+        quitting.put(False)
+        quitter.join()
+
+
+def _quit_at_once() -> None:
+    logger.warning(
+        "Quitting without cleaning up. The worker job ends by itself once its "
+        "heartbeats stop."
+    )
+    # Hidden, the live display gives the terminal its cursor back. Briefly: a
+    # terminal that doesn't take output mustn't keep it running.
+    hide_live_display()
+    restore_terminal()
+    flush_output(_EXIT_FLUSH_SECONDS)
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(130)

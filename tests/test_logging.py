@@ -2,12 +2,15 @@ import io
 import logging
 import os
 import re
+import stat
+import sys
 import time
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
+from ezhpcy import api
 from ezhpcy.cli._console import flush_output, make_console
 from ezhpcy.cli._logging import (
     ASYNCSSH_LOGGER_NAME,
@@ -545,6 +548,28 @@ def test_a_log_file_already_made_moves_to_its_new_label(tmp_path: Path) -> None:
     assert "-scratch-" in path.name
     log = path.read_text(encoding="utf-8")
     assert log.index("Before") < log.index("After")
+
+
+def test_a_program_writes_a_log_file_without_the_cli(tmp_path: Path) -> None:
+    logger = logging.getLogger("tests.log_file")
+    logger.propagate = False
+    logger.setLevel(logging.INFO)
+    handler = api.LogFile(tmp_path / "logs", keep=2)
+    logger.addHandler(handler)
+    try:
+        handler.relabel("gui")
+        logger.info("Worker ready")
+    finally:
+        logger.removeHandler(handler)
+        handler.close()
+
+    [path] = (tmp_path / "logs").iterdir()
+    assert re.fullmatch(rf"ezhpcy-\d{{8}}-\d{{6}}-gui-{os.getpid()}\.log", path.name)
+    assert path.read_text(encoding="utf-8").endswith(
+        "INFO     [tests.log_file] Worker ready\n"
+    )
+    if sys.platform != "win32":
+        assert stat.S_IMODE((tmp_path / "logs").stat().st_mode) == 0o700
 
 
 def test_a_log_file_that_cannot_be_written_is_reported_once(

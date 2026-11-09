@@ -8,10 +8,11 @@ with it. `ezhpcy.cli._console.flush_output` waits until they are written.
 A record whose message is a template (see `ezhpcy.api.get_logger`) carries it as plain
 text, and the terminal log styles its parts.
 
-Each run can also write its log to a file of its own (`configure_log_file`), at a
-level of its own. What a log shows is up to the log, never the code that logs:
-tracebacks are shown only at DEBUG, and asyncssh's records by the terminal only
-with debug logging (`--debug`), and by the file at DEBUG.
+Each run can also write its log to a file of its own (`configure_log_file`, with
+`ezhpcy.api.LogFile`), at a level of its own. What a log shows is up to the log,
+never the code that logs: tracebacks are shown only at DEBUG, and asyncssh's
+records by the terminal only with debug logging (`--debug`), and by the file at
+DEBUG.
 
 A record logged with `extra=REPLAY_ON_ERROR`, such as a line of an interactive
 job's output, is context for a failure: if the terminal doesn't show it, it keeps
@@ -21,11 +22,7 @@ the last of them, and shows them before the next ERROR record.
 import logging
 lazy import copy
 lazy import functools
-lazy import os
-lazy import sys
-lazy import time
 lazy from collections import deque
-lazy from contextlib import suppress
 lazy from pathlib import Path
 lazy from string.templatelib import Template
 lazy from typing import Any, TextIO
@@ -33,7 +30,7 @@ lazy from typing import Any, TextIO
 from rich.logging import RichHandler
 lazy from rich.text import Text
 
-from ezhpcy.api import get_logger
+from ezhpcy.api import LogFile
 lazy from ezhpcy.cli._console import (
     error_console,
     flush_output,
@@ -47,8 +44,6 @@ TERMINAL_HANDLER_NAME = "ezhpcy-terminal"
 FILE_HANDLER_NAME = "ezhpcy-file"
 OUTPUT_HANDLER_NAME = "ezhpcy-output"
 LOG_FORMAT = "[%(name)s] %(message)s"
-LOG_FILE_FORMAT = "%(asctime)s.%(msecs)03d %(levelname)-8s [%(name)s] %(message)s"
-LOG_FILE_PATTERN = "ezhpcy-*.log"
 ASYNCSSH_LOGGER_NAME = "asyncssh"
 # How many `REPLAY_ON_ERROR` records the terminal keeps: all of an interactive
 # job's output while it starts, which echoes the worker script.
@@ -62,8 +57,6 @@ _terminal_enabled = True
 _output_handler: _OutputHandler | None = None
 # Replaced by each `configure_log_file`.
 _file_handler: _FileHandler | None = None
-
-logger = get_logger(__name__)
 
 
 class _OutputHandler(logging.Handler):
@@ -182,85 +175,13 @@ class _Replay(logging.Handler):
         self.target.handle(record)
 
 
-class _FileHandler(logging.FileHandler):
-    """
-    Writes one run's log file in `directory`, named after when the run started,
-    its label (see `label_log_file`) and its process. The file is made, and the
-    oldest runs' removed to keep `keep`, when the first record comes: a run that
-    logs nothing leaves no file.
-    """
+class _FileHandler(LogFile):
+    """A run's log file, which shows tracebacks and asyncssh's records as `detail` says."""
 
     def __init__(self, directory: Path, *, keep: int) -> None:
-        self.directory = directory
-        self.started = time.strftime("%Y%m%d-%H%M%S")
-        self.keep = keep
-        self.failed = False
-        super().__init__(self._path(None), encoding="utf-8", delay=True)
+        super().__init__(directory, keep=keep)
         self.detail = _DebugDetail(self)
         self.addFilter(self.detail)
-
-    def _path(self, label: str | None) -> Path:
-        name = "-".join(filter(None, ["ezhpcy", self.started, label, str(os.getpid())]))
-        return (self.directory / f"{name}.log").absolute()
-
-    def relabel(self, label: str) -> None:
-        """Name the file after `label`, moving it if it's made."""
-        path = self._path(label)
-        # Holds off `emit`, in the output thread.
-        self.acquire()
-        try:
-            if self.stream is None:
-                self.baseFilename = str(path)
-                return
-            self.stream.close()
-            try:
-                Path(self.baseFilename).rename(path)
-            except OSError as error:
-                logger.debug(t"Could not rename the log file to {path:path}: {error}")
-            else:
-                self.baseFilename = str(path)
-            self.stream = self._open()
-        finally:
-            self.release()
-
-    def emit(self, record: logging.LogRecord) -> None:
-        if self.stream is None:
-            if self.failed:
-                return
-            path = Path(self.baseFilename)
-            try:
-                # Only the current user's. On Windows, `mkdir` gives a new directory
-                # a private ACL, and `chmod` would only set its read-only flag.
-                path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-                if sys.platform != "win32":
-                    path.parent.chmod(0o700)
-                _remove_old_logs(path.parent, keep=self.keep - 1)
-                self.stream = self._open()
-            except OSError as error:
-                # Reported once, rather than raised for every record. The warning
-                # comes back here, to be dropped with the rest.
-                self.failed = True
-                logger.warning(t"Could not write the log file {path:path}: {error}")
-                return
-        super().emit(record)
-
-
-def _remove_old_logs(directory: Path, *, keep: int) -> None:
-    """
-    Remove all but the `keep` most recently written log files in `directory`.
-
-    By when they were written, so that a long tunnel's log outlives the runs
-    started after it. One that can't be removed, as on Windows while its run still
-    writes it, stays.
-    """
-    logs: list[tuple[float, Path]] = []
-    for path in directory.glob(LOG_FILE_PATTERN):
-        with suppress(OSError):
-            logs.append((path.stat().st_mtime, path))
-    logs.sort(reverse=True)
-    for _, path in logs[keep:]:
-        with suppress(OSError):
-            path.unlink()
 
 
 def configure_logging(
@@ -330,9 +251,6 @@ def configure_log_file(
         handler = _FileHandler(directory, keep=keep)
         handler.set_name(FILE_HANDLER_NAME)
         handler.setLevel(level)
-        handler.setFormatter(
-            logging.Formatter(LOG_FILE_FORMAT, datefmt="%Y-%m-%d %H:%M:%S")
-        )
         handler.detail.asyncssh = handler.level <= logging.DEBUG
 
     flush_output()

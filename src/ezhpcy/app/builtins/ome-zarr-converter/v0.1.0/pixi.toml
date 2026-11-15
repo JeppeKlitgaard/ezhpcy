@@ -1,0 +1,14 @@
+[workspace]
+name = "ome-zarr-converter"
+channels = ["conda-forge"]
+platforms = ["linux-64"]
+
+[dependencies]
+coreutils = ">=9.5"
+python = "3.13.*"
+
+[pypi-dependencies]
+jupyterlab = ">=4.6.6, <5"
+qim3d = ">=1.6.1, <2"
+numpy = ">=2.5.4, <3"
+matplotlib = ">=3.11.2, <4"

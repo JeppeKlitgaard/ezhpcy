@@ -1,0 +1,44 @@
+[ezhpcy]
+schema = 1
+
+[ezhpcy.app.ome-zarr-converter."v0.1.0"]
+name = "OME-Zarr Converter"
+short_description = "Notebook which converts a TIF volume to OME-Zarr"
+
+environment = {
+    pixi = "pixi.toml",
+}
+run = {
+    command = [
+        "jupyter", "lab", "--no-browser",
+        "--ServerApp.sock={{ socket }}",
+        "--KernelManager.transport=ipc",
+        "--ServerApp.root_dir={{ root_dir }}",
+    ],
+    env = { JUPYTER_TOKEN = "{{ token }}", JUPYTER_RUNTIME_DIR = "{{ run_dir }}/jupyter", },
+}
+argument = {
+    root_dir = {
+        type = "path",
+        label = "Directory to open JupyterLab in",
+        default = "/",
+        kind = "directory",
+    },
+}
+endpoint = { transport = "socket", authenticates = true, }
+ready = { check = "http", path = "/api", timeout = 180, }
+access = { url = "http://127.0.0.1:{{ local_port }}/lab?token={{ token }}", }
+
+assets = { include = ["notebook_OME-zarr_conv.ipynb"], }
+action = {
+    copy_over_notebook = {
+        action_description = "Copy over the notebook",
+        run = {
+            command = [
+                "cp", "--update=none-fail", "--",
+                "{{ assets }}/notebook_OME-zarr_conv.ipynb", "{{ destination }}",
+            ],
+        },
+        input = { destination = { type = "path", label = "Where to copy it", }, },
+    },
+}

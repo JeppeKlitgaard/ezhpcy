@@ -4,6 +4,7 @@ with the launch script, and a real `pixi` where there is one (in WSL on
 Windows). Its arguments must reach the app as the manifest gives them.
 """
 
+import os
 import shutil
 import subprocess
 import sys
@@ -62,6 +63,30 @@ def test_awkward_arguments_reach_the_app_through_pixi_unchanged(
     The environment isn't installed, so `pixi run --as-is -x` runs `sh` from
     `PATH`: what matters is how Pixi passes the arguments on.
     """
+    command = ["sh", "-c", 'printf "%s\\0" "$@"', "sh", *AWKWARD]
+    printed = _run_through_pixi(tmp_path, command).split("\0")[:-1]
+    assert printed == AWKWARD
+
+
+def test_a_command_named_like_a_pixi_shell_builtin_runs_from_path(
+    tmp_path: Path,
+) -> None:
+    """`cp` is the executable on `PATH`, not deno_task_shell's own."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    cp = bin_dir / "cp"
+    cp.write_text('#!/bin/sh\nprintf "%s" "$*"\n', encoding="utf-8")
+    cp.chmod(0o755)
+    command = ["cp", "--update=none-fail", "--", "a", "b"]
+    path = f"{bin_dir}:{os.environ['PATH']}"
+    printed = _run_through_pixi(tmp_path, command, {"PATH": path})
+    assert printed == "--update=none-fail -- a b"
+
+
+def _run_through_pixi(
+    tmp_path: Path, command: list[str], extra_env: dict[str, str] | None = None
+) -> str:
+    """Run `command` as an app's, under bash and Pixi, and return its stdout."""
     remote_state = RemoteState(
         cache_dir=PurePosixPath(tmp_path / "cache"),
         state_dir=PurePosixPath(tmp_path / "state"),
@@ -70,7 +95,6 @@ def test_awkward_arguments_reach_the_app_through_pixi_unchanged(
     executable.parent.mkdir(parents=True)
     assert PIXI is not None
     executable.symlink_to(PIXI)
-    command = ["sh", "-c", 'printf "%s\\0" "$@"', "sh", *AWKWARD]
     manifest = write_project(
         tmp_path / "project",
         MINIMAL_APP.replace(
@@ -93,7 +117,10 @@ def test_awkward_arguments_reach_the_app_through_pixi_unchanged(
     run_dir.mkdir(mode=0o700)
     (run_dir / "launch.sh").write_text(
         launch_script(
-            PurePosixPath(run_dir), argv, env=env, cwd=PurePosixPath(workdir)
+            PurePosixPath(run_dir),
+            argv,
+            env=env | (extra_env or {}),
+            cwd=PurePosixPath(workdir),
         ),
         encoding="utf-8",
     )
@@ -111,5 +138,4 @@ def test_awkward_arguments_reach_the_app_through_pixi_unchanged(
     assert (run_dir / "status").read_text(encoding="utf-8") == "0\n", (
         run_dir / "err"
     ).read_text(encoding="utf-8")
-    printed = (run_dir / "out").read_text(encoding="utf-8").split("\0")[:-1]
-    assert printed == AWKWARD
+    return (run_dir / "out").read_text(encoding="utf-8")

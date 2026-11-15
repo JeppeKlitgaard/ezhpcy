@@ -1066,11 +1066,11 @@ async def test_arguments_reach_every_template_of_the_app(
         )
 
         tick = await next_process(rig, 2)
-        assert "-- tick 7\n" in tick.launch_script + "\n"
+        assert "-- env tick 7\n" in tick.launch_script + "\n"
         tick.exit(0)
         going = asyncio.create_task(lab.run_action("go", amount=4))
         run = await next_process(rig, 3)
-        assert f"-- go 7 {WORKDIR}/data 4" in run.launch_script
+        assert f"-- env go 7 {WORKDIR}/data 4" in run.launch_script
         run.exit(0)
         await going
 
@@ -1131,13 +1131,13 @@ async def test_an_optional_input_may_have_no_value(rig: AppRig, tmp_path: Path) 
 
         running = asyncio.create_task(lab.run_action("go"))
         fake = await next_process(rig, 1)
-        assert "-- run\n" in fake.launch_script + "\n"
+        assert "-- env run\n" in fake.launch_script + "\n"
         fake.exit(0)
         await running
 
         running = asyncio.create_task(lab.run_action("go", limit=0))
         fake = await next_process(rig, 2)
-        assert "-- run --limit=0" in fake.launch_script
+        assert "-- env run --limit=0" in fake.launch_script
         fake.exit(0)
         await running
 
@@ -1181,7 +1181,7 @@ async def test_the_data_dumper_builtin_copies_its_asset_to_the_path_given(
         )
         fake = await next_process(rig, 1)
         assert re.search(
-            r"-- cp --update=none-fail -- \S+/assets/[^/ ]+/dump\.txt "
+            r"-- env cp --update=none-fail -- \S+/assets/[^/ ]+/dump\.txt "
             r"'/data/it'\"'\"'s here\.txt'",
             fake.launch_script,
         )

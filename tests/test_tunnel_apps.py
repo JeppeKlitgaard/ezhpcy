@@ -186,8 +186,8 @@ def test_the_apps_start_on_the_node_in_order_and_stop_with_the_tunnel(
     assert all(status.state is api.AppState.READY for status in serving.statuses)
     # Started in order, on the node, and stopped with the tunnel.
     first, second = serving.launched
-    assert "-- jupyter lab" in first
-    assert "-- tensorboard --port" in second
+    assert "-- env jupyter lab" in first
+    assert "-- env tensorboard --port" in second
     assert [process.signals for process in apps.rig.processes.processes] == [
         ["TERM"],
         ["TERM"],
@@ -493,7 +493,7 @@ def test_a_key_runs_an_action_while_the_tunnel_serves(
 
     assert result.exit_code == 0, result
     assert apps.serving is not None
-    assert apps.serving.launched[0].count("-- go 42") == 1
+    assert apps.serving.launched[0].count("-- env go 42") == 1
     assert results[0].state is api.ActionState.SUCCEEDED
     assert results[0].stdout == "done\n"
     messages = log.messages()

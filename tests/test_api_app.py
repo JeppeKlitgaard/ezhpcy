@@ -129,7 +129,7 @@ async def test_an_app_runs_on_a_plain_host_and_is_served_here(
             f"    cd -- {workdir} && exec env PIXI_HOME={REMOTE_STATE.pixi_home()} "
             f"PIXI_CACHE_DIR={APPS_ROOT / 'pixi-cache'} "
             f"{REMOTE_STATE.pixi_executable()} run --as-is --executable "
-            f"--manifest-path {environment} --environment default -- "
+            f"--manifest-path {environment} --environment default -- env "
             'jupyter lab --ServerApp.sock="$run_dir"/app.sock'
         )
         assert command in lines

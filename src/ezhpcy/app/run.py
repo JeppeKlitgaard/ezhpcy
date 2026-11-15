@@ -8,11 +8,13 @@ job, control directory or scheduler.
 The process runs, in the app's workdir,
 
     env PIXI_HOME=… PIXI_CACHE_DIR=… <EzHPCy's pixi> run --as-is -x \
-        --manifest-path <environment>/pixi.toml -e <name> -- <run.command>
+        --manifest-path <environment>/pixi.toml -e <name> -- env <run.command>
 
 `-x` runs the command as an executable, so that a task of the user's
 `pixi.toml` named like it can't run instead, and passes its arguments on as they
-are, unquoted; `--as-is` never installs or writes.
+are, unquoted; `--as-is` never installs or writes. Pixi still runs it in its
+deno_task_shell, whose built-in `cp`, `mv`, `rm`, `echo` and others would take
+the place of the environment's executables: `env` runs the command from `PATH`.
 Not through a login shell: the host's profile, and so its modules, aren't read,
 as for any process. A manifest may run `bash -lc …` itself.
 
@@ -567,6 +569,7 @@ def _through_pixi(
         "--environment",
         app.environment.environment,
         "--",
+        "env",
         *render_command(f"{field}.command", command.command, values),
         cache_dir=layout.pixi_cache,
     )

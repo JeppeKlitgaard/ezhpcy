@@ -28,6 +28,7 @@ from ezhpcy.types import (
     JobConfig,
     Login,
     SchedulerSettings,
+    SiteConfig,
     SubmissionMode,
     Timings,
 )
@@ -106,6 +107,7 @@ class Rig:
                     ),
                     timings=Timings.model_validate(FAST_TIMINGS),
                 ),
+                site=SiteConfig(),
                 worker_ports=(self.worker_port,),
             )
         )

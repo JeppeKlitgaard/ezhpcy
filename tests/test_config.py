@@ -326,7 +326,7 @@ def test_nested_profile_inheritance_resolves_all_ancestor_values() -> None:
                     "connection": {"host": "login.example.com", "user": "alice"},
                     "scheduler": {"type": "LSF"},
                     "resources": {"queue": "normal"},
-                    "lsf": {"resource_reserve_per_task": True},
+                    "site": {"lsf_resource_reserve_per_task": True},
                 },
                 "batch": {
                     "inherit": "default",
@@ -357,7 +357,7 @@ def test_nested_profile_inheritance_resolves_all_ancestor_values() -> None:
     assert profile.resources.exclusive
     assert int(profile.resources.memory) == 32_000_000_000
     assert profile.resources.time_limit == timedelta(hours=1)
-    assert profile.lsf.resource_reserve_per_task
+    assert profile.site.lsf_resource_reserve_per_task
 
 
 def test_profile_inheritance_merges_each_sub_config_field_by_field() -> None:

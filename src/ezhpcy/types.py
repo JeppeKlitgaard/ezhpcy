@@ -232,9 +232,6 @@ class Timings(_SubConfig):
 class LSFOptions(_SubConfig):
     """Options only used by the LSF scheduler."""
 
-    # The site's LSF reserves memory per core, so the job asks for `memory`
-    # divided by its cores.
-    resource_reserve_per_task: bool = False
     # For an interactive submission: `bsub -app`, variables for `bsub` itself,
     # and the variables passed on to the job (`bsub -env`).
     application_profile: str | None = Field(default=None, min_length=1)
@@ -242,12 +239,15 @@ class LSFOptions(_SubConfig):
     export_environment: tuple[str, ...] = ()
 
 
-class PBSOptions(_SubConfig):
-    """Options only used by the PBS scheduler."""
+class SiteConfig(_SubConfig):
+    """What a cluster is like: the same for every job on it."""
 
-    # Where `qsub`, `qstat` and `qdel` are, when they aren't on the login
-    # node's `PATH`.
-    command_directory: PurePosixPath | None = None
+    # Where PBS's commands (`qsub`, `qstat`, ...) are, when they aren't on the
+    # login node's `PATH`.
+    pbs_command_directory: PurePosixPath | None = None
+    # The site's LSF reserves memory per core (`RESOURCE_RESERVE_PER_TASK`), so
+    # a job asks for its memory divided by its cores.
+    lsf_resource_reserve_per_task: bool = False
 
 
 class AppsConfig(_SubConfig):
@@ -276,7 +276,7 @@ class _ProfileSettings(BaseModel):
     resources: Resources = Field(default_factory=Resources)
     timings: Timings = Field(default_factory=Timings)
     lsf: LSFOptions = Field(default_factory=LSFOptions)
-    pbs: PBSOptions = Field(default_factory=PBSOptions)
+    site: SiteConfig = Field(default_factory=SiteConfig)
     apps: AppsConfig = Field(default_factory=AppsConfig)
 
 
@@ -441,7 +441,6 @@ class JobConfig(BaseModel):
     resources: Resources = Field(default_factory=Resources)
     timings: Timings = Field(default_factory=Timings)
     lsf: LSFOptions = Field(default_factory=LSFOptions)
-    pbs: PBSOptions = Field(default_factory=PBSOptions)
     auto_provision: bool = True
 
     # As `Login`'s: which fields name an anonymous tunnel.
@@ -456,14 +455,8 @@ class JobConfig(BaseModel):
             {"queue", "cores", "gpus", "exclusive", "time_limit", "memory"}
         ),
         "lsf": frozenset(
-            {
-                "resource_reserve_per_task",
-                "application_profile",
-                "submission_environment",
-                "export_environment",
-            }
+            {"application_profile", "submission_environment", "export_environment"}
         ),
-        "pbs": frozenset({"command_directory"}),
     }
 
     @model_validator(mode="after")

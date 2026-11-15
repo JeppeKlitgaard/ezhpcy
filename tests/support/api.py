@@ -85,7 +85,7 @@ class JobRig:
         )
 
     def job(self, host: api.Host, config: api.JobConfig = JOB) -> api.Job:
-        return host.job(config, worker_ports=[self.worker.port])
+        return host.job(config, site=api.SiteConfig(), worker_ports=[self.worker.port])
 
     def host_block(self, alias: str) -> Path:
         return self.runtime / "ssh-config" / f"active-{alias}.conf"

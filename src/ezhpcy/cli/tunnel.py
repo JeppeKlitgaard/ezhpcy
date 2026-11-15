@@ -256,12 +256,14 @@ async def tunnel_cmd(
         logger.info(
             t"Using profile {profile:name} with {job.scheduler.type:detail} scheduler."
         )
+    resolved = config.resolve_profile(profile)
     run = TunnelRun(
         alias,
         login,
         job,
+        site=resolved.site,
         apps=apps,
-        apps_root=config.resolve_profile(profile).apps.root,
+        apps_root=resolved.apps.root,
         arguments=arguments,
     )
     try:
@@ -316,9 +318,9 @@ async def tunnel_cmd(
 
 class TunnelRun:
     """
-    One `ezhpcy tunnel`: the apps it runs, under `apps_root` on the node (by
-    default the node's own), what its status panel shows, how Ctrl+C stops
-    it, and whether it served.
+    One `ezhpcy tunnel`: the site its job runs on, the apps it runs, under
+    `apps_root` on the node (by default the node's own), what its status panel
+    shows, how Ctrl+C stops it, and whether it served.
     """
 
     def __init__(
@@ -327,6 +329,7 @@ class TunnelRun:
         login: api.Login,
         config: api.JobConfig,
         *,
+        site: api.SiteConfig,
         apps: Sequence[api.App | api.Link] = (),
         apps_root: PurePosixPath | None = None,
         arguments: Mapping[str, Mapping[str, object]] | None = None,
@@ -334,6 +337,7 @@ class TunnelRun:
         self.alias = alias
         self.login = login
         self.config = config
+        self.site = site
         self.apps = tuple(apps)
         self.apps_root = apps_root
         # The values of its apps' arguments, by normalised name.
@@ -440,7 +444,9 @@ async def serve(
         async with api.connect(
             login, prompts=cli_prompts(), password=password
         ) as login_node:
-            job = run.job = login_node.job(run.config, worker_ports=worker_ports)
+            job = run.job = login_node.job(
+                run.config, site=run.site, worker_ports=worker_ports
+            )
             try:
                 async with job:
                     published = await job.publish(reservation)

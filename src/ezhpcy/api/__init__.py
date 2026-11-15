@@ -11,10 +11,11 @@ login node, and a host of its own once it runs (`Job.host`).
 
     config = api.Config.load()
     profile = config.profiles["dtu-hpc"]
+    job_config = profile.job.with_resources(cores=4)
 
     async with api.reserve_alias("gpu") as gpu:
         async with api.connect(profile.login, prompts=api.terminal_prompts()) as login_node:
-            async with login_node.job(profile.job.with_resources(cores=4)) as job:
+            async with login_node.job(job_config, site=profile.site) as job:
                 await job.publish(gpu)  # `ssh gpu` reaches the node
                 print(await job.host.run(["nvidia-smi", "-L"]))
                 server = await job.host.start(["python", "-m", "http.server", "8000"])
@@ -161,9 +162,9 @@ lazy from ezhpcy.types import (
     Login,
     LSFOptions,
     MissingSetting,
-    PBSOptions,
     Resources,
     SchedulerSettings,
+    SiteConfig,
     SubmissionCommandError,
     SubmissionMode,
     Timings,
@@ -222,7 +223,6 @@ __all__ = [
     "MissingCredentials",
     "MissingSetting",
     "NumberParameter",
-    "PBSOptions",
     "Parameter",
     "PasswordRequired",
     "PathParameter",
@@ -239,6 +239,7 @@ __all__ = [
     "SSHError",
     "SchedulerSettings",
     "SchedulerType",
+    "SiteConfig",
     "SocketDestination",
     "StringParameter",
     "SubmissionCommandError",
@@ -326,17 +327,24 @@ class Host:
         """What is attached to the host, oldest first, as snapshots."""
         return self._host.attachments.statuses
 
-    def job(self, config: JobConfig, *, worker_ports: Sequence[int] = ()) -> Job:
+    def job(
+        self,
+        config: JobConfig,
+        *,
+        site: SiteConfig,
+        worker_ports: Sequence[int] = (),
+    ) -> Job:
         """
         A worker job, submitted through this host's scheduler, run while `async
         with` it (see `Job`). On a host without the scheduler, entering it
-        raises `JobFailed`.
+        raises `JobFailed`. `site` is what the cluster is like (see
+        `Profile.site`).
 
         `worker_ports` are the ports on the node that the worker's SSH daemon
         tries, in order, until one is free; by default a few random ones from
         the dynamic range.
         """
-        return Job(self._host, config, tuple(worker_ports))
+        return Job(self._host, config, site, tuple(worker_ports))
 
     @translating_ssh_errors
     async def run(self, argv: Sequence[str], *, stdin: str | None = None) -> str:
@@ -555,11 +563,15 @@ class Job:
     """
 
     def __init__(
-        self, host: RemoteHost, config: JobConfig, worker_ports: tuple[int, ...]
+        self,
+        host: RemoteHost,
+        config: JobConfig,
+        site: SiteConfig,
+        worker_ports: tuple[int, ...],
     ) -> None:
         # Use `Host.job`.
         self._lifecycle = JobLifecycle(
-            host=host, config=config, worker_ports=worker_ports
+            host=host, config=config, site=site, worker_ports=worker_ports
         )
         self._node_host: Host | None = None
 

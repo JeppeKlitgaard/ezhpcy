@@ -252,7 +252,8 @@ def test_config_load_creates_dtu_config_case_insensitively(
     assert a100sh.lsf.export_environment == ()
     assert not loaded_config.profile["dtu-a100sh"].lsf.model_fields_set
     dtu_base_pbs = loaded_config.resolve_profile("dtu-base-pbs")
-    assert str(dtu_base_pbs.pbs.command_directory) == "/opt/pbspro/bin"
+    assert str(dtu_base_pbs.site.pbs_command_directory) == "/opt/pbspro/bin"
+    assert dtu_base_pbs.site.lsf_resource_reserve_per_task
 
 
 def test_config_load_existing_file_defaults_to_no(

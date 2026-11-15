@@ -39,7 +39,7 @@ async def main() -> None:
 
     async with (
         api.connect(profile.login, prompts=api.terminal_prompts()) as login_node,
-        login_node.job(job_config) as job,
+        login_node.job(job_config, site=profile.site) as job,
     ):
         # Ctrl+C ends the job, and `wait` returns; leaving the block cleans up.
         loop = asyncio.get_running_loop()

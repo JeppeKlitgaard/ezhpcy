@@ -35,13 +35,14 @@ description = "DTU HPC"
 inherit = "base"
 connection.host = "login.hpc.dtu.dk"
 connection.user = {{ user | tojson }}
+site.pbs_command_directory = "/opt/pbspro/bin"
+site.lsf_resource_reserve_per_task = true
 
 [profile.dtu-base-lsf]
 description = "DTU HPC LSF based queues"
 inherit = "dtu-base"
 scheduler.type = "LSF"
 
-lsf.resource_reserve_per_task = true
 lsf.application_profile = "qrsh"
 lsf.submission_environment = { }
 lsf.export_environment = []
@@ -50,7 +51,6 @@ lsf.export_environment = []
 description = "DTU HPC PBS Pro based queues"
 inherit = "dtu-base"
 scheduler.type = "PBS"
-pbs.command_directory = "/opt/pbspro/bin"
 
 ### Interactive Queues
 [profile.dtu-linuxsh]

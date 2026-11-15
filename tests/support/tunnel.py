@@ -314,7 +314,7 @@ def use_scheduler(
     """Give the tunnel `make(host)` as its scheduler; returns those it made."""
     made: list[FakeScheduler] = []
 
-    def create(_config: object, host: RemoteHost) -> FakeScheduler:
+    def create(_config: object, _site: object, host: RemoteHost) -> FakeScheduler:
         made.append(make(host))
         return made[-1]
 

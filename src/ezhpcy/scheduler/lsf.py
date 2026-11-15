@@ -6,7 +6,7 @@ lazy from collections.abc import Sequence
 from ezhpcy.scheduler.base import JobInfo, JobSpec, JobState, Scheduler, SchedulerError
 from ezhpcy.scheduler.types import SchedulerType
 lazy from ezhpcy.ssh import RemoteHost
-lazy from ezhpcy.types import LSFOptions
+lazy from ezhpcy.types import LSFOptions, SiteConfig
 
 _SUBMITTED_JOB_PATTERN = re.compile(r"Job <(?P<job_id>\d+)> is submitted")
 # `pend_reason` last: it is free text. LSF 10.1 prints one reason per job, on its
@@ -41,11 +41,12 @@ class LSFScheduler(Scheduler):
         self,
         host: RemoteHost,
         lsf: LSFOptions,
+        site: SiteConfig,
         *,
         interactive_submission_command: Sequence[str] | None = None,
     ) -> None:
         super().__init__(
-            host, interactive_submission_command=interactive_submission_command
+            host, site, interactive_submission_command=interactive_submission_command
         )
         self._lsf = lsf
 
@@ -130,7 +131,7 @@ class LSFScheduler(Scheduler):
             minutes = math.ceil(spec.time_limit.total_seconds() / 60)
             command.extend(["-W", str(minutes)])
         if spec.memory_bytes is not None:
-            divisor = spec.cores if self._lsf.resource_reserve_per_task else 1
+            divisor = spec.cores if self._site.lsf_resource_reserve_per_task else 1
             reservation_unit = divisor * _MEBIBYTE
             memory_mib = (spec.memory_bytes + reservation_unit - 1) // reservation_unit
             command.extend(["-R", f"rusage[mem={memory_mib}MB]"])

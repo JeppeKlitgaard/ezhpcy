@@ -88,7 +88,9 @@ class Rig:
         return any(job.status.phase in STARTING_PHASES for job in self.jobs)
 
     def job(self, host: api.Host, config: api.JobConfig = JOB) -> api.Job:
-        self.jobs.append(host.job(config, worker_ports=[self.worker_port]))
+        self.jobs.append(
+            host.job(config, site=api.SiteConfig(), worker_ports=[self.worker_port])
+        )
         return self.jobs[-1]
 
     def host_block(self, alias: str) -> Path:

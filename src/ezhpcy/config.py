@@ -45,6 +45,7 @@ lazy from ezhpcy.types import (
     MissingSetting,
     ProfileConfig,
     ResolvedProfileConfig,
+    SiteConfig,
     config_error,
     submission_sections,
     validated,
@@ -281,7 +282,7 @@ class _ConfigValues(BaseModel):
                 **getattr(profile, section).model_dump(exclude_unset=True),
                 **changes.get(section, {}),
             }
-            for section in ("scheduler", "resources", "timings", "lsf", "pbs")
+            for section in ("scheduler", "resources", "timings", "lsf")
         }
         values["auto_provision"] = (
             self.auto_provision if auto_provision is None else auto_provision
@@ -568,8 +569,8 @@ class Config(BaseSettings, _ConfigValues):
 
 class Profile:
     """
-    A profile of a configuration: its `login` and its `job`, each built and
-    checked when read. A profile without a setting it needs (a host, a
+    A profile of a configuration: its `login`, its `job` and its cluster's
+    `site`, each built and checked when read. A profile without a setting it needs (a host, a
     scheduler type) is still listed; reading `login` or `job` then raises
     `ConfigError` naming it.
     """
@@ -592,6 +593,11 @@ class Profile:
     def job(self) -> JobConfig:
         """The worker job."""
         return self._config.resolve_job(self.name)
+
+    @property
+    def site(self) -> SiteConfig:
+        """What the profile's cluster is like, for every job on it."""
+        return self._config.resolve_profile(self.name).site
 
     def __repr__(self) -> str:
         return f"Profile({self.name!r})"

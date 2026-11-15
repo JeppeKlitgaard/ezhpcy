@@ -48,7 +48,7 @@ async def main() -> None:
 
     async with (
         api.connect(profile.login, prompts=api.terminal_prompts()) as login_node,
-        login_node.job(job_config) as job,
+        login_node.job(job_config, site=profile.site) as job,
     ):
         node = job.host
         print(f"Job {job.id} on {(await node.run(['hostname'])).strip()}")

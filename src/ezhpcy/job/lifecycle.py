@@ -75,7 +75,7 @@ lazy from ezhpcy.scheduler.base import (
 )
 lazy from ezhpcy.ssh import RemoteHost, TCPDestination, ensure_directory
 lazy from ezhpcy.tunnel import TunnelError
-lazy from ezhpcy.types import JobConfig, RemoteState, SubmissionMode
+lazy from ezhpcy.types import JobConfig, RemoteState, SiteConfig, SubmissionMode
 lazy from ezhpcy.utils import local_machine_id
 lazy from ezhpcy.worker.control import (
     JOB_RECORD_NAME,
@@ -133,6 +133,7 @@ class JobLifecycle:
         *,
         host: RemoteHost,
         config: JobConfig,
+        site: SiteConfig,
         worker_ports: tuple[int, ...] = (),
         prepare: Prepare | None = None,
         job_name: str = "ezhpcy-worker",
@@ -140,6 +141,7 @@ class JobLifecycle:
     ) -> None:
         self.host = host
         self.config = config
+        self.site = site
         self.credentials: WorkerCredentials
         self._worker_ports = worker_ports or select_ports(DEFAULT_WORKER_PORTS)
         self._prepare = prepare
@@ -394,7 +396,7 @@ class JobLifecycle:
         else:
             await validate_worker_infrastructure(host, remote_state, credentials)
             authorized_key = await asyncio.to_thread(credentials.authorized_key)
-        scheduler = create_scheduler(config, host)
+        scheduler = create_scheduler(config, self.site, host)
         logger.debug(
             t"Worker request: queue={resources.queue!r:detail} "
             t"cores={resources.cores:detail} gpus={resources.gpus:detail} "

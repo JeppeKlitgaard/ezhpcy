@@ -15,6 +15,7 @@ lazy import asyncssh
 from ezhpcy.messages import MessageError
 lazy from ezhpcy.scheduler.types import SchedulerType
 lazy from ezhpcy.ssh import CommandFailed, RemoteHost
+lazy from ezhpcy.types import SiteConfig
 
 # How much output to read from an interactive submission at a time.
 _READ_BYTES = 64 * 1024
@@ -124,10 +125,12 @@ class Scheduler(ABC):
     def __init__(
         self,
         host: RemoteHost,
+        site: SiteConfig,
         *,
         interactive_submission_command: Sequence[str] | None = None,
     ) -> None:
         self._host = host
+        self._site = site
         self._interactive_submission_command = (
             tuple(interactive_submission_command)
             if interactive_submission_command is not None

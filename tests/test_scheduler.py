@@ -24,8 +24,8 @@ from ezhpcy.types import (
     JobConfig,
     Login,
     LSFOptions,
-    PBSOptions,
     SchedulerSettings,
+    SiteConfig,
     SubmissionMode,
 )
 from tests.support.sshserver import Handler, Invocation, SSHTestServer, reply
@@ -133,11 +133,11 @@ def _failed(stderr: str) -> CommandFailed:
 
 
 def _lsf(host: Any, **lsf: Any) -> LSFScheduler:
-    return LSFScheduler(host, LSFOptions(**lsf))
+    return LSFScheduler(host, LSFOptions(**lsf), SiteConfig())
 
 
-def _pbs(host: Any, **pbs: Any) -> PBSScheduler:
-    return PBSScheduler(host, PBSOptions(**pbs))
+def _pbs(host: Any, **site: Any) -> PBSScheduler:
+    return PBSScheduler(host, SiteConfig(**site))
 
 
 # Shared behaviour of both adapters
@@ -146,21 +146,21 @@ def _pbs(host: Any, **pbs: Any) -> PBSScheduler:
 @dataclass(frozen=True)
 class Adapter:
     scheduler: type[LSFScheduler | PBSScheduler]
-    config: LSFOptions | PBSOptions
     # The interactive submission command, and its output naming `job_id`.
     submit_command: str
     submitted: str
     job_id: str
 
     def create(self, host: Any, **options: Any) -> Scheduler:
-        return self.scheduler(host, self.config, **options)
+        if self.scheduler is LSFScheduler:
+            return LSFScheduler(host, LSFOptions(), SiteConfig(), **options)
+        return PBSScheduler(host, SiteConfig(), **options)
 
 
 _ADAPTERS = [
     pytest.param(
         Adapter(
             LSFScheduler,
-            LSFOptions(),
             "bsub",
             "Job <2718> is submitted to queue <hpcint>.\r\n",
             "2718",
@@ -170,7 +170,6 @@ _ADAPTERS = [
     pytest.param(
         Adapter(
             PBSScheduler,
-            PBSOptions(),
             "qsub",
             "qsub: waiting for job 690874.hnode41 to start\r\n",
             "690874.hnode41",
@@ -484,16 +483,18 @@ async def test_lsf_interactive_submission_uses_site_profile():
     host = FakeHost(
         process=FakeProcess(b"Job <2718> is submitted to queue <hpcint>.\r\n")
     )
-    scheduler = _lsf(
+    scheduler = LSFScheduler(
         host,
-        application_profile="qrsh",
-        submission_environment={
-            "ESUB_BYPASS": "1",
-            "ESUB_QUIET": "1",
-            "LSF_QRSH": "true",
-        },
-        export_environment=["TERM", "LSF_QRSH"],
-        resource_reserve_per_task=True,
+        LSFOptions(
+            application_profile="qrsh",
+            submission_environment={
+                "ESUB_BYPASS": "1",
+                "ESUB_QUIET": "1",
+                "LSF_QRSH": "true",
+            },
+            export_environment=["TERM", "LSF_QRSH"],
+        ),
+        SiteConfig(lsf_resource_reserve_per_task=True),
     )
     spec = JobSpec(
         command=(_COMMAND, "54321"),
@@ -758,7 +759,7 @@ async def test_pbs_uses_the_configured_command_directory():
         json.dumps({"Jobs": {"42.server": {"job_state": "R"}}}),
         process=FakeProcess(b"qsub: waiting for job 42.server to start\n"),
     )
-    scheduler = _pbs(host, command_directory=PurePosixPath("/opt/pbspro/bin"))
+    scheduler = _pbs(host, pbs_command_directory=PurePosixPath("/opt/pbspro/bin"))
 
     await scheduler.submit_interactive(
         JobSpec(command=("true",), name="ezhpcy-worker", queue="workq"),
@@ -976,6 +977,7 @@ async def test_create_scheduler_configures_lsf_from_the_profile():
             ),
             lsf=LSFOptions(application_profile="qrsh"),
         ),
+        SiteConfig(),
         host,
     )
 
@@ -996,8 +998,8 @@ async def test_create_scheduler_configures_pbs_from_the_profile():
                 submission_mode=SubmissionMode.INTERACTIVE,
                 interactive_submission_command=("linuxsh",),
             ),
-            pbs=PBSOptions(command_directory=PurePosixPath("/opt/pbspro/bin")),
         ),
+        SiteConfig(pbs_command_directory=PurePosixPath("/opt/pbspro/bin")),
         host,
     )
 

@@ -7,7 +7,7 @@ lazy from pathlib import PurePosixPath
 from ezhpcy.scheduler.base import JobInfo, JobSpec, JobState, Scheduler, SchedulerError
 from ezhpcy.scheduler.types import SchedulerType
 lazy from ezhpcy.ssh import CommandFailed, RemoteHost
-lazy from ezhpcy.types import PBSOptions
+lazy from ezhpcy.types import SiteConfig
 
 _JOB_ID_PATTERN = re.compile(r"\d+(?:\.[A-Za-z0-9_.-]+)?")
 _JOB_NOT_FOUND_PATTERN = re.compile(r"unknown\s+job\s+id", re.IGNORECASE)
@@ -30,16 +30,16 @@ class PBSScheduler(Scheduler):
     def __init__(
         self,
         host: RemoteHost,
-        pbs: PBSOptions,
+        site: SiteConfig,
         *,
         interactive_submission_command: Sequence[str] | None = None,
     ) -> None:
         super().__init__(
-            host, interactive_submission_command=interactive_submission_command
+            host, site, interactive_submission_command=interactive_submission_command
         )
-        self._qsub = _executable(pbs.command_directory, "qsub")
-        self._qstat = _executable(pbs.command_directory, "qstat")
-        self._qdel = _executable(pbs.command_directory, "qdel")
+        self._qsub = _executable(site.pbs_command_directory, "qsub")
+        self._qstat = _executable(site.pbs_command_directory, "qstat")
+        self._qdel = _executable(site.pbs_command_directory, "qdel")
 
     async def submit(self, spec: JobSpec) -> str:
         output = await self._run(self._submit_command(spec), t"submit a job")

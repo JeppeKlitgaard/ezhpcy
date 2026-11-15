@@ -283,7 +283,6 @@ def test_tunnel_command_logs_inherited_submission_options_ignored_by_wrapper(
         ("resources", "exclusive", False),
         ("resources", "time_limit", "1:00"),
         ("resources", "memory", "1GB"),
-        ("lsf", "resource_reserve_per_task", False),
         ("lsf", "application_profile", "qrsh"),
         ("lsf", "submission_environment", {"LSF_QRSH": "true"}),
         ("lsf", "export_environment", ["TERM"]),
@@ -581,7 +580,8 @@ def test_anonymous_alias_digest_excludes_timings() -> None:
 def test_anonymous_alias_digest_is_stable(monkeypatch: pytest.MonkeyPatch) -> None:
     """A change to the digest renames every anonymous tunnel, so make it on purpose.
 
-    Pinned from before `time_limit` became a `timedelta`.
+    Pinned when `lsf.resource_reserve_per_task` and `pbs.command_directory`
+    moved to the profile's `site`, out of the job.
     """
     monkeypatch.setattr(types_module, "local_machine_id", lambda: "test-machine")
     resolved = digest(
@@ -599,7 +599,7 @@ def test_anonymous_alias_digest_is_stable(monkeypatch: pytest.MonkeyPatch) -> No
     )
 
     assert resolved == (
-        "9a8261e14d47a7b754e2d99f08e637a816f77cbc8a9e177c10804875f6f6e18a"
+        "c5b7d03fbf63c23870a8cb1b0f8fe69a3675396f31358ce6c49b2d6a51f5d4fa"
     )
 
 
@@ -612,7 +612,6 @@ def test_anonymous_alias_digest_is_stable(monkeypatch: pytest.MonkeyPatch) -> No
         ("resources", "cores", 16),
         ("scheduler", "type", "PBS"),
         ("scheduler", "submission_mode", "interactive"),
-        ("pbs", "command_directory", "/opt/pbspro/bin"),
     ],
 )
 def test_anonymous_alias_digest_includes_job_configuration(

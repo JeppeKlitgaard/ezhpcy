@@ -106,6 +106,7 @@ _TEMPLATE_FUEL = 1_000_000
 FIELD_PLACEHOLDERS = {
     "run.command": _HOST_PLACEHOLDERS,
     "run.env": _HOST_PLACEHOLDERS | {"token"},
+    "ready.path": frozenset({"token"}),
     "access.url": frozenset({"token", "local_port", "alias"}),
     "access.status_hints": frozenset({"token", "local_port", "alias"}),
     "argument.default": _PATH_DEFAULT_PLACEHOLDERS,
@@ -1077,6 +1078,7 @@ class App(_Entry):
             yield "run.command", f"run.command[{index}]", argument
         for name, value in self.run.env.items():
             yield "run.env", f"run.env.{name}", value
+        yield "ready.path", "ready.path", self.ready.path
         yield from _access_templates(self.access)
 
     def available(self) -> set[str]:

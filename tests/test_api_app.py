@@ -21,6 +21,7 @@ from typing import Any
 import pytest
 
 from ezhpcy import api
+from ezhpcy.app import run as app_run
 from tests.support.api import JOB, LOGIN, JobRig, SlowPorts
 from tests.support.apps import MINIMAL_APP, AppRig, http_app, write_project
 from tests.support.login import CACHE, REMOTE_STATE
@@ -174,6 +175,27 @@ async def test_a_tcp_app_listens_on_the_port_its_launch_script_picks(
     [warning] = warnings(caplog)
     assert "App board v2.18 listens on a TCP port" in warning
     assert "other users on its host can reach it" in warning
+
+
+async def test_ready_path_renders_the_app_token(
+    rig: AppRig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    paths: list[str] = []
+
+    async def check_ready(host: Any, destination: Any, ready: Any) -> None:
+        paths.append(ready.path)
+
+    monkeypatch.setattr(app_run, "check_ready", check_ready)
+    manifest = LAB.replace(
+        'ready = { check = "http", path = "/api" }',
+        'ready = { check = "http", path = "/api?token={{ token }}" }',
+    )
+
+    async with api.connect(LOGIN) as host:
+        lab = await host.run_app(config_of(tmp_path, manifest).app("lab"))
+
+    token = lab.url.rsplit("token=", 1)[1]
+    assert paths == [f"/api?token={token}"]
 
 
 async def test_an_app_that_never_becomes_ready_fails_with_its_stderr(

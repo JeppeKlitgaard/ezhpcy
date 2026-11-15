@@ -900,6 +900,10 @@ def test_a_broken_template_is_said_to_be(template: str) -> None:
             "access.status_hints[1]: access.status_hints does not take {{ workdir }}",
         ),
         (
+            'ready = { check = "http", path = "/?port={{ local_port }}" }',
+            "ready.path: ready.path does not take {{ local_port }}",
+        ),
+        (
             'run.env.X = "{{ port }}"',
             "run.env.X: {{ port }} is not set for endpoint.transport = 'socket'",
         ),
@@ -927,6 +931,7 @@ ACTION_TABLE = '[ezhpcy.app.lab."v1.0".action.go]\n'
 UNKNOWN_PLACEHOLDER_IN = {
     "run.command": MINIMAL_APP.replace("{{ socket }}", "{{ nope }}"),
     "run.env": MINIMAL_APP + 'run.env.X = "{{ nope }}"\n',
+    "ready.path": MINIMAL_APP + 'ready = { check = "http", path = "/{{ nope }}" }\n',
     "access.url": MINIMAL_APP + 'access.url = "http://x/{{ nope }}"\n',
     "access.status_hints": MINIMAL_APP + 'access.status_hints = ["{{ nope }}"]\n',
     "argument.default": (

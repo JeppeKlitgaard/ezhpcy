@@ -357,7 +357,9 @@ async def _run(
     else:
         destination = SocketDestination(process.run_dir / SOCKET_NAME)
     try:
-        await _wait_until_ready(host, destination, app, process)
+        await _wait_until_ready(
+            host, destination, app, process, {"token": token, **arguments}
+        )
     except AppFailed as failed:
         failed.stderr = await log_stderr(process)
         raise
@@ -593,13 +595,19 @@ def _warn_if_reachable(app: App) -> None:
 
 
 async def _wait_until_ready(
-    host: RemoteHost, destination: Destination, app: App, process: Process
+    host: RemoteHost,
+    destination: Destination,
+    app: App,
+    process: Process,
+    values: Mapping[str, object],
 ) -> None:
     """
     Check the app through the host's connection until it is ready, for at most
     `ready.timeout`, giving up early if its process exits.
     """
-    ready = app.ready
+    ready = app.ready.model_copy(
+        update={"path": render("ready.path", app.ready.path, values)}
+    )
     logger.info(
         t"Waiting for app {app!s:name} to be ready {f'(check: {ready.check})':aside}."
     )

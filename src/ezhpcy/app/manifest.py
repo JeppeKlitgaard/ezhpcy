@@ -1422,9 +1422,12 @@ def collect_apps(
 
 
 def builtin_manifests() -> list[Path]:
-    """The manifests EzHPCy ships, one directory each in `ezhpcy/app/builtins/`."""
+    """
+    The manifests EzHPCy ships: every directory under `ezhpcy/app/builtins/`
+    holding one, at any depth, such as one directory per version of an app.
+    """
     builtins = Path(__file__).parent / "builtins"
-    return sorted(path.parent for path in builtins.glob(f"*/{MANIFEST_FILE_NAME}"))
+    return sorted(path.parent for path in builtins.rglob(MANIFEST_FILE_NAME))
 
 
 def choose_app(

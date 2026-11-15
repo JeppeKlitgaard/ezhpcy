@@ -13,6 +13,7 @@ from types import ModuleType
 
 import pytest
 
+import ezhpcy.app
 from ezhpcy import api
 from ezhpcy.app.manifest import (
     FIELD_PLACEHOLDERS,
@@ -31,7 +32,7 @@ from ezhpcy.types import AppsConfig
 from tests.support.apps import MINIMAL_APP, lock_file, write_project
 
 BUILTIN_MANIFESTS = builtin_manifests()
-BUILTINS = BUILTIN_MANIFESTS[0].parent
+BUILTINS = Path(ezhpcy.app.__file__).parent / "builtins"
 LAB = 'ezhpcy.app.lab."v1.0"'
 
 # JupyterLab, written with sub-tables and with dotted keys.
@@ -119,7 +120,9 @@ def versions(*tables: tuple[str, str]) -> str:
 # Loading
 
 
-@pytest.mark.parametrize("path", BUILTIN_MANIFESTS, ids=lambda path: path.name)
+@pytest.mark.parametrize(
+    "path", BUILTIN_MANIFESTS, ids=lambda path: path.relative_to(BUILTINS).as_posix()
+)
 def test_the_builtins_load(path: Path) -> None:
     manifest = Manifest.load(path)
 

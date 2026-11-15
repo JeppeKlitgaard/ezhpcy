@@ -242,12 +242,24 @@ class LSFOptions(_SubConfig):
 class SiteConfig(_SubConfig):
     """What a cluster is like: the same for every job on it."""
 
+    # Where the site keeps its submission wrappers (e.g. DTU's `linuxsh`), on the
+    # login node, to list them among the ways into its queues.
+    wrapper_directories: tuple[PurePosixPath, ...] = ()
     # Where PBS's commands (`qsub`, `qstat`, ...) are, when they aren't on the
     # login node's `PATH`.
     pbs_command_directory: PurePosixPath | None = None
     # The site's LSF reserves memory per core (`RESOURCE_RESERVE_PER_TASK`), so
     # a job asks for its memory divided by its cores.
     lsf_resource_reserve_per_task: bool = False
+
+    @field_validator("wrapper_directories")
+    @classmethod
+    def validate_wrapper_directories(
+        cls, value: tuple[PurePosixPath, ...]
+    ) -> tuple[PurePosixPath, ...]:
+        if not all(directory.is_absolute() for directory in value):
+            raise ValueError("wrapper directories must be absolute paths on the host")
+        return value
 
 
 class AppsConfig(_SubConfig):

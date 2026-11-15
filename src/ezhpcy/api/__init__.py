@@ -89,7 +89,12 @@ lazy from typing import Self
 lazy from pydantic import SecretStr
 
 from ezhpcy.ssh_errors import translating_ssh_errors
-lazy from ezhpcy import forward as _forward, login as _login, process as _process
+lazy from ezhpcy import (
+    forward as _forward,
+    login as _login,
+    process as _process,
+    scheduler as _scheduler,
+)
 lazy from ezhpcy.app import ActionError, AppFailed, ManifestError, run as _app_run
 lazy from ezhpcy.app.action import ActionRun, ActionState
 lazy from ezhpcy.app.manifest import (
@@ -139,7 +144,16 @@ lazy from ezhpcy.provision_local import (
     WorkerCredentials,
     missing_credentials,
 )
-lazy from ezhpcy.scheduler.base import JobInfo, JobState
+lazy from ezhpcy.scheduler.base import JobInfo, JobState, SchedulerError
+lazy from ezhpcy.scheduler.queues import (
+    Cluster,
+    ExecutionHost,
+    Limits,
+    LimitSource,
+    Queue,
+    Submission,
+    Unavailable,
+)
 lazy from ezhpcy.scheduler.types import SchedulerType
 lazy from ezhpcy.ssh import (
     CommandFailed,
@@ -190,12 +204,14 @@ __all__ = [
     "Check",
     "CheckStatus",
     "ChoiceParameter",
+    "Cluster",
     "CommandFailed",
     "Config",
     "ConfigError",
     "ConnectionFailed",
     "Destination",
     "DirectoryEntry",
+    "ExecutionHost",
     "Forward",
     "ForwardStatus",
     "Host",
@@ -213,6 +229,8 @@ __all__ = [
     "JobStatus",
     "KeyRequired",
     "LSFOptions",
+    "LimitSource",
+    "Limits",
     "Link",
     "LinkStatus",
     "Login",
@@ -234,18 +252,22 @@ __all__ = [
     "ProvisioningError",
     "Published",
     "PublishedStatus",
+    "Queue",
     "Resources",
     "RunningApp",
     "SSHError",
+    "SchedulerError",
     "SchedulerSettings",
     "SchedulerType",
     "SiteConfig",
     "SocketDestination",
     "StringParameter",
+    "Submission",
     "SubmissionCommandError",
     "SubmissionMode",
     "TCPDestination",
     "Timings",
+    "Unavailable",
     "connect",
     "diagnose",
     "missing_credentials",
@@ -345,6 +367,27 @@ class Host:
         the dynamic range.
         """
         return Job(self._host, config, site, tuple(worker_ports))
+
+    async def queues(
+        self,
+        config: JobConfig,
+        *,
+        site: SiteConfig,
+        only_available_to_me: bool = False,
+    ) -> Cluster:
+        """
+        The cluster's hosts and queues, as `config`'s scheduler on `site`
+        describes them to the login user, from this host: the login node, or a
+        job's node where the scheduler's commands are found too. The site's
+        wrappers (such as DTU's `linuxsh`), in its `wrapper_directories`, are
+        among the ways into them. With `only_available_to_me`, only the queues
+        that would run the user's jobs, and their hosts. Raises `SchedulerError`
+        if a command fails. Cancelled, its session is closed.
+        """
+        scheduler = _scheduler.create_scheduler(config, site, self._host)
+        return await scheduler.describe_queues(
+            only_available_to_me=only_available_to_me
+        )
 
     @translating_ssh_errors
     async def run(self, argv: Sequence[str], *, stdin: str | None = None) -> str:

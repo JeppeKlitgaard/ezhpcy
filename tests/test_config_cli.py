@@ -2,7 +2,7 @@ import os
 import subprocess
 import sys
 import tomllib
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -254,6 +254,10 @@ def test_config_load_creates_dtu_config_case_insensitively(
     dtu_base_pbs = loaded_config.resolve_profile("dtu-base-pbs")
     assert str(dtu_base_pbs.site.pbs_command_directory) == "/opt/pbspro/bin"
     assert dtu_base_pbs.site.lsf_resource_reserve_per_task
+    assert dtu_base_pbs.site.wrapper_directories == (
+        PurePosixPath("/lsf/local/bin"),
+        PurePosixPath("/apps9/dcc/bin"),
+    )
 
 
 def test_config_load_existing_file_defaults_to_no(

@@ -7,6 +7,7 @@ with the in-process SSH servers and the fakes of `tests.support`.
 
 import asyncio
 import json
+import shlex
 import socket
 import threading
 import time
@@ -17,6 +18,7 @@ import pytest
 
 from ezhpcy import api, process as process_module
 from tests.support.api import LOGIN, JobRig, SlowPorts
+from tests.support.scheduler import answer_batch
 from tests.support.sshserver import Invocation, SSHTestServer, reply
 from tests.support.tunnel import JOB_ID, control_dirs, unused_port
 from tests.support.worker import NODE, FakeProcess, FakeProcesses, quick_processes
@@ -92,6 +94,60 @@ async def test_run_returns_stdout_and_raises_command_failed(
 
     assert str(failed.value) == "Remote command failed (1): nope"
     assert (failed.value.exit_status, failed.value.stderr) == (1, "nope\n")
+
+
+async def test_queues_describes_the_clusters_queues_with_the_sites_wrappers(
+    login: SSHTestServer,
+) -> None:
+    commands: list[list[str]] = []
+    responses = {
+        "qstat -Bf": json.dumps({"pbs_version": "20.0.0", "Server": {"server1": {}}}),
+        "qstat -Qf": json.dumps(
+            {
+                "Queue": {
+                    "openq": {"enabled": "True", "started": "True"},
+                    "closedq": {"enabled": "False", "started": "True"},
+                }
+            }
+        ),
+        "pbsnodes -a": json.dumps(
+            {"nodes": {"n1": {"queue": "openq", "resources_available": {"ncpus": 8}}}}
+        ),
+        "^id -Gn": "users\n",
+        "find -L": (
+            "/site/bin/linuxsh:QUE=openq\n"
+            "/site/bin/linuxsh:$QSUB -I -q $QUE\n"
+            "--- PATH\n"
+            "/site/bin/linuxsh\t/site/bin/linuxsh\n"
+        ),
+    }
+
+    def login_shell(invocation: Invocation) -> None:
+        [_, _, script] = shlex.split(invocation.argv[2])
+        invocation.stdout.write(answer_batch(script, responses, commands))
+
+    login.command("bash -lc", login_shell)
+    config = api.JobConfig(
+        scheduler=api.SchedulerSettings(
+            type=api.SchedulerType.PBS, submission_mode=api.SubmissionMode.BATCH
+        )
+    )
+    site = api.SiteConfig(
+        wrapper_directories=(PurePosixPath("/site/bin"),),
+        pbs_command_directory=PurePosixPath("/opt/pbs/bin"),
+    )
+
+    async with api.connect(LOGIN) as host:
+        cluster = await host.queues(config, site=site, only_available_to_me=True)
+
+    assert (cluster.name, cluster.user) == ("server1", "alice")
+    [queue] = cluster.queues
+    assert (queue.name, queue.hosts) == ("openq", ("n1",))
+    assert queue.submissions[0] == api.Submission(
+        interactive=True, command=PurePosixPath("/site/bin/linuxsh")
+    )
+    assert ["/opt/pbs/bin/qstat", "-Qf", "-F", "json"] in commands
+    assert commands[-1][-2:] == ["scan", "/site/bin"]
 
 
 async def test_put_and_get_copy_files(login: SSHTestServer, tmp_path: Path) -> None:

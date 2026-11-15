@@ -6,6 +6,8 @@ lazy from pathlib import PurePosixPath
 
 from ezhpcy.scheduler.base import JobInfo, JobSpec, JobState, Scheduler, SchedulerError
 from ezhpcy.scheduler.types import SchedulerType
+lazy from ezhpcy.scheduler import pbs_queues
+lazy from ezhpcy.scheduler.queues import Cluster
 lazy from ezhpcy.ssh import CommandFailed, RemoteHost
 lazy from ezhpcy.types import SiteConfig
 
@@ -40,6 +42,7 @@ class PBSScheduler(Scheduler):
         self._qsub = _executable(site.pbs_command_directory, "qsub")
         self._qstat = _executable(site.pbs_command_directory, "qstat")
         self._qdel = _executable(site.pbs_command_directory, "qdel")
+        self._pbsnodes = _executable(site.pbs_command_directory, "pbsnodes")
 
     async def submit(self, spec: JobSpec) -> str:
         output = await self._run(self._submit_command(spec), t"submit a job")
@@ -66,6 +69,14 @@ class PBSScheduler(Scheduler):
                     raise
                 return _ENDED
         return _parse_job_info(job_id, output)
+
+    async def describe_queues(self, *, only_available_to_me: bool = False) -> Cluster:
+        return await self._describe_queues(
+            pbs_queues.commands({"qstat": self._qstat, "pbsnodes": self._pbsnodes}),
+            optional=(),
+            parse=pbs_queues.parse,
+            only_available_to_me=only_available_to_me,
+        )
 
     def _submit_command(self, spec: JobSpec) -> list[str]:
         command = self._qsub_command(spec, interactive=False)

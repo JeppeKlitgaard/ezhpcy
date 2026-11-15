@@ -4,21 +4,25 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import ClassVar
 lazy import asyncio
+lazy import secrets
 lazy import shlex
-lazy from collections.abc import Awaitable, Callable, Sequence
-lazy from datetime import timedelta
+lazy from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
+lazy from datetime import UTC, datetime, timedelta
 lazy from pathlib import PurePosixPath
 lazy from string.templatelib import Template
 
 lazy import asyncssh
 
 from ezhpcy.messages import MessageError
+lazy from ezhpcy.scheduler.queues import Cluster, parse_scan, scan_command
 lazy from ezhpcy.scheduler.types import SchedulerType
 lazy from ezhpcy.ssh import CommandFailed, RemoteHost
 lazy from ezhpcy.types import SiteConfig
 
 # How much output to read from an interactive submission at a time.
 _READ_BYTES = 64 * 1024
+# The wrapper scan's output, among an adapter's commands.
+_WRAPPERS = "wrappers"
 
 
 class JobState(StrEnum):
@@ -182,6 +186,15 @@ class Scheduler(ABC):
         """Request cancellation of a job."""
         await self._run([self.cancel_executable, job_id], t"cancel job {job_id:detail}")
 
+    @abstractmethod
+    async def describe_queues(self, *, only_available_to_me: bool = False) -> Cluster:
+        """
+        Describe the cluster's hosts and queues as they are for the login user,
+        with the site's wrappers (in its `wrapper_directories`) among the ways to
+        submit to them. With `only_available_to_me`, only the queues that would
+        run the user's jobs, and their hosts.
+        """
+
     @property
     @abstractmethod
     def cancel_executable(self) -> str:
@@ -211,6 +224,88 @@ class Scheduler(ABC):
             raise SchedulerError(
                 t"{self.scheduler_type} failed to {operation}: {error}"
             ) from error
+
+    async def _run_all(
+        self, commands: Mapping[str, Sequence[str]], *, optional: Collection[str] = ()
+    ) -> dict[str, str | None]:
+        """
+        Run `commands` at once, in one login shell, and return their stdout. A
+        login shell can take longer to start than the commands take to run, so
+        one is started for them all. An `optional` command that fails gives
+        `None`, as one may where the site has nothing to list, such as no GPUs.
+        """
+        # Separates the commands' output, which can't contain it.
+        marker = f"ezhpcy-{secrets.token_hex(16)}"
+        keys = list(commands)
+        script = [
+            "directory=$(mktemp -d) || exit",
+            """trap 'rm -rf "$directory"' EXIT""",
+        ]
+        for index, key in enumerate(keys):
+            output = f'"$directory/{index}"'
+            script.append(
+                f"{{ {shlex.join(commands[key])}; echo $? > {output}.status; }}"
+                f" < /dev/null > {output} 2> {output}.stderr &"
+            )
+        script.append("wait")
+        for index in range(len(keys)):
+            output = f'"$directory/{index}"'
+            script.append(
+                f'printf "\\n%s %s\\n" {marker} "$(cat {output}.status)"; cat {output};'
+                f' printf "\\n%s\\n" {marker}-stderr; cat {output}.stderr'
+            )
+        output = await self._run(
+            ["bash", "-c", "\n".join(script)], t"run {len(keys):detail} commands"
+        )
+
+        results: dict[str, str | None] = {}
+        sections = output.split(f"\n{marker} ")[1:]
+        if len(sections) != len(keys):
+            raise SchedulerError(
+                t"{self.scheduler_type} printed the output of {len(sections):detail} "
+                t"of its {len(keys):detail} commands"
+            )
+        for key, section in zip(keys, sections, strict=True):
+            status, _, rest = section.partition("\n")
+            stdout, _, stderr = rest.partition(f"\n{marker}-stderr\n")
+            if status == "0":
+                results[key] = stdout
+                continue
+            command = shlex.join(commands[key])
+            error = CommandFailed(
+                command,
+                exit_status=int(status) if status.isdigit() else None,
+                exit_signal=None,
+                stdout=stdout,
+                stderr=stderr,
+            )
+            if key not in optional:
+                raise SchedulerError(
+                    t"{self.scheduler_type} failed to run {command:detail}: {error}"
+                ) from error
+            results[key] = None
+        return results
+
+    async def _describe_queues(
+        self,
+        commands: Mapping[str, Sequence[str]],
+        *,
+        optional: Collection[str],
+        parse: Callable[..., Cluster],
+        only_available_to_me: bool,
+    ) -> Cluster:
+        """Run an adapter's `commands` and the wrapper scan, and `parse` them."""
+        if directories := self._site.wrapper_directories:
+            commands = {**commands, _WRAPPERS: scan_command(directories)}
+        generated_at = datetime.now(UTC)
+        outputs = await self._run_all(commands, optional=optional)
+        cluster = parse(
+            outputs,
+            user=self._host.login.user,
+            scripts=parse_scan(outputs.pop(_WRAPPERS, None) or ""),
+            generated_at=generated_at,
+        )
+        return cluster.only_available() if only_available_to_me else cluster
 
     @staticmethod
     def _job_shell_command(spec: JobSpec) -> str:

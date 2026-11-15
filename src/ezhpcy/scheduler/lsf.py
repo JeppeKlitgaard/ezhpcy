@@ -5,6 +5,8 @@ lazy from collections.abc import Sequence
 
 from ezhpcy.scheduler.base import JobInfo, JobSpec, JobState, Scheduler, SchedulerError
 from ezhpcy.scheduler.types import SchedulerType
+lazy from ezhpcy.scheduler import lsf_queues
+lazy from ezhpcy.scheduler.queues import Cluster
 lazy from ezhpcy.ssh import RemoteHost
 lazy from ezhpcy.types import LSFOptions, SiteConfig
 
@@ -87,6 +89,14 @@ class LSFScheduler(Scheduler):
             ),
             exit_code=exit_code,
             pending_reason=None if reason in {"", "-"} else reason,
+        )
+
+    async def describe_queues(self, *, only_available_to_me: bool = False) -> Cluster:
+        return await self._describe_queues(
+            lsf_queues.commands(self._host.login.user),
+            optional=lsf_queues.OPTIONAL,
+            parse=lsf_queues.parse,
+            only_available_to_me=only_available_to_me,
         )
 
     def _interactive_command(self, spec: JobSpec) -> list[str]:

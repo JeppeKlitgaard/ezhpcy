@@ -142,6 +142,13 @@ def test_the_keepalive_interval_reaches_the_login_as_a_duration() -> None:
     assert config.profiles["base"].login.keepalive_interval == timedelta(seconds=7.5)
 
 
+def test_profile_site_wrapper_directories_must_be_absolute() -> None:
+    with pytest.raises(ValidationError, match="wrapper directories must be absolute"):
+        config_module.Config.from_mapping(
+            {"profile": {"base": {"site": {"wrapper_directories": ["bin"]}}}}
+        )
+
+
 @pytest.mark.parametrize("command", [[], ["a100sh", ""], ["a100sh", "a\0b"]])
 def test_profile_interactive_submission_command_arguments_must_be_usable(
     command: list[str],

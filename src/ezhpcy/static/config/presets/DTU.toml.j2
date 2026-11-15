@@ -33,8 +33,12 @@ timings.job_monitor_interval = 60
 [profile.dtu-base]
 description = "DTU HPC"
 inherit = "base"
+
 connection.host = "login.hpc.dtu.dk"
 connection.user = {{ user | tojson }}
+
+# The site's submission wrappers (`linuxsh`, `a100sh`, ...), for listing its queues.
+site.wrapper_directories = ["/lsf/local/bin", "/apps9/dcc/bin"]
 site.pbs_command_directory = "/opt/pbspro/bin"
 site.lsf_resource_reserve_per_task = true
 

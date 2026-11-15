@@ -1,0 +1,17 @@
+[ezhpcy]
+schema = 1
+
+[ezhpcy.app.insegt3d."v0.3.1+1"]
+description = "InSegt3D tool for interactive 3D segmentation"
+environment = { pixi = "pixi.toml", environment = "default", }
+run = {
+    command = [
+        "insegt3d",
+        "--host", "localhost",
+        "--port", "{{ port }}",
+    ],
+    env = { INSEGT3D_TOKEN = "{{ token }}", },
+}
+endpoint = { transport = "tcp", authenticates = true, }
+ready = { check = "http", path = "/?token={{ token }}", timeout = 300, }
+access = { url = "http://127.0.0.1:{{ local_port }}/?token={{ token }}", }

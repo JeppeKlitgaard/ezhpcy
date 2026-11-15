@@ -1,0 +1,13 @@
+[workspace]
+name = "insegt3d"
+channels = ["conda-forge"]
+platforms = ["linux-64"]
+
+[dependencies]
+python = "3.13.*"
+
+[pypi-dependencies]
+insegt3d = {
+    git = "https://github.com/qim-center/insegt3d.git",
+    rev = "97c487af2883bb634bc4ea5e9058ae321a5fc6bd",
+}

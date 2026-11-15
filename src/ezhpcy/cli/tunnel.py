@@ -370,8 +370,8 @@ class TunnelRun:
 
     async def start_app(self, host: api.Host, app: api.App) -> api.RunningApp | None:
         """
-        Run `app` on `host`, and print its URL, if any, once it is ready; or say why it
-        couldn't start, and return None.
+        Run `app` on `host`, until it is ready; or say why it couldn't start, and
+        return None.
         """
         try:
             running = await host.run_app(
@@ -389,9 +389,6 @@ class TunnelRun:
                 )
             )
             return None
-        self.menu.add(running)
-        if running.url is not None:
-            print_for_scripts(running.url)
         return running
 
     def show_link(self, link: api.Link) -> None:
@@ -459,12 +456,21 @@ async def serve(
                     )
                     watchers: list[asyncio.Task[None]] = []
                     try:
-                        for app in run.apps:
+                        # All at once; then each one's URL and keys in order.
+                        async with asyncio.TaskGroup() as group:
+                            starts = [
+                                None
+                                if isinstance(app, api.Link)
+                                else group.create_task(run.start_app(job.host, app))
+                                for app in run.apps
+                            ]
+                        for app, start in zip(run.apps, starts, strict=True):
                             if isinstance(app, api.Link):
                                 run.show_link(app)
-                                continue
-                            running = await run.start_app(job.host, app)
-                            if running is not None:
+                            elif start is not None and (running := start.result()):
+                                run.menu.add(running)
+                                if running.url is not None:
+                                    print_for_scripts(running.url)
                                 watchers.append(
                                     asyncio.create_task(_watch_app(running))
                                 )

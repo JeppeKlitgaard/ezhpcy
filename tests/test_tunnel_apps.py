@@ -1,9 +1,9 @@
 """
 `ezhpcy tunnel --manifest PATH --app NAME`: the apps chosen before anything
-else, then started on the job's node once the tunnel serves, in order, and
-stopped first when it ends. An app that fails to start, or exits, leaves the
-tunnel serving. Against the in-process SSH servers, the worker's sshd serving
-the apps as `test_api_app.py`'s rig does.
+else, then started on the job's node at once when the tunnel serves, printed in
+order, and stopped first when it ends. An app that fails to start, or exits,
+leaves the tunnel serving. Against the in-process SSH servers, the worker's
+sshd serving the apps as `test_api_app.py`'s rig does.
 """
 
 import asyncio
@@ -89,19 +89,28 @@ class TunnelApps:
         self.serving: Serving | None = None
         self._error: BaseException | None = None
         start_app = tunnel_cli.TunnelRun.start_app
-        started: list[api.RunningApp | None] = []
+        wait = api.Job.wait
+        # Each app's, once started or failed to.
+        started: dict[api.App, api.RunningApp | None] = {}
+        runs: list[tunnel_cli.TunnelRun] = []
 
         async def recording(
             run: tunnel_cli.TunnelRun, host: api.Host, app: api.App
         ) -> api.RunningApp | None:
-            running = await start_app(run, host, app)
-            started.append(running)
-            if len(started) == sum(isinstance(app, api.App) for app in run.apps):
-                self.serving = Serving(run, list(started), asyncio.get_running_loop())
+            runs[:] = [run]
+            started[app] = await start_app(run, host, app)
+            return started[app]
+
+        async def serving(job: api.Job) -> api.JobEnd:
+            if started:
+                [run] = runs
+                in_order = [started[app] for app in run.apps if app in started]
+                self.serving = Serving(run, in_order, asyncio.get_running_loop())
                 threading.Thread(target=self._then, args=(self.serving,)).start()
-            return running
+            return await wait(job)
 
         monkeypatch.setattr(tunnel_cli.TunnelRun, "start_app", recording)
+        monkeypatch.setattr(api.Job, "wait", serving)
 
     def _then(self, serving: Serving) -> None:
         try:
@@ -151,7 +160,7 @@ def wait_until(condition: Callable[[], bool]) -> None:
         time.sleep(0.01)
 
 
-def test_the_apps_start_on_the_node_in_order_and_stop_with_the_tunnel(
+def test_the_apps_start_on_the_node_and_stop_with_the_tunnel(
     apps: TunnelApps,
 ) -> None:
     apps.rig.serve_port()
@@ -184,10 +193,12 @@ def test_the_apps_start_on_the_node_in_order_and_stop_with_the_tunnel(
         ("board", "v2.18"),
     ]
     assert all(status.state is api.AppState.READY for status in serving.statuses)
-    # Started in order, on the node, and stopped with the tunnel.
-    first, second = serving.launched
-    assert "-- env jupyter lab" in first
-    assert "-- env tensorboard --port" in second
+    # Started on the node, in either order, and stopped with the tunnel.
+    first, second = sorted(
+        serving.launched, key=lambda script: "-- env jupyter" in script
+    )
+    assert "-- env tensorboard --port" in first
+    assert "-- env jupyter lab" in second
     assert [process.signals for process in apps.rig.processes.processes] == [
         ["TERM"],
         ["TERM"],

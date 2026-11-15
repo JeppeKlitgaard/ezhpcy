@@ -331,7 +331,8 @@ AppOpt = Annotated[
             "An app of the manifests to run on the compute node once the tunnel "
             "serves, provisioned there if needed: its newest version, or "
             "VERSION. A link is printed instead, for the tunnel's alias. May be "
-            "repeated; the apps start in order."
+            "repeated; the apps start at once, and their URLs are printed in "
+            "order once all have started."
         ),
         group=APPS_PANEL,
     ),

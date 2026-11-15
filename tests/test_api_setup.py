@@ -79,7 +79,7 @@ def test_diagnose_says_how_each_check_went_by_section(
     config = api.Config.from_mapping({})
     config.local_file.config_file.parent.mkdir(parents=True, exist_ok=True)
     config.local_file.config_file.write_text("", encoding="utf-8")
-    monkeypatch.setenv("PATH", "")
+    monkeypatch.setattr("ezhpcy.diagnose.ssh_client", lambda: None)
 
     checks = list(api.diagnose(config))
 

@@ -517,11 +517,13 @@ async def test_an_alias_ssh_would_not_reach_is_not_reserved(
         async with api.reserve_alias("gpu"):
             pytest.fail("reserved")
 
-    # Nothing is printed: the message points where the lines are.
+    # Nothing is printed, and a library user may have no CLI: the message holds
+    # the line itself.
     assert "below" not in str(caught.value)
-    assert "ezhpcy doctor" in str(caught.value)
+    assert "ezhpcy doctor" not in str(caught.value)
     assert caught.value.problem.include_lines is not None
     assert "Include" in caught.value.problem.include_lines
+    assert caught.value.problem.include_lines.splitlines()[-1] in str(caught.value)
     assert frontend.probe_alias("gpu") == caught.value.problem
 
 

@@ -54,7 +54,7 @@ def resolving_to(hostnames: dict[str, str]) -> Resolver:
 def resolved(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     """An SSH client on PATH that gives every alias the probe's block; returns
     the aliases resolved."""
-    monkeypatch.setattr(diagnose_module, "which", lambda _name: "/usr/bin/ssh")
+    monkeypatch.setattr(diagnose_module, "ssh_client", lambda: "/usr/bin/ssh")
     aliases: list[str] = []
     resolve = resolving_to({})
 
@@ -314,7 +314,7 @@ def test_doctor_skips_the_probe_without_ssh(
     resolved: list[str],
     isolated_runtime_dir: Path,
 ) -> None:
-    monkeypatch.setattr(diagnose_module, "which", lambda _name: None)
+    monkeypatch.setattr(diagnose_module, "ssh_client", lambda: None)
     write_active_host_config(worker_host("gone"), 50023)
 
     result = invoke(["doctor"])

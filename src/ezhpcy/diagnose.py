@@ -8,7 +8,6 @@ from enum import StrEnum
 lazy import secrets
 lazy from collections.abc import Iterator
 lazy from dataclasses import replace
-lazy from shutil import which
 lazy from string.templatelib import Template
 lazy from typing import Literal
 
@@ -19,6 +18,7 @@ lazy from ezhpcy.tunnel.ssh_config import (
     probe_hosts,
     prune_stale_active_configs,
     resolution_problem,
+    ssh_client,
 )
 
 
@@ -131,7 +131,7 @@ def _profile_aliases(source: Config) -> list[str]:
 
 
 def _check_ssh_config(source: Config) -> Iterator[Check]:
-    ssh = which("ssh")
+    ssh = ssh_client()
     if ssh is None:
         yield Check(
             CheckStatus.WARN,

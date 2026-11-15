@@ -14,11 +14,14 @@ INCLUDE_HINT = (
     t"If {'~/.ssh/config':path} does not include EzHPCy's SSH profiles yet, copy "
     t"the two highlighted lines below to its top, before any Host or Match block:"
 )
+SSH_FAILED_HINT = (
+    t"Fix what OpenSSH reports, then check with {'ezhpcy doctor':suggestion}."
+)
 
 
 def hint(problem: AliasProblem) -> Template:
     """The problem's fix, pointing at the Include lines printed after it."""
-    return INCLUDE_HINT if problem.include_lines is not None else problem.hint
+    return INCLUDE_HINT if problem.include_lines is not None else SSH_FAILED_HINT
 
 
 def explanation(problem: AliasProblem) -> Template:

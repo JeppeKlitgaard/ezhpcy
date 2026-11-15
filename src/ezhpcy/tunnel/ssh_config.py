@@ -17,6 +17,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 lazy import os
+lazy import shutil
 lazy import subprocess
 lazy import uuid
 lazy from collections.abc import Generator, Iterable
@@ -49,12 +50,6 @@ _PROBE_FILE_PREFIX = "probe-"
 PROBE_HOST_NAME = "ezhpcy-doctor-probe.invalid"
 _SSH_RESOLVE_TIMEOUT_SECONDS = 10
 
-INCLUDE_HINT = (
-    t"If {'~/.ssh/config':path} does not include EzHPCy's SSH profiles yet, add "
-    t"the Include lines that {'ezhpcy doctor':suggestion} shows to its top, before "
-    t"any Host or Match block."
-)
-
 
 @dataclass(frozen=True)
 class AliasProblem:
@@ -69,11 +64,12 @@ class AliasProblem:
     def hint(self) -> Template:
         """How to fix it."""
         if self.ssh_failed:
-            return (
-                t"Fix what OpenSSH reports, then check with "
-                t"{'ezhpcy doctor':suggestion}."
-            )
-        return INCLUDE_HINT
+            return t"Fix what OpenSSH reports."
+        return (
+            t"If {'~/.ssh/config':path} does not include EzHPCy's SSH profiles yet, "
+            t"add {include_line():suggestion} to its top, before any Host or Match "
+            t"block."
+        )
 
     @property
     def explanation(self) -> Template:
@@ -96,12 +92,15 @@ def ssh_config_dir() -> Path:
     return local_files.runtime_dir / SSH_CONFIG_DIRECTORY_NAME
 
 
+def include_line() -> str:
+    """The Include line that makes OpenSSH read EzHPCy's Host blocks."""
+    directory = ssh_config_dir().expanduser().resolve().as_posix()
+    return f'Include "{directory}/*.conf"'
+
+
 def include_directive() -> str:
     """Return the lines users add to their own OpenSSH configuration."""
-    directory = ssh_config_dir().expanduser().resolve().as_posix()
-    return (
-        f'# Load EzHPCy static and dynamic SSH profiles\nInclude "{directory}/*.conf"'
-    )
+    return f"# Load EzHPCy static and dynamic SSH profiles\n{include_line()}"
 
 
 def check_alias(alias: str, login: Login) -> None:
@@ -291,26 +290,41 @@ def probe_alias(alias: str) -> AliasProblem | None:
         return resolution_problem(alias)
 
 
+def ssh_client() -> str | None:
+    """
+    The OpenSSH client that other tools run for `ssh <alias>`, or `None` if
+    there is none. On Windows that is the system's OpenSSH, even where a shell
+    such as Git Bash puts its own `ssh` first on PATH.
+    """
+    if os.name == "nt":
+        system_root = os.environ.get("SystemRoot", r"C:\Windows")
+        system_client = Path(system_root, "System32", "OpenSSH", "ssh.exe")
+        if system_client.is_file():
+            return str(system_client)
+    return shutil.which("ssh")
+
+
 def resolve_alias(alias: str) -> dict[str, list[str]] | AliasProblem | None:
     """
     Ask OpenSSH how it resolves `alias` (`ssh -G`): its options, lower-case,
-    with every value in order; or the problem running it; or `None` when `ssh`
-    is not on PATH.
+    with every value in order; or the problem running it; or `None` when there
+    is no client.
     """
+    client = ssh_client()
+    if client is None:
+        logger.debug(
+            t"Skipping SSH configuration check: {'ssh':suggestion} is not on PATH."
+        )
+        return None
     try:
         result = subprocess.run(
-            ["ssh", "-G", alias],
+            [client, "-G", alias],
             capture_output=True,
             check=False,
             text=True,
             timeout=_SSH_RESOLVE_TIMEOUT_SECONDS,
             creationflags=WINDOWS_CREATION_FLAGS,
         )
-    except FileNotFoundError:
-        logger.debug(
-            t"Skipping SSH configuration check: {'ssh':suggestion} is not on PATH."
-        )
-        return None
     except (OSError, subprocess.TimeoutExpired) as error:
         return AliasProblem(f"could not run `ssh -G {alias}`: {error}", ssh_failed=True)
 

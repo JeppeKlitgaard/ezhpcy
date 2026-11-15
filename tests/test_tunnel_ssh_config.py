@@ -1,5 +1,4 @@
 import os
-import shutil
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
@@ -209,6 +208,7 @@ def fake_ssh(
             raise error
         return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
 
+    monkeypatch.setattr(ssh_config, "ssh_client", lambda: "ssh")
     monkeypatch.setattr(ssh_config.subprocess, "run", run)
     return commands
 
@@ -270,9 +270,31 @@ def test_ssh_refusing_the_configuration_is_reported_verbatim(
 
 
 def test_missing_ssh_skips_the_check(monkeypatch: pytest.MonkeyPatch) -> None:
-    fake_ssh(monkeypatch, error=FileNotFoundError("ssh"))
+    commands = fake_ssh(monkeypatch)
+    monkeypatch.setattr(ssh_config, "ssh_client", lambda: None)
 
     assert check_host_resolution(worker_host(), PORT) is None
+    assert commands == []
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows' own OpenSSH")
+def test_windows_checks_with_its_own_openssh_over_one_first_on_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    on_path = tmp_path / "git" / "usr" / "bin"
+    on_path.mkdir(parents=True)
+    (on_path / "ssh.exe").touch()
+    monkeypatch.setenv("PATH", str(on_path))
+    monkeypatch.setenv("SystemRoot", str(tmp_path / "Windows"))
+
+    # `which` gives the extension as PATHEXT spells it.
+    assert Path(str(ssh_config.ssh_client())) == on_path / "ssh.exe"
+
+    system_client = tmp_path / "Windows" / "System32" / "OpenSSH" / "ssh.exe"
+    system_client.parent.mkdir(parents=True)
+    system_client.touch()
+
+    assert ssh_config.ssh_client() == str(system_client)
 
 
 def test_hanging_ssh_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -362,7 +384,7 @@ def test_publish_leaves_out_the_include_when_ssh_fails(
     assert warnings == [
         (
             "'ssh gpu' will not reach this tunnel: line 2: Bad option. Fix what "
-            "OpenSSH reports, then check with 'ezhpcy doctor'."
+            "OpenSSH reports."
         )
     ]
     assert problem is not None
@@ -476,7 +498,7 @@ def test_probe_alias_goes_on_if_it_cannot_prune(
 
 
 requires_openssh = pytest.mark.skipif(
-    shutil.which("ssh") is None, reason="OpenSSH client is not installed"
+    ssh_config.ssh_client() is None, reason="OpenSSH client is not installed"
 )
 
 
@@ -513,7 +535,7 @@ def resolve_with_openssh(
     main_config = tmp_path / "ssh_config"
     main_config.write_text(include_directive() + "\n" + after_include, encoding="utf-8")
     result = subprocess.run(
-        ["ssh", "-F", str(main_config), "-G", alias],
+        [str(ssh_config.ssh_client()), "-F", str(main_config), "-G", alias],
         capture_output=True,
         check=False,
         text=True,

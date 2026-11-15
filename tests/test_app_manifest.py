@@ -719,6 +719,7 @@ def test_an_asset_outside_the_directory_through_a_link_is_an_error(
     ("addition", "message"),
     [
         ("resources.cores = 2", f"{LAB}.resources: unknown key"),
+        ("requires.cuda = true", f"{LAB}.requires.cuda: unknown key"),
         ('run.workdir = "work"', f"{LAB}.run.workdir: must be an absolute path"),
         ('run.env.EZHPCY_TOKEN = "x"', "EZHPCY_TOKEN is reserved"),
         ('run.env."A-B" = "x"', "'A-B' is not an environment variable name"),
@@ -758,6 +759,14 @@ def test_the_ready_timeout_is_a_duration_in_seconds(tmp_path: Path) -> None:
     manifest = load(tmp_path, MINIMAL_APP + "ready.timeout = 2.5\n")
 
     assert only(manifest).ready.timeout == timedelta(seconds=2.5)
+
+
+def test_an_app_requires_a_gpu_only_if_it_says_so(tmp_path: Path) -> None:
+    plain = load(tmp_path / "plain", MINIMAL_APP)
+    gpu = load(tmp_path / "gpu", MINIMAL_APP + "requires.gpu = true\n")
+
+    assert not only(plain).requires.gpu
+    assert only(gpu).requires.gpu
 
 
 # Placeholders

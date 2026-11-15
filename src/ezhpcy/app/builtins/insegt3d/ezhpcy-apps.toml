@@ -4,6 +4,7 @@ schema = 1
 [ezhpcy.app.insegt3d."v0.3.1+1"]
 description = "InSegt3D tool for interactive 3D segmentation"
 environment = { pixi = "pixi.toml", environment = "default", }
+requires = { gpu = true, }
 run = {
     command = [
         "insegt3d",

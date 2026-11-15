@@ -89,6 +89,20 @@ _READY_POLL_SECONDS = 1.0
 # How many lines of the app's stderr to show when it fails to start.
 _STDERR_LINES = 20
 _STATUS_LINE_LIMIT = 1024
+# Lists the device files of the host's GPUs, NVIDIA's or AMD's. A host's other
+# display devices (`/dev/dri`), such as a server's management console's, aren't
+# GPUs to compute on.
+GPU_DEVICES = [
+    "find",
+    "/dev",
+    "-maxdepth",
+    "1",
+    "-name",
+    "nvidia[0-9]*",
+    "-o",
+    "-name",
+    "kfd",
+]
 
 
 class AppState(Enum):
@@ -257,10 +271,11 @@ async def run_app(
     host's XDG cache directory.
 
     Raises `ManifestError` for an argument it can't take, before anything else;
-    `ProvisioningError`; and `AppFailed` if the app exits before it is ready, or
-    isn't within `ready.timeout`, or a path it was given isn't there, or a template
-    can't be rendered, after stopping it. Raises `TypeError` for a link, which has
-    nothing to run.
+    `AppFailed` if the host lacks what the app `requires`, before installing
+    anything; `ProvisioningError`; and `AppFailed` if the app exits before it is
+    ready, or isn't within `ready.timeout`, or a path it was given isn't there, or
+    a template can't be rendered, after stopping it. Raises `TypeError` for a
+    link, which has nothing to run.
     """
     if isinstance(app, Link):
         raise TypeError(f"{app} is a link, which has nothing to run")
@@ -289,6 +304,7 @@ async def _run(
     apps_root: PurePosixPath | None,
     arguments: Mapping[str, object],
 ) -> RunningApp:
+    await _check_requirements(host, app)
     remote_state = await host.remote_state()
     layout = AppsLayout(apps_root or remote_state.apps_root())
     prepare = provision_app if provision else validate_app
@@ -439,6 +455,12 @@ def _without_server(
     changed()
     logger.info(t"App {app!s:name} is ready, with its actions alone.")
     return RunningApp(app, None, (), None, None, attachment, actions, stopped)
+
+
+async def _check_requirements(host: RemoteHost, app: App) -> None:
+    """Fail before anything is installed if the host lacks what the app requires."""
+    if app.requires.gpu and not (await host.run(GPU_DEVICES)).strip():
+        raise AppFailed(t"app {app!s:name} needs a GPU, and its host has none")
 
 
 def _places(provisioned: ProvisionedApp, workdir: PurePosixPath) -> dict[str, str]:

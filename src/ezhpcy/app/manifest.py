@@ -463,6 +463,12 @@ class Access(_Table):
     local_port: int = Field(default=0, ge=0, le=65535)
 
 
+class Requires(_Table):
+    """What the app's host must have, checked before anything is installed."""
+
+    gpu: bool = False
+
+
 class _Parameter(_Table):
     """
     One value an app takes as it starts (an argument), or an action as it runs (an
@@ -911,6 +917,7 @@ class App(_Entry):
 
     environment: Environment
     assets: Assets | None = None
+    requires: Requires = Field(default_factory=Requires)
     run: Run | None = None
     endpoint: Endpoint | None = None
     ready: Ready = Field(default_factory=Ready)

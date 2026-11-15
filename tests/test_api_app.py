@@ -25,7 +25,7 @@ from ezhpcy.app import run as app_run
 from tests.support.api import JOB, LOGIN, JobRig, SlowPorts
 from tests.support.apps import MINIMAL_APP, AppRig, http_app, write_project
 from tests.support.login import CACHE, REMOTE_STATE
-from tests.support.sshserver import SSHTestServer
+from tests.support.sshserver import SSHTestServer, reply
 from tests.support.tunnel import JOB_ID, control_dirs, unused_port
 from tests.support.worker import NODE, FakeProcess, FakeProcesses
 
@@ -175,6 +175,32 @@ async def test_a_tcp_app_listens_on_the_port_its_launch_script_picks(
     [warning] = warnings(caplog)
     assert "App board v2.18 listens on a TCP port" in warning
     assert "other users on its host can reach it" in warning
+
+
+async def test_an_app_that_requires_a_gpu_fails_first_on_a_host_without_one(
+    rig: AppRig, tmp_path: Path
+) -> None:
+    rig.server.command("find /dev", reply())
+    app = config_of(tmp_path, LAB + "requires.gpu = true\n").app("lab")
+
+    async with api.connect(LOGIN) as host:
+        with pytest.raises(api.AppFailed, match="needs a GPU, and its host has none"):
+            await host.run_app(app)
+
+    assert (rig.pixi.installs, rig.started) == ([], 0)
+
+
+@pytest.mark.parametrize("device", ["/dev/nvidia0", "/dev/kfd"])
+async def test_an_app_that_requires_a_gpu_runs_on_a_host_with_one(
+    rig: AppRig, tmp_path: Path, device: str
+) -> None:
+    rig.server.command("find /dev", reply(stdout=f"{device}\n"))
+    app = config_of(tmp_path, LAB + "requires.gpu = true\n").app("lab")
+
+    async with api.connect(LOGIN) as host:
+        lab = await host.run_app(app)
+
+    assert lab.url is not None
 
 
 async def test_ready_path_renders_the_app_token(

@@ -506,30 +506,31 @@ class Host:
         return once it is ready and forwarded to `local_port` here (by default
         its `access.local_port`, by default a free one). Attached to the host
         until stopped. See `RunningApp`. Of an app with actions alone, only the
-        first step below happens. `arguments` are the values of its arguments
+        first two steps below happen. `arguments` are the values of its arguments
         (`App.argument`), for all of its templates.
 
         In order:
 
-        1. with `provision`, its environment and assets, and EzHPCy's own Pixi,
+        1. The host is checked for what the app `requires`, such as a GPU.
+        2. With `provision`, its environment and assets, and EzHPCy's own Pixi,
            are installed on the host unless they are; without, they are only
            checked. They live under `apps_root`, by default `ezhpcy-apps` in
            the host's XDG cache directory; on a cluster, on the filesystem its
            nodes share.
-        2. It starts as a process (`start`), through EzHPCy's Pixi, in its
+        3. It starts as a process (`start`), through EzHPCy's Pixi, in its
            workdir: not through a login shell, so the host's profile and
            modules aren't read.
-        3. Its readiness check runs through the host's connection, until it
+        4. Its readiness check runs through the host's connection, until it
            passes, the app exits, or `ready.timeout` passes.
-        4. A loopback port here is forwarded to it (`forward`): to its socket
+        5. A loopback port here is forwarded to it (`forward`): to its socket
            in the process's run directory, or to `127.0.0.1` on the host.
 
         Several runs of one app may run at once; they share its workdir.
         Raises `ManifestError` first for an argument it can't take
         (`App.checked_arguments` says so without running anything);
-        `ProvisioningError`; and `AppFailed` (with its stderr's last
-        lines) if it exits before it is ready or isn't ready in time, once it
-        has been stopped; `SSHError` if the connection fails. Raises `TypeError`
+        `AppFailed` if the host lacks what the app requires; `ProvisioningError`;
+        and `AppFailed` (with its stderr's last lines) if it exits before it is
+        ready or isn't ready in time, once it has been stopped; `SSHError` if the connection fails. Raises `TypeError`
         for a `Link`, which runs nothing.
         Failing or cancelled, it stops what it started; an install it was
         waiting for may still run to its end on the host, and the next one

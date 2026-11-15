@@ -237,7 +237,7 @@ def test_a_manifest_describes_actions_fully(tmp_path: Path) -> None:
         ),
         (
             'run.command = ["{{ a }}"]\ninput.a = { type = "path", default = "{{ token }}/x" }',
-            "input.a.default: a path's default does not take {{ token }}",
+            "input.a.default: action.input.default does not take {{ token }}",
         ),
         (
             'run.command = ["{{ a }}"]\ninput.a = { type = "path", default = "{{ assets }}/x" }',
@@ -988,7 +988,15 @@ def test_arguments_are_checked_without_running_anything(tmp_path: Path) -> None:
                 '[ezhpcy.app.lab."v1.0".argument.a]\ntype = "path"\n'
                 'default = "{{ token }}/x"\n'
             ),
-            "argument.a.default: a path's default does not take {{ token }}",
+            "argument.a.default: argument.default does not take {{ token }}",
+        ),
+        (
+            (
+                '[ezhpcy.app.lab."v1.0".argument.a]\ntype = "path"\n'
+                '[ezhpcy.app.lab."v1.0".argument.b]\ntype = "path"\n'
+                'default = "{{ a }}/x"\n'
+            ),
+            "argument.b.default: argument.default does not take {{ a }}",
         ),
         (
             (

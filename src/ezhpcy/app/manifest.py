@@ -10,7 +10,9 @@ unknown keys are errors.
 `Manifest.load` reads the file and checks everything that can be checked here:
 the models' rules, the names and versions, the Pixi files and lock file, the
 assets, and the placeholders. Placeholders (`{name}`, `str.format` syntax) are
-rendered by `render`, the one renderer, which shares its parser with the checks.
+rendered by `render`, the one renderer, which gives each field only the
+placeholders `FIELD_PLACEHOLDERS` says it takes, and shares its parser with the
+checks.
 
 Names follow the rules for a Python package's name, and are compared normalised
 (`My_App` is `my-app`); versions are `v` and a PEP 440 version, compared as
@@ -93,23 +95,25 @@ ENVIRONMENT_VARIABLES = {
 _HOST_PLACEHOLDERS = frozenset({"socket", "port", "run_dir", "assets", "workdir"})
 # The app's, not the action's own run: an action has no `run_dir`.
 _ACTION_PLACEHOLDERS = _HOST_PLACEHOLDERS - {"run_dir"}
-# What a `path` input's default may use.
+# What a `path` parameter's default may use: where the app's work is on its host.
 _PATH_DEFAULT_PLACEHOLDERS = frozenset({"assets", "workdir"})
 # As `{{ flag }}` renders, for a command line, not as Python spells them.
 _BOOLEAN_TEXT = {True: "true", False: "false"}
 # Far more than a manifest's template needs, and an end to one that never would.
 _TEMPLATE_FUEL = 1_000_000
-# The placeholders each field takes. `{{ token }}` is not in `run.command`: argv can
-# be read by other users on the host.
+# The built-in placeholders each field takes, which `render` gives it and no others.
+# `{{ token }}` is not in `run.command`: argv can be read by other users on the host.
 FIELD_PLACEHOLDERS = {
     "run.command": _HOST_PLACEHOLDERS,
     "run.env": _HOST_PLACEHOLDERS | {"token"},
     "access.url": frozenset({"token", "local_port", "alias"}),
     "access.status_hints": frozenset({"token", "local_port", "alias"}),
+    "argument.default": _PATH_DEFAULT_PLACEHOLDERS,
     "action.run.command": _ACTION_PLACEHOLDERS,
     "action.run.env": _ACTION_PLACEHOLDERS | {"token"},
     # Known before anything starts, so arguments alone.
     "action.trigger.every": frozenset[str](),
+    "action.input.default": _PATH_DEFAULT_PLACEHOLDERS,
 }
 _ALL_PLACEHOLDERS = frozenset(ENVIRONMENT_VARIABLES) | {"local_port", "alias"}
 
@@ -142,25 +146,36 @@ def placeholders(template: str) -> set[str]:
         raise ValueError(_why(error)) from None
 
 
-def render(template: str, values: Mapping[str, object]) -> str:
+def render(field: str, template: str, values: Mapping[str, object]) -> str:
     """
-    Render `template` with `values`, which aren't rendered in turn. Every field
-    that takes placeholders is rendered here. Raises `ValueError` if it can't be,
-    such as for a value it uses that has none.
+    Render `template`, the manifest's `field` (a key of `FIELD_PLACEHOLDERS`), with
+    `values`, which aren't rendered in turn: the built-in placeholders the field
+    takes, and the manifest's own (arguments, inputs). Every field that takes
+    placeholders is rendered here. Raises `ValueError` if it can't be, such as for
+    a value it uses that has none.
     """
+    takes = FIELD_PLACEHOLDERS[field]
+    given = {
+        name: value
+        for name, value in values.items()
+        if name in takes or name not in _ALL_PLACEHOLDERS
+    }
     try:
-        return _environment().render_str(template, **values)
+        return _environment().render_str(template, **given)
     except minijinja.TemplateError as error:
         raise ValueError(_why(error)) from None
 
 
-def render_command(templates: Iterable[str], values: Mapping[str, object]) -> list[str]:
+def render_command(
+    field: str, templates: Iterable[str], values: Mapping[str, object]
+) -> list[str]:
     """
-    The arguments of a command. One with a block that renders empty is left out, so
-    that `{% if verbose %}--verbose{% endif %}` is one argument or none; an empty
-    value alone stays, as an empty argument.
+    The arguments of a command, the manifest's `field`, as `render` renders them.
+    One with a block that renders empty is left out, so that `{% if verbose
+    %}--verbose{% endif %}` is one argument or none; an empty value alone stays, as
+    an empty argument.
     """
-    rendered = ((template, render(template, values)) for template in templates)
+    rendered = ((template, render(field, template, values)) for template in templates)
     return [text for template, text in rendered if text or "{%" not in template]
 
 
@@ -747,7 +762,7 @@ class Trigger(_Table):
 
 
 def _rendered_every(template: str, values: Mapping[str, object]) -> timedelta:
-    text = render(template, values)
+    text = render("action.trigger.every", template, values)
     try:
         seconds = float(text)
     except ValueError:
@@ -791,7 +806,9 @@ class Action(_Table):
         """
         inputs = {
             name: parameter.model_copy(
-                update={"default": render(parameter.default, values)}
+                update={
+                    "default": render("action.input.default", parameter.default, values)
+                }
             )
             if isinstance(parameter, PathParameter) and parameter.default is not None
             else parameter
@@ -863,7 +880,7 @@ class _Entry(_Table):
         """What is wrong with `field` using the placeholder `name`, if anything."""
         if name in own:
             return None
-        if name not in _ALL_PLACEHOLDERS:
+        if name not in _ALL_PLACEHOLDERS | self.own_placeholders():
             return f"unknown placeholder {_shown(name)}"
         if name not in FIELD_PLACEHOLDERS[field]:
             return f"{field} does not take {_shown(name)}"
@@ -963,7 +980,10 @@ class App(_Entry):
                 yield f"argument.{name}", "is not used by anything"
             if isinstance(parameter, PathParameter) and parameter.default is not None:
                 yield from self._path_default_problems(
-                    f"argument.{name}.default", parameter.default, ()
+                    "argument.default",
+                    f"argument.{name}.default",
+                    parameter.default,
+                    (),
                 )
 
     def _names_used(self) -> set[str]:
@@ -1024,27 +1044,29 @@ class App(_Entry):
                 yield f"input.{name}", "is not used by run.command or run.env"
             if isinstance(parameter, PathParameter) and parameter.default is not None:
                 yield from self._path_default_problems(
+                    "action.input.default",
                     f"input.{name}.default",
                     parameter.default,
                     self.own_placeholders(),
                 )
 
     def _path_default_problems(
-        self, path: str, default: str, own: Collection[str]
+        self, field: str, path: str, default: str, own: Collection[str]
     ) -> Iterator[tuple[str, str]]:
         try:
             names = placeholders(default)
         except ValueError as error:
             yield path, str(error)
             return
-        allowed = _PATH_DEFAULT_PLACEHOLDERS | set(own)
-        for name in sorted(names):
-            if name not in allowed:
-                yield path, f"a path's default does not take {_shown(name)}"
-            elif name not in own and name not in self.available():
-                yield path, f"{_shown(name)} {self.unavailable(name)}"
-        if names <= allowed:
-            rendered = render(default, dict.fromkeys(names, "/absolute"))
+        problems = [
+            problem
+            for name in sorted(names)
+            if (problem := self.placeholder_problem(field, name, own)) is not None
+        ]
+        for problem in problems:
+            yield path, problem
+        if not problems:
+            rendered = render(field, default, dict.fromkeys(names, "/absolute"))
             if not PurePosixPath(rendered).is_absolute():
                 yield path, "must be an absolute path on the host"
 
@@ -1111,12 +1133,13 @@ class Link(_Entry):
 
     def url(self, alias: str) -> str:
         """Its URL, for the host published under the Host alias `alias`."""
-        return render(self.access.url, {"alias": alias})
+        return render("access.url", self.access.url, {"alias": alias})
 
     def status_hints(self, alias: str) -> tuple[str, ...]:
         """Its status hints, for the host published under the Host alias `alias`."""
         return tuple(
-            render(hint, {"alias": alias}) for hint in self.access.status_hints
+            render("access.status_hints", hint, {"alias": alias})
+            for hint in self.access.status_hints
         )
 
 

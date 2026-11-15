@@ -15,6 +15,7 @@ import pytest
 
 from ezhpcy import api
 from ezhpcy.app.manifest import (
+    FIELD_PLACEHOLDERS,
     App,
     AssetFile,
     Link,
@@ -765,11 +766,16 @@ def test_the_ready_timeout_is_a_duration_in_seconds(tmp_path: Path) -> None:
 def test_render_fills_placeholders_and_keeps_literal_braces() -> None:
     values = {"socket": "/tmp/ezhpcy-1/app.sock", "token": "abc"}
 
-    assert render("--sock={{ socket }}", values) == "--sock=/tmp/ezhpcy-1/app.sock"
-    assert render('{"token": "{{ token }}"}', values) == '{"token": "abc"}'
-    assert render("{not a placeholder}", values) == "{not a placeholder}"
-    assert render("{% raw %}{{ .Names }}{% endraw %}", values) == "{{ .Names }}"
-    assert render("plain", values) == "plain"
+    assert (
+        render("run.env", "--sock={{ socket }}", values)
+        == "--sock=/tmp/ezhpcy-1/app.sock"
+    )
+    assert render("run.env", '{"token": "{{ token }}"}', values) == '{"token": "abc"}'
+    assert render("run.env", "{not a placeholder}", values) == "{not a placeholder}"
+    assert (
+        render("run.env", "{% raw %}{{ .Names }}{% endraw %}", values) == "{{ .Names }}"
+    )
+    assert render("run.env", "plain", values) == "plain"
 
 
 @pytest.mark.parametrize(
@@ -793,11 +799,14 @@ def test_render_fills_placeholders_and_keeps_literal_braces() -> None:
 def test_what_templates_can_do(
     template: str, values: dict[str, object], rendered: str
 ) -> None:
-    assert render(template, values) == rendered
+    assert render("run.env", template, values) == rendered
 
 
 def test_a_value_named_as_the_renderers_parameters_is_rendered() -> None:
-    assert render("{{ name }} {{ source }}", {"name": "n", "source": "s"}) == "n s"
+    assert (
+        render("run.env", "{{ name }} {{ source }}", {"name": "n", "source": "s"})
+        == "n s"
+    )
 
 
 @pytest.mark.parametrize(
@@ -811,7 +820,7 @@ def test_a_value_named_as_the_renderers_parameters_is_rendered() -> None:
 )
 def test_a_template_cant_reach_python(template: str) -> None:
     with pytest.raises(ValueError, match="undefined"):
-        render(template, {})
+        render("run.env", template, {})
 
 
 def test_a_template_that_would_never_end_runs_out_of_fuel() -> None:
@@ -821,28 +830,40 @@ def test_a_template_that_would_never_end_runs_out_of_fuel() -> None:
     )
 
     with pytest.raises(ValueError, match="fuel"):
-        render(forever, {})
+        render("run.env", forever, {})
 
 
 def test_a_template_with_an_undefined_value_fails() -> None:
     with pytest.raises(ValueError, match="undefined"):
-        render("{{ nope }}", {})
+        render("run.env", "{{ nope }}", {})
 
 
 def test_a_command_leaves_out_arguments_whose_blocks_render_empty() -> None:
     command = ["a", "{% if flag %}--flag{% endif %}", "{{ empty }}", "{{ value }}"]
 
-    assert render_command(command, {"flag": False, "empty": "", "value": "v"}) == [
+    assert render_command(
+        "run.command", command, {"flag": False, "empty": "", "value": "v"}
+    ) == [
         "a",
         "",
         "v",
     ]
-    assert render_command(command, {"flag": True, "empty": "", "value": "v"}) == [
+    assert render_command(
+        "run.command", command, {"flag": True, "empty": "", "value": "v"}
+    ) == [
         "a",
         "--flag",
         "",
         "v",
     ]
+
+
+def test_render_gives_a_field_only_the_built_in_placeholders_it_takes() -> None:
+    template = "{% if token is defined %}{{ token }}{% endif %}-{{ name }}"
+    values = {"token": "secret", "name": "n"}
+
+    assert render("run.command", template, values) == "-n"
+    assert render("run.env", template, values) == "secret-n"
 
 
 def test_placeholders_are_found_in_blocks_too() -> None:
@@ -899,6 +920,45 @@ def test_placeholders_are_checked_for_every_field(
         )
 
     assert f"{LAB}.{message}" in problems(tmp_path, manifest + addition + "\n")
+
+
+ACTION_TABLE = '[ezhpcy.app.lab."v1.0".action.go]\n'
+# A manifest with `{{ nope }}` in each field that takes placeholders.
+UNKNOWN_PLACEHOLDER_IN = {
+    "run.command": MINIMAL_APP.replace("{{ socket }}", "{{ nope }}"),
+    "run.env": MINIMAL_APP + 'run.env.X = "{{ nope }}"\n',
+    "access.url": MINIMAL_APP + 'access.url = "http://x/{{ nope }}"\n',
+    "access.status_hints": MINIMAL_APP + 'access.status_hints = ["{{ nope }}"]\n',
+    "argument.default": (
+        MINIMAL_APP
+        + 'run.env.A = "{{ a }}"\n'
+        + '[ezhpcy.app.lab."v1.0".argument.a]\ntype = "path"\ndefault = "/{{ nope }}"\n'
+    ),
+    "action.run.command": MINIMAL_APP + ACTION_TABLE + 'run.command = ["{{ nope }}"]\n',
+    "action.run.env": (
+        MINIMAL_APP + ACTION_TABLE + 'run.command = ["x"]\nrun.env.X = "{{ nope }}"\n'
+    ),
+    "action.trigger.every": (
+        MINIMAL_APP
+        + ACTION_TABLE
+        + 'run.command = ["x"]\ntrigger.every = "{{ nope }}"\n'
+    ),
+    "action.input.default": (
+        MINIMAL_APP
+        + ACTION_TABLE
+        + 'run.command = ["{{ a }}"]\n'
+        + 'input.a = { type = "path", default = "/{{ nope }}" }\n'
+    ),
+}
+
+
+@pytest.mark.parametrize("field", FIELD_PLACEHOLDERS)
+def test_every_field_render_takes_is_checked_as_the_manifest_loads(
+    tmp_path: Path, field: str
+) -> None:
+    assert "unknown placeholder {{ nope }}" in problems(
+        tmp_path, UNKNOWN_PLACEHOLDER_IN[field]
+    )
 
 
 def test_socket_is_not_set_for_tcp(tmp_path: Path) -> None:

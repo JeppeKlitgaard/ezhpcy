@@ -369,8 +369,10 @@ async def _run(
     )
     state = AppState.READY
     values = {"token": token, "local_port": forward.port, **arguments}
-    url = render(app.access.url, values)
-    status_hints = tuple(render(hint, values) for hint in app.access.status_hints)
+    url = render("access.url", app.access.url, values)
+    status_hints = tuple(
+        render("access.status_hints", hint, values) for hint in app.access.status_hints
+    )
     actions = AppActions(
         host,
         app,
@@ -378,7 +380,9 @@ async def _run(
         attachment,
         workdir=workdir,
         values=_action_values(process, provisioned, workdir, token, arguments),
-        command=partial(_through_pixi, app, remote_state, layout, provisioned),
+        command=partial(
+            _through_pixi, app, remote_state, layout, provisioned, "action.run"
+        ),
         on_change=changed,
     )
     actions.start()
@@ -424,7 +428,9 @@ def _without_server(
         attachment,
         workdir=workdir,
         values={**_places(provisioned, workdir), **arguments},
-        command=partial(_through_pixi, app, remote_state, layout, provisioned),
+        command=partial(
+            _through_pixi, app, remote_state, layout, provisioned, "action.run"
+        ),
         on_change=changed,
     )
     actions.start()
@@ -459,7 +465,9 @@ async def _arguments_on_host(
             and isinstance(parameter, PathParameter)
             and parameter.default is not None
         ):
-            values[name] = render(parameter.default, _places(provisioned, workdir))
+            values[name] = render(
+                "argument.default", parameter.default, _places(provisioned, workdir)
+            )
     problem = await path_problem(host, app.argument, values)
     if problem is not None:
         name, path, why = problem
@@ -490,7 +498,7 @@ def _command(
         values["socket"] = f"{_process.RUN_DIR}/{SOCKET_NAME}"
     else:
         values["port"] = _process.PORT
-    return _through_pixi(app, remote_state, layout, provisioned, app.run, values)
+    return _through_pixi(app, remote_state, layout, provisioned, "run", app.run, values)
 
 
 def _action_values(
@@ -518,10 +526,14 @@ def _through_pixi(
     remote_state: RemoteState,
     layout: AppsLayout,
     provisioned: ProvisionedApp,
+    field: str,
     command: Command,
     values: Mapping[str, object],
 ) -> tuple[list[str], dict[str, str]]:
-    """`command`, through EzHPCy's Pixi in the app's environment, and its environment."""
+    """
+    `command`, the manifest's `field` (`run`, or an action's `action.run`), through
+    EzHPCy's Pixi in the app's environment, and its environment.
+    """
     argv = remote_state.pixi_command(
         "run",
         "--as-is",
@@ -531,7 +543,7 @@ def _through_pixi(
         "--environment",
         app.environment.environment,
         "--",
-        *render_command(command.command, values),
+        *render_command(f"{field}.command", command.command, values),
         cache_dir=layout.pixi_cache,
     )
     # The manifest's own variables after EzHPCy's, which they can't override
@@ -541,7 +553,10 @@ def _through_pixi(
         for name, variable in ENVIRONMENT_VARIABLES.items()
         if name in values
     }
-    env |= {name: render(value, values) for name, value in command.env.items()}
+    env |= {
+        name: render(f"{field}.env", value, values)
+        for name, value in command.env.items()
+    }
     return list(argv), env
 
 

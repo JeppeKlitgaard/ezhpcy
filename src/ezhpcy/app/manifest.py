@@ -870,6 +870,10 @@ class _Entry(_Table):
     def __str__(self) -> str:
         return f"{self._id} {self._version}"
 
+    def __hash__(self) -> int:
+        # Pydantic's hashes every field, and some are dicts.
+        return hash((self.normalised_id, self._version))
+
     def templates(self) -> Iterator[tuple[str, str, str]]:
         """Every field that takes placeholders: (field, path, template)."""
         raise NotImplementedError

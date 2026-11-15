@@ -168,6 +168,16 @@ def test_an_app_is_frozen_and_shown_as_id_and_version(tmp_path: Path) -> None:
         app.short_description = "changed"
 
 
+def test_an_app_is_hashable_with_its_tables_of_values() -> None:
+    # Its arguments and actions are dicts.
+    app = only(Manifest.load(BUILTINS / "zhome-quota"))
+    again = only(Manifest.load(BUILTINS / "zhome-quota"))
+
+    assert app.argument and app.action
+    assert app == again and hash(app) == hash(again)
+    assert {app: 1}[again] == 1
+
+
 def test_an_app_has_a_name_and_descriptions_to_show(tmp_path: Path) -> None:
     app = only(
         load(

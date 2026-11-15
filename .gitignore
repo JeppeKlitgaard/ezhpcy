@@ -17,3 +17,6 @@ htmlcov/
 
 # Environment
 .env
+
+# Editors
+.vscode/

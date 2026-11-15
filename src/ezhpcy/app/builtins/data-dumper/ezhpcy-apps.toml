@@ -16,7 +16,7 @@ environment = { pixi = "pixi.toml", }
 assets = { include = ["dump.txt"], }
 action = {
     dump = {
-        description = "Copy dump.txt to a path",
+        action_description = "Copy dump.txt to a path",
         run = {
             command = [
                 "cp", "--update=none-fail", "--",

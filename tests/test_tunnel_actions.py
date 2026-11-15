@@ -702,7 +702,7 @@ def test_what_an_input_takes_is_described(
 
 def test_the_panel_shows_actions_their_keys_and_latest_runs() -> None:
     menu, running = menu_of(
-        never=action(description="Never run"),
+        never=action(action_description="Never run"),
         going=action(),
         fine=action(),
         broken=action(),
@@ -759,6 +759,23 @@ def test_the_panel_shows_a_result_of_one_line_as_it_is() -> None:
 
     assert "1 short 19.4/30.0G [18:04] (3 s ago)" in lines
     assert "2 long succeeded (3 s ago)" in lines
+
+
+def test_the_panel_names_a_result_of_one_line_by_the_output_description() -> None:
+    menu, running = menu_of(
+        quota=action(action_description="Show quota", output_description="Quota")
+    )
+    running.runs = [
+        api.ActionRun(
+            action="quota",
+            stdout="19.4/30.0G [18:04]\n",
+            state=api.ActionState.SUCCEEDED,
+            started=NOW - 9,
+            finished=NOW - 3,
+        )
+    ]
+
+    assert "1 quota Show quota Quota: 19.4/30.0G [18:04] (3 s ago)" in shown(menu)
 
 
 def test_the_panel_says_an_app_of_actions_alone_is_ready() -> None:

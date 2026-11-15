@@ -316,14 +316,15 @@ def _action_row(
     """An action: its key if it has one, what it does, and its latest run."""
     key = entry.key or " "
     about: Template = t""
-    if entry.action.description is not None:
-        about += t"{entry.action.description} "
+    if entry.action.action_description is not None:
+        about += t"{entry.action.action_description} "
     if isinstance(every := entry.action.trigger.every, timedelta):
         about += t"{f'(every {duration(every.total_seconds())})':aside} "
-    return (f"  {key}  {entry.name}", about + _latest_run(run, now))
+    latest = _latest_run(run, entry.action.output_description, now)
+    return (f"  {key}  {entry.name}", about + latest)
 
 
-def _latest_run(run: ActionRun | None, now: float) -> Template:
+def _latest_run(run: ActionRun | None, output: str | None, now: float) -> Template:
     if run is None:
         return t""
     if run.finished is None:
@@ -332,7 +333,9 @@ def _latest_run(run: ActionRun | None, now: float) -> Template:
     if run.state is ActionState.SUCCEEDED:
         # A line is the result itself, such as a figure; more belong in the log.
         lines = run.stdout.splitlines()
-        result = lines[0] if len(lines) == 1 else "succeeded"
+        if len(lines) != 1:
+            return t"{'succeeded':hint} {f'({ago} ago)':aside}"
+        result = lines[0] if output is None else f"{output}: {lines[0]}"
         return t"{result:hint} {f'({ago} ago)':aside}"
     status = "" if run.exit_status is None else f" with status {run.exit_status}"
     return t"{f'failed{status}':emphasis} {f'({ago} ago)':aside}"

@@ -26,7 +26,8 @@ argument = {
 }
 action = {
     quota = {
-        description = "Show the quota",
+        action_description = "Show quota",
+        output_description = "Quota",
         run = { command = ["python", "{{ assets }}/quota.py"], },
         trigger = { every = "{{ every }}", },
     },

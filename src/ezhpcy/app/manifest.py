@@ -784,7 +784,8 @@ def _rendered_every(template: str, values: Mapping[str, object]) -> timedelta:
 class Action(_Table):
     """A command run on an app's host, in its environment, while it runs."""
 
-    description: str | None = Field(default=None, min_length=1)
+    action_description: str | None = Field(default=None, min_length=1)
+    output_description: str | None = Field(default=None, min_length=1)
     run: Command
     trigger: Trigger = Field(default_factory=Trigger)
     input: _Parameters = Field(default_factory=dict)

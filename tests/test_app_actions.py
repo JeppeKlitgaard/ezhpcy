@@ -35,7 +35,7 @@ ACTIONS = (
 assets.include = ["script.py"]
 
 [ezhpcy.app.lab."v1.0".action.reindex]
-description = "Reindex the notebooks"
+action_description = "Reindex the notebooks"
 run.command = ["python", "{{ assets }}/script.py", "--amount", "{{ amount }}", "--to", "{{ socket }}"]
 run.env.TARGET = "{{ where }}"
 run.env.TOKEN = "{{ token }}"
@@ -122,7 +122,7 @@ async def next_process(rig: AppRig, count: int) -> FakeProcess:
 def test_a_manifest_describes_actions_fully(tmp_path: Path) -> None:
     action = app_of(tmp_path).action["reindex"]
 
-    assert action.description == "Reindex the notebooks"
+    assert action.action_description == "Reindex the notebooks"
     assert action.trigger.manual
     assert action.trigger.every is None
     amount = action.input["amount"]

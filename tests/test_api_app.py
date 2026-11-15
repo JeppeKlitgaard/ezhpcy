@@ -420,7 +420,7 @@ async def test_an_apps_name_is_normalised_in_every_path(
         [fake] = rig.processes.processes
 
         workdir = APPS_ROOT / "work" / "my-lab"
-        assert app.name == "My_Lab"
+        assert app.id_ == "My_Lab"
         assert f"export EZHPCY_WORKDIR={workdir}" in launch_lines(fake)
         assert rig.server.local_path(workdir).is_dir()
         assert lab.process.run_dir == PurePosixPath(f"/tmp/ezhpcy-{lab.process.run_id}")

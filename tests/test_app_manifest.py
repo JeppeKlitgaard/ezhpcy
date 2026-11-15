@@ -40,7 +40,7 @@ LAB_SUB_TABLES = """\
 schema = 1
 
 [ezhpcy.app.lab."v1.0"]
-description = "JupyterLab with the project's environment"
+short_description = "JupyterLab with the project's environment"
 
 [ezhpcy.app.lab."v1.0".environment]
 pixi = "pixi.toml"
@@ -71,7 +71,7 @@ LAB_DOTTED_KEYS = """\
 schema = 1
 
 [ezhpcy.app.lab."v1.0"]
-description = "JupyterLab with the project's environment"
+short_description = "JupyterLab with the project's environment"
 environment.pixi = "pixi.toml"
 environment.environment = "default"
 run.command = [
@@ -126,7 +126,7 @@ def test_the_builtins_load(path: Path) -> None:
     assert manifest.apps
     for name, by_version in manifest.apps.items():
         for version, app in by_version.items():
-            assert (app.normalised_name, app.version) == (name, version)
+            assert (app.normalised_id, app.version) == (name, version)
             if isinstance(app, Link):
                 continue
             assert app.environment.pixi == path / "pixi.toml"
@@ -157,12 +157,45 @@ def test_sub_tables_and_dotted_keys_load_alike(tmp_path: Path) -> None:
     assert not sub_tables.ready.accepts(401)
 
 
-def test_an_app_is_frozen_and_shown_as_name_and_version(tmp_path: Path) -> None:
+def test_an_app_is_frozen_and_shown_as_id_and_version(tmp_path: Path) -> None:
     app = only(load(tmp_path, MINIMAL_APP))
 
-    assert (app.name, app.version, str(app)) == ("lab", "v1.0", "lab v1.0")
+    assert (app.id_, app.version, str(app)) == ("lab", "v1.0", "lab v1.0")
     with pytest.raises(ValueError, match="frozen"):
-        app.description = "changed"
+        app.short_description = "changed"
+
+
+def test_an_app_has_a_name_and_descriptions_to_show(tmp_path: Path) -> None:
+    app = only(
+        load(
+            tmp_path,
+            MINIMAL_APP
+            + 'name = "JupyterLab"\n'
+            + 'short_description = "Notebooks, *in the browser*"\n'
+            + 'long_description = """\nLine one.\n\n    ezhpcy tunnel\n"""\n',
+        )
+    )
+
+    assert (app.id_, app.name) == ("lab", "JupyterLab")
+    assert app.short_description == "Notebooks, *in the browser*"
+    assert app.long_description == "Line one.\n\n    ezhpcy tunnel\n"
+
+
+def test_an_app_needs_no_name_or_descriptions(tmp_path: Path) -> None:
+    app = only(load(tmp_path, MINIMAL_APP))
+
+    assert (app.name, app.short_description, app.long_description) == (
+        None,
+        None,
+        None,
+    )
+
+
+@pytest.mark.parametrize("key", ["name", "short_description", "long_description"])
+def test_an_empty_name_or_description_is_an_error(tmp_path: Path, key: str) -> None:
+    message = problems(tmp_path, MINIMAL_APP + f'{key} = ""\n')
+
+    assert f"{LAB}.{key}: String should have at least 1 character" in message
 
 
 def test_a_directory_names_the_manifest_in_it(tmp_path: Path) -> None:
@@ -335,8 +368,8 @@ def test_a_valid_app_name_loads_under_its_normalised_name(
     manifest = load(tmp_path, versions((name, "v1.0")))
 
     app = manifest.apps[normalised]["v1.0"]
-    assert app.name == name.strip('"')
-    assert app.normalised_name == normalised
+    assert app.id_ == name.strip('"')
+    assert app.normalised_id == normalised
 
 
 def test_names_that_normalise_alike_are_one_app(tmp_path: Path) -> None:
@@ -1022,7 +1055,7 @@ def test_a_table_with_nothing_to_run_is_a_link_to_the_alias(tmp_path: Path) -> N
 @pytest.mark.parametrize(
     ("addition", "message"),
     [
-        ('description = "x"', '"v1.0".access: Field required'),
+        ('short_description = "x"', '"v1.0".access: Field required'),
         ('access.url = "x"\naccess.local_port = 1', "access.local_port: unknown key"),
         ('access.url = "x"\nassets.include = ["x"]', "assets: unknown key"),
         (

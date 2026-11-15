@@ -838,19 +838,23 @@ def _check_action_name(name: object) -> object:
 
 class _Entry(_Table):
     """
-    One version of an app or a link, `[ezhpcy.app.<name>."<version>"]`, frozen.
-    Shown as `name version`; `normalised_name` is the name compared, and used
-    in paths.
+    One version of an app or a link, `[ezhpcy.app.<id>."<version>"]`, frozen.
+    Shown as `id version`; `normalised_id` is the id compared, and used in
+    paths.
     """
 
-    description: str | None = Field(default=None, min_length=1)
-    _name: str = PrivateAttr(default="")
+    # The name people read, such as `JupyterLab`; `id_` is the table's key.
+    name: str | None = Field(default=None, min_length=1)
+    # CommonMark, which isn't checked: one line, and as long as it needs.
+    short_description: str | None = Field(default=None, min_length=1)
+    long_description: str | None = Field(default=None, min_length=1)
+    _id: str = PrivateAttr(default="")
     _version: str = PrivateAttr(default="")
 
     @property
-    def name(self) -> str:
-        """The app's name, as the manifest spells it."""
-        return self._name
+    def id_(self) -> str:
+        """The app's id, its table's key, as the manifest spells it: `lab`."""
+        return self._id
 
     @property
     def version(self) -> str:
@@ -858,12 +862,12 @@ class _Entry(_Table):
         return self._version
 
     @property
-    def normalised_name(self) -> str:
-        """The name as names are compared (PEP 503): `My_App` is `my-app`."""
-        return canonicalize_name(self._name)
+    def normalised_id(self) -> str:
+        """The id as ids are compared (PEP 503): `My_App` is `my-app`."""
+        return canonicalize_name(self._id)
 
     def __str__(self) -> str:
-        return f"{self._name} {self._version}"
+        return f"{self._id} {self._version}"
 
     def templates(self) -> Iterator[tuple[str, str, str]]:
         """Every field that takes placeholders: (field, path, template)."""
@@ -1251,7 +1255,7 @@ class EzhpcyTable(_Table):
                         f"app {name!r} has versions {equal!r} and {version!r}, "
                         "which are one version"
                     )
-                app._name, app._version = name, version
+                app._id, app._version = name, version
         return apps
 
 
@@ -1300,7 +1304,7 @@ class Manifest:
             raise _invalid(path, _validation_problems(error)) from error
         apps = manifest.ezhpcy.app
         problems = [
-            (_location(("ezhpcy", "app", app.name, app.version)) + f".{field}", why)
+            (_location(("ezhpcy", "app", app.id_, app.version)) + f".{field}", why)
             for versions in apps.values()
             for app in versions.values()
             for field, why in app.placeholder_problems()

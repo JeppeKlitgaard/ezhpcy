@@ -159,7 +159,7 @@ def test_the_apps_start_on_the_node_in_order_and_stop_with_the_tunnel(
     def fetch_both(serving: Serving) -> None:
         for running in serving.started:
             assert running is not None
-            serving.fetched[running.app.name] = fetch(running.url)
+            serving.fetched[running.app.id_] = fetch(running.url)
         serving.statuses = serving.app_statuses()
         # While their run directories are there.
         serving.launched = [

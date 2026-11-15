@@ -229,7 +229,7 @@ class AppActions:
                 # Not `app`: what is listed as a run of the app is the app.
                 record={
                     "action": name,
-                    "action_of": self._app.normalised_name,
+                    "action_of": self._app.normalised_id,
                     "version": self._app.version,
                 },
             )

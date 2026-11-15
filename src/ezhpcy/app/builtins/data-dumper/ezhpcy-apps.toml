@@ -10,11 +10,19 @@
 schema = 1
 
 [ezhpcy.app.data-dumper."v0.1.0"]
-description = "Copies a file to a path you give"
-environment.pixi = "pixi.toml"
-assets.include = ["dump.txt"]
-
-[ezhpcy.app.data-dumper."v0.1.0".action.dump]
-description = "Copy dump.txt to a path"
-run.command = ["cp", "--update=none-fail", "--", "{{ assets }}/dump.txt", "{{ destination }}"]
-input.destination = { type = "path", label = "Where to copy it" }
+name = "Data dumper"
+short_description = "Copies a file to a path you give"
+environment = { pixi = "pixi.toml", }
+assets = { include = ["dump.txt"], }
+action = {
+    dump = {
+        description = "Copy dump.txt to a path",
+        run = {
+            command = [
+                "cp", "--update=none-fail", "--",
+                "{{ assets }}/dump.txt", "{{ destination }}",
+            ],
+        },
+        input = { destination = { type = "path", label = "Where to copy it", }, },
+    },
+}

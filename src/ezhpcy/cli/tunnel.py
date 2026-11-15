@@ -137,7 +137,7 @@ def _chosen_arguments(
     The values of `--arg APP.NAME=VALUE`, by the normalised name of the app they are
     for, checked, so that a wrong one fails before connecting.
     """
-    by_name = {app.normalised_name: app for app in apps if isinstance(app, api.App)}
+    by_name = {app.normalised_id: app for app in apps if isinstance(app, api.App)}
     values: dict[str, dict[str, object]] = {}
     for item in given:
         target, equals, text = item.partition("=")
@@ -168,10 +168,10 @@ def _chosen_arguments(
             raise CliUsageError(
                 t"{sentence(str(error))}", param_hint="--arg", value=item
             ) from error
-        values.setdefault(app.normalised_name, {})[name] = value
+        values.setdefault(app.normalised_id, {})[name] = value
     for app in by_name.values():
         try:
-            app.checked_arguments(values.get(app.normalised_name, {}))
+            app.checked_arguments(values.get(app.normalised_id, {}))
         except api.ManifestError as error:
             raise CliUsageError(
                 t"{sentence(error.message)}", param_hint="--arg"
@@ -377,7 +377,7 @@ class TunnelRun:
             running = await host.run_app(
                 app,
                 apps_root=self.apps_root,
-                arguments=self.arguments.get(app.normalised_name),
+                arguments=self.arguments.get(app.normalised_id),
             )
         except (api.MessageError, RuntimeError, OSError) as error:
             logger.error(
@@ -385,7 +385,7 @@ class TunnelRun:
             )
             self._unattached.append(
                 api.AppStatus(
-                    name=app.name, version=app.version, state=api.AppState.EXITED
+                    name=app.id_, version=app.version, state=api.AppState.EXITED
                 )
             )
             return None
@@ -399,7 +399,7 @@ class TunnelRun:
         url = link.url(self.alias)
         self._unattached.append(
             api.LinkStatus(
-                name=link.name,
+                name=link.id_,
                 version=link.version,
                 url=url,
                 status_hints=link.status_hints(self.alias),

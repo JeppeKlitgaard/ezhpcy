@@ -2,7 +2,17 @@
 schema = 1
 
 [ezhpcy.app.insegt3d."v0.3.1+1"]
-description = "InSegt3D tool for interactive 3D segmentation"
+name = "InSegt3D"
+short_description = "Interactive 3D segmentation"
+long_description = """
+[InSegt3D](https://github.com/qim-center/insegt3d) is a tool for interactive
+segmentation of 3D images.
+
+It requires a GPU to run.
+
+Its documentation can be found at
+[https://qim-center.github.io/insegt3d/](https://qim-center.github.io/insegt3d/).
+"""
 environment = { pixi = "pixi.toml", environment = "default", }
 requires = { gpu = true, }
 run = {

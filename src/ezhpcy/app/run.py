@@ -283,7 +283,7 @@ async def run_app(
     # Before the app, so that it is closed after it.
     _process.watcher(host)
     attachment = host.attachments.attach()
-    attachment.report(AppStatus(name=app.name, version=app.version))
+    attachment.report(AppStatus(name=app.id_, version=app.version))
     try:
         return await _run(
             host, app, attachment, local_port, provision, apps_root, checked
@@ -338,7 +338,7 @@ async def _run(
         exit_status = process.exit_status
         attachment.report(
             AppStatus(
-                name=app.name,
+                name=app.id_,
                 version=app.version,
                 state=AppState.EXITED if exit_status is not None else state,
                 run_id=process.run_id,
@@ -362,7 +362,7 @@ async def _run(
         attachment=attachment.attach(on_change=changed),
         pick_port=app.endpoint.transport == "tcp",
         record={
-            "app": app.normalised_name,
+            "app": app.normalised_id,
             "version": app.version,
             "transport": app.endpoint.transport,
         },
@@ -427,7 +427,7 @@ def _without_server(
     def changed() -> None:
         attachment.report(
             AppStatus(
-                name=app.name,
+                name=app.id_,
                 version=app.version,
                 state=AppState.READY,
                 run_id=run_id,
@@ -587,9 +587,9 @@ def _through_pixi(
 async def _note_other_runs(host: RemoteHost, app: App) -> None:
     """Say so when another run of the app is live on the host."""
     for run_dir, record in (await _process.live_runs(host)).items():
-        if record.get("app") == app.normalised_name:
+        if record.get("app") == app.normalised_id:
             logger.info(
-                t"Another run of app {app.name:name} is live on this host: "
+                t"Another run of app {app.id_:name} is live on this host: "
                 t"{record.get('version')!s:name} in {run_dir:path}. They share "
                 t"its workdir."
             )

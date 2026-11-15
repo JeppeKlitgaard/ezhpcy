@@ -12,17 +12,22 @@
 schema = 1
 
 [ezhpcy.app.zhome-quota."v0.1.0"]
-description = "The quota of your DTU home directory, every so often"
-environment.pixi = "pixi.toml"
-assets.include = ["quota.py"]
-
-[ezhpcy.app.zhome-quota."v0.1.0".argument.every]
-type = "integer"
-label = "Seconds between checks"
-default = 900 # 15 minutes
-min = 10
-
-[ezhpcy.app.zhome-quota."v0.1.0".action.quota]
-description = "Show the quota"
-run.command = ["python", "{{ assets }}/quota.py"]
-trigger.every = "{{ every }}"
+name = "Home quota"
+short_description = "The quota of your DTU home directory, every so often"
+environment = { pixi = "pixi.toml", }
+assets = { include = ["quota.py"], }
+argument = {
+    every = {
+        type = "integer",
+        label = "Seconds between checks",
+        default = 900,  # 15 minutes
+        min = 10,
+    },
+}
+action = {
+    quota = {
+        description = "Show the quota",
+        run = { command = ["python", "{{ assets }}/quota.py"], },
+        trigger = { every = "{{ every }}", },
+    },
+}

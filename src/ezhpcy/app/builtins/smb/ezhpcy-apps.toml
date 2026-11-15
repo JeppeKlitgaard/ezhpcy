@@ -14,18 +14,22 @@
 schema = 1
 
 [ezhpcy.app.smb."v0.1.0"]
-description = "An SMB server over the node's files (impacket)"
-environment.pixi = "pixi.toml"
-assets.include = ["main.py"]
-run.command = ["python", "{{ assets }}/main.py"]
-# The login's password is the per-run token; clients authenticate so the server
-# can sign its responses (Windows 11 24H2+ reject unsigned guest shares).
-run.env = { SMB_PASSWORD = "{{ token }}" }
-endpoint.transport = "socket"
-endpoint.authenticates = true
-ready = { check = "tcp" }
-access.url = "smb://ezhpcy:{{ token }}@127.0.0.1:{{ local_port }}/files"
-# A literal string: the backslashes are the UNC path's.
-access.status_hints = [
-    'NET USE Z: \\127.0.0.1\files {{ token }} /USER:ezhpcy /TCPPORT:{{ local_port }}',
-]
+name = "SMB share"
+short_description = "An SMB server over the node's files (impacket)"
+environment = { pixi = "pixi.toml", }
+assets = { include = ["main.py"], }
+run = {
+    command = ["python", "{{ assets }}/main.py"],
+    # The login's password is the per-run token; clients authenticate so the
+    # server can sign its responses (Windows 11 24H2+ reject unsigned guest shares).
+    env = { SMB_PASSWORD = "{{ token }}", },
+}
+endpoint = { transport = "socket", authenticates = true, }
+ready = { check = "tcp", }
+access = {
+    url = "smb://ezhpcy:{{ token }}@127.0.0.1:{{ local_port }}/files",
+    status_hints = [
+        # A literal string: the backslashes are the UNC path's.
+        'NET USE Z: \\127.0.0.1\files {{ token }} /USER:ezhpcy /TCPPORT:{{ local_port }}',
+    ],
+}

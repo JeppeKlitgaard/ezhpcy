@@ -33,6 +33,10 @@ dependencies = [
 [project.scripts]
 ezhpcy = "ezhpcy.cli:main"
 
+# Support for PyInstaller in downstream projects
+[project.entry-points.pyinstaller40]
+hook-dirs = "ezhpcy.__pyinstaller:get_hook_dirs"
+
 [dependency-groups]
 dev = [
     { include-group = "lint" },
@@ -105,6 +109,10 @@ ignore = [
 isort.combine-as-imports = true
 
 [tool.ruff.lint.per-file-ignores]
+# PyInstaller finds hooks by this name.
+"src/ezhpcy/__pyinstaller/hook-*.py" = [
+    "N999", # invalid-module-name
+]
 # Tests
 "tests/**" = [
     "RUF069", # float-equality-comparison, in tests we sometimes want eq. check

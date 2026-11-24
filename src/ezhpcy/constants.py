@@ -26,7 +26,7 @@ LOOPBACK_HOST = "127.0.0.1"
 PIXI_INSTALLER_URL = "https://pixi.sh/install.sh"
 
 # How many ports the worker's sshd tries, by default, until one is free.
-DEFAULT_WORKER_PORTS = 6
+DEFAULT_WORKER_PORTS = 5
 
 # Keeps helper commands (icacls, whoami, ssh) from flashing a console window on
 # Windows; 0 elsewhere.

@@ -63,9 +63,9 @@ lazy from pydantic import ValidationError
 from ezhpcy.types import Seconds
 lazy from ezhpcy.app import ManifestError
 lazy from ezhpcy.logging import get_logger
+lazy from ezhpcy.versions import APP_MANIFEST_SCHEMA_VERSION, PIXI_LOCK_FILE_MIN_VERSION
 
 MANIFEST_FILE_NAME = "ezhpcy-apps.toml"
-SCHEMA_VERSION = 1
 # A Python package's name (PEP 508), which never contains `@`, so that
 # `NAME@VERSION` is unambiguous.
 _APP_NAME = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9._-]*[A-Za-z0-9])?$")
@@ -79,8 +79,6 @@ _PIXI_MANIFEST_NAMES = frozenset({"pixi.toml", "pyproject.toml"})
 _LOCK_FILE_NAME = "pixi.lock"
 # A Pixi workspace's version, as part of a directory's name on the host.
 _WORKSPACE_VERSION = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.+!_-]*$")
-# Lock files from this version on list each package by its location.
-_MIN_LOCK_VERSION = 6
 _ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 # Every placeholder, and the environment variable that carries its value too.
@@ -284,7 +282,7 @@ def _check_lock(text: str, environment: str) -> None:
     none of them from a path. No YAML parser is among the dependencies, so the
     lines are scanned by indentation, for the layout Pixi writes:
 
-        version: 6
+        version: 7
         environments:
           default:
             packages:
@@ -294,10 +292,10 @@ def _check_lock(text: str, environment: str) -> None:
     """
     lines = text.splitlines()
     version = next((line.split(":", 1)[1].strip() for line in lines[:1]), "")
-    if not version.isdigit() or int(version) < _MIN_LOCK_VERSION:
+    if not version.isdigit() or int(version) < PIXI_LOCK_FILE_MIN_VERSION:
         raise ValueError(
             f"pixi.lock has version {version or '(none)'}; lock it again with a "
-            f"recent Pixi (lock file version {_MIN_LOCK_VERSION} or later)"
+            f"recent Pixi (lock file version {PIXI_LOCK_FILE_MIN_VERSION} or later)"
         )
     environments: dict[str, dict[str, list[str]]] = {}
     section = environment_name = platform = None
@@ -1261,16 +1259,16 @@ class EzhpcyTable(_Table):
     """`[ezhpcy]`: EzHPCy's part of the file."""
 
     # `schema` would shadow `BaseModel.schema`.
-    schema_version: Literal[1] = Field(alias="schema")
+    schema_version: int = Field(alias="schema")
     app: dict[AppName, dict[AppVersion, Entry]]
 
     @field_validator("schema_version", mode="before")
     @classmethod
     def check_schema(cls, value: object) -> object:
-        if value != SCHEMA_VERSION:
+        if value != APP_MANIFEST_SCHEMA_VERSION:
             raise ValueError(
                 f"unsupported schema {value!r}; this version of EzHPCy reads "
-                f"schema = {SCHEMA_VERSION}"
+                f"schema = {APP_MANIFEST_SCHEMA_VERSION}"
             )
         return value
 
@@ -1367,7 +1365,8 @@ def _check_layout(path: Path, data: dict[str, object]) -> None:
         raise ManifestError(
             t"{path:path} has no {'[ezhpcy]':name} table; EzHPCy reads apps from "
             t"{'[ezhpcy.app.<name>."<version>"]':name} tables, beside "
-            t"{'schema = 1':suggestion} in {'[ezhpcy]':name}"
+            t"{f'schema = {APP_MANIFEST_SCHEMA_VERSION}':suggestion} in "
+            t"{'[ezhpcy]':name}"
         )
     apps = ezhpcy.get("app")
     if not isinstance(apps, dict) or not any(

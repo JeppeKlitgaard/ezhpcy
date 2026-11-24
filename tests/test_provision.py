@@ -10,12 +10,17 @@ from rich.prompt import Confirm
 
 from ezhpcy import ssh
 from ezhpcy.config import local_files
-from ezhpcy.constants import EZHPCY_VERSION, WORKER_HOST_ALIAS, WORKER_HOST_KEY_NAME
+from ezhpcy.constants import (
+    EZHPCY_VERSION,
+    PIXI_INSTALLER_URL,
+    WORKER_HOST_ALIAS,
+    WORKER_HOST_KEY_NAME,
+)
 from ezhpcy.provision_host import ProvisioningError, validate_worker_infrastructure
 from ezhpcy.provision_local import WorkerCredentials
 from ezhpcy.ssh import CommandFailed
 from ezhpcy.types import Login
-from ezhpcy.versions import OPENSSH_MATCHSPEC, PIXI_INSTALLER_URL, PIXI_VERSION
+from ezhpcy.versions import OPENSSH_MATCHSPEC, PIXI_VERSION
 from tests.support.apps import (
     LAYOUT_DIRECTORY,
     MINIMAL_APP,

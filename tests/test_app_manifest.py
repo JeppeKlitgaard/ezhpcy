@@ -728,9 +728,9 @@ def test_git_and_url_dependencies_are_not_path_dependencies(tmp_path: Path) -> N
 
 
 def test_an_old_lock_file_is_rejected(tmp_path: Path) -> None:
-    message = problems(tmp_path, MINIMAL_APP, lock=lock_file(version=5))
+    message = problems(tmp_path, MINIMAL_APP, lock=lock_file(version=6))
 
-    assert "pixi.lock has version 5" in message
+    assert "pixi.lock has version 6" in message
 
 
 def test_the_builtin_lock_files_are_read() -> None:

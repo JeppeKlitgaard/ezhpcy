@@ -17,10 +17,18 @@ These are frequently bumped with new releases of EzHPCy.
 # same app versions to coexist in the same apps root.
 APPS_LAYOUT_VERSION = 1
 
+# The supported schema version for app manifests, `ezhpcy.schema`.
+# Bump when making breaking changes to app manifests.
+APP_MANIFEST_SCHEMA_VERSION = 1
+
 # Vendor software
 # See versions: https://github.com/prefix-dev/pixi
 PIXI_VERSION = "0.82.1"
-PIXI_INSTALLER_URL = "https://pixi.sh/install.sh"
+
+# The oldest `pixi.lock` version EzHPCy supports.
+# We don't usually care to support older versions since we pin the Pixi version
+# so bump this according to the Pixi version above.
+PIXI_LOCK_FILE_MIN_VERSION = 7
 
 # See versions: https://anaconda.org/channels/conda-forge/packages/openssh/files
 OPENSSH_VERSION = "10.5p1"

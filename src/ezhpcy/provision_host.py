@@ -9,10 +9,11 @@ lazy import asyncssh
 from ezhpcy.logging import get_logger
 from ezhpcy.messages import MessageError
 lazy from ezhpcy.app.provision import AppsLayout, stale_installs
+lazy from ezhpcy.constants import PIXI_INSTALLER_URL
 lazy from ezhpcy.provision_local import WorkerCredentials
 lazy from ezhpcy.ssh import RemoteHost, ensure_directory
 lazy from ezhpcy.types import RemoteState
-lazy from ezhpcy.versions import OPENSSH_MATCHSPEC, PIXI_INSTALLER_URL, PIXI_VERSION
+lazy from ezhpcy.versions import OPENSSH_MATCHSPEC, PIXI_VERSION
 lazy from ezhpcy.worker.sshd import (
     absolute_sshd_command,
     sshd_config_arguments,

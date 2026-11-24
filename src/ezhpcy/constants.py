@@ -22,6 +22,9 @@ WORKER_HOST_KEY_NAME = "ssh_host_ed25519_key"
 WORKER_KNOWN_HOSTS_NAME = "worker_known_hosts"
 LOOPBACK_HOST = "127.0.0.1"
 
+# Where Pixi is installed from.
+PIXI_INSTALLER_URL = "https://pixi.sh/install.sh"
+
 # How many ports the worker's sshd tries, by default, until one is free.
 DEFAULT_WORKER_PORTS = 6
 

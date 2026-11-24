@@ -35,7 +35,7 @@ python = "3.13.*"
 
 
 def lock_file(
-    environments: dict[str, dict[str, list[str]]] | None = None, *, version: int = 6
+    environments: dict[str, dict[str, list[str]]] | None = None, *, version: int = 7
 ) -> str:
     """
     A `pixi.lock` in Pixi's layout, with these package entries (such as

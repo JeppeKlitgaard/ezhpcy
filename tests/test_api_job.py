@@ -80,7 +80,7 @@ class Rig:
                 inspections,
                 submitted=worker_ready_on(self.login, self.worker_port),
                 held=self.starting,
-                **options,  # type: ignore[arg-type]
+                **options,
             ),
         )
 

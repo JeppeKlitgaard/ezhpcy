@@ -133,7 +133,7 @@ def _environment() -> minijinja.Environment:
 
 
 def _why(error: minijinja.TemplateError) -> str:
-    return str(error.message).removesuffix(" (in <string>:1)")
+    return error.message.removesuffix(" (in <string>:1)")
 
 
 def placeholders(template: str) -> set[str]:

@@ -752,7 +752,7 @@ async def _free_space(host: RemoteHost, directory: PurePosixPath) -> str:
 def _reason(error: BaseException) -> str:
     """What failed, in a line or a few: Pixi's last words, or the SFTP error."""
     if isinstance(error, CommandFailed):
-        lines = [line for line in str(error.stderr).splitlines() if line.strip()]
+        lines = [line for line in error.stderr.splitlines() if line.strip()]
         return "\n".join(lines[-10:]) or str(error)
     return str(error)
 

@@ -138,7 +138,7 @@ def _job_not_found(error: SchedulerError) -> bool:
     """Whether `qstat` failed because the job isn't (or is no longer) queued."""
     cause = error.__cause__
     return isinstance(cause, CommandFailed) and bool(
-        _JOB_NOT_FOUND_PATTERN.search(str(cause.stderr))
+        _JOB_NOT_FOUND_PATTERN.search(cause.stderr)
     )
 
 

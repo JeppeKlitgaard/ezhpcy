@@ -668,7 +668,7 @@ async def test_stopping_cancels_the_runs_it_began() -> None:
             raise
         raise AssertionError
 
-    running.run_action = run_action  # pyrefly: ignore[bad-assignment]
+    running.run_action = run_action
     await press(menu, "1")
 
     await menu.stop()

@@ -2,7 +2,7 @@
 
 import asyncio
 import socket
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 import asyncssh
 import pytest
@@ -16,7 +16,14 @@ from ezhpcy.provision_local import WorkerCredentials
 from ezhpcy.ssh import CommandFailed
 from ezhpcy.types import Login
 from ezhpcy.versions import OPENSSH_MATCHSPEC, PIXI_INSTALLER_URL, PIXI_VERSION
-from tests.support.cli import invoke
+from tests.support.apps import (
+    MINIMAL_APP,
+    FakePixi,
+    serve_shell_tools,
+    with_root_mode,
+    write_project,
+)
+from tests.support.cli import invoke, use_settings
 from tests.support.login import CACHE, MACHINE_ID, REMOTE_STATE, STATE
 from tests.support.sshserver import SSHTestServer, reply
 
@@ -26,6 +33,25 @@ _PIXI_HOME = _PACKAGE_CACHE / "pixi" / PIXI_VERSION
 # Named after the configured login host, not the test server's address.
 _REMOTE_SSH_DIR = _PACKAGE_CACHE / "ssh" / MACHINE_ID / "alice@login.example.com"
 _CREDENTIALS = WorkerCredentials(MACHINE_ID, "alice", "login.example.com")
+_SHARED = PurePosixPath("/dtu/qim/ezhpcy-apps")
+# Two versions of one app, another app, and a link.
+_MANY_APPS = (
+    MINIMAL_APP
+    + """
+[ezhpcy.app.lab."v2.0"]
+environment.pixi = "pixi.toml"
+run.command = ["jupyter", "lab", "--ServerApp.sock={{ socket }}"]
+endpoint.transport = "socket"
+
+[ezhpcy.app.board."v1.0"]
+environment.pixi = "pixi.toml"
+run.command = ["tensorboard", "--port", "{{ port }}"]
+endpoint.transport = "tcp"
+
+[ezhpcy.app.code."v1.0"]
+access.url = "vscode://vscode-remote/ssh-remote+{{ alias }}/"
+"""
+)
 
 
 def _commands(server: SSHTestServer, name: str) -> list[list[str]]:
@@ -127,6 +153,114 @@ def test_ctrl_c_at_the_confirmation_exits_130(
 
     assert result.exit_code == 130, result
     assert _commands(login, "env") == []
+
+
+def _apps_on(server: SSHTestServer) -> FakePixi:
+    """Install EzHPCy's Pixi and app environments on `server`, as `FakePixi`."""
+    serve_shell_tools(server)
+    return FakePixi(server)
+
+
+def test_provision_installs_the_apps_given_in_the_shared_app_root_given(
+    login: SSHTestServer, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pixi = _apps_on(login)
+    manifest = write_project(tmp_path / "project", MINIMAL_APP)
+    login.local_path(_SHARED).mkdir(parents=True)
+    with_root_mode(monkeypatch, _SHARED, 0o2775)
+
+    result = invoke(
+        ["provision", *_LOGIN, "--manifest", str(manifest), "--app", "lab"]
+        + ["--shared-app-root", str(_SHARED), "--yes"]
+    )
+
+    assert result.exit_code == 0, result
+    [install] = pixi.installs
+    assert install.startswith(f"{_SHARED}/envs/")
+    # So that the root's group shares it, and only that.
+    environment = str(PurePosixPath(install).parent)
+    assert ["chmod", "-R", "a+rX,g+w,o-w", "--", environment] in login.commands_run
+    assert "Success: App lab v1.0 is provisioned." in result.stdout
+    assert "Success: Remote provisioning completed." in result.stdout
+
+
+def test_provision_installs_an_app_only_where_no_shared_root_has_it(
+    login: SSHTestServer, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pixi = _apps_on(login)
+    manifest = str(write_project(tmp_path / "project", MINIMAL_APP))
+    login.local_path(_SHARED).mkdir(parents=True)
+    with_root_mode(monkeypatch, _SHARED, 0o755)
+    connection = {"host": "login.example.com", "user": "alice"}
+    use_settings(
+        monkeypatch,
+        {
+            "profile": {
+                "base": {
+                    "connection": connection,
+                    "site": {"shared_app_roots": [str(_SHARED)]},
+                },
+            },
+        },
+    )
+    apps = ["--manifest", manifest, "--app", "lab", "--yes"]
+
+    shared = invoke(["provision", "base", *apps, "--shared-app-root", str(_SHARED)])
+    again = invoke(["provision", "base", *apps])
+
+    assert (shared.exit_code, again.exit_code) == (0, 0)
+    # Once, in the shared root.
+    [install] = pixi.installs
+    assert install.startswith(f"{_SHARED}/envs/")
+
+
+def test_provision_all_apps_installs_every_version_of_every_app(
+    login: SSHTestServer, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pixi = _apps_on(login)
+    manifest = write_project(tmp_path / "project", _MANY_APPS)
+    login.local_path(_SHARED).mkdir(parents=True)
+    with_root_mode(monkeypatch, _SHARED, 0o2775)
+
+    result = invoke(
+        ["provision", *_LOGIN, "--manifest", str(manifest), "--all-apps"]
+        + ["--no-load-builtin-manifests", "--shared-app-root", str(_SHARED), "--yes"]
+    )
+
+    assert result.exit_code == 0, result
+    provisioned = [
+        line.removeprefix("Success: App ").removesuffix(" is provisioned.")
+        for line in result.stdout.splitlines()
+        if line.endswith(" is provisioned.")
+    ]
+    # Not the link, which has nothing to install.
+    assert sorted(provisioned) == ["board v1.0", "lab v1.0", "lab v2.0"]
+    # One environment, which they share.
+    [install] = pixi.installs
+    assert install.startswith(f"{_SHARED}/envs/")
+
+
+@pytest.mark.parametrize(
+    ("arguments", "problem"),
+    [
+        (["--shared-app-root", "/dtu/qim/ezhpcy-apps"], "none is chosen"),
+        (["--app", "lab", "--shared-app-root", "qim"], "must be an absolute path"),
+        (["--app", "lab", "--all-apps"], "chooses some"),
+    ],
+    ids=["no-app", "relative", "all-and-some"],
+)
+def test_provision_refuses_apps_it_cant_install_so(
+    login: SSHTestServer, tmp_path: Path, arguments: list[str], problem: str
+) -> None:
+    manifest = write_project(tmp_path / "project", MINIMAL_APP)
+
+    result = invoke(
+        ["provision", *_LOGIN, "--manifest", str(manifest), *arguments, "--yes"]
+    )
+
+    assert result.exit_code != 0, result
+    assert problem in result.stderr
+    assert login.commands_run == []
 
 
 # Connecting

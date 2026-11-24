@@ -168,6 +168,26 @@ class FakePixi:
                 executable.write_text("#!/bin/sh\n", encoding="utf-8")
 
 
+def with_root_mode(
+    monkeypatch: pytest.MonkeyPatch, root: PurePosixPath, mode: int
+) -> None:
+    """
+    Have the server say that the directory `root` has `mode` (such as a shared
+    root's `0o2775`), which its filesystem here may not keep.
+    """
+    original = asyncssh.SFTPClient.stat
+
+    async def stat_with_mode(
+        self: asyncssh.SFTPClient, path: object, *args: object, **kwargs: object
+    ) -> asyncssh.SFTPAttrs:
+        attrs = await original(self, path, *args, **kwargs)  # type: ignore[arg-type]
+        if PurePosixPath(str(path)) == root:
+            attrs.permissions = stat.S_IFDIR | mode
+        return attrs
+
+    monkeypatch.setattr(asyncssh.SFTPClient, "stat", stat_with_mode)
+
+
 def quick_apps(monkeypatch: pytest.MonkeyPatch) -> None:
     """Check apps' readiness every 10 ms."""
     monkeypatch.setattr(app_run, "_READY_POLL_SECONDS", 0.01)
@@ -233,7 +253,11 @@ def http_app(status: int = 200, body: bytes = b"hello") -> Callable[..., Any]:
 
 
 def serve_shell_tools(server: SSHTestServer, *, free_kib: int = 1_048_576) -> None:
-    """`sh -c '… rm -rf …' remove PATH…`, which removes for real, and `df -Pk`."""
+    """
+    `sh -c '… rm -rf …' remove PATH…`, which removes for real, `df -Pk`,
+    `chmod -R`, which changes nothing, as modes may not hold here, and `stat -c
+    %d`, which says every path is on one filesystem.
+    """
 
     def remove(invocation: Invocation) -> None:
         for path in invocation.argv[4:]:
@@ -248,6 +272,8 @@ def serve_shell_tools(server: SSHTestServer, *, free_kib: int = 1_048_576) -> No
                 shutil.rmtree(local, onexc=_make_writable_and_retry)
 
     server.command("sh -c", remove)
+    server.command("chmod -R", reply())
+    server.command("stat -c %d", reply(stdout="42\n42\n"))
     server.command(
         "df -Pk",
         reply(

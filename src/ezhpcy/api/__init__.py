@@ -95,7 +95,13 @@ lazy from ezhpcy import (
     process as _process,
     scheduler as _scheduler,
 )
-lazy from ezhpcy.app import ActionError, AppFailed, ManifestError, run as _app_run
+lazy from ezhpcy.app import (
+    ActionError,
+    AppFailed,
+    ManifestError,
+    provision as _app_provision,
+    run as _app_run,
+)
 lazy from ezhpcy.app.action import ActionRun, ActionState
 lazy from ezhpcy.app.manifest import (
     Action,
@@ -499,6 +505,7 @@ class Host:
         local_port: int | None = None,
         provision: bool = True,
         apps_root: PurePosixPath | None = None,
+        shared_app_roots: Sequence[PurePosixPath] = (),
         arguments: Mapping[str, object] | None = None,
     ) -> RunningApp:
         """
@@ -514,9 +521,11 @@ class Host:
         1. The host is checked for what the app `requires`, such as a GPU.
         2. With `provision`, its environment and assets, and EzHPCy's own Pixi,
            are installed on the host unless they are; without, they are only
-           checked. They live under `apps_root`, by default `ezhpcy-apps` in
-           the host's XDG cache directory; on a cluster, on the filesystem its
-           nodes share.
+           checked. They are used from the first of `shared_app_roots`
+           (`SiteConfig.shared_app_roots`) that has them, which administrators
+           install into (`provision_app`), or else live under `apps_root`, by
+           default `ezhpcy-apps` in the host's XDG cache directory; on a
+           cluster, on the filesystem its nodes share.
         3. It starts as a process (`start`), through EzHPCy's Pixi, in its
            workdir, `ezhpcy-apps/work/<its normalised id>` in the host's XDG
            state directory: not through a login shell, so the host's profile
@@ -543,7 +552,42 @@ class Host:
             local_port=local_port,
             provision=provision,
             apps_root=apps_root,
+            shared_app_roots=shared_app_roots,
             arguments=arguments,
+        )
+
+    @translating_ssh_errors
+    async def provision_app(
+        self,
+        app: App,
+        *,
+        apps_root: PurePosixPath | None = None,
+        shared_app_roots: Sequence[PurePosixPath] = (),
+        shared: bool = False,
+    ) -> None:
+        """
+        Install an app's environment and assets on the host, and EzHPCy's own
+        Pixi, unless they are, as `run_app` does, without running it.
+
+        With `shared`, `apps_root` is a shared root, which administrators
+        install into for others to run apps from (`SiteConfig.shared_app_roots`):
+        it must exist, of mode `755`, `775`, `750` or `770` (its setgid bit
+        kept), which say who writes and who reads, and what is made there takes
+        its mode.
+
+        Raises `ValueError` for `shared` without `apps_root`;
+        `ProvisioningError`, also for a shared root that can't be used; and
+        `SSHError` if the connection fails. Cancelled, it stops; an install may
+        still run to its end on the host, and the next one repairs what it left.
+        """
+        if shared and apps_root is None:
+            raise ValueError("a shared apps root must be given")
+        remote_state = await self._host.remote_state()
+        layout = _app_provision.AppsLayout(
+            remote_state.apps_root(apps_root), tuple(shared_app_roots)
+        )
+        await _app_provision.provision_app(
+            self._host, remote_state, layout, app, shared=shared
         )
 
     @translating_ssh_errors
@@ -578,9 +622,9 @@ class Host:
         """
         Remove everything EzHPCy made on the host: its cache and state, and apps'
         environments and assets under `apps_root` (as for `run_app`); with
-        `workdirs`, apps' workdirs too, with whatever apps wrote there. Raises
-        `CommandFailed`, and `SSHError` if the connection fails. Cancelled, it
-        stops; what it hadn't removed stays.
+        `workdirs`, apps' workdirs too, with whatever apps wrote there. Never a
+        shared root. Raises `CommandFailed`, and `SSHError` if the connection
+        fails. Cancelled, it stops; what it hadn't removed stays.
         """
         remote_state = await self._host.remote_state()
         await prune_all_remote_data(

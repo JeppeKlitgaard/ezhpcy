@@ -21,6 +21,7 @@ from pydantic import (
     Strict,
     TypeAdapter,
     ValidationError,
+    ValidationInfo,
     field_validator,
     model_validator,
 )
@@ -247,14 +248,20 @@ class SiteConfig(_SubConfig):
     # The site's LSF reserves memory per core (`RESOURCE_RESERVE_PER_TASK`), so
     # a job asks for its memory divided by its cores.
     lsf_resource_reserve_per_task: bool = False
+    # Apps roots that administrators install apps into (`ezhpcy provision
+    # --shared-app-root`), on the filesystem the nodes share: a run uses an app's
+    # environment and assets from the first that has them, before the user's
+    # own apps root, and never writes there.
+    shared_app_roots: tuple[PurePosixPath, ...] = ()
 
-    @field_validator("wrapper_directories")
+    @field_validator("wrapper_directories", "shared_app_roots")
     @classmethod
-    def validate_wrapper_directories(
-        cls, value: tuple[PurePosixPath, ...]
+    def validate_absolute(
+        cls, value: tuple[PurePosixPath, ...], info: ValidationInfo
     ) -> tuple[PurePosixPath, ...]:
         if not all(directory.is_absolute() for directory in value):
-            raise ValueError("wrapper directories must be absolute paths on the host")
+            what = (info.field_name or "").replace("_", " ")
+            raise ValueError(f"{what} must be absolute paths on the host")
         return value
 
 

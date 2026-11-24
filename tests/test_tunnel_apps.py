@@ -21,6 +21,7 @@ import pytest
 from ezhpcy import api
 from ezhpcy.cli import tunnel as tunnel_cli
 from ezhpcy.cli.utils.keys import ENTER
+from tests.support.api import JOB, LOGIN
 from tests.support.apps import MINIMAL_APP, AppRig, http_app, write_project
 from tests.support.cli import Result, capture, invoke
 from tests.support.login import remote_state_json
@@ -600,3 +601,23 @@ def test_a_wrong_arg_is_refused_before_connecting(
     assert result.exit_code == 2, result
     assert message in " ".join(result.stderr.split())
     assert apps.serving is None
+
+
+async def test_apps_run_from_the_sites_shared_app_roots(tmp_path: Path) -> None:
+    roots = (PurePosixPath("/dtu/qim/ezhpcy-apps"),)
+    [versions] = api.Manifest.load(
+        write_project(tmp_path / "project", MINIMAL_APP)
+    ).apps.values()
+    [app] = versions.values()
+    given: dict[str, object] = {}
+
+    class Host:
+        async def run_app(self, app: api.App, **options: object) -> None:
+            given.update(options)
+
+    run = tunnel_cli.TunnelRun(
+        "base", LOGIN, JOB, site=api.SiteConfig(shared_app_roots=roots)
+    )
+    await run.start_app(Host(), app)  # type: ignore[arg-type]
+
+    assert given["shared_app_roots"] == roots

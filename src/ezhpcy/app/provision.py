@@ -11,8 +11,23 @@ An app's environment and assets on the host it runs on, under the apps root
       assets/<key>.lock/       held while an attempt runs
       pixi-cache/              Pixi's cache for app environments
 
-Every directory EzHPCy creates here is its owner's alone (`private_directory`),
-and so are the asset files.
+**Shared roots** (`site.shared_app_roots`) are apps roots that administrators
+install apps into, for their users to run them from. They are looked in first,
+in order, for an installed environment and for published assets; what none has
+is installed in the user's own apps root. A run never writes in a shared root.
+Each has its own Pixi cache, as Pixi links an environment's files to its cache
+only on one filesystem, and only to files that their user owns or may write.
+
+Everything EzHPCy creates in an apps root takes its mode from the root's
+(`_SHARED_MODES`): in the user's own, its owner's alone (as `private_directory`);
+in a shared root, which must exist, as the root's own, of a few that say who
+writes (its owner, or its group too) and who reads (everyone, or its group), and
+whose setgid bit its directories keep, so that what they hold keeps its group. Pixi gives what it installs its packages' own modes, whatever
+the umask, often group-writable: so an environment, like an asset attempt, is
+open only to those who may write in the root while it is built, and then, in a
+shared root, takes the root's modes all at once (`chmod -R`; in the user's own,
+the root's mode keeps others out). Pixi's cache stays theirs alone. Asset files
+are read-only, to their owner too.
 
 **Environments** are installed by EzHPCy's own Pixi, in place: Pixi detects
 and repairs an install that was interrupted, and an environment keyed by its Pixi files never goes out
@@ -33,10 +48,11 @@ The locks are directories, as `mkdir` is atomic, on NFS and BeeGFS too.
 
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import PurePosixPath
 lazy import asyncio
 lazy import secrets
+lazy import stat
 lazy import time
 lazy from collections.abc import AsyncGenerator
 
@@ -51,13 +67,7 @@ lazy from ezhpcy.app.manifest import (
     environment_key,
 )
 lazy from ezhpcy.provision_host import ProvisioningError, provision_pixi
-lazy from ezhpcy.ssh import (
-    CommandFailed,
-    RemoteHost,
-    ensure_directory,
-    open_file,
-    private_directory,
-)
+lazy from ezhpcy.ssh import CommandFailed, RemoteHost, open_file
 lazy from ezhpcy.types import RemoteState
 
 logger = get_logger(__name__)
@@ -89,9 +99,13 @@ _UPLOADS_AT_ONCE = 16
 
 @dataclass(frozen=True, slots=True)
 class AppsLayout:
-    """Where an apps root keeps what (see the module's docstring)."""
+    """
+    Where an apps root keeps what, and the shared roots looked in first (see the
+    module's docstring).
+    """
 
     root: PurePosixPath
+    shared: tuple[PurePosixPath, ...] = ()
 
     @property
     def environments(self) -> PurePosixPath:
@@ -108,6 +122,42 @@ class AppsLayout:
     def environment(self, environment: Environment) -> PurePosixPath:
         """The directory of `environment`, by its key."""
         return self.environments / environment_key(environment)
+
+
+@dataclass(frozen=True, slots=True)
+class _Modes:
+    """The modes of what provisioning creates in an apps root, by the root's."""
+
+    directory: int
+    file: int
+    # The assets', and their directories' and executables' (`read_only`).
+    read_only_file: int
+    read_only_executable: int
+    # What is being built, and Pixi's cache: only those who may write in the root
+    # may enter.
+    building: int
+    # In a shared root, the `chmod -R` mode that gives what Pixi installed the
+    # root's, as Pixi gives it its packages' own; in a user's own, nothing, as
+    # its root keeps others out.
+    installed: str | None = None
+
+    def read_only(self, *, executable: bool) -> int:
+        return self.read_only_executable if executable else self.read_only_file
+
+
+# A user's own apps root's: its owner's alone, as `private_directory`.
+_PRIVATE = _Modes(0o700, 0o600, 0o400, 0o500, 0o700)
+# A shared root's, by its permission bits.
+_SHARED_MODES = {
+    # Its owner writes, and everyone reads.
+    0o755: _Modes(0o755, 0o644, 0o444, 0o555, 0o700, "a+rX,go-w"),
+    # Its group writes too, and everyone reads.
+    0o775: _Modes(0o775, 0o664, 0o444, 0o555, 0o770, "a+rX,g+w,o-w"),
+    # Its owner writes, and its group reads.
+    0o750: _Modes(0o750, 0o640, 0o440, 0o550, 0o700, "g+rX,g-w,o-rwx"),
+    # Its group writes and reads.
+    0o770: _Modes(0o770, 0o660, 0o440, 0o550, 0o770, "g+rwX,o-rwx"),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,28 +180,63 @@ class ProvisionedApp:
 type Build = Callable[[PurePosixPath], Awaitable[None]]
 
 
+# Where an app's environment or assets are in an apps root, if they are.
+type _Find = Callable[[AppsLayout], Awaitable[PurePosixPath | None]]
+
+
 async def provision_app(
-    host: RemoteHost, remote_state: RemoteState, layout: AppsLayout, app: App
+    host: RemoteHost,
+    remote_state: RemoteState,
+    layout: AppsLayout,
+    app: App,
+    *,
+    shared: bool = False,
 ) -> ProvisionedApp:
     """
     Install EzHPCy's Pixi on `host` if it is missing, then the app's
-    environment, and upload its assets, each unless done already. Raises
-    `ProvisioningError`.
+    environment, and upload its assets, each unless a shared root or the apps
+    root has it already, and note that a run uses those in the apps root. With
+    `shared`, the apps root is a shared one, for others to run apps from: it
+    must exist, and others mustn't write there. Raises `ProvisioningError`.
     """
     await provision_pixi(host, remote_state)
     async with host.sftp() as sftp:
-        directory = await _install(host, sftp, remote_state, layout, app)
+        if shared:
+            modes = await _shared_modes(sftp, layout.root)
+        else:
+            modes = _PRIVATE
+            await _directory(sftp, layout.root, modes.directory)
+        shared_layouts = [AppsLayout(root) for root in layout.shared]
+        used: list[PurePosixPath] = []
+        what = f"environment of app {app}"
+        found = await _first(
+            shared_layouts, _environment(sftp, app.environment), what=what
+        )
+        if found is not None:
+            directory = found[1]
+            logger.debug(t"Using the shared {what}: directory={directory:path}")
+        else:
+            directory = await _install(host, sftp, remote_state, layout, app, modes)
+            used.append(directory)
         assets = None
         if app.assets is not None:
-            files = app.assets.files
-            assets = await publish_once(
-                host,
-                sftp,
-                layout.assets,
-                assets_key(files),
-                _assets_builder(sftp, files),
-                what=f"assets of app {app}",
-            )
+            key = assets_key(app.assets.files)
+            what = f"assets of app {app}"
+            if found := await _first(shared_layouts, _assets(sftp, key), what=what):
+                assets = found[1]
+                logger.debug(t"Using the shared {what}: directory={assets:path}")
+            else:
+                assets = await publish_once(
+                    host,
+                    sftp,
+                    layout.assets,
+                    key,
+                    _assets_builder(sftp, app.assets.files, modes),
+                    what=what,
+                    modes=modes,
+                )
+                used.append(assets)
+        await _mark_used(sftp, used)
     return ProvisionedApp(directory / app.environment.pixi.name, assets)
 
 
@@ -159,39 +244,156 @@ async def validate_app(
     host: RemoteHost, remote_state: RemoteState, layout: AppsLayout, app: App
 ) -> ProvisionedApp:
     """
-    Where the app's environment and assets are, without changing anything;
-    raises `ProvisioningError` if EzHPCy's Pixi, the environment or the assets
-    aren't there for the app's current files.
+    Where the app's environment and assets are, in a shared root or the apps
+    root, without installing anything, and note that a run uses those in the
+    apps root; raises `ProvisioningError` if EzHPCy's Pixi, the environment or
+    the assets aren't there for the app's current files.
     """
-    directory = layout.environment(app.environment)
+    layouts = [*(AppsLayout(root) for root in layout.shared), layout]
     missing: list[PurePosixPath] = []
-    assets = None
+    used: list[PurePosixPath] = []
+    directory = assets = None
     async with host.sftp() as sftp:
-        for path in (remote_state.pixi_executable(), directory / INSTALLED_NAME):
-            if not await sftp.exists(path):
-                missing.append(path)
+        if not await sftp.exists(remote_state.pixi_executable()):
+            missing.append(remote_state.pixi_executable())
+        what = f"environment of app {app}"
+        if found := await _first(
+            layouts, _environment(sftp, app.environment), what=what
+        ):
+            found_in, directory = found
+            if found_in is layout:
+                used.append(directory)
+        else:
+            missing += [
+                each.environment(app.environment) / INSTALLED_NAME for each in layouts
+            ]
         if app.assets is not None:
-            entry = layout.assets / assets_key(app.assets.files)
-            if (assets := await _published(sftp, entry)) is None:
-                missing.append(entry)
+            key = assets_key(app.assets.files)
+            what = f"assets of app {app}"
+            if found := await _first(layouts, _assets(sftp, key), what=what):
+                found_in, assets = found
+                if found_in is layout:
+                    used.append(assets)
+            else:
+                missing += [each.assets / key for each in layouts]
+        if not missing:
+            await _mark_used(sftp, used)
     if missing:
         raise ProvisioningError(
             t"app {str(app):name} isn't provisioned on this host for its current "
             t"files (missing: {missing:path})"
         )
+    assert directory is not None
     return ProvisionedApp(directory / app.environment.pixi.name, assets)
 
 
-async def mark_used(sftp: asyncssh.SFTPClient, provisioned: ProvisionedApp) -> None:
+def _environment(sftp: asyncssh.SFTPClient, environment: Environment) -> _Find:
+    """Finds `environment` where it is installed."""
+
+    async def find(layout: AppsLayout) -> PurePosixPath | None:
+        directory = layout.environment(environment)
+        return directory if await sftp.exists(directory / INSTALLED_NAME) else None
+
+    return find
+
+
+def _assets(sftp: asyncssh.SFTPClient, key: str) -> _Find:
+    """Finds the assets of `key` where they are published."""
+
+    async def find(layout: AppsLayout) -> PurePosixPath | None:
+        return await _published(sftp, layout.assets / key)
+
+    return find
+
+
+async def _first(
+    layouts: Sequence[AppsLayout], find: _Find, *, what: str
+) -> tuple[AppsLayout, PurePosixPath] | None:
     """
-    Note that a run uses the environment and assets now, for pruning by age:
-    by the time of their `LAST_USED_NAME` file, which their owner may set even
-    where it can't write, as in the read-only assets.
+    The first of `layouts` where `find` finds the app's `what`, and where; one
+    that can't be read is passed over.
+    """
+    for layout in layouts:
+        try:
+            if (found := await find(layout)) is not None:
+                return layout, found
+        except asyncssh.SFTPError as error:
+            logger.debug(
+                t"Could not look for the {what} in {layout.root:path}: {error!r}"
+            )
+            continue
+        logger.debug(t"No {what} in {layout.root:path}.")
+    return None
+
+
+async def _shared_modes(sftp: asyncssh.SFTPClient, root: PurePosixPath) -> _Modes:
+    """
+    The modes of what is created in the shared root `root`, by its own: it must
+    be a directory, of one of `_SHARED_MODES`, so that others never write there,
+    as they would then change what its users run. Its setgid bit is kept.
+    """
+    try:
+        attrs = await sftp.stat(root)
+    except asyncssh.SFTPError as error:
+        raise ProvisioningError(
+            t"Could not use the shared root {root:path}: {error}. Create it first, "
+            t"with the group and mode that what is installed there is to have."
+        ) from error
+    if attrs.type != asyncssh.FILEXFER_TYPE_DIRECTORY:
+        raise ProvisioningError(t"The shared root {root:path} isn't a directory.")
+    mode = attrs.permissions or 0
+    if (modes := _SHARED_MODES.get(mode & 0o777)) is None:
+        supported = [f"{each:o}" for each in _SHARED_MODES]
+        raise ProvisioningError(
+            t"The shared root {root:path} has mode {f'{mode & 0o7777:04o}':detail}; "
+            t"give it one of {supported:choice}, with or without the setgid bit, "
+            t"which say who writes and who reads, and never let others write there."
+        )
+    setgid = mode & stat.S_ISGID
+    return replace(
+        modes, directory=modes.directory | setgid, building=modes.building | setgid
+    )
+
+
+async def _directory(sftp: asyncssh.SFTPClient, path: PurePosixPath, mode: int) -> None:
+    """
+    Create a directory, and those of its parents that are missing, of `mode`,
+    unless it exists. Each one's mode is set after creating it too, as the
+    server's umask may take bits away.
+    """
+    missing = []
+    while not await sftp.isdir(path):
+        missing.append(path)
+        if path.parent == path:
+            break
+        path = path.parent
+    for directory in reversed(missing):
+        try:
+            await sftp.mkdir(directory, attrs=asyncssh.SFTPAttrs(permissions=mode))
+        except asyncssh.SFTPFailure:
+            # Made by another provisioner meanwhile.
+            if not await sftp.isdir(directory):
+                raise
+        await sftp.chmod(directory, mode)
+
+
+async def _file(sftp: asyncssh.SFTPClient, path: PurePosixPath, modes: _Modes) -> None:
+    """Create an empty file in `modes`."""
+    async with open_file(sftp, path, "w"):
+        pass
+    await sftp.chmod(path, modes.file)
+
+
+async def _mark_used(
+    sftp: asyncssh.SFTPClient, directories: Sequence[PurePosixPath]
+) -> None:
+    """
+    Note that a run uses the environment and assets in `directories` now, for
+    pruning by age: by the time of their `LAST_USED_NAME` file, which their
+    owner may set even where it can't write, as in the read-only assets.
     """
     now = int(time.time())
-    for directory in (provisioned.environment, provisioned.assets):
-        if directory is None:
-            continue
+    for directory in directories:
         path = directory / LAST_USED_NAME
         try:
             await sftp.utime(path, (now, now))
@@ -209,10 +411,11 @@ async def _install(
     remote_state: RemoteState,
     layout: AppsLayout,
     app: App,
+    modes: _Modes,
 ) -> PurePosixPath:
     """
-    The directory of the app's environment, installing it first unless it is
-    installed (see the module's docstring).
+    The directory of the app's environment in the apps root, installing it
+    first unless it is installed (see the module's docstring).
     """
     environment = app.environment
     directory = layout.environment(environment)
@@ -221,16 +424,22 @@ async def _install(
     if await sftp.exists(installed):
         logger.debug(t"Using the installed {what}: directory={directory:path}")
         return directory
-    await ensure_directory(sftp, layout.environments)
-    async with _held(sftp, layout.environments / _INSTALL_LOCK_NAME, what=what):
+    await _directory(sftp, layout.environments, modes.directory)
+    lock = layout.environments / _INSTALL_LOCK_NAME
+    async with _held(sftp, lock, modes, what=what):
         # Another provisioner may have installed it while this one waited.
         if await sftp.exists(installed):
             logger.debug(t"Using the {what}, installed meanwhile.")
             return directory
-        logger.info(t"Installing the {what} in {directory:path}.")
+        unshared = ", as no shared root has it" if layout.shared else ""
+        logger.info(t"Installing the {what} in {directory:path}{unshared}.")
         started = time.monotonic()
         try:
-            await ensure_directory(sftp, directory)
+            # Also an earlier attempt's, never opened, and a cache Pixi made.
+            for building in (layout.pixi_cache, directory):
+                await _directory(sftp, building, modes.building)
+                await sftp.chmod(building, modes.building)
+            await _warn_if_apart(host, layout)
             # The same files as any earlier attempt's, by the key.
             manifest = directory / environment.pixi.name
             await sftp.put(environment.pixi, manifest)
@@ -247,8 +456,9 @@ async def _install(
                 remote_state,
                 cache_dir=layout.pixi_cache,
             )
-            async with open_file(sftp, installed, "w"):
-                pass
+            if modes.installed is not None:
+                await host.run(["chmod", "-R", modes.installed, "--", str(directory)])
+            await _file(sftp, installed, modes)
         except (CommandFailed, asyncssh.Error, OSError) as error:
             free = await _free_space(host, directory)
             raise ProvisioningError(
@@ -260,6 +470,25 @@ async def _install(
     return directory
 
 
+async def _warn_if_apart(host: RemoteHost, layout: AppsLayout) -> None:
+    """
+    Warn when Pixi's cache is on another filesystem than the environments, as
+    Pixi then copies every package into each, where it would link them.
+    """
+    paths = [str(layout.environments), str(layout.pixi_cache)]
+    try:
+        devices = (await host.run(["stat", "-c", "%d", "--", *paths])).split()
+    except (CommandFailed, asyncssh.Error, OSError) as error:
+        logger.debug(t"Could not tell the filesystems of {paths:path}: {error!r}")
+        return
+    if len(set(devices)) > 1:
+        logger.warning(
+            t"Pixi's cache {layout.pixi_cache:path} is on another filesystem than "
+            t"{layout.environments:path}, so each environment holds a copy of "
+            t"every package."
+        )
+
+
 async def publish_once(
     host: RemoteHost,
     sftp: asyncssh.SFTPClient,
@@ -268,10 +497,12 @@ async def publish_once(
     build: Build,
     *,
     what: str,
+    modes: _Modes,
 ) -> PurePosixPath:
     """
     The real path of `directory / key`, building it first with `build` unless it
-    is published already (see the module's docstring).
+    is published already (see the module's docstring), and creating what it does
+    in `modes`.
 
     Raises `ProvisioningError` if the build fails, saying how much space is left,
     as a full disk or quota is the likely cause, after removing what it left.
@@ -280,8 +511,8 @@ async def publish_once(
     if (published := await _published(sftp, entry)) is not None:
         logger.debug(t"Using published {what}: entry={entry:path}")
         return published
-    await ensure_directory(sftp, directory)
-    async with _held(sftp, directory / f"{key}{_LOCK_SUFFIX}", what=what):
+    await _directory(sftp, directory, modes.directory)
+    async with _held(sftp, directory / f"{key}{_LOCK_SUFFIX}", modes, what=what):
         # Another provisioner may have published it while this one waited.
         if (published := await _published(sftp, entry)) is not None:
             logger.debug(t"Using {what}, published meanwhile: entry={entry:path}")
@@ -290,11 +521,10 @@ async def publish_once(
         attempt = directory / f"{key}.{secrets.token_hex(8)}"
         logger.info(t"Provisioning the {what} in {attempt:path}.")
         started = time.monotonic()
-        await sftp.mkdir(attempt, attrs=private_directory())
         try:
-            # First, while the attempt's directory is writable (see `mark_used`).
-            async with open_file(sftp, attempt / LAST_USED_NAME, "w"):
-                pass
+            await _directory(sftp, attempt, modes.building)
+            # First, while the attempt's directory is writable (see `_mark_used`).
+            await _file(sftp, attempt / LAST_USED_NAME, modes)
             await build(attempt)
             await sftp.symlink(attempt.name, entry)
         except BaseException as error:
@@ -331,14 +561,14 @@ async def _published(
 
 @asynccontextmanager
 async def _held(
-    sftp: asyncssh.SFTPClient, lock: PurePosixPath, *, what: str
+    sftp: asyncssh.SFTPClient, lock: PurePosixPath, modes: _Modes, *, what: str
 ) -> AsyncGenerator[None]:
     """
     Hold `lock`, a directory, as `mkdir` creates it atomically, and renew it
     while held. Waits while another provisioner holds it, unless its holder
     hasn't renewed it within `_LOCK_STALE_SECONDS`, and is taken for dead.
     """
-    await _acquire(sftp, lock, what=what)
+    await _acquire(sftp, lock, modes, what=what)
     renewing = asyncio.create_task(_renew(sftp, lock))
     try:
         yield
@@ -352,13 +582,17 @@ async def _held(
 
 
 async def _acquire(
-    sftp: asyncssh.SFTPClient, lock: PurePosixPath, *, what: str
+    sftp: asyncssh.SFTPClient, lock: PurePosixPath, modes: _Modes, *, what: str
 ) -> None:
     # The lock's last renewal seen, and when it was seen to change, by this clock.
     seen: tuple[int | None, float] | None = None
     while True:
         try:
-            await sftp.mkdir(lock, attrs=private_directory())
+            # Only its holder changes it, and the others remove it from the
+            # directory it is in: so its mode as asked, less the umask's bits.
+            await sftp.mkdir(
+                lock, attrs=asyncssh.SFTPAttrs(permissions=modes.directory)
+            )
             return
         # Any failure, not only an existing lock: on BeeGFS, a `mkdir` of a
         # name another node removes meanwhile can fail with ENOENT.
@@ -465,10 +699,12 @@ def _reason(error: BaseException) -> str:
     return str(error)
 
 
-def _assets_builder(sftp: asyncssh.SFTPClient, files: Sequence[AssetFile]) -> Build:
+def _assets_builder(
+    sftp: asyncssh.SFTPClient, files: Sequence[AssetFile], modes: _Modes
+) -> Build:
     """
-    Upload the asset files, then make them and their directories read-only, and
-    their owner's alone, as the directories that hold them.
+    Upload the asset files, then make them and their directories read-only, in
+    `modes`.
     """
 
     async def build(attempt: PurePosixPath) -> None:
@@ -478,14 +714,15 @@ def _assets_builder(sftp: asyncssh.SFTPClient, files: Sequence[AssetFile]) -> Bu
             key=lambda path: len(path.parts),
         )
         for directory in directories:
-            await sftp.mkdir(directory, attrs=private_directory())
+            await _directory(sftp, directory, modes.building)
         uploads = asyncio.Semaphore(_UPLOADS_AT_ONCE)
 
         async def upload(file: AssetFile) -> None:
             async with uploads:
                 await sftp.put(file.path, attempt / file.relative)
                 await sftp.chmod(
-                    attempt / file.relative, 0o500 if file.executable else 0o400
+                    attempt / file.relative,
+                    modes.read_only(executable=file.executable),
                 )
 
         # A group, so that when one upload fails the others have stopped before
@@ -498,6 +735,6 @@ def _assets_builder(sftp: asyncssh.SFTPClient, files: Sequence[AssetFile]) -> Bu
             raise failed.exceptions[0] from None
         # Deepest first, while their parents are still writable.
         for directory in [*reversed(directories), attempt]:
-            await sftp.chmod(directory, 0o500)
+            await sftp.chmod(directory, modes.read_only(executable=True))
 
     return build

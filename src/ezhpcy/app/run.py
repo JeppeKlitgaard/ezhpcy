@@ -35,7 +35,7 @@ from dataclasses import dataclass
 from enum import Enum, auto
 lazy import asyncio
 lazy import secrets
-lazy from collections.abc import Mapping
+lazy from collections.abc import Mapping, Sequence
 lazy from functools import partial
 lazy from pathlib import PurePosixPath
 
@@ -60,7 +60,6 @@ lazy from ezhpcy.app.manifest import (
 lazy from ezhpcy.app.provision import (
     AppsLayout,
     ProvisionedApp,
-    mark_used,
     provision_app,
     validate_app,
 )
@@ -260,6 +259,7 @@ async def run_app(
     local_port: int | None = None,
     provision: bool = True,
     apps_root: PurePosixPath | None = None,
+    shared_app_roots: Sequence[PurePosixPath] = (),
     arguments: Mapping[str, object] | None = None,
 ) -> RunningApp:
     """
@@ -269,8 +269,9 @@ async def run_app(
 
     With `provision`, its environment and assets (and EzHPCy's Pixi) are
     installed on the host first if they aren't; without, they are only
-    checked. They live under `apps_root`, by default `ezhpcy-apps` in the
-    host's XDG cache directory.
+    checked. They are used from the first of `shared_app_roots` that has them,
+    or live under `apps_root`, by default `ezhpcy-apps` in the host's XDG cache
+    directory.
 
     Raises `ManifestError` for an argument it can't take, before anything else;
     `AppFailed` if the host lacks what the app `requires`, before installing
@@ -288,7 +289,14 @@ async def run_app(
     attachment.report(AppStatus(name=app.id_, version=app.version))
     try:
         return await _run(
-            host, app, attachment, local_port, provision, apps_root, checked
+            host,
+            app,
+            attachment,
+            local_port,
+            provision,
+            apps_root,
+            tuple(shared_app_roots),
+            checked,
         )
     except BaseException as error:
         await attachment.close()
@@ -304,17 +312,17 @@ async def _run(
     local_port: int | None,
     provision: bool,
     apps_root: PurePosixPath | None,
+    shared_app_roots: tuple[PurePosixPath, ...],
     arguments: Mapping[str, object],
 ) -> RunningApp:
     await _check_requirements(host, app)
     remote_state = await host.remote_state()
-    layout = AppsLayout(apps_root or remote_state.apps_root())
+    layout = AppsLayout(remote_state.apps_root(apps_root), shared_app_roots)
     prepare = provision_app if provision else validate_app
     provisioned = await prepare(host, remote_state, layout, app)
     workdir = remote_state.app_workdir(app.normalised_id)
     async with host.sftp() as sftp:
         await ensure_directory(sftp, workdir)
-        await mark_used(sftp, provisioned)
     arguments = await _arguments_on_host(host, app, arguments, provisioned, workdir)
     if app.endpoint is None:
         return _without_server(

@@ -1,19 +1,24 @@
 """
 From a command's PROFILE argument and options to the configuration models it
-runs with (`Login`, `JobConfig`), through its `Config`, rendering their
-`ConfigError`s as usage errors that name the options and settings at fault.
+runs with (`Login`, `JobConfig`) and the apps it runs, through its `Config`,
+rendering their `ConfigError`s and `ManifestError`s as usage errors that name
+the options and settings at fault.
 """
 
 lazy import shlex
-lazy from collections.abc import Mapping
+lazy from collections.abc import Mapping, Sequence
+lazy from pathlib import Path
 
 lazy from pydantic import SecretStr
 
 lazy from ezhpcy.api import (
+    App,
     Config,
     ConfigError,
     JobConfig,
+    Link,
     Login,
+    ManifestError,
     MissingSetting,
     SubmissionCommandError,
 )
@@ -192,6 +197,43 @@ def job_from_cli(
             prefix=f"profile.{profile_name}" if profile_name is not None else None,
             profile_name=profile_name,
         ) from error
+
+
+def chosen_apps(
+    config: Config,
+    manifests: Sequence[Path],
+    names: Sequence[str],
+    *,
+    load_builtins: bool | None,
+    every: bool = False,
+) -> list[App | Link]:
+    """
+    The apps `--app` names, `NAME` or `NAME@VERSION`, of the `--manifest`s, and
+    of the built-in manifests if `load_builtins`, by default as `config` says;
+    or with `every`, every version of every one.
+    """
+    try:
+        loaded = config.with_manifests(manifests, load_builtin_manifests=load_builtins)
+    except ManifestError as error:
+        raise CliUsageError(
+            t"{sentence(error.message)}", param_hint="--manifest"
+        ) from error
+    if every:
+        return [
+            app
+            for versions in loaded.available_apps.values()
+            for app in versions.values()
+        ]
+    chosen = []
+    for name in names:
+        app_name, _, version = name.partition("@")
+        try:
+            chosen.append(loaded.app(app_name, version or None))
+        except ManifestError as error:
+            raise CliUsageError(
+                t"{sentence(error.message)}", param_hint="--app", value=name
+            ) from error
+    return chosen
 
 
 def _usage_error(

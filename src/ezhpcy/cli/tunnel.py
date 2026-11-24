@@ -19,7 +19,7 @@ lazy import sys
 lazy import threading
 lazy from collections.abc import Callable, Generator, Mapping, Sequence
 lazy from dataclasses import replace
-lazy from pathlib import Path, PurePosixPath
+lazy from pathlib import PurePosixPath
 lazy from types import FrameType
 lazy from typing import Annotated
 
@@ -54,6 +54,7 @@ lazy from ezhpcy.cli._console import (
 lazy from ezhpcy.cli._errors import CliUsageError, sentence
 lazy from ezhpcy.cli._logging import label_log_file
 lazy from ezhpcy.cli._resolve import (
+    chosen_apps,
     job_from_cli,
     login_from_cli,
     login_usage_error,
@@ -99,35 +100,6 @@ def _resolve_alias(
             t"{sentence(str(error))}", param_hint="--alias", value=alias
         ) from error
     return alias
-
-
-def _chosen_apps(
-    config: api.Config,
-    manifests: Sequence[Path],
-    names: Sequence[str],
-    *,
-    load_builtins: bool | None,
-) -> list[api.App | api.Link]:
-    """
-    The apps `--app` names, `NAME` or `NAME@VERSION`, of the `--manifest`s, and
-    of the built-in manifests if `load_builtins`, by default as `config` says.
-    """
-    try:
-        loaded = config.with_manifests(manifests, load_builtin_manifests=load_builtins)
-    except api.ManifestError as error:
-        raise CliUsageError(
-            t"{sentence(error.message)}", param_hint="--manifest"
-        ) from error
-    chosen = []
-    for name in names:
-        app_name, _, version = name.partition("@")
-        try:
-            chosen.append(loaded.app(app_name, version or None))
-        except api.ManifestError as error:
-            raise CliUsageError(
-                t"{sentence(error.message)}", param_hint="--app", value=name
-            ) from error
-    return chosen
 
 
 def _chosen_arguments(
@@ -231,7 +203,7 @@ async def tunnel_cmd(
     """
     # Nothing else runs on the event loop until connecting, so the local work up
     # to there (reading local files) may block it.
-    apps = _chosen_apps(
+    apps = chosen_apps(
         config, manifest or [], app or [], load_builtins=load_builtin_manifests
     )
     arguments = _chosen_arguments(apps, arg or [])
@@ -377,6 +349,7 @@ class TunnelRun:
             running = await host.run_app(
                 app,
                 apps_root=self.apps_root,
+                shared_app_roots=self.site.shared_app_roots,
                 arguments=self.arguments.get(app.normalised_id),
             )
         except (api.MessageError, RuntimeError, OSError) as error:

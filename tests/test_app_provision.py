@@ -4,6 +4,7 @@ the in-process SSH server with a fake `pixi`.
 """
 
 import asyncio
+import logging
 import os
 import re
 import threading
@@ -25,10 +26,11 @@ from tests.support.apps import (
     PREFIX_MARKER,
     FakePixi,
     serve_shell_tools,
+    with_root_mode,
     write_project,
 )
 from tests.support.login import CACHE, REMOTE_STATE
-from tests.support.sshserver import SSHTestServer
+from tests.support.sshserver import SSHTestServer, reply
 
 APPS_ROOT = CACHE / "ezhpcy-apps"
 LAYOUT = AppsLayout(APPS_ROOT)
@@ -108,6 +110,7 @@ async def test_the_first_run_installs_and_the_second_does_nothing(
     assert first.pixi_manifest == first.environment / "pixi.toml"
     assert entries(ssh_server, first.environment) == [
         ".ezhpcy-installed",
+        ".ezhpcy-last-used",
         ".pixi",
         "pixi.lock",
         "pixi.toml",
@@ -122,6 +125,8 @@ async def test_the_first_run_installs_and_the_second_does_nothing(
         "--manifest-path",
         str(first.pixi_manifest),
     ]
+    # Its modes left as Pixi gives them: the apps root keeps others out.
+    assert not [argv for argv in ssh_server.commands_run if argv[0] == "chmod"]
 
 
 async def test_the_users_pixi_files_arrive_unchanged(
@@ -452,3 +457,241 @@ async def test_validate_app_refuses_an_unfinished_install(
     async with connected(ssh_server) as host:
         with pytest.raises(ProvisioningError, match=re.escape(".ezhpcy-installed")):
             await validate_app(host, REMOTE_STATE, LAYOUT, app)
+
+
+# Shared roots
+
+SHARED = PurePosixPath("/dtu/qim/ezhpcy-apps")
+OTHER_SHARED = PurePosixPath("/work3/admin/public/ezhpcy-apps")
+
+
+async def install_shared(
+    server: SSHTestServer,
+    app: App,
+    root: PurePosixPath,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: int = 0o2775,
+) -> provisioning.ProvisionedApp:
+    """Install `app` in the shared root `root`, of `mode`, as an administrator."""
+    server.local_path(root).mkdir(parents=True, exist_ok=True)
+    with_root_mode(monkeypatch, root, mode)
+    async with connected(server) as host:
+        return await provision_app(
+            host, REMOTE_STATE, AppsLayout(root), app, shared=True
+        )
+
+
+def tree(server: SSHTestServer, root: PurePosixPath) -> dict[str, int]:
+    """Every path under `root`, with its modification time."""
+    local = server.local_path(root)
+    return {
+        path.relative_to(local).as_posix(): path.lstat().st_mtime_ns
+        for path in local.rglob("*")
+    }
+
+
+def recorded_chmods(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
+    """The modes provisioning sets from now on, by the name of what it sets."""
+    chmods: dict[str, int] = {}
+    chmod = asyncssh.SFTPClient.chmod
+
+    async def recording_chmod(
+        self: asyncssh.SFTPClient, path: str, mode: int, **kwargs: object
+    ) -> None:
+        chmods[PurePosixPath(path).name] = mode
+        await chmod(self, path, mode, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(asyncssh.SFTPClient, "chmod", recording_chmod)
+    return chmods
+
+
+async def test_a_shared_roots_install_is_used_and_never_written(
+    ssh_server: SSHTestServer,
+    fake_pixi: FakePixi,
+    app: App,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shared = await install_shared(ssh_server, app, SHARED, monkeypatch)
+    before = tree(ssh_server, SHARED)
+    layout = AppsLayout(APPS_ROOT, (SHARED,))
+
+    async with connected(ssh_server) as host:
+        provisioned = await provision_app(host, REMOTE_STATE, layout, app)
+        validated = await validate_app(host, REMOTE_STATE, layout, app)
+
+    assert provisioned == validated == shared
+    assert provisioned.environment.is_relative_to(SHARED)
+    assert len(fake_pixi.installs) == 1
+    # Not even marked used.
+    assert tree(ssh_server, SHARED) == before
+    assert entries(ssh_server, LAYOUT.environments) == []
+    assert entries(ssh_server, LAYOUT.assets) == []
+
+
+async def test_shared_roots_are_looked_in_in_order_for_the_environment_and_assets_apart(
+    ssh_server: SSHTestServer,
+    fake_pixi: FakePixi,
+    app: App,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = await install_shared(ssh_server, app, OTHER_SHARED, monkeypatch)
+    second = await install_shared(ssh_server, app, SHARED, monkeypatch)
+    ssh_server.local_path(first.environment / ".ezhpcy-installed").unlink()
+
+    async with connected(ssh_server) as host:
+        provisioned = await provision_app(
+            host, REMOTE_STATE, AppsLayout(APPS_ROOT, (OTHER_SHARED, SHARED)), app
+        )
+
+    assert provisioned.environment == second.environment
+    assert provisioned.assets == first.assets
+    assert len(fake_pixi.installs) == 2
+
+
+async def test_what_no_shared_root_has_is_installed_in_the_apps_root(
+    ssh_server: SSHTestServer,
+    fake_pixi: FakePixi,
+    app: App,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    layout = AppsLayout(APPS_ROOT, (SHARED,))
+
+    with caplog.at_level(logging.INFO, logger="ezhpcy.app.provision"):
+        async with connected(ssh_server) as host:
+            provisioned = await provision_app(host, REMOTE_STATE, layout, app)
+
+    assert provisioned.environment.parent == LAYOUT.environments
+    assert provisioned.assets is not None
+    assert provisioned.assets.parent == LAYOUT.assets
+    assert fake_pixi.installs == [str(provisioned.pixi_manifest)]
+    assert "as no shared root has it" in caplog.text
+
+
+async def test_a_shared_root_that_cant_be_read_is_passed_over(
+    ssh_server: SSHTestServer,
+    fake_pixi: FakePixi,
+    app: App,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await install_shared(ssh_server, app, SHARED, monkeypatch)
+    for name in ("stat", "lstat"):
+        original = getattr(asyncssh.SFTPClient, name)
+
+        def denying(original: object = original) -> object:
+            async def deny(
+                self: asyncssh.SFTPClient, path: object, *args: object, **kwargs: object
+            ) -> object:
+                if PurePosixPath(str(path)).is_relative_to(SHARED):
+                    raise asyncssh.SFTPPermissionDenied("Permission denied")
+                return await original(self, path, *args, **kwargs)  # type: ignore[operator]
+
+            return deny
+
+        monkeypatch.setattr(asyncssh.SFTPClient, name, denying())
+
+    provisioned = await provision(ssh_server, app)
+
+    assert provisioned.environment.parent == LAYOUT.environments
+    assert len(fake_pixi.installs) == 2
+
+
+async def test_validate_app_names_every_place_it_looked_in(
+    ssh_server: SSHTestServer, fake_pixi: FakePixi, app: App
+) -> None:
+    async with connected(ssh_server) as host:
+        with pytest.raises(ProvisioningError, match="isn't provisioned") as raised:
+            await validate_app(
+                host, REMOTE_STATE, AppsLayout(APPS_ROOT, (SHARED,)), app
+            )
+
+    message = str(raised.value)
+    environment = environment_key(app.environment)
+    assets = assets_key(app.assets.files if app.assets else ())
+    for root in (SHARED, APPS_ROOT):
+        assert f"{root}/envs/{environment}/.ezhpcy-installed" in message
+        assert f"{root}/assets/{assets}" in message
+
+
+@pytest.mark.parametrize(
+    ("mode", "building", "installed", "file", "read_only"),
+    [
+        (0o2775, 0o2770, "a+rX,g+w,o-w", 0o664, (0o444, 0o555)),
+        (0o755, 0o700, "a+rX,go-w", 0o644, (0o444, 0o555)),
+        (0o750, 0o700, "g+rX,g-w,o-rwx", 0o640, (0o440, 0o550)),
+        (0o2770, 0o2770, "g+rwX,o-rwx", 0o660, (0o440, 0o550)),
+    ],
+    ids=["group-writes", "owner-writes", "group-reads", "group-only"],
+)
+async def test_a_shared_install_takes_the_roots_group_and_mode(
+    ssh_server: SSHTestServer,
+    fake_pixi: FakePixi,
+    app: App,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: int,
+    building: int,
+    installed: str,
+    file: int,
+    read_only: tuple[int, int],
+) -> None:
+    chmods = recorded_chmods(monkeypatch)
+
+    shared = await install_shared(ssh_server, app, SHARED, monkeypatch, mode)
+
+    assert shared.assets is not None
+    assert chmods["envs"] == chmods["assets"] == mode
+    # Only those who may write in the root may enter while Pixi installs, as
+    # what it writes has its packages' modes, and Pixi's cache stays theirs.
+    assert chmods[shared.environment.name] == chmods["pixi-cache"] == building
+    command = ["chmod", "-R", installed, "--", str(shared.environment)]
+    assert command in ssh_server.commands_run
+    assert chmods[".ezhpcy-installed"] == file
+    # Read-only, to their owner too.
+    read_only_file, read_only_executable = read_only
+    assert chmods["main.py"] == chmods["logo.svg"] == read_only_file
+    assert chmods["img"] == chmods[shared.assets.name] == read_only_executable
+
+
+@pytest.mark.parametrize(
+    ("mode", "problem"),
+    [
+        (None, "Create it first"),
+        (0o777, "never let others write there"),
+        (0o711, "has mode 0711; give it one of"),
+    ],
+    ids=["missing", "others-write", "unsupported"],
+)
+async def test_a_shared_root_that_others_could_change_is_refused(
+    ssh_server: SSHTestServer,
+    fake_pixi: FakePixi,
+    app: App,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: int | None,
+    problem: str,
+) -> None:
+    if mode is not None:
+        ssh_server.local_path(SHARED).mkdir(parents=True)
+        with_root_mode(monkeypatch, SHARED, mode)
+
+    async with connected(ssh_server) as host:
+        with pytest.raises(ProvisioningError, match=problem):
+            await provision_app(
+                host, REMOTE_STATE, AppsLayout(SHARED), app, shared=True
+            )
+
+    assert fake_pixi.installs == []
+    assert entries(ssh_server, SHARED) == []
+
+
+async def test_a_pixi_cache_on_another_filesystem_is_warned_of(
+    ssh_server: SSHTestServer,
+    fake_pixi: FakePixi,
+    app: App,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    ssh_server.command("stat -c %d", reply(stdout="42\n43\n"))
+
+    with caplog.at_level(logging.WARNING, logger="ezhpcy.app.provision"):
+        await provision(ssh_server, app)
+
+    assert "on another filesystem" in caplog.text
+    assert "a copy of every package" in caplog.text

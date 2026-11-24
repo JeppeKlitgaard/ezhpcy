@@ -142,10 +142,12 @@ def test_the_keepalive_interval_reaches_the_login_as_a_duration() -> None:
     assert config.profiles["base"].login.keepalive_interval == timedelta(seconds=7.5)
 
 
-def test_profile_site_wrapper_directories_must_be_absolute() -> None:
-    with pytest.raises(ValidationError, match="wrapper directories must be absolute"):
+@pytest.mark.parametrize("field", ["wrapper_directories", "shared_app_roots"])
+def test_profile_site_directories_must_be_absolute(field: str) -> None:
+    what = field.replace("_", " ")
+    with pytest.raises(ValidationError, match=f"{what} must be absolute"):
         config_module.Config.from_mapping(
-            {"profile": {"base": {"site": {"wrapper_directories": ["bin"]}}}}
+            {"profile": {"base": {"site": {field: ["bin"]}}}}
         )
 
 

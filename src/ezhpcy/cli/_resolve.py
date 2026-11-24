@@ -215,8 +215,13 @@ def chosen_apps(
     try:
         loaded = config.with_manifests(manifests, load_builtin_manifests=load_builtins)
     except ManifestError as error:
+        # A manifest given as its directory or as its file; a built-in one isn't
+        # the option's fault.
+        given = error.path is not None and bool(
+            {error.path, error.path.parent} & {path.resolve() for path in manifests}
+        )
         raise CliUsageError(
-            t"{sentence(error.message)}", param_hint="--manifest"
+            t"{sentence(error.message)}", param_hint="--manifest" if given else None
         ) from error
     if every:
         return [

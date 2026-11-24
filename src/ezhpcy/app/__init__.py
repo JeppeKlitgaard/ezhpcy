@@ -10,6 +10,7 @@ machine, and run on any host through EzHPCy's Pixi.
 - `action` runs an app's actions on its host while it runs.
 """
 
+lazy from pathlib import Path
 lazy from string.templatelib import Template
 
 from ezhpcy.messages import MessageError
@@ -17,7 +18,14 @@ from ezhpcy.types import ConfigError
 
 
 class ManifestError(ConfigError):
-    """A manifest is invalid, or names no app that was asked for."""
+    """
+    A manifest is invalid, or names no app that was asked for. `path` is the
+    manifest file at fault, if one is.
+    """
+
+    def __init__(self, message: Template, *, path: Path | None = None) -> None:
+        super().__init__(message)
+        self.path = path
 
 
 class AppFailed(MessageError, RuntimeError):

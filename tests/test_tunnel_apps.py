@@ -18,7 +18,7 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
-from ezhpcy import api
+from ezhpcy import api, config as config_module
 from ezhpcy.cli import tunnel as tunnel_cli
 from ezhpcy.cli.utils.keys import ENTER
 from tests.support.api import JOB, LOGIN
@@ -465,6 +465,21 @@ def test_an_invalid_manifest_fails_before_connecting(
 
     assert result.exit_code == 2, result
     assert "Invalid value for --manifest." in result.stderr
+    assert "unknown key" in result.stderr
+    assert captured == {}
+
+
+def test_an_invalid_builtin_manifest_is_not_blamed_on_the_option(
+    captured: dict, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    builtin = write_project(tmp_path / "builtin", MINIMAL_APP + "rnu = 1\n")
+    monkeypatch.setattr(config_module, "builtin_manifests", lambda: [builtin])
+    manifest = write_project(tmp_path / "project", MINIMAL_APP)
+
+    result = invoke(["tunnel", "base", "--manifest", str(manifest), "--app", "lab"])
+
+    assert result.exit_code == 2, result
+    assert "--manifest" not in result.stderr
     assert "unknown key" in result.stderr
     assert captured == {}
 

@@ -1329,10 +1329,12 @@ class Manifest:
                 data = tomllib.load(file)
         except OSError as error:
             raise ManifestError(
-                t"Could not read manifest {path:path}: {error}"
+                t"Could not read manifest {path:path}: {error}", path=path
             ) from error
         except tomllib.TOMLDecodeError as error:
-            raise ManifestError(t"{path:path} is not valid TOML: {error}") from error
+            raise ManifestError(
+                t"{path:path} is not valid TOML: {error}", path=path
+            ) from error
         _check_layout(path, data)
         try:
             manifest = ManifestFile.model_validate(
@@ -1366,7 +1368,8 @@ def _check_layout(path: Path, data: dict[str, object]) -> None:
             t"{path:path} has no {'[ezhpcy]':name} table; EzHPCy reads apps from "
             t"{'[ezhpcy.app.<name>."<version>"]':name} tables, beside "
             t"{f'schema = {APP_MANIFEST_SCHEMA_VERSION}':suggestion} in "
-            t"{'[ezhpcy]':name}"
+            t"{'[ezhpcy]':name}",
+            path=path,
         )
     apps = ezhpcy.get("app")
     if not isinstance(apps, dict) or not any(
@@ -1375,7 +1378,8 @@ def _check_layout(path: Path, data: dict[str, object]) -> None:
         raise ManifestError(
             t"{path:path} has no apps; describe each version of each in a table "
             t"{'[ezhpcy.app.<name>."<version>"]':name}, such as "
-            t"{'[ezhpcy.app.lab."v1.0"]':suggestion}"
+            t"{'[ezhpcy.app.lab."v1.0"]':suggestion}",
+            path=path,
         )
     for name, versions in apps.items():
         if isinstance(versions, dict) and set(versions) & (
@@ -1384,7 +1388,8 @@ def _check_layout(path: Path, data: dict[str, object]) -> None:
             raise ManifestError(
                 t"{path:path}: app {name:name} has no version; each version of an "
                 t"app is a table of its own, such as "
-                t"{f'[ezhpcy.app.{name}."v1.0"]':suggestion}"
+                t"{f'[ezhpcy.app.{name}."v1.0"]':suggestion}",
+                path=path,
             )
 
 
@@ -1420,7 +1425,7 @@ def _invalid(path: Path, problems: list[tuple[str, str]]) -> ManifestError:
     message = t"invalid manifest {path:path}:"
     for location, why in problems:
         message += t"\n  {location:name}: {why}"
-    return ManifestError(message)
+    return ManifestError(message, path=path)
 
 
 def collect_apps(
@@ -1446,7 +1451,8 @@ def collect_apps(
                         raise ManifestError(
                             t"{str(other):name} of {source.path:path} and "
                             t"{str(app):name} of {manifest.path:path} are one "
-                            t"version of one app"
+                            t"version of one app",
+                            path=manifest.path,
                         )
                     get_logger(__name__).debug(
                         t"App {str(app):name} of {manifest.path:path} replaces the "

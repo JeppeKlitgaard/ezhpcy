@@ -17,7 +17,9 @@ from ezhpcy.ssh import CommandFailed
 from ezhpcy.types import Login
 from ezhpcy.versions import OPENSSH_MATCHSPEC, PIXI_INSTALLER_URL, PIXI_VERSION
 from tests.support.apps import (
+    LAYOUT_DIRECTORY,
     MINIMAL_APP,
+    PIXI_DIRECTORY,
     FakePixi,
     serve_shell_tools,
     with_root_mode,
@@ -176,7 +178,7 @@ def test_provision_installs_the_apps_given_in_the_shared_app_root_given(
 
     assert result.exit_code == 0, result
     [install] = pixi.installs
-    assert install.startswith(f"{_SHARED}/envs/")
+    assert install.startswith(f"{_SHARED}/{PIXI_DIRECTORY}/envs/")
     # So that the root's group shares it, and only that.
     environment = str(PurePosixPath(install).parent)
     assert ["chmod", "-R", "a+rX,g+w,o-w", "--", environment] in login.commands_run
@@ -211,7 +213,7 @@ def test_provision_installs_an_app_only_where_no_shared_root_has_it(
     assert (shared.exit_code, again.exit_code) == (0, 0)
     # Once, in the shared root.
     [install] = pixi.installs
-    assert install.startswith(f"{_SHARED}/envs/")
+    assert install.startswith(f"{_SHARED}/{PIXI_DIRECTORY}/envs/")
 
 
 def test_provision_all_apps_installs_every_version_of_every_app(
@@ -237,7 +239,7 @@ def test_provision_all_apps_installs_every_version_of_every_app(
     assert sorted(provisioned) == ["board v1.0", "lab v1.0", "lab v2.0"]
     # One environment, which they share.
     [install] = pixi.installs
-    assert install.startswith(f"{_SHARED}/envs/")
+    assert install.startswith(f"{_SHARED}/{PIXI_DIRECTORY}/envs/")
 
 
 @pytest.mark.parametrize(
@@ -324,7 +326,7 @@ def _make_remote_files(server: SSHTestServer, *paths: PurePosixPath) -> None:
 
 
 def test_prune_removes_other_versions_only(login: SSHTestServer) -> None:
-    login.command("rm", reply())
+    login.command("sh", reply())
     pixi_cache = _PACKAGE_CACHE / "pixi_cache"
     _make_remote_dirs(
         login,
@@ -341,17 +343,41 @@ def test_prune_removes_other_versions_only(login: SSHTestServer) -> None:
     result = invoke(["prune", *_LOGIN])
 
     assert result.exit_code == 0, result
-    assert _commands(login, "rm") == [
-        [
-            "rm",
-            "-rf",
-            "--",
-            f"{CACHE}/ezhpcy/0.0.9",
-            f"{STATE}/ezhpcy/0.0.9",
-            f"{_PACKAGE_CACHE}/pixi/0.72.0",
-            f"{pixi_cache}/0.72.0",
-        ],
+    # Read-only files too, as apps' assets are.
+    [command] = _commands(login, "sh")
+    assert "chmod -R u+w" in command[2]
+    assert command[3:] == [
+        "prune",
+        f"{CACHE}/ezhpcy/0.0.9",
+        f"{STATE}/ezhpcy/0.0.9",
+        f"{_PACKAGE_CACHE}/pixi/0.72.0",
+        f"{pixi_cache}/0.72.0",
     ]
+
+
+def test_prune_removes_other_layouts_and_pixi_versions_from_the_apps_root(
+    login: SSHTestServer,
+) -> None:
+    login.command("sh", reply())
+    apps = CACHE / "ezhpcy-apps"
+    layout = apps / LAYOUT_DIRECTORY
+    _make_remote_dirs(
+        login,
+        apps / PIXI_DIRECTORY / "envs",
+        layout / "pixi-0.72.0" / "envs",
+        layout / "cache",
+        layout / "assets",
+        apps / "v0" / "envs",
+        # What came before layouts, such as workdirs, which may hold the user's
+        # work: left to `prune --all`.
+        apps / "work" / "lab",
+    )
+
+    result = invoke(["prune", *_LOGIN])
+
+    assert result.exit_code == 0, result
+    [command] = _commands(login, "sh")
+    assert command[3:] == ["prune", f"{apps}/v0", f"{layout}/pixi-0.72.0"]
 
 
 def test_prune_with_nothing_on_the_server_removes_nothing(
@@ -360,7 +386,7 @@ def test_prune_with_nothing_on_the_server_removes_nothing(
     result = invoke(["prune", *_LOGIN])
 
     assert result.exit_code == 0, result
-    assert _commands(login, "rm") == []
+    assert _commands(login, "sh") == []
 
 
 def test_prune_all_removes_the_package_cache_and_state_and_the_apps_root(
@@ -418,15 +444,15 @@ def test_prune_workdirs_needs_all(login: SSHTestServer) -> None:
     assert login.commands_run == []
 
 
-def test_prune_never_touches_the_apps_root(login: SSHTestServer) -> None:
-    login.command("rm", reply())
+def test_prune_keeps_the_apps_roots_current_installs(login: SSHTestServer) -> None:
+    login.command("sh", reply())
     # A sibling of the package cache root, not inside it.
-    _make_remote_dirs(login, _PACKAGE_CACHE, CACHE / "ezhpcy-apps" / "envs")
+    _make_remote_dirs(login, _PACKAGE_CACHE, CACHE / "ezhpcy-apps" / PIXI_DIRECTORY)
 
     result = invoke(["prune", *_LOGIN])
 
     assert result.exit_code == 0, result
-    assert _commands(login, "rm") == []
+    assert _commands(login, "sh") == []
 
 
 # validate_worker_infrastructure

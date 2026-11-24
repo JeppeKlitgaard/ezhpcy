@@ -2,14 +2,26 @@
 An app's environment and assets on the host it runs on, under the apps root
 (by default `<XDG cache>/ezhpcy-apps` there, see `RemoteState.apps_root`):
 
-    <apps root>/
-      envs/<key>/              the Pixi files, and Pixi's `.pixi/`
-      envs/<key>/.ezhpcy-installed   once `pixi install --frozen` succeeded
-      envs/.install.lock/      held while an environment installs
-      assets/<key>             symlink to <key>.<attempt>, once that attempt completed
-      assets/<key>.<attempt>/  the asset files, read-only: one attempt
-      assets/<key>.lock/       held while an attempt runs
-      pixi-cache/              Pixi's cache for app environments
+    <apps root>/v<layout>/     by `APPS_LAYOUT_VERSION`
+      pixi-<version>/envs/<env>/   by `PIXI_VERSION`: the Pixi files, and Pixi's
+                               `.pixi/`
+      pixi-<version>/envs/<env>/.ezhpcy-installed   once `pixi install --frozen`
+                               succeeded, saying which EzHPCy and Pixi installed it
+      cache/                   Pixi's cache for app environments, of every version
+      .install.lock/           held while an environment installs
+      assets/<assets>/         the asset files, read-only, once an attempt completed
+      assets/<assets>.<attempt>/  one attempt, while it runs
+      assets/<assets>.lock/    held while an attempt runs
+
+So installs of other layouts, and environments of other Pixi versions, are
+never used, and stay beside these for the EzHPCy versions that use them: a
+shared root serves clients of several versions at once. Pixi's cache is made
+to be shared by its versions, so they share one, and their environments are
+linked to the same files. An environment's
+directory is named by its workspace's name and version, its Pixi environment
+and its key (`environment_key`), such as `notebooks@1.0.0__default__<key>`, so
+that the apps of one workspace share it; assets' by their app's normalised id
+and version and their key (`assets_key`), such as `lab@v1.0__<key>`.
 
 **Shared roots** (`site.shared_app_roots`) are apps roots that administrators
 install apps into, for their users to run them from. They are looked in first,
@@ -37,20 +49,23 @@ installs at once; on success it writes `.ezhpcy-installed`. A run uses only an
 environment with that marker, and never installs (`pixi run --as-is`).
 
 **Assets** are built once by `publish_once`: each attempt builds in a fresh
-directory of its own, and the entry appears under its key only once the attempt
-has succeeded, as a symlink created in one atomic step. An attempt that failed,
-typically on a full disk or quota, is removed, and never used or built over:
-the next one removes any leftovers, while holding the key's lock, and starts
-afresh.
+directory of its own, and only once it has succeeded is it renamed to its key,
+in one atomic step. SFTP's rename never replaces what has the name already, so
+of two attempts that finish at once, the second is removed, and the first's
+used. An attempt that failed, typically on a full disk or quota, is removed, and
+never used or built over: the next one removes any leftovers, while holding the
+key's lock, and starts afresh.
 
 The locks are directories, as `mkdir` is atomic, on NFS and BeeGFS too.
 """
 
+import re
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from pathlib import PurePosixPath
 lazy import asyncio
+lazy import json
 lazy import secrets
 lazy import stat
 lazy import time
@@ -66,22 +81,27 @@ lazy from ezhpcy.app.manifest import (
     assets_key,
     environment_key,
 )
+lazy from ezhpcy.constants import EZHPCY_VERSION
 lazy from ezhpcy.provision_host import ProvisioningError, provision_pixi
 lazy from ezhpcy.ssh import CommandFailed, RemoteHost, open_file
 lazy from ezhpcy.types import RemoteState
+lazy from ezhpcy.versions import APPS_LAYOUT_VERSION, PIXI_VERSION
 
 logger = get_logger(__name__)
 
 ENVIRONMENTS_DIRECTORY = "envs"
 ASSETS_DIRECTORY = "assets"
-PIXI_CACHE_DIRECTORY = "pixi-cache"
+PIXI_CACHE_DIRECTORY = "cache"
 # In an environment's directory, once its install succeeded.
 INSTALLED_NAME = ".ezhpcy-installed"
 # Touched in an entry's directory by each run that uses it, for pruning by age.
 LAST_USED_NAME = ".ezhpcy-last-used"
 _LOCK_SUFFIX = ".lock"
-# The one lock of an apps root's installs, in `envs/`.
+# The one lock of a layout's installs, as they share Pixi's cache.
 _INSTALL_LOCK_NAME = f".install{_LOCK_SUFFIX}"
+# The names of a layout's directory, and of a Pixi version's in it.
+_LAYOUT_NAME = re.compile(r"^v[0-9]+$")
+_PIXI_NAME = re.compile(r"^pixi-[0-9A-Za-z][0-9A-Za-z.+!_-]*$")
 
 # How often a provisioner renews the lock it holds, and how long a lock may go
 # unrenewed before others take its holder for dead. Renewed by its directory's
@@ -108,20 +128,31 @@ class AppsLayout:
     shared: tuple[PurePosixPath, ...] = ()
 
     @property
+    def layout(self) -> PurePosixPath:
+        return self.root / f"v{APPS_LAYOUT_VERSION}"
+
+    @property
+    def pixi(self) -> PurePosixPath:
+        """What EzHPCy's Pixi makes."""
+        return self.layout / f"pixi-{PIXI_VERSION}"
+
+    @property
     def environments(self) -> PurePosixPath:
-        return self.root / ENVIRONMENTS_DIRECTORY
+        return self.pixi / ENVIRONMENTS_DIRECTORY
 
     @property
     def assets(self) -> PurePosixPath:
-        return self.root / ASSETS_DIRECTORY
+        return self.layout / ASSETS_DIRECTORY
 
     @property
     def pixi_cache(self) -> PurePosixPath:
-        return self.root / PIXI_CACHE_DIRECTORY
+        return self.layout / PIXI_CACHE_DIRECTORY
 
     def environment(self, environment: Environment) -> PurePosixPath:
-        """The directory of `environment`, by its key."""
-        return self.environments / environment_key(environment)
+        """The directory of `environment` (see the module's docstring)."""
+        name, version = environment.workspace
+        key = environment_key(environment)
+        return self.environments / f"{name}@{version}__{environment.environment}__{key}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,7 +195,7 @@ _SHARED_MODES = {
 class ProvisionedApp:
     """
     Where an app's installed environment and published assets are: the Pixi
-    manifest to run it by, and the assets' real path.
+    manifest to run it by, and the assets' directory.
     """
 
     pixi_manifest: PurePosixPath
@@ -178,6 +209,32 @@ class ProvisionedApp:
 
 # Builds an attempt in the directory it is given; raises if it can't.
 type Build = Callable[[PurePosixPath], Awaitable[None]]
+
+
+async def stale_installs(
+    sftp: asyncssh.SFTPClient, layout: AppsLayout
+) -> list[PurePosixPath]:
+    """
+    What this EzHPCy never uses in the apps root, as another EzHPCy or Pixi
+    version made it: other layouts' installs, and in this one, other Pixi
+    versions' environments. For a user's own apps root alone: a shared root
+    keeps them, for the clients of those versions.
+    """
+    stale: list[PurePosixPath] = []
+    for directory, current, pattern in (
+        (layout.root, layout.layout, _LAYOUT_NAME),
+        (layout.layout, layout.pixi, _PIXI_NAME),
+    ):
+        try:
+            names = await sftp.listdir(directory)
+        except asyncssh.SFTPNoSuchFile:
+            continue
+        stale += [
+            directory / name
+            for name in sorted(names)
+            if name != current.name and pattern.fullmatch(name)
+        ]
+    return stale
 
 
 # Where an app's environment or assets are in an apps root, if they are.
@@ -220,7 +277,7 @@ async def provision_app(
             used.append(directory)
         assets = None
         if app.assets is not None:
-            key = assets_key(app.assets.files)
+            key = _assets_name(app, app.assets.files)
             what = f"assets of app {app}"
             if found := await _first(shared_layouts, _assets(sftp, key), what=what):
                 assets = found[1]
@@ -268,7 +325,7 @@ async def validate_app(
                 each.environment(app.environment) / INSTALLED_NAME for each in layouts
             ]
         if app.assets is not None:
-            key = assets_key(app.assets.files)
+            key = _assets_name(app, app.assets.files)
             what = f"assets of app {app}"
             if found := await _first(layouts, _assets(sftp, key), what=what):
                 found_in, assets = found
@@ -285,6 +342,11 @@ async def validate_app(
         )
     assert directory is not None
     return ProvisionedApp(directory / app.environment.pixi.name, assets)
+
+
+def _assets_name(app: App, files: Sequence[AssetFile]) -> str:
+    """The name of the app's assets in `assets/` (see the module's docstring)."""
+    return f"{app.normalised_id}@{app.version}__{assets_key(files)}"
 
 
 def _environment(sftp: asyncssh.SFTPClient, environment: Environment) -> _Find:
@@ -377,10 +439,12 @@ async def _directory(sftp: asyncssh.SFTPClient, path: PurePosixPath, mode: int) 
         await sftp.chmod(directory, mode)
 
 
-async def _file(sftp: asyncssh.SFTPClient, path: PurePosixPath, modes: _Modes) -> None:
-    """Create an empty file in `modes`."""
-    async with open_file(sftp, path, "w"):
-        pass
+async def _file(
+    sftp: asyncssh.SFTPClient, path: PurePosixPath, modes: _Modes, content: str = ""
+) -> None:
+    """Create a file in `modes`, holding `content`."""
+    async with open_file(sftp, path, "w") as file:
+        await file.write(content)
     await sftp.chmod(path, modes.file)
 
 
@@ -425,7 +489,7 @@ async def _install(
         logger.debug(t"Using the installed {what}: directory={directory:path}")
         return directory
     await _directory(sftp, layout.environments, modes.directory)
-    lock = layout.environments / _INSTALL_LOCK_NAME
+    lock = layout.layout / _INSTALL_LOCK_NAME
     async with _held(sftp, lock, modes, what=what):
         # Another provisioner may have installed it while this one waited.
         if await sftp.exists(installed):
@@ -458,7 +522,8 @@ async def _install(
             )
             if modes.installed is not None:
                 await host.run(["chmod", "-R", modes.installed, "--", str(directory)])
-            await _file(sftp, installed, modes)
+            installer = {"ezhpcy": EZHPCY_VERSION, "pixi": PIXI_VERSION}
+            await _file(sftp, installed, modes, json.dumps(installer) + "\n")
         except (CommandFailed, asyncssh.Error, OSError) as error:
             free = await _free_space(host, directory)
             raise ProvisioningError(
@@ -500,9 +565,8 @@ async def publish_once(
     modes: _Modes,
 ) -> PurePosixPath:
     """
-    The real path of `directory / key`, building it first with `build` unless it
-    is published already (see the module's docstring), and creating what it does
-    in `modes`.
+    `directory / key`, building it first with `build` unless it is published
+    already (see the module's docstring), and creating what it does in `modes`.
 
     Raises `ProvisioningError` if the build fails, saying how much space is left,
     as a full disk or quota is the likely cause, after removing what it left.
@@ -526,7 +590,9 @@ async def publish_once(
             # First, while the attempt's directory is writable (see `_mark_used`).
             await _file(sftp, attempt / LAST_USED_NAME, modes)
             await build(attempt)
-            await sftp.symlink(attempt.name, entry)
+            # Read-only already: moving a directory within its parent doesn't
+            # write in it.
+            await sftp.rename(attempt, entry)
         except BaseException as error:
             await _remove(host, [attempt])
             # A provisioner that broke a lock it took for dead may have won.
@@ -543,20 +609,19 @@ async def publish_once(
             ) from error
         elapsed = time.monotonic() - started
         logger.info(t"Provisioned the {what} in {elapsed:detail:.0f} seconds.")
-        return await _published(sftp, entry) or attempt
+        return entry
 
 
 async def _published(
     sftp: asyncssh.SFTPClient, entry: PurePosixPath
 ) -> PurePosixPath | None:
-    """The real path `entry` points at, if it is published: a symlink that resolves."""
+    """`entry`, if it is published: only a completed attempt has its name."""
     try:
-        if (await sftp.lstat(entry)).type != asyncssh.FILEXFER_TYPE_SYMLINK:
+        if (await sftp.lstat(entry)).type != asyncssh.FILEXFER_TYPE_DIRECTORY:
             return None
-        await sftp.stat(entry)
     except asyncssh.SFTPNoSuchFile:
         return None
-    return PurePosixPath(str(await sftp.realpath(entry)))
+    return entry
 
 
 @asynccontextmanager
@@ -642,13 +707,6 @@ async def _remove_leftovers(
         for name in await sftp.listdir(directory)
         if name.startswith(f"{key}.") and name != f"{key}{_LOCK_SUFFIX}"
     ]
-    # An entry whose attempt is gone can't be used, and would keep a new one from
-    # being published.
-    try:
-        await sftp.lstat(directory / key)
-        leftovers.append(directory / key)
-    except asyncssh.SFTPNoSuchFile:
-        pass
     if leftovers:
         logger.info(
             t"Removing what failed provisioning attempts left: {leftovers:path}."

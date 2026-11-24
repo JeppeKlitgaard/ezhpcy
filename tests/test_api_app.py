@@ -23,7 +23,14 @@ import pytest
 from ezhpcy import api
 from ezhpcy.app import run as app_run
 from tests.support.api import JOB, LOGIN, JobRig, SlowPorts
-from tests.support.apps import MINIMAL_APP, AppRig, http_app, write_project
+from tests.support.apps import (
+    LAYOUT_DIRECTORY,
+    MINIMAL_APP,
+    PIXI_DIRECTORY,
+    AppRig,
+    http_app,
+    write_project,
+)
 from tests.support.login import CACHE, REMOTE_STATE, STATE
 from tests.support.sshserver import SSHTestServer, reply
 from tests.support.tunnel import JOB_ID, control_dirs, unused_port
@@ -129,7 +136,7 @@ async def test_an_app_runs_on_a_plain_host_and_is_served_here(
         environment = rig.pixi.installs[0]
         command = (
             f"    cd -- {workdir} && exec env PIXI_HOME={REMOTE_STATE.pixi_home()} "
-            f"PIXI_CACHE_DIR={APPS_ROOT / 'pixi-cache'} "
+            f"PIXI_CACHE_DIR={APPS_ROOT / LAYOUT_DIRECTORY / 'cache'} "
             f"{REMOTE_STATE.pixi_executable()} run --as-is --executable "
             f"--manifest-path {environment} --environment default -- env "
             'jupyter lab --ServerApp.sock="$run_dir"/app.sock'
@@ -404,7 +411,7 @@ async def test_the_apps_root_and_local_port_can_be_chosen(
         lab = await host.run_app(
             config_of(tmp_path).app("lab"), apps_root=root, local_port=port
         )
-        assert rig.pixi.installs[0].startswith(f"{root}/envs/")
+        assert rig.pixi.installs[0].startswith(f"{root}/{PIXI_DIRECTORY}/envs/")
         # The workdir stays in the state directory.
         assert rig.server.local_path(WORKDIRS / "lab").is_dir()
         assert not rig.server.local_path(root / "work").exists()

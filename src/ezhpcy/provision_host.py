@@ -1,12 +1,14 @@
 import re
 lazy import asyncio
 lazy import shlex
+lazy from collections.abc import Sequence
 lazy from pathlib import PurePosixPath
 
 lazy import asyncssh
 
 from ezhpcy.logging import get_logger
 from ezhpcy.messages import MessageError
+lazy from ezhpcy.app.provision import AppsLayout, stale_installs
 lazy from ezhpcy.provision_local import WorkerCredentials
 lazy from ezhpcy.ssh import RemoteHost, ensure_directory
 lazy from ezhpcy.types import RemoteState
@@ -166,9 +168,12 @@ async def validate_worker_infrastructure(
 
 
 async def prune_stale_data(
-    login: RemoteHost, remote_state: RemoteState
+    login: RemoteHost, remote_state: RemoteState, apps_root: PurePosixPath
 ) -> tuple[PurePosixPath, ...]:
-    """Remove remote EzHPCy and Pixi data other than the current versions'."""
+    """
+    Remove remote EzHPCy and Pixi data other than the current versions', and
+    in `apps_root`, the user's own, what other versions installed there.
+    """
     current_directories = (
         remote_state.package_cache_dir(),
         remote_state.package_state_dir(),
@@ -181,9 +186,10 @@ async def prune_stale_data(
             for current_directory in current_directories
             for path in await _stale_siblings(sftp, current_directory)
         ]
+        stale += await stale_installs(sftp, AppsLayout(apps_root))
 
     if stale:
-        await login.run(["rm", "-rf", "--", *(str(path) for path in stale)])
+        await _remove(login, stale)
         for path in stale:
             logger.info(t"Pruned stale data {path:path}.")
     else:
@@ -232,6 +238,10 @@ async def prune_all_remote_data(
         *([remote_state.apps_state_root()] if workdirs else []),
     )
     logger.info(t"Removing {list(roots):path}.")
-    # Assets are read-only, directories included.
+    await _remove(login, roots)
+
+
+async def _remove(login: RemoteHost, paths: Sequence[PurePosixPath]) -> None:
+    """Remove `paths`, read-only ones too, as apps' assets are, directories included."""
     script = 'chmod -R u+w -- "$@" 2>/dev/null; rm -rf -- "$@"'
-    await login.run(["sh", "-c", script, "prune", *map(str, roots)])
+    await login.run(["sh", "-c", script, "prune", *map(str, paths)])

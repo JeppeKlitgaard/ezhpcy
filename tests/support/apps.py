@@ -18,12 +18,14 @@ import pytest
 
 from ezhpcy import process
 from ezhpcy.app import run as app_run
+from ezhpcy.versions import APPS_LAYOUT_VERSION, PIXI_VERSION
 from tests.support.sshserver import Invocation, SSHTestServer, reply
 from tests.support.worker import FakeProcess, FakeProcesses, quick_processes
 
 PIXI_TOML = """\
 [workspace]
 name = "project"
+version = "0.1.0"
 channels = ["conda-forge"]
 platforms = ["linux-64"]
 
@@ -108,6 +110,9 @@ endpoint.transport = "socket"
 """
 
 PREFIX_MARKER = "/.pixi/envs/default"
+# In an apps root: its installs of this layout, and what this Pixi made.
+LAYOUT_DIRECTORY = f"v{APPS_LAYOUT_VERSION}"
+PIXI_DIRECTORY = f"{LAYOUT_DIRECTORY}/pixi-{PIXI_VERSION}"
 
 
 class FakePixi:

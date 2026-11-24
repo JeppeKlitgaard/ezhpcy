@@ -616,12 +616,63 @@ def test_a_pyproject_toml_needs_a_pixi_table(tmp_path: Path) -> None:
 
 
 def test_a_pyproject_toml_with_a_pixi_table_loads(tmp_path: Path) -> None:
-    files = {"pyproject.toml": "[tool.pixi.workspace]\nchannels = []\n"}
+    files = {
+        "pyproject.toml": '[tool.pixi.workspace]\nchannels = []\nversion = "0.1.0"\n'
+    }
     manifest = MINIMAL_APP.replace('"pixi.toml"', '"pyproject.toml"')
 
     app = only(load(tmp_path, manifest, files=files))
 
     assert app.environment.pixi.name == "pyproject.toml"
+
+
+def test_a_workspace_needs_a_version(tmp_path: Path) -> None:
+    message = problems(
+        tmp_path, MINIMAL_APP, pixi_toml='[workspace]\nname = "project"\n'
+    )
+
+    assert "gives its workspace no version" in message
+    assert 'such as version = "0.1.0"' in message
+
+
+def test_a_workspace_version_is_one_a_directory_may_be_named_by(
+    tmp_path: Path,
+) -> None:
+    message = problems(
+        tmp_path, MINIMAL_APP, pixi_toml='[workspace]\nversion = "1/0"\n'
+    )
+
+    assert "gives its workspace version '1/0'" in message
+
+
+@pytest.mark.parametrize(
+    ("name", "content", "workspace"),
+    [
+        (
+            "pixi.toml",
+            '[workspace]\nname = "My_Tools"\nversion = "1.2"\n',
+            ("my-tools", "1.2"),
+        ),
+        ("pixi.toml", '[project]\nname = "old"\nversion = "0.3"\n', ("old", "0.3")),
+        ("pixi.toml", '[workspace]\nversion = "2.0"\n', ("project", "2.0")),
+        (
+            "pyproject.toml",
+            '[project]\nname = "pkg"\nversion = "0.5"\n[tool.pixi.workspace]\n',
+            ("pkg", "0.5"),
+        ),
+    ],
+    ids=["workspace", "project", "unnamed", "pyproject"],
+)
+def test_the_workspace_is_named_and_versioned_as_pixi_has_it(
+    tmp_path: Path, name: str, content: str, workspace: tuple[str, str]
+) -> None:
+    manifest = MINIMAL_APP.replace('"pixi.toml"', f'"{name}"')
+    files = {name: content}
+
+    app = only(load(tmp_path / "project", manifest, files=files))
+
+    # Normalised, and without a name, its directory's.
+    assert app.environment.workspace == workspace
 
 
 def test_the_lock_file_must_have_the_environment(tmp_path: Path) -> None:

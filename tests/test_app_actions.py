@@ -21,7 +21,7 @@ from pydantic import TypeAdapter
 from ezhpcy import api
 from ezhpcy.app.manifest import Manifest
 from tests.support.api import LOGIN
-from tests.support.apps import MINIMAL_APP, AppRig, write_project
+from tests.support.apps import LAYOUT_DIRECTORY, MINIMAL_APP, AppRig, write_project
 from tests.support.login import CACHE, STATE
 from tests.support.sshserver import SSHTestServer
 from tests.support.worker import FakeProcess
@@ -1167,7 +1167,9 @@ async def test_the_data_dumper_builtin_copies_its_asset_to_the_path_given(
     async with api.connect(LOGIN) as host:
         dumper = await host.run_app(app)
         # The asset's key, a symbolic link, and the directory it points to.
-        assets = rig.server.local_path(CACHE / "ezhpcy-apps" / "assets")
+        assets = rig.server.local_path(
+            CACHE / "ezhpcy-apps" / LAYOUT_DIRECTORY / "assets"
+        )
         [file] = {path.resolve() for path in assets.glob("*/dump.txt")}
         assert file.read_text(encoding="utf-8") == "Hello world!\n"
 

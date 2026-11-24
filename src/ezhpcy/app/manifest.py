@@ -77,6 +77,8 @@ _BARE_KEY = re.compile(r"^[A-Za-z0-9_-]+$")
 _PLATFORM = "linux-64"
 _PIXI_MANIFEST_NAMES = frozenset({"pixi.toml", "pyproject.toml"})
 _LOCK_FILE_NAME = "pixi.lock"
+# A Pixi workspace's version, as part of a directory's name on the host.
+_WORKSPACE_VERSION = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.+!_-]*$")
 # Lock files from this version on list each package by its location.
 _MIN_LOCK_VERSION = 6
 _ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -202,6 +204,11 @@ class Environment(_Table):
         """`pixi.lock`, beside the Pixi manifest."""
         return self.pixi.with_name(_LOCK_FILE_NAME)
 
+    @property
+    def workspace(self) -> tuple[str, str]:
+        """The Pixi workspace's name, normalised, and its version."""
+        return _workspace(self.pixi)
+
     @field_validator("pixi")
     @classmethod
     def resolve_pixi(cls, value: Path, info: ValidationInfo) -> Path:
@@ -220,6 +227,7 @@ class Environment(_Table):
 
     @model_validator(mode="after")
     def check_lock(self) -> Self:
+        _workspace(self.pixi)
         if not self.lock.is_file():
             raise ValueError(
                 f"{self.lock} does not exist; lock the environment with `pixi lock` "
@@ -227,6 +235,47 @@ class Environment(_Table):
             )
         _check_lock(self.lock.read_text(encoding="utf-8"), self.environment)
         return self
+
+
+def _workspace(pixi: Path) -> tuple[str, str]:
+    """
+    The name, normalised, and version of the Pixi workspace of `pixi`, from its
+    workspace table, or a `pyproject.toml`'s `[project]`; without a name, its
+    directory's, as Pixi has it. Raises `ValueError` without a version, which
+    EzHPCy requires, as an install's directory on the host is named by both.
+    """
+    with pixi.open("rb") as file:
+        data = tomllib.load(file)
+    if pixi.name == "pyproject.toml":
+        pixi_tables = data.get("tool", {}).get("pixi", {})
+        tables = [
+            pixi_tables.get("workspace", {}),
+            pixi_tables.get("project", {}),
+            data.get("project", {}),
+        ]
+        table = "[tool.pixi.workspace]"
+    else:
+        tables = [data.get("workspace", {}), data.get("project", {})]
+        table = "[workspace]"
+    name = next(
+        (each["name"] for each in tables if isinstance(each.get("name"), str)),
+        pixi.parent.name,
+    )
+    version = next(
+        (each["version"] for each in tables if isinstance(each.get("version"), str)),
+        None,
+    )
+    if version is None:
+        raise ValueError(
+            f"{pixi} gives its workspace no version; add one to its {table}, "
+            'such as version = "0.1.0"'
+        )
+    if not _WORKSPACE_VERSION.fullmatch(version):
+        raise ValueError(
+            f"{pixi} gives its workspace version {version!r}; use letters, digits "
+            'and . + ! _ - alone, such as version = "0.1.0"'
+        )
+    return canonicalize_name(name), version
 
 
 def _check_lock(text: str, environment: str) -> None:

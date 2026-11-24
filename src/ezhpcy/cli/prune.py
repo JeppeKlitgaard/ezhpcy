@@ -52,16 +52,16 @@ async def prune_cmd(
         )
     select_profile(config, profile)
     login, password = login_from_cli(config, connection_options, profile_name=profile)
+    apps_root = config.resolve_profile(profile).apps.root
     if not all_data:
         async with connect_or_exit(
             login, password, connection_options, profile_name=profile
         ) as host:
-            await host.prune_stale()
+            await host.prune_stale(apps_root=apps_root)
         return
 
     # Asked before connecting (see `ask`).
     target = f"{login.user}@{login.host}"
-    apps_root = config.resolve_profile(profile).apps.root
     apps = (
         t"{str(apps_root):path}"
         if apps_root is not None

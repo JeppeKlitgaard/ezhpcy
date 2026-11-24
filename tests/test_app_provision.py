@@ -4,6 +4,7 @@ the in-process SSH server with a fake `pixi`.
 """
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -19,10 +20,14 @@ from ezhpcy import ssh
 from ezhpcy.app import provision as provisioning
 from ezhpcy.app.manifest import App, Manifest, assets_key, environment_key
 from ezhpcy.app.provision import AppsLayout, provision_app, validate_app
+from ezhpcy.constants import EZHPCY_VERSION
 from ezhpcy.provision_host import ProvisioningError
 from ezhpcy.types import Login
+from ezhpcy.versions import APPS_LAYOUT_VERSION, PIXI_VERSION
 from tests.support.apps import (
+    LAYOUT_DIRECTORY,
     MINIMAL_APP,
+    PIXI_DIRECTORY,
     PREFIX_MARKER,
     FakePixi,
     serve_shell_tools,
@@ -41,6 +46,12 @@ WITH_ASSETS = MINIMAL_APP + 'assets.include = ["main.py", "static/**"]\n'
 def fake_pixi(ssh_server: SSHTestServer) -> FakePixi:
     serve_shell_tools(ssh_server)
     return FakePixi(ssh_server)
+
+
+def assets_name(app: App) -> str:
+    """The name of the app's assets in `assets/`: its id, version and key."""
+    files = app.assets.files if app.assets else ()
+    return f"{app.normalised_id}@{app.version}__{assets_key(files)}"
 
 
 def load_app(directory: Path, manifest: str, **project: object) -> App:
@@ -96,17 +107,22 @@ async def test_the_first_run_installs_and_the_second_does_nothing(
     first = await provision(ssh_server, app)
     second = await provision(ssh_server, app)
 
-    key = environment_key(app.environment)
+    # Named by its workspace, so that its apps share it, and its key.
+    key = f"project@0.1.0__default__{environment_key(app.environment)}"
     assert first == second
     assert len(fake_pixi.installs) == 1
     # EzHPCy's own Pixi, installed on the host first.
     assert fake_pixi.pixi_installs == 1
     assert ssh_server.local_path(REMOTE_STATE.pixi_executable()).exists()
-    # Into the apps' own Pixi cache.
-    assert str(APPS_ROOT / "pixi-cache") in fake_pixi.cache_dirs
+    # Into the apps' own Pixi cache, which Pixi's versions share.
+    assert str(APPS_ROOT / LAYOUT_DIRECTORY / "cache") in fake_pixi.cache_dirs
     # In place, in `envs/<key>/`: no attempts, links or locks left.
     assert entries(ssh_server, LAYOUT.environments) == [key]
     assert first.environment == LAYOUT.environments / key
+    # By the layout's version, and by what Pixi installed it.
+    assert LAYOUT.environments == (
+        APPS_ROOT / f"v{APPS_LAYOUT_VERSION}" / f"pixi-{PIXI_VERSION}" / "envs"
+    )
     assert first.pixi_manifest == first.environment / "pixi.toml"
     assert entries(ssh_server, first.environment) == [
         ".ezhpcy-installed",
@@ -125,6 +141,12 @@ async def test_the_first_run_installs_and_the_second_does_nothing(
         "--manifest-path",
         str(first.pixi_manifest),
     ]
+    # Saying what installed it.
+    installed = ssh_server.local_path(first.environment / ".ezhpcy-installed")
+    assert json.loads(installed.read_text(encoding="utf-8")) == {
+        "ezhpcy": EZHPCY_VERSION,
+        "pixi": PIXI_VERSION,
+    }
     # Its modes left as Pixi gives them: the apps root keeps others out.
     assert not [argv for argv in ssh_server.commands_run if argv[0] == "chmod"]
 
@@ -169,7 +191,7 @@ async def test_an_install_that_fails_partway_is_repaired_by_the_next(
     assert "1.0 GiB is free" in message
     assert "full disk or quota" in message
     assert "The next attempt repairs what this one left" in message
-    directory = LAYOUT.environments / environment_key(app.environment)
+    directory = LAYOUT.environment(app.environment)
     # Left as it is, for Pixi to repair; not marked installed; not locked.
     assert entries(ssh_server, LAYOUT.environments) == [directory.name]
     assert ".ezhpcy-installed" not in entries(ssh_server, directory)
@@ -219,8 +241,10 @@ async def test_two_environments_install_one_at_a_time(
 ) -> None:
     """They share the apps root's Pixi cache, which file locks don't guard."""
     monkeypatch.setattr(provisioning, "_LOCK_POLL_SECONDS", 0.05)
-    other = load_app(tmp_path / "other", MINIMAL_APP, pixi_toml="[workspace]\n")
-    assert environment_key(other.environment) != environment_key(app.environment)
+    other = load_app(
+        tmp_path / "other", MINIMAL_APP, pixi_toml='[workspace]\nversion = "0.1.0"\n'
+    )
+    assert LAYOUT.environment(other.environment) != LAYOUT.environment(app.environment)
     installing = threading.Event()
     finish = threading.Event()
 
@@ -250,7 +274,7 @@ async def test_a_lock_left_by_a_killed_provisioner_is_broken(
     monkeypatch.setattr(provisioning, "_LOCK_STALE_SECONDS", 0.3)
     monkeypatch.setattr(provisioning, "_LOCK_POLL_SECONDS", 0.05)
     # Never renewed again.
-    ssh_server.local_path(LAYOUT.environments / ".install.lock").mkdir(parents=True)
+    ssh_server.local_path(LAYOUT.layout / ".install.lock").mkdir(parents=True)
 
     provisioned = await provision(ssh_server, app)
 
@@ -281,10 +305,11 @@ async def test_assets_are_published_once_as_they_are_and_read_only(
 
     assert provisioned.assets is not None
     assert again.assets == provisioned.assets
-    key = assets_key(app.assets.files if app.assets else ())
-    # Published as `<key>`, a symlink to its attempt's directory.
-    assert entries(ssh_server, LAYOUT.assets) == sorted([key, provisioned.assets.name])
-    assert ssh_server.local_path(LAYOUT.assets / key).is_symlink()
+    key = assets_name(app)
+    # Published as `<key>`, its attempt renamed: nothing else is left.
+    assert provisioned.assets == LAYOUT.assets / key
+    assert entries(ssh_server, LAYOUT.assets) == [key]
+    assert not ssh_server.local_path(LAYOUT.assets / key).is_symlink()
     assets = ssh_server.local_path(provisioned.assets)
     # Byte for byte: line endings left as they are.
     local = app.environment.pixi.parent / "main.py"
@@ -336,7 +361,9 @@ async def test_every_directory_and_asset_is_its_owners_alone(
     assert set(created) == {0o700}
     assert chmods["main.py"] == 0o400
     assert chmods["logo.svg"] == 0o400
-    assert chmods["img"] == chmods[provisioned.assets.name] == 0o500
+    # Its attempt's, before it was renamed.
+    [attempt] = [name for name in chmods if name.startswith(f"{assets_name(app)}.")]
+    assert chmods["img"] == chmods[attempt] == 0o500
 
 
 async def test_an_upload_that_fails_partway_leaves_nothing(
@@ -374,7 +401,7 @@ async def test_an_attempt_left_by_a_killed_provisioner_is_removed(
 ) -> None:
     monkeypatch.setattr(provisioning, "_LOCK_STALE_SECONDS", 0.3)
     monkeypatch.setattr(provisioning, "_LOCK_POLL_SECONDS", 0.05)
-    key = assets_key(app.assets.files if app.assets else ())
+    key = assets_name(app)
     leftover = ssh_server.local_path(LAYOUT.assets / f"{key}.0123456789abcdef")
     leftover.mkdir(parents=True)
     (leftover / "half-written").write_text("")
@@ -385,7 +412,7 @@ async def test_an_attempt_left_by_a_killed_provisioner_is_removed(
 
     assert provisioned.assets is not None
     assert not leftover.exists()
-    assert entries(ssh_server, LAYOUT.assets) == sorted([key, provisioned.assets.name])
+    assert entries(ssh_server, LAYOUT.assets) == [key]
 
 
 async def test_a_provisioner_that_loses_the_race_to_publish_uses_the_winners(
@@ -394,29 +421,28 @@ async def test_a_provisioner_that_loses_the_race_to_publish_uses_the_winners(
     app: App,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    key = assets_key(app.assets.files if app.assets else ())
-    winner = LAYOUT.assets / f"{key}.fedcba9876543210"
-    symlink = asyncssh.SFTPClient.symlink
+    key = assets_name(app)
+    rename = asyncssh.SFTPClient.rename
 
     def publish(entry: Path) -> None:
-        ssh_server.local_path(winner).mkdir()
-        entry.symlink_to(winner.name)
+        entry.mkdir()
+        (entry / "the winner's").write_text("")
 
     async def publish_first(
-        self: asyncssh.SFTPClient, old: object, new: PurePosixPath
+        self: asyncssh.SFTPClient, old: PurePosixPath, new: PurePosixPath
     ) -> None:
         # Another provisioner, which took the lock for dead, publishes first.
         await asyncio.to_thread(publish, ssh_server.local_path(new))
-        await symlink(self, old, new)  # type: ignore[arg-type]
+        await rename(self, old, new)
 
-    monkeypatch.setattr(asyncssh.SFTPClient, "symlink", publish_first)
+    monkeypatch.setattr(asyncssh.SFTPClient, "rename", publish_first)
 
     provisioned = await provision(ssh_server, app)
 
-    assert provisioned.assets is not None
-    assert provisioned.assets.name == winner.name
-    # Its own attempt is gone.
-    assert entries(ssh_server, LAYOUT.assets) == sorted([key, winner.name])
+    # Not replaced: the winner's is used, and its own attempt is gone.
+    assert provisioned.assets == LAYOUT.assets / key
+    assert "the winner's" in entries(ssh_server, provisioned.assets)
+    assert entries(ssh_server, LAYOUT.assets) == [key]
 
 
 # Checking without changing anything
@@ -443,8 +469,8 @@ async def test_validate_app_names_what_is_missing(
 
     message = str(raised.value)
     assert str(REMOTE_STATE.pixi_executable()) in message
-    assert f"{environment_key(app.environment)}/.ezhpcy-installed" in message
-    assert assets_key(app.assets.files if app.assets else ()) in message
+    assert f"{LAYOUT.environment(app.environment)}/.ezhpcy-installed" in message
+    assert assets_name(app) in message
 
 
 async def test_validate_app_refuses_an_unfinished_install(
@@ -605,11 +631,12 @@ async def test_validate_app_names_every_place_it_looked_in(
             )
 
     message = str(raised.value)
-    environment = environment_key(app.environment)
-    assets = assets_key(app.assets.files if app.assets else ())
+    environment = LAYOUT.environment(app.environment).name
     for root in (SHARED, APPS_ROOT):
-        assert f"{root}/envs/{environment}/.ezhpcy-installed" in message
-        assert f"{root}/assets/{assets}" in message
+        assert f"{root}/{PIXI_DIRECTORY}/envs/{environment}/.ezhpcy-installed" in (
+            message
+        )
+        assert f"{root}/{LAYOUT_DIRECTORY}/assets/{assets_name(app)}" in message
 
 
 @pytest.mark.parametrize(
@@ -639,16 +666,18 @@ async def test_a_shared_install_takes_the_roots_group_and_mode(
 
     assert shared.assets is not None
     assert chmods["envs"] == chmods["assets"] == mode
+    assert chmods[LAYOUT_DIRECTORY] == chmods[f"pixi-{PIXI_VERSION}"] == mode
     # Only those who may write in the root may enter while Pixi installs, as
     # what it writes has its packages' modes, and Pixi's cache stays theirs.
-    assert chmods[shared.environment.name] == chmods["pixi-cache"] == building
+    assert chmods[shared.environment.name] == chmods["cache"] == building
     command = ["chmod", "-R", installed, "--", str(shared.environment)]
     assert command in ssh_server.commands_run
     assert chmods[".ezhpcy-installed"] == file
     # Read-only, to their owner too.
     read_only_file, read_only_executable = read_only
     assert chmods["main.py"] == chmods["logo.svg"] == read_only_file
-    assert chmods["img"] == chmods[shared.assets.name] == read_only_executable
+    [attempt] = [name for name in chmods if name.startswith(f"{shared.assets.name}.")]
+    assert chmods["img"] == chmods[attempt] == read_only_executable
 
 
 @pytest.mark.parametrize(

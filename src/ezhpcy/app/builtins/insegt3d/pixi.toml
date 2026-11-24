@@ -1,5 +1,6 @@
 [workspace]
 name = "insegt3d"
+version = "0.3.1+1"
 channels = ["conda-forge"]
 platforms = ["linux-64"]
 

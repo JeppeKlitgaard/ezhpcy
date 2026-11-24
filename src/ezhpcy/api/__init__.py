@@ -606,14 +606,21 @@ class Host:
         await provision_worker_infrastructure(self._host, remote_state, credentials)
 
     @translating_ssh_errors
-    async def prune_stale(self) -> tuple[PurePosixPath, ...]:
+    async def prune_stale(
+        self, *, apps_root: PurePosixPath | None = None
+    ) -> tuple[PurePosixPath, ...]:
         """
         Remove EzHPCy's and Pixi's data on the host other than the current
-        versions', and return what it removed. Raises `CommandFailed`, and
+        versions', and in `apps_root` (as for `run_app`), what other versions
+        installed: other layouts', and other Pixi versions' environments. Never
+        a shared root. Returns what it removed. Raises `CommandFailed`, and
         `SSHError` if the connection fails. Cancelled, it stops; what it hadn't
         removed stays, for the next one.
         """
-        return await prune_stale_data(self._host, await self._host.remote_state())
+        remote_state = await self._host.remote_state()
+        return await prune_stale_data(
+            self._host, remote_state, remote_state.apps_root(apps_root)
+        )
 
     @translating_ssh_errors
     async def prune_all(

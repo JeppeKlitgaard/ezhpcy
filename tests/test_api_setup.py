@@ -37,7 +37,7 @@ async def test_provision_installs_what_a_worker_needs(login: SSHTestServer) -> N
 async def test_prune_stale_removes_other_versions_and_says_which(
     login: SSHTestServer,
 ) -> None:
-    login.command("rm", reply())
+    login.command("sh -c", reply())
     stale = CACHE / "ezhpcy" / "0.0.9"
     login.local_path(stale).mkdir(parents=True)
 
@@ -45,7 +45,8 @@ async def test_prune_stale_removes_other_versions_and_says_which(
         removed = await host.prune_stale()
 
     assert removed == (stale,)
-    assert commands(login, "rm") == [["rm", "-rf", "--", str(stale)]]
+    [argv] = commands(login, "sh")
+    assert argv[3:] == ["prune", str(stale)]
 
 
 async def test_prune_all_removes_everything_under_the_apps_root_given(

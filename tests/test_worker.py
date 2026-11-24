@@ -14,8 +14,9 @@ from unittest.mock import patch
 import pytest
 
 from ezhpcy import ssh
-from ezhpcy.constants import EZHPCY_VERSION, OPENSSH_MATCHSPEC, PIXI_VERSION
+from ezhpcy.constants import EZHPCY_VERSION
 from ezhpcy.types import Login, RemoteState
+from ezhpcy.versions import OPENSSH_MATCHSPEC, PIXI_VERSION
 from ezhpcy.worker import WorkerError
 from ezhpcy.worker.control import (
     WorkerControl,

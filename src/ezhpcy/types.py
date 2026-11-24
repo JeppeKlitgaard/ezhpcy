@@ -27,14 +27,10 @@ from pydantic import (
 lazy from pydantic_extra_types.domain import DomainStr
 
 from ezhpcy.messages import MessageError
-lazy from ezhpcy.constants import (
-    APPS_DIRECTORY_NAME,
-    EZHPCY_VERSION,
-    PACKAGE_NAME,
-    PIXI_VERSION,
-)
+lazy from ezhpcy.constants import APPS_DIRECTORY_NAME, EZHPCY_VERSION, PACKAGE_NAME
 lazy from ezhpcy.scheduler.types import SchedulerType
 lazy from ezhpcy.utils import local_machine_id
+lazy from ezhpcy.versions import PIXI_VERSION
 
 _TIME_LIMIT_PATTERN = re.compile(r"^(?P<hours>\d+):(?P<minutes>\d{1,2})$")
 PositiveByteSize = Annotated[ByteSize, Field(gt=0)]

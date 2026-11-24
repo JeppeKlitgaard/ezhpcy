@@ -5,8 +5,8 @@ lazy import secrets
 lazy from pathlib import PurePosixPath
 
 from ezhpcy.worker.sshd import RESOLVE_SSHD
-lazy from ezhpcy.constants import OPENSSH_MATCHSPEC
 lazy from ezhpcy.types import RemoteState
+lazy from ezhpcy.versions import OPENSSH_MATCHSPEC
 
 _FIRST_DYNAMIC_PORT = 49152
 _LAST_DYNAMIC_PORT = 65535

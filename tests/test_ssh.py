@@ -14,9 +14,10 @@ import asyncssh
 import pytest
 
 from ezhpcy import ssh
-from ezhpcy.constants import EZHPCY_VERSION, LOOPBACK_HOST, PIXI_VERSION
+from ezhpcy.constants import EZHPCY_VERSION, LOOPBACK_HOST
 from ezhpcy.ssh import CommandFailed, ForwardedPort, RemoteHost, TCPDestination
 from ezhpcy.types import Login, RemoteState
+from ezhpcy.versions import PIXI_VERSION
 from tests.support.sshserver import Invocation, SSHTestServer, StreamHandler, reply
 
 LARGE_OUTPUT_BYTES = 5_000_000

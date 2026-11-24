@@ -24,7 +24,7 @@ from ezhpcy import api
 from ezhpcy.app import run as app_run
 from tests.support.api import JOB, LOGIN, JobRig, SlowPorts
 from tests.support.apps import MINIMAL_APP, AppRig, http_app, write_project
-from tests.support.login import CACHE, REMOTE_STATE
+from tests.support.login import CACHE, REMOTE_STATE, STATE
 from tests.support.sshserver import SSHTestServer, reply
 from tests.support.tunnel import JOB_ID, control_dirs, unused_port
 from tests.support.worker import NODE, FakeProcess, FakeProcesses
@@ -33,6 +33,8 @@ pytestmark = pytest.mark.usefixtures("quiet_api")
 
 WAIT_SECONDS = 5
 APPS_ROOT = CACHE / "ezhpcy-apps"
+# Of the user's work, so in the state directory, not with the environments.
+WORKDIRS = STATE / "ezhpcy-apps" / "work"
 LAB = MINIMAL_APP + (
     'run.env.JUPYTER_TOKEN = "{{ token }}"\n'
     'run.env.JUPYTER_RUNTIME_DIR = "{{ run_dir }}/jupyter"\n'
@@ -120,7 +122,7 @@ async def test_an_app_runs_on_a_plain_host_and_is_served_here(
         assert 'export EZHPCY_RUN_DIR="$run_dir"' in lines
         assert 'export EZHPCY_SOCKET="$run_dir"/app.sock' in lines
         assert 'export JUPYTER_RUNTIME_DIR="$run_dir"/jupyter' in lines
-        workdir = APPS_ROOT / "work" / "lab"
+        workdir = WORKDIRS / "lab"
         assert f"export EZHPCY_WORKDIR={workdir}" in lines
         assert rig.server.local_path(workdir).is_dir()
         # Through EzHPCy's own Pixi, as installed, in the workdir.
@@ -403,7 +405,9 @@ async def test_the_apps_root_and_local_port_can_be_chosen(
             config_of(tmp_path).app("lab"), apps_root=root, local_port=port
         )
         assert rig.pixi.installs[0].startswith(f"{root}/envs/")
-        assert rig.server.local_path(root / "work" / "lab").is_dir()
+        # The workdir stays in the state directory.
+        assert rig.server.local_path(WORKDIRS / "lab").is_dir()
+        assert not rig.server.local_path(root / "work").exists()
         assert lab.local_port == port
         assert lab.url.startswith(f"http://127.0.0.1:{port}/lab?token=")
         await lab.stop()
@@ -419,7 +423,7 @@ async def test_an_apps_name_is_normalised_in_every_path(
         lab = await host.run_app(app)
         [fake] = rig.processes.processes
 
-        workdir = APPS_ROOT / "work" / "my-lab"
+        workdir = WORKDIRS / "my-lab"
         assert app.id_ == "My_Lab"
         assert f"export EZHPCY_WORKDIR={workdir}" in launch_lines(fake)
         assert rig.server.local_path(workdir).is_dir()

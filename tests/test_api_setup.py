@@ -61,6 +61,20 @@ async def test_prune_all_removes_everything_under_the_apps_root_given(
     assert argv[-3:] == [f"{CACHE}/ezhpcy", f"{STATE}/ezhpcy", str(apps_root)]
 
 
+async def test_prune_all_removes_the_workdirs_only_when_asked(
+    login: SSHTestServer,
+) -> None:
+    login.command("sh -c", reply())
+
+    async with api.connect(LOGIN) as host:
+        await host.prune_all()
+        await host.prune_all(workdirs=True)
+
+    kept, removed = commands(login, "sh")
+    assert f"{STATE}/ezhpcy-apps" not in kept
+    assert removed[-1] == f"{STATE}/ezhpcy-apps"
+
+
 def test_diagnose_runs_only_as_far_as_it_is_read(
     isolated_local_files: object,
 ) -> None:

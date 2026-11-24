@@ -766,7 +766,7 @@ def test_an_asset_outside_the_directory_through_a_link_is_an_error(
     [
         ("resources.cores = 2", f"{LAB}.resources: unknown key"),
         ("requires.cuda = true", f"{LAB}.requires.cuda: unknown key"),
-        ('run.workdir = "work"', f"{LAB}.run.workdir: must be an absolute path"),
+        ('run.workdir = "/work"', f"{LAB}.run.workdir: unknown key"),
         ('run.env.EZHPCY_TOKEN = "x"', "EZHPCY_TOKEN is reserved"),
         ('run.env."A-B" = "x"', "'A-B' is not an environment variable name"),
         ("run.command = []", f"{LAB}.run.command:"),

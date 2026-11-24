@@ -5,6 +5,7 @@ lazy from rich.prompt import Confirm
 
 from ezhpcy.cli._options import ConfigArg, ConnectionOptions, OptionalProfileArg
 lazy from ezhpcy.cli._console import error_console
+lazy from ezhpcy.cli._errors import CliUsageError
 lazy from ezhpcy.cli._messages import print_aborted, print_success, rich_text
 lazy from ezhpcy.cli._resolve import login_from_cli, select_profile
 lazy from ezhpcy.cli.utils.prompt import ask
@@ -25,6 +26,16 @@ async def prune_cmd(
             help="Remove all EzHPCy-managed remote infrastructure and data.",
         ),
     ] = False,
+    workdirs: Annotated[
+        bool,
+        Parameter(
+            name="--workdirs",
+            negative=(),
+            help=(
+                "With --all, remove apps' workdirs too, with whatever apps wrote there."
+            ),
+        ),
+    ] = False,
     yes: Annotated[
         bool,
         Parameter(
@@ -34,6 +45,11 @@ async def prune_cmd(
     ] = False,
 ) -> None:
     """Prune stale installations and Pixi data."""
+    if workdirs and not all_data:
+        raise CliUsageError(
+            t"It removes workdirs with everything else, and needs {'--all':name}.",
+            param_hint="--workdirs",
+        )
     select_profile(config, profile)
     login, password = login_from_cli(config, connection_options, profile_name=profile)
     if not all_data:
@@ -51,14 +67,19 @@ async def prune_cmd(
         if apps_root is not None
         else t"{'$XDG_CACHE_HOME/ezhpcy-apps':path}"
     )
+    removed_workdirs = (
+        t", and apps' {'workdirs':emphasis}, with whatever apps wrote there, in "
+        t"{'$XDG_STATE_HOME/ezhpcy-apps':path}"
+        if workdirs
+        else t"; apps' workdirs stay"
+    )
     user_accepts = yes or ask(
         Confirm.ask,
         rich_text(
             t"This will remove {'all':emphasis} EzHPCy-managed infrastructure and "
             t"data from {target:name}: the {'ezhpcy':path} directories under its "
             t"{'$XDG_CACHE_HOME':path} and {'$XDG_STATE_HOME':path}, and apps' "
-            t"environments, assets and {'workdirs':emphasis}, with whatever apps "
-            t"wrote there, in {apps}. Proceed?"
+            t"environments and assets in {apps}{removed_workdirs}. Proceed?"
         ),
         console=error_console,
         default=False,
@@ -70,5 +91,5 @@ async def prune_cmd(
     async with connect_or_exit(
         login, password, connection_options, profile_name=profile
     ) as host:
-        await host.prune_all(apps_root=apps_root)
+        await host.prune_all(apps_root=apps_root, workdirs=workdirs)
     print_success(t"All managed remote data removed.")

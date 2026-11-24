@@ -10,7 +10,6 @@ An app's environment and assets on the host it runs on, under the apps root
       assets/<key>.<attempt>/  the asset files, read-only: one attempt
       assets/<key>.lock/       held while an attempt runs
       pixi-cache/              Pixi's cache for app environments
-      work/<normalised name>/  the default workdir: the user's, never pruned
 
 Every directory EzHPCy creates here is its owner's alone (`private_directory`),
 and so are the asset files.
@@ -66,7 +65,6 @@ logger = get_logger(__name__)
 ENVIRONMENTS_DIRECTORY = "envs"
 ASSETS_DIRECTORY = "assets"
 PIXI_CACHE_DIRECTORY = "pixi-cache"
-WORK_DIRECTORY = "work"
 # In an environment's directory, once its install succeeded.
 INSTALLED_NAME = ".ezhpcy-installed"
 # Touched in an entry's directory by each run that uses it, for pruning by age.
@@ -110,11 +108,6 @@ class AppsLayout:
     def environment(self, environment: Environment) -> PurePosixPath:
         """The directory of `environment`, by its key."""
         return self.environments / environment_key(environment)
-
-    def workdir(self, app: App) -> PurePosixPath:
-        """The app's workdir: its own `run.workdir`, or a default by its name."""
-        own = app.run.workdir if app.run is not None else None
-        return own or self.root / WORK_DIRECTORY / app.normalised_id
 
 
 @dataclass(frozen=True, slots=True)

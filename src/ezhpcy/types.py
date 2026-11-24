@@ -259,7 +259,7 @@ class SiteConfig(_SubConfig):
 
 
 class AppsConfig(_SubConfig):
-    """Where apps keep their environments, assets and workdirs on their host."""
+    """Where apps keep their environments and assets on their host."""
 
     # Default: `ezhpcy-apps` under the host's XDG cache directory. Environments
     # run to gigabytes, so a site may want them off a small home.
@@ -343,11 +343,23 @@ class RemoteState(BaseModel):
 
     def apps_root(self, configured: PurePosixPath | None = None) -> PurePosixPath:
         """
-        Where app environments, assets and workdirs live: `configured` (the
-        profile's `apps.root`), or by default a sibling of the package cache root,
-        so that pruning stale versions never sees it.
+        Where app environments and assets live: `configured` (the profile's
+        `apps.root`), or by default a sibling of the package cache root, so that
+        pruning stale versions never sees it.
         """
         return configured or self.cache_dir / APPS_DIRECTORY_NAME
+
+    def apps_state_root(self) -> PurePosixPath:
+        """
+        Where apps' default workdirs live, in `work/`: what they hold is the
+        user's, so in the state directory, a sibling of the package state root,
+        so that pruning stale versions never sees it.
+        """
+        return self.state_dir / APPS_DIRECTORY_NAME
+
+    def app_workdir(self, normalised_id: str) -> PurePosixPath:
+        """The default workdir of the app `normalised_id`."""
+        return self.apps_state_root() / "work" / normalised_id
 
     def worker_cwd_dir(self) -> PurePosixPath:
         return self.package_cache_dir() / "worker_cwd"

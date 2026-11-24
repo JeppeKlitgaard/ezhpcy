@@ -518,8 +518,9 @@ class Host:
            the host's XDG cache directory; on a cluster, on the filesystem its
            nodes share.
         3. It starts as a process (`start`), through EzHPCy's Pixi, in its
-           workdir: not through a login shell, so the host's profile and
-           modules aren't read.
+           workdir, `ezhpcy-apps/work/<its normalised id>` in the host's XDG
+           state directory: not through a login shell, so the host's profile
+           and modules aren't read.
         4. Its readiness check runs through the host's connection, until it
            passes, the app exits, or `ready.timeout` passes.
         5. A loopback port here is forwarded to it (`forward`): to its socket
@@ -571,16 +572,22 @@ class Host:
         return await prune_stale_data(self._host, await self._host.remote_state())
 
     @translating_ssh_errors
-    async def prune_all(self, *, apps_root: PurePosixPath | None = None) -> None:
+    async def prune_all(
+        self, *, apps_root: PurePosixPath | None = None, workdirs: bool = False
+    ) -> None:
         """
         Remove everything EzHPCy made on the host: its cache and state, and apps'
-        environments, assets and workdirs under `apps_root` (as for `run_app`),
-        with whatever apps wrote there. Raises `CommandFailed`, and `SSHError` if
-        the connection fails. Cancelled, it stops; what it hadn't removed stays.
+        environments and assets under `apps_root` (as for `run_app`); with
+        `workdirs`, apps' workdirs too, with whatever apps wrote there. Raises
+        `CommandFailed`, and `SSHError` if the connection fails. Cancelled, it
+        stops; what it hadn't removed stays.
         """
         remote_state = await self._host.remote_state()
         await prune_all_remote_data(
-            self._host, remote_state, remote_state.apps_root(apps_root)
+            self._host,
+            remote_state,
+            remote_state.apps_root(apps_root),
+            workdirs=workdirs,
         )
 
 

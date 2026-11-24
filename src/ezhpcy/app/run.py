@@ -311,7 +311,7 @@ async def _run(
     layout = AppsLayout(apps_root or remote_state.apps_root())
     prepare = provision_app if provision else validate_app
     provisioned = await prepare(host, remote_state, layout, app)
-    workdir = layout.workdir(app)
+    workdir = remote_state.app_workdir(app.normalised_id)
     async with host.sftp() as sftp:
         await ensure_directory(sftp, workdir)
         await mark_used(sftp, provisioned)

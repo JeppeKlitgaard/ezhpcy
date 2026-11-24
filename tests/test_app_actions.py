@@ -22,13 +22,13 @@ from ezhpcy import api
 from ezhpcy.app.manifest import Manifest
 from tests.support.api import LOGIN
 from tests.support.apps import MINIMAL_APP, AppRig, write_project
-from tests.support.login import CACHE
+from tests.support.login import CACHE, STATE
 from tests.support.sshserver import SSHTestServer
 from tests.support.worker import FakeProcess
 
 WAIT_SECONDS = 5
 LAB = 'ezhpcy.app.lab."v1.0"'
-WORKDIR = CACHE / "ezhpcy-apps" / "work" / "lab"
+WORKDIR = STATE / "ezhpcy-apps" / "work" / "lab"
 ACTIONS = (
     MINIMAL_APP
     + """\

@@ -214,16 +214,22 @@ async def _stale_siblings(
 
 
 async def prune_all_remote_data(
-    login: RemoteHost, remote_state: RemoteState, apps_root: PurePosixPath
+    login: RemoteHost,
+    remote_state: RemoteState,
+    apps_root: PurePosixPath,
+    *,
+    workdirs: bool = False,
 ) -> None:
     """
     Remove the complete EzHPCy-managed remote footprint: its cache and state, and
-    `apps_root`, apps' environments, assets and workdirs.
+    `apps_root`, apps' environments and assets; with `workdirs`, apps' workdirs
+    too, which hold the user's work.
     """
     roots = (
         remote_state.package_cache_root(),
         remote_state.package_state_root(),
         apps_root,
+        *([remote_state.apps_state_root()] if workdirs else []),
     )
     logger.info(t"Removing {list(roots):path}.")
     # Assets are read-only, directories included.

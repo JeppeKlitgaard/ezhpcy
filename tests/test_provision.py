@@ -250,12 +250,38 @@ def test_prune_all_removes_the_package_cache_and_state_and_the_apps_root(
     assert "Success: All managed remote data removed." in result.stdout
 
 
-def test_prune_all_says_it_removes_the_apps_workdirs(login: SSHTestServer) -> None:
+def test_prune_all_says_it_keeps_the_apps_workdirs(login: SSHTestServer) -> None:
     result = invoke(["prune", *_LOGIN, "--all"], stdin="n\n")
 
     assert result.exit_code == 1, result
-    assert "workdirs" in result.stderr
+    assert "workdirs stay" in result.stderr
     assert "ezhpcy-apps" in result.stderr
+
+
+def test_prune_all_with_workdirs_removes_them_too(login: SSHTestServer) -> None:
+    login.command("sh", reply())
+
+    asked = invoke(["prune", *_LOGIN, "--all", "--workdirs"], stdin="n\n")
+    result = invoke(["prune", *_LOGIN, "--all", "--workdirs", "--yes"])
+
+    assert "$XDG_STATE_HOME/ezhpcy-apps" in asked.stderr
+    assert result.exit_code == 0, result
+    [command] = _commands(login, "sh")
+    assert command[3:] == [
+        "prune",
+        f"{CACHE}/ezhpcy",
+        f"{STATE}/ezhpcy",
+        f"{CACHE}/ezhpcy-apps",
+        f"{STATE}/ezhpcy-apps",
+    ]
+
+
+def test_prune_workdirs_needs_all(login: SSHTestServer) -> None:
+    result = invoke(["prune", *_LOGIN, "--workdirs"])
+
+    assert result.exit_code != 0, result
+    assert "--all" in result.stderr
+    assert login.commands_run == []
 
 
 def test_prune_never_touches_the_apps_root(login: SSHTestServer) -> None:

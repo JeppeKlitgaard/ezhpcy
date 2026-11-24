@@ -8,8 +8,9 @@ EZHPCY_VERSION = ezhpcy_version()
 # The system keyring service that login passwords are stored under, by `user@host`.
 KEYRING_SERVICE_NAME = PACKAGE_NAME
 
-# Apps' environments, assets and workdirs on the cluster: a sibling of the
-# package's cache directory, so that pruning stale versions never touches it.
+# Apps' environments and assets on the cluster: a sibling of the package's
+# cache directory, so that pruning stale versions never touches it. Their
+# workdirs are in a sibling of the package's state directory of the same name.
 APPS_DIRECTORY_NAME = "ezhpcy-apps"
 
 

@@ -397,20 +397,6 @@ class Command(_Table):
         return value
 
 
-class Run(Command):
-    """What runs on the host as the app."""
-
-    # Default: `<apps root>/work/<normalised name>/`.
-    workdir: PurePosixPath | None = None
-
-    @field_validator("workdir")
-    @classmethod
-    def require_absolute(cls, value: PurePosixPath | None) -> PurePosixPath | None:
-        if value is not None and not value.is_absolute():
-            raise ValueError("must be an absolute path on the host")
-        return value
-
-
 class Endpoint(_Table):
     """Where the app listens on its host."""
 
@@ -927,7 +913,7 @@ class App(_Entry):
     environment: Environment
     assets: Assets | None = None
     requires: Requires = Field(default_factory=Requires)
-    run: Run | None = None
+    run: Command | None = None
     endpoint: Endpoint | None = None
     ready: Ready = Field(default_factory=Ready)
     access: Access = Field(default_factory=Access)

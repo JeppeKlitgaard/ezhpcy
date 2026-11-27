@@ -108,6 +108,9 @@ type StreamHandler = Callable[
 type SocketHandler = Callable[
     [asyncssh.SSHReader[bytes], asyncssh.SSHWriter[bytes]], Awaitable[None]
 ]
+# Awaited before a file is opened for reading, inside the server; what it raises
+# fails the open (`PermissionError` as permission denied).
+type ReadHandler = Callable[[], Awaitable[None]]
 
 
 def reply(*, stdout: str = "", stderr: str = "", exit_status: int = 0) -> Handler:
@@ -130,7 +133,7 @@ class SSHTestServer:
     - Commands: fakes registered with `command`, matched on the command's words.
       `commands_run` records the words of every command started, in order.
     - SFTP: rooted in a local directory (`local_path` maps a remote path into it),
-      with relative paths starting at `home`.
+      with relative paths starting at `home`. `before_read` holds or fails reads.
     - `direct-tcpip`: only to ports allowed with `allow_forwarding`, such as those
       of the stand-ins `listen` starts.
     - `direct-streamlocal@openssh.com`: only to paths allowed with `allow_socket`,
@@ -163,6 +166,7 @@ class SSHTestServer:
         self._commands: dict[tuple[str, ...], Handler] = {}
         self._forwardable: set[tuple[str, int]] = set()
         self._sockets: dict[str, SocketHandler] = {}
+        self._reads: dict[str, ReadHandler] = {}
         self._listeners: list[asyncio.Server] = []
         self._connections: set[asyncssh.SSHServerConnection] = set()
         self._links: set[tuple[asyncio.StreamWriter, asyncio.StreamWriter]] = set()
@@ -202,6 +206,19 @@ class SSHTestServer:
             self._sockets.pop(str(path), None)
         else:
             self._sockets[str(path)] = handler
+
+    def before_read(
+        self, path: str | PurePosixPath, handler: ReadHandler | None
+    ) -> None:
+        """
+        Await `handler` on the server's thread whenever the file at `path` is
+        opened for reading, and fail the open if it raises; `None` stops it.
+        """
+        remote = posixpath.normpath(posixpath.join(str(self.home), path))
+        if handler is None:
+            self._reads.pop(remote, None)
+        else:
+            self._reads[remote] = handler
 
     def listen(self, handler: StreamHandler, port: int = 0) -> int:
         """
@@ -305,7 +322,7 @@ class SSHTestServer:
             server_host_keys=[self.host_key],
             process_factory=self._run_command,
             sftp_factory=lambda channel: _SFTPServer(
-                channel, self.sftp_root, self.home
+                channel, self.sftp_root, self.home, self._reads
             ),
             # Fakes see input as sent, without asyncssh's line editing or echo.
             line_editor=False,
@@ -512,19 +529,43 @@ class _SFTPServer(asyncssh.SFTPServer):
     server (asyncssh's chroot starts them at `/`)."""
 
     def __init__(
-        self, channel: asyncssh.SSHServerChannel, root: Path, home: PurePosixPath
+        self,
+        channel: asyncssh.SSHServerChannel,
+        root: Path,
+        home: PurePosixPath,
+        reads: dict[str, ReadHandler],
     ) -> None:
         super().__init__(channel, chroot=str(root).encode())
         self._home = str(home).encode()
+        # The root as an SFTP path, as asyncssh gives local paths: `/C:/…` on
+        # Windows, where the chroot is `C:\…`.
+        resolved = root.resolve()
+        self._root = (("/" if resolved.drive else "") + resolved.as_posix()).encode()
+        self._reads = reads
 
     def map_path(self, path: bytes) -> bytes:
         return super().map_path(posixpath.join(self._home, path))
+
+    def reverse_map_path(self, path: bytes) -> bytes:
+        """
+        As asyncssh's, which compares `path` with the chroot as given, and so fails
+        on Windows, or under a linked directory.
+        """
+        if path == self._root:
+            return b"/"
+        if path.startswith(self._root + b"/"):
+            return path[len(self._root) :]
+        raise asyncssh.SFTPNoSuchFile("File not found")
 
     async def open(self, path: bytes, pflags: int, attrs: asyncssh.SFTPAttrs) -> object:
         """
         On Windows a file can't be opened for a moment while it is replaced, which a
         POSIX server's clients never see. So that is tried again.
         """
+        if pflags & asyncssh.FXF_READ:
+            remote = posixpath.normpath(posixpath.join(self._home, path)).decode()
+            if handler := self._reads.get(remote):
+                await handler()
         for _ in range(_OPEN_ATTEMPTS - 1):
             try:
                 return super().open(path, pflags, attrs)

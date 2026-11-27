@@ -9,6 +9,8 @@ import asyncio
 import json
 import shlex
 import socket
+import stat
+import sys
 import threading
 import time
 from pathlib import Path, PurePosixPath
@@ -19,7 +21,7 @@ import pytest
 from ezhpcy import api, process as process_module
 from tests.support.api import LOGIN, JobRig, SlowPorts
 from tests.support.scheduler import answer_batch
-from tests.support.sshserver import Invocation, SSHTestServer, reply
+from tests.support.sshserver import Invocation, ReadHandler, SSHTestServer, reply
 from tests.support.tunnel import JOB_ID, control_dirs, unused_port
 from tests.support.worker import NODE, FakeProcess, FakeProcesses, quick_processes
 
@@ -174,6 +176,305 @@ async def test_put_and_get_raise_ssh_errors(
             await host.put(local, PurePosixPath("/home/alice/no/such/dir/params.yaml"))
         with pytest.raises(api.SSHError):
             await host.get(PurePosixPath("/home/alice/missing"), tmp_path / "back")
+
+
+REPOSITORY = PurePosixPath("/home/alice/repository")
+
+
+def on_host(login: SSHTestServer, files: dict[str, str]) -> Path:
+    """Write `files`, by path under `REPOSITORY`, on the host; returns its local path."""
+    root = login.local_path(REPOSITORY)
+    root.mkdir(exist_ok=True)
+    for relative, content in files.items():
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    return root
+
+
+def tree(root: Path) -> dict[str, str | None]:
+    """Every file's content, and every directory as None, by path under `root`."""
+    return {
+        path.relative_to(root).as_posix(): (
+            path.read_text(encoding="utf-8") if path.is_file() else None
+        )
+        for path in sorted(root.rglob("*"))
+    }
+
+
+def recording_reads(login: SSHTestServer, *relatives: str) -> list[str]:
+    """The files of `relatives`, under `REPOSITORY`, as they are read."""
+    reads: list[str] = []
+
+    def recorder(relative: str) -> ReadHandler:
+        async def record() -> None:
+            reads.append(relative)
+
+        return record
+
+    for relative in relatives:
+        login.before_read(REPOSITORY / relative, recorder(relative))
+    return reads
+
+
+def link(path: Path, target: Path) -> None:
+    try:
+        path.symlink_to(target, target_is_directory=target.is_dir())
+    except OSError:
+        pytest.skip("this account can't create symbolic links")
+
+
+async def test_download_copies_a_tree(login: SSHTestServer, tmp_path: Path) -> None:
+    on_host(
+        login,
+        {
+            "repository.toml": "r",
+            "apps/lab/v1/ezhpcy-apps.toml": "lab",
+            "apps/lab/v1/assets/deep/data.txt": "data",
+            ".git/HEAD": "head",
+        },
+    )
+    login.local_path(REPOSITORY / "empty").mkdir()
+    local = tmp_path / "mirrors" / "repository"
+
+    async with api.connect(LOGIN) as host:
+        await host.download(REPOSITORY, local)
+
+    assert tree(local) == {
+        ".git": None,
+        ".git/HEAD": "head",
+        "apps": None,
+        "apps/lab": None,
+        "apps/lab/v1": None,
+        "apps/lab/v1/assets": None,
+        "apps/lab/v1/assets/deep": None,
+        "apps/lab/v1/assets/deep/data.txt": "data",
+        "apps/lab/v1/ezhpcy-apps.toml": "lab",
+        "empty": None,
+        "repository.toml": "r",
+    }
+    assert [path.name for path in local.parent.iterdir()] == ["repository"]
+
+
+async def test_download_again_fetches_only_what_changed_and_removes_what_went(
+    login: SSHTestServer, tmp_path: Path
+) -> None:
+    root = on_host(login, {"same.txt": "same", "changed.txt": "old", "gone.txt": "x"})
+    local = tmp_path / "repository"
+    async with api.connect(LOGIN) as host:
+        await host.download(REPOSITORY, local)
+        (root / "changed.txt").write_text("newer", encoding="utf-8")
+        (root / "gone.txt").unlink()
+        (root / "added.txt").write_text("added", encoding="utf-8")
+        reads = recording_reads(login, "same.txt", "changed.txt", "added.txt")
+
+        await host.download(REPOSITORY, local)
+
+    assert sorted(reads) == ["added.txt", "changed.txt"]
+    assert tree(local) == {
+        "added.txt": "added",
+        "changed.txt": "newer",
+        "same.txt": "same",
+    }
+
+
+async def test_a_failed_download_leaves_the_copy_as_it_was(
+    login: SSHTestServer, tmp_path: Path
+) -> None:
+    root = on_host(login, {"a.txt": "a", "b.txt": "b"})
+    local = tmp_path / "mirrors" / "repository"
+
+    async def refuse() -> None:
+        raise PermissionError("refused")
+
+    async with api.connect(LOGIN) as host:
+        await host.download(REPOSITORY, local)
+        (root / "a.txt").write_text("newer a", encoding="utf-8")
+        (root / "b.txt").write_text("newer b", encoding="utf-8")
+        login.before_read(REPOSITORY / "b.txt", refuse)
+
+        with pytest.raises(api.SSHError):
+            await host.download(REPOSITORY, local)
+
+    assert tree(local) == {"a.txt": "a", "b.txt": "b"}
+    assert [path.name for path in local.parent.iterdir()] == ["repository"]
+
+
+async def test_a_cancelled_download_leaves_the_copy_as_it_was(
+    login: SSHTestServer, tmp_path: Path
+) -> None:
+    root = on_host(login, {"a.txt": "a"})
+    local = tmp_path / "mirrors" / "repository"
+    held = threading.Event()
+    released = threading.Event()
+
+    async def hold() -> None:
+        held.set()
+        await asyncio.to_thread(released.wait, WAIT_SECONDS)
+
+    async with api.connect(LOGIN) as host:
+        await host.download(REPOSITORY, local)
+        (root / "a.txt").write_text("newer a", encoding="utf-8")
+        login.before_read(REPOSITORY / "a.txt", hold)
+        download = asyncio.create_task(host.download(REPOSITORY, local))
+        try:
+            assert await asyncio.to_thread(held.wait, WAIT_SECONDS)
+            download.cancel()
+        finally:
+            # Closing the SFTP session waits for the server's answer.
+            released.set()
+        with pytest.raises(asyncio.CancelledError):
+            await download
+
+    assert tree(local) == {"a.txt": "a"}
+    assert [path.name for path in local.parent.iterdir()] == ["repository"]
+
+
+async def test_download_removes_what_a_killed_download_left(
+    login: SSHTestServer, tmp_path: Path
+) -> None:
+    on_host(login, {"a.txt": "a"})
+    local = tmp_path / "mirrors" / "repository"
+    for leftover in (".repository.download-x1", ".repository.download-x2.old"):
+        (local.parent / leftover / "sub").mkdir(parents=True)
+    (local.parent / ".other.download-x3").mkdir()
+
+    async with api.connect(LOGIN) as host:
+        await host.download(REPOSITORY, local)
+
+    assert sorted(path.name for path in local.parent.iterdir()) == [
+        ".other.download-x3",
+        "repository",
+    ]
+
+
+async def test_download_replaces_a_copy_of_read_only_files(
+    login: SSHTestServer, tmp_path: Path
+) -> None:
+    root = on_host(login, {"shared/file.txt": "old"})
+    local = tmp_path / "repository"
+    (root / "shared" / "file.txt").chmod(0o444)
+    (root / "shared").chmod(0o555)
+    try:
+        async with api.connect(LOGIN) as host:
+            await host.download(REPOSITORY, local)
+            (root / "shared").chmod(0o755)
+            (root / "shared" / "file.txt").chmod(0o644)
+            (root / "shared" / "file.txt").write_text("newer", encoding="utf-8")
+            await host.download(REPOSITORY, local)
+    finally:
+        (root / "shared").chmod(0o755)
+        (root / "shared" / "file.txt").chmod(0o644)
+
+    assert tree(local) == {"shared": None, "shared/file.txt": "newer"}
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no executable bit")
+async def test_download_keeps_only_the_executable_bit(
+    login: SSHTestServer, tmp_path: Path
+) -> None:
+    root = on_host(login, {"run.sh": "#!/bin/sh\n", "data.txt": "data"})
+    (root / "run.sh").chmod(0o700)
+    (root / "data.txt").chmod(0o600)
+    local = tmp_path / "repository"
+
+    async with api.connect(LOGIN) as host:
+        await host.download(REPOSITORY, local)
+
+    assert stat.S_IMODE((local / "run.sh").stat().st_mode) == 0o755
+    assert stat.S_IMODE((local / "data.txt").stat().st_mode) == 0o644
+
+
+async def test_download_copies_a_linked_directory_as_a_real_one(
+    login: SSHTestServer, tmp_path: Path
+) -> None:
+    root = on_host(login, {"apps/placeholder": ""})
+    elsewhere = login.local_path("/home/alice/elsewhere/lab")
+    elsewhere.mkdir(parents=True)
+    (elsewhere / "ezhpcy-apps.toml").write_text("lab", encoding="utf-8")
+    link(root / "apps" / "lab", elsewhere)
+    local = tmp_path / "repository"
+
+    async with api.connect(LOGIN) as host:
+        await host.download(REPOSITORY, local)
+
+    assert not (local / "apps" / "lab").is_symlink()
+    assert tree(local) == {
+        "apps": None,
+        "apps/lab": None,
+        "apps/lab/ezhpcy-apps.toml": "lab",
+        "apps/placeholder": "",
+    }
+
+
+async def test_download_skips_a_link_to_a_directory_above_it(
+    login: SSHTestServer, tmp_path: Path
+) -> None:
+    root = on_host(login, {"apps/lab/ezhpcy-apps.toml": "lab"})
+    link(root / "apps" / "lab" / "up", root / "apps")
+    link(root / "itself", root)
+    local = tmp_path / "repository"
+
+    async with api.connect(LOGIN) as host:
+        await host.download(REPOSITORY, local)
+
+    assert tree(local) == {
+        "apps": None,
+        "apps/lab": None,
+        "apps/lab/ezhpcy-apps.toml": "lab",
+    }
+
+
+async def test_download_copies_a_directory_at_every_path_fetching_it_once(
+    login: SSHTestServer, tmp_path: Path
+) -> None:
+    root = on_host(login, {"apps/b/ezhpcy-apps.toml": "b"})
+    link(root / "apps" / "a", root / "apps" / "b")
+    link(root / ".hidden", root / "apps" / "b")
+    reads = recording_reads(
+        login,
+        ".hidden/ezhpcy-apps.toml",
+        "apps/a/ezhpcy-apps.toml",
+        "apps/b/ezhpcy-apps.toml",
+    )
+    local = tmp_path / "repository"
+
+    async with api.connect(LOGIN) as host:
+        await host.download(REPOSITORY, local)
+
+    assert len(reads) == 1
+    assert tree(local) == {
+        ".hidden": None,
+        ".hidden/ezhpcy-apps.toml": "b",
+        "apps": None,
+        "apps/a": None,
+        "apps/a/ezhpcy-apps.toml": "b",
+        "apps/b": None,
+        "apps/b/ezhpcy-apps.toml": "b",
+    }
+
+
+async def test_download_skips_a_broken_link(
+    login: SSHTestServer, tmp_path: Path
+) -> None:
+    root = on_host(login, {"kept.txt": "kept"})
+    link(root / "broken", root / "nowhere")
+    local = tmp_path / "repository"
+
+    async with api.connect(LOGIN) as host:
+        await host.download(REPOSITORY, local)
+
+    assert tree(local) == {"kept.txt": "kept"}
+
+
+async def test_download_raises_ssh_error_for_a_missing_directory(
+    login: SSHTestServer, tmp_path: Path
+) -> None:
+    async with api.connect(LOGIN) as host:
+        with pytest.raises(api.SSHError):
+            await host.download(PurePosixPath("/home/alice/missing"), tmp_path / "copy")
+
+    assert not (tmp_path / "copy").exists()
 
 
 # Processes

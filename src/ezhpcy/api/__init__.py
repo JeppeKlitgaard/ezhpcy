@@ -24,7 +24,7 @@ login node, and a host of its own once it runs (`Job.host`).
                 await job.wait()  # until the job ends, or `job.stop()`
 
 Every host has the same operations: commands (`Host.run`), files (`Host.put`,
-`Host.get`, `Host.list_directory`), processes started detached (`Host.start`), forwarded ports
+`Host.get`, `Host.download`, `Host.list_directory`), processes started detached (`Host.start`), forwarded ports
 (`Host.forward`, `Host.reverse_forward`), apps (`Host.run_app`), and jobs
 (`Host.job`). Processes, ports and apps are attached to the host they were made
 on, and closed, newest first, when its connection closes, unless they were
@@ -92,6 +92,7 @@ lazy from pydantic import SecretStr
 
 from ezhpcy.ssh_errors import translating_ssh_errors
 lazy from ezhpcy import (
+    download as _download,
     forward as _forward,
     login as _login,
     process as _process,
@@ -433,6 +434,34 @@ class Host:
         """
         async with self._host.sftp() as sftp:
             await sftp.get(remote, local)
+
+    @translating_ssh_errors
+    async def download(self, remote: PurePosixPath, local: Path) -> None:
+        """
+        Make the directory `local` here a copy of the directory `remote` on the
+        host, over SFTP: what is new or changed is fetched, by size and
+        modification time, and whatever is in `local` but not on the host is
+        deleted. Everything is copied, dot-directories included. `local` is
+        replaced whole once the new copy is complete, and left as it was if the
+        download fails or is cancelled; killed while replacing it, `local` may be
+        missing, and the next download fetches everything.
+
+        Symbolic links are followed, and become real files and directories here.
+        A directory reached by several paths is copied at each, its files fetched
+        once; a link to a directory above it is skipped, so it can't loop, and so
+        is what is neither a file nor a directory, a broken link among them.
+
+        Files are written readable and writable by the user, and executable if
+        they are on the host; other bits aren't copied. On Windows, nothing is
+        executable, so the assets of an app with executable files hash otherwise
+        than on Linux, and don't find a shared install made from Linux.
+
+        Raises `SSHError` if `remote` or anything under it can't be read, and
+        `OSError` if `local` can't be written. Two downloads into one `local` at
+        once aren't supported.
+        """
+        async with self._host.sftp() as sftp:
+            await _download.download(sftp, remote, local)
 
     @translating_ssh_errors
     async def list_directory(self, path: PurePosixPath) -> tuple[DirectoryEntry, ...]:

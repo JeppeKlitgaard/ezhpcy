@@ -35,9 +35,10 @@ closes it.
 
 Apps, such as JupyterLab, are described by manifests (`Manifest`), which a
 configuration loads (`Config.load(manifests=…)`, `Config.app`), beside the
-ones EzHPCy ships unless `load_builtin_manifests` is false. An app runs as a
-process on its host, through EzHPCy's own Pixi, in an environment installed
-there, and is forwarded to a loopback port here:
+ones EzHPCy ships unless `load_builtin_manifests` is false; `find_manifests`
+finds those kept in folders of folders. An app runs as a process on its host,
+through EzHPCy's own Pixi, in an environment installed there, and is forwarded
+to a loopback port here:
 
     config = api.Config.load()
     lab = await job.host.run_app(config.app("lab"))
@@ -115,6 +116,7 @@ lazy from ezhpcy.app.manifest import (
     Parameter,
     PathParameter,
     StringParameter,
+    find_manifests,
 )
 lazy from ezhpcy.app.run import AppState, AppStatus, LinkStatus, RunningApp
 lazy from ezhpcy.config import Config, Profile
@@ -276,6 +278,7 @@ __all__ = [
     "Unavailable",
     "connect",
     "diagnose",
+    "find_manifests",
     "missing_credentials",
     "reserve_alias",
     "select_ports",

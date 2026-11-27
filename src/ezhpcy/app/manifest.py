@@ -18,7 +18,8 @@ Names follow the rules for a Python package's name, and are compared normalised
 (`My_App` is `my-app`); versions are `v` and a PEP 440 version, compared as
 such (`v1.2` is `v1.2.0`). `collect_apps` gathers several manifests' apps, and
 `choose_app` picks one by name and version, the newest by default.
-`builtin_manifests` are the manifests EzHPCy ships.
+`find_manifests` finds the manifests under a directory, and `builtin_manifests`
+are the manifests EzHPCy ships.
 
 An app may have actions (`Action`), `[ezhpcy.app.<name>."<version>".action.<name>]`:
 commands run on its host, in its environment, while it runs, by hand or by a
@@ -1465,13 +1466,51 @@ def collect_apps(
     return apps
 
 
+def find_manifests(root: Path) -> list[Path]:
+    """
+    The directories under `root`, `root` included, that hold a manifest, sorted,
+    as found under `root` rather than resolved. A directory holding one is an
+    app's, assets and all, and isn't looked in further; nor are dot-directories
+    (`.pixi`, `.git`). Symbolic links are followed, but a directory reached by
+    two paths is looked in once, at the first in sorted order, so a link to an
+    ancestor doesn't loop. A broken link, or a directory that can't be read, is
+    skipped.
+    """
+    logger = get_logger(__name__)
+
+    def unreadable(error: OSError) -> None:
+        logger.debug(
+            t"Could not look for manifests in {error.filename:path}: {error!r}"
+        )
+
+    walked: set[Path] = set()
+    found: list[Path] = []
+    for directory, dirnames, filenames in root.walk(
+        on_error=unreadable, follow_symlinks=True
+    ):
+        resolved = directory.resolve()
+        if resolved in walked:
+            dirnames.clear()
+            continue
+        walked.add(resolved)
+        for name in filenames:
+            path = directory / name
+            if name != MANIFEST_FILE_NAME and path.is_symlink() and not path.exists():
+                logger.debug(t"Skipped a broken link: link={path:path}")
+        if MANIFEST_FILE_NAME in filenames:
+            found.append(directory)
+            dirnames.clear()
+            continue
+        dirnames[:] = sorted(name for name in dirnames if not name.startswith("."))
+    return sorted(found)
+
+
 def builtin_manifests() -> list[Path]:
     """
     The manifests EzHPCy ships: every directory under `ezhpcy/app/builtins/`
-    holding one, at any depth, such as one directory per version of an app.
+    holding one, such as one directory per version of an app.
     """
-    builtins = Path(__file__).parent / "builtins"
-    return sorted(path.parent for path in builtins.rglob(MANIFEST_FILE_NAME))
+    return find_manifests(Path(__file__).parent / "builtins")
 
 
 def choose_app(

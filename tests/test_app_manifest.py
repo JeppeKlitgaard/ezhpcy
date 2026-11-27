@@ -17,6 +17,7 @@ import ezhpcy.app
 from ezhpcy import api
 from ezhpcy.app.manifest import (
     FIELD_PLACEHOLDERS,
+    MANIFEST_FILE_NAME,
     App,
     AssetFile,
     Link,
@@ -24,6 +25,7 @@ from ezhpcy.app.manifest import (
     assets_key,
     builtin_manifests,
     environment_key,
+    find_manifests,
     placeholders,
     render,
     render_command,
@@ -157,6 +159,104 @@ def test_the_builtins_keys_hash_lf_text(path: Path) -> None:
         if b"\0" not in content[:8000] and b"\r\n" in content:
             crlf.append(file.relative_to(BUILTINS).as_posix())
     assert not crlf, "check out again with the .gitattributes' line endings"
+
+
+def test_the_builtins_are_found_as_before() -> None:
+    assert BUILTIN_MANIFESTS == sorted(
+        path.parent for path in BUILTINS.rglob(MANIFEST_FILE_NAME)
+    )
+
+
+def app_directories(root: Path, *relatives: str) -> None:
+    for relative in relatives:
+        (root / relative).mkdir(parents=True, exist_ok=True)
+        (root / relative / MANIFEST_FILE_NAME).write_text("", encoding="utf-8")
+
+
+def link(path: Path, target: Path) -> None:
+    try:
+        path.symlink_to(target, target_is_directory=True)
+    except OSError:
+        pytest.skip("this account can't create symbolic links")
+
+
+def test_manifests_are_found_at_any_depth(tmp_path: Path) -> None:
+    app_directories(tmp_path, "b", "a/one", "a/deep/er/two", "c/d/three")
+    (tmp_path / "empty" / "dir").mkdir(parents=True)
+
+    assert find_manifests(tmp_path) == [
+        tmp_path / "a" / "deep" / "er" / "two",
+        tmp_path / "a" / "one",
+        tmp_path / "b",
+        tmp_path / "c" / "d" / "three",
+    ]
+
+
+def test_an_apps_directory_is_not_looked_in(tmp_path: Path) -> None:
+    app_directories(tmp_path, "app", "app/assets/nested")
+
+    assert find_manifests(tmp_path) == [tmp_path / "app"]
+
+
+def test_dot_directories_are_not_looked_in(tmp_path: Path) -> None:
+    app_directories(tmp_path, ".pixi/envs/default/app", ".git/app", "app/v1")
+
+    assert find_manifests(tmp_path) == [tmp_path / "app" / "v1"]
+
+
+def test_an_empty_root_has_no_manifests(tmp_path: Path) -> None:
+    assert find_manifests(tmp_path) == []
+    assert find_manifests(tmp_path / "missing") == []
+
+
+def test_the_root_may_be_an_apps_directory(tmp_path: Path) -> None:
+    app_directories(tmp_path, ".", "nested")
+
+    assert find_manifests(tmp_path) == [tmp_path]
+
+
+def test_a_linked_apps_directory_is_found(tmp_path: Path) -> None:
+    app_directories(tmp_path, "elsewhere/app")
+    (tmp_path / "root").mkdir()
+    link(tmp_path / "root" / "app", tmp_path / "elsewhere" / "app")
+
+    assert find_manifests(tmp_path / "root") == [tmp_path / "root" / "app"]
+
+
+def test_a_link_to_an_ancestor_does_not_loop(tmp_path: Path) -> None:
+    app_directories(tmp_path, "apps/app")
+    link(tmp_path / "apps" / "up", tmp_path)
+
+    assert find_manifests(tmp_path) == [tmp_path / "apps" / "app"]
+
+
+def test_a_directory_reached_twice_is_found_at_its_first_path(tmp_path: Path) -> None:
+    # "a/x" sorts before "b", though it is deeper.
+    app_directories(tmp_path, "b")
+    (tmp_path / "a").mkdir()
+    link(tmp_path / "a" / "x", tmp_path / "b")
+    link(tmp_path / "c", tmp_path / "b")
+
+    assert find_manifests(tmp_path) == [tmp_path / "a" / "x"]
+
+
+def test_a_broken_link_is_skipped(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    app_directories(tmp_path, "app")
+    link(tmp_path / "broken", tmp_path / "nowhere")
+    caplog.set_level("DEBUG", logger="ezhpcy.app.manifest")
+
+    assert find_manifests(tmp_path) == [tmp_path / "app"]
+    assert "Skipped a broken link" in caplog.text
+
+
+def test_a_broken_link_for_a_manifest_still_counts(tmp_path: Path) -> None:
+    # So that loading it reports the link, rather than the app going missing.
+    (tmp_path / "app").mkdir()
+    link(tmp_path / "app" / MANIFEST_FILE_NAME, tmp_path / "nowhere")
+
+    assert find_manifests(tmp_path) == [tmp_path / "app"]
 
 
 def test_the_notebook_apps_share_one_environment() -> None:

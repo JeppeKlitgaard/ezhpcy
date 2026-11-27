@@ -118,7 +118,9 @@ def test_with_manifests_is_a_copy_with_their_apps(tmp_path: Path) -> None:
     manifest = write_project(tmp_path, MINIMAL_APP)
     config = api.Config.from_mapping({})
 
-    with_apps = config.with_manifests([manifest], load_builtin_manifests=False)
+    with_apps = config.with_manifests(
+        [api.Manifest.load(manifest)], load_builtin_manifests=False
+    )
 
     assert list(with_apps.available_apps) == ["lab"]
     assert str(with_apps.app("lab")) == "lab v1.0"

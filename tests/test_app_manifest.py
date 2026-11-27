@@ -559,13 +559,12 @@ def test_several_versions_of_one_app_load(tmp_path: Path) -> None:
 # Choosing from a configuration's manifests
 
 
-def config_with(*manifests: Path, defaults: tuple[Path, ...] = ()) -> api.Config:
+def config_with(*manifests: Path) -> api.Config:
     config_file = manifests[0].parent.parent / "ezhpcy.toml"
     config_file.write_text("", encoding="utf-8")
     return api.Config.load(
         config_file,
-        manifests=list(manifests),
-        default_manifests=list(defaults),
+        manifests=[Manifest.load(path) for path in manifests],
         load_builtin_manifests=False,
     )
 
@@ -649,10 +648,17 @@ def test_a_users_manifest_replaces_a_builtin_version(tmp_path: Path) -> None:
     config_file = tmp_path / "ezhpcy.toml"
     config_file.write_text("", encoding="utf-8")
 
-    config = api.Config.load(config_file, manifests=[user])
+    config = api.Config.load(config_file, manifests=[Manifest.load(user)])
 
     assert config.app("lab").environment.pixi.parent == tmp_path / "user"
     assert config.app("tensorboard").environment.pixi.parent == BUILTINS / "notebooks"
+    [clash] = config.manifest_clashes
+    assert clash.kept_from.path == user
+    assert clash.set_aside_from.path == BUILTINS / "notebooks" / MANIFEST_FILE_NAME
+
+
+def test_the_builtins_have_no_clashes() -> None:
+    assert api.Config.from_mapping({}).with_manifests().manifest_clashes == ()
 
 
 def test_the_apps_of_several_manifests_are_merged(tmp_path: Path) -> None:
@@ -668,45 +674,65 @@ def test_the_apps_of_several_manifests_are_merged(tmp_path: Path) -> None:
         "board": ["v0.1"],
     }
     assert config.app("lab").environment.pixi.parent == tmp_path / "b"
+    assert config.manifest_clashes == ()
 
 
-def test_one_version_in_two_manifests_is_an_error_naming_both(tmp_path: Path) -> None:
+def test_the_first_manifest_with_a_version_wins(tmp_path: Path) -> None:
     first = write_project(tmp_path / "a", versions(("lab", "v1.0")))
-    second = write_project(tmp_path / "b", versions(("lab", "v1.0.0")))
+    other = write_project(tmp_path / "b", versions(("lab", "v0.9")))
+    third = write_project(tmp_path / "c", versions(("lab", "v1.0")))
 
-    with pytest.raises(api.ManifestError) as error:
-        config_with(first, second)
+    config = config_with(first, other, third)
 
-    message = str(error.value)
-    assert "lab v1.0 of" in message
-    assert "lab v1.0.0 of" in message
-    assert str(first) in message
-    assert str(second) in message
-
-
-def test_a_users_manifest_replaces_a_default_version(tmp_path: Path) -> None:
-    default = write_project(tmp_path / "default", versions(("lab", "v1.0")))
-    user = write_project(tmp_path / "user", versions(("lab", "v1.0")))
-    other_default = write_project(tmp_path / "other", versions(("lab", "v0.9")))
-
-    config = config_with(user, defaults=(default, other_default))
-
-    assert config.app("lab", "v1.0").environment.pixi.parent == tmp_path / "user"
-    assert config.app("lab", "v0.9").environment.pixi.parent == tmp_path / "other"
+    assert config.app("lab", "v1.0").environment.pixi.parent == tmp_path / "a"
+    assert config.app("lab", "v0.9").environment.pixi.parent == tmp_path / "b"
+    [clash] = config.manifest_clashes
+    assert (clash.kept_from.path, clash.set_aside_from.path) == (first, third)
+    assert clash.set_aside.environment.pixi.parent == tmp_path / "c"
 
 
-def test_one_version_in_two_defaults_is_an_error(tmp_path: Path) -> None:
-    first = write_project(tmp_path / "a", versions(("lab", "v1.0")))
-    second = write_project(tmp_path / "b", versions(("lab", "v1.0")))
-    user = write_project(tmp_path / "user", versions(("board", "v1.0")))
+def test_each_copy_of_a_version_clashes_with_the_first(tmp_path: Path) -> None:
+    paths = [
+        write_project(tmp_path / name, versions(("lab", "v1.0"))) for name in "abc"
+    ]
 
-    with pytest.raises(api.ManifestError, match="are one version of one app"):
-        config_with(user, defaults=(first, second))
+    clashes = config_with(*paths).manifest_clashes
+
+    assert [(c.kept_from.path, c.set_aside_from.path) for c in clashes] == [
+        (paths[0], paths[1]),
+        (paths[0], paths[2]),
+    ]
 
 
-def test_an_invalid_manifest_fails_loading_the_configuration(tmp_path: Path) -> None:
-    with pytest.raises(api.ManifestError, match="invalid manifest"):
-        config_with(write_project(tmp_path / "a", MINIMAL_APP + "rnu = 1\n"))
+def test_a_clash_keeps_both_spellings_of_its_version(tmp_path: Path) -> None:
+    config = config_with(
+        write_project(tmp_path / "a", versions(("lab", "v1.2"))),
+        write_project(tmp_path / "b", versions(("lab", "v1.2.0"))),
+    )
+
+    [clash] = config.manifest_clashes
+    assert (clash.kept.version, clash.set_aside.version) == ("v1.2", "v1.2.0")
+    assert list(config.available_apps["lab"]) == ["v1.2"]
+
+
+def test_a_clash_holds_the_manifests_as_given(tmp_path: Path) -> None:
+    # A linked app directory's manifest has the path of where it is linked from,
+    # so only the `Manifest` tells which of the given ones a clash came from.
+    write_project(tmp_path / "elsewhere" / "lab", versions(("lab", "v1.0")))
+    (tmp_path / "linked").mkdir()
+    link(tmp_path / "linked" / "lab", tmp_path / "elsewhere" / "lab")
+    linked = Manifest.load(tmp_path / "linked" / "lab")
+    own = Manifest.load(write_project(tmp_path / "own", versions(("lab", "v1.0"))))
+
+    [clash] = (
+        api.Config.from_mapping({})
+        .with_manifests([linked, own], load_builtin_manifests=False)
+        .manifest_clashes
+    )
+
+    assert clash.kept_from is linked
+    assert clash.set_aside_from is own
+    assert linked.path.is_relative_to(tmp_path / "elsewhere")
 
 
 # The Pixi files

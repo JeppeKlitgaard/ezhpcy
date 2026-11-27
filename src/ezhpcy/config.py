@@ -33,6 +33,7 @@ lazy from ezhpcy.app.manifest import (
     App,
     Link,
     Manifest,
+    ManifestClash,
     builtin_manifests,
     choose_app,
     collect_apps,
@@ -401,6 +402,7 @@ class Config(BaseSettings, _ConfigValues):
 
     model_config = SettingsConfigDict(env_prefix="EZHPCY_")
     _apps: dict[str, dict[str, App | Link]] = PrivateAttr(default_factory=dict)
+    _manifest_clashes: tuple[ManifestClash, ...] = PrivateAttr(default=())
 
     @classmethod
     def settings_customise_sources(
@@ -475,50 +477,41 @@ class Config(BaseSettings, _ConfigValues):
         cls,
         path: Path | None = None,
         *,
-        manifests: Sequence[Path] = (),
-        default_manifests: Sequence[Path] = (),
+        manifests: Sequence[Manifest] = (),
         load_builtin_manifests: bool | None = None,
     ) -> Self:
         """
         Read the configuration file `path`, by default the one the CLI reads
-        (`default_path`), and the apps of `manifests` (`Manifest.load`). Unlike
+        (`default_path`), with the apps of `manifests` (`Manifest.load` each)
+        and of the ones EzHPCy ships, as `with_manifests` takes them. Unlike
         `Config()`, the environment (`EZHPCY_*`) is not read. A value: loading
-        one changes nothing global, and several may be used at once.
-
-        `default_manifests` are a front end's own, and with
-        `load_builtin_manifests` (by default the file's
-        `apps.load_builtin_manifests`) so are the ones EzHPCy ships: a version
-        of an app in one of `manifests` replaces the same version there. Raises
-        `ConfigError`, and `ManifestError` for an invalid manifest, or the same
-        version of an app in two of `manifests` (or two of the defaults).
+        one changes nothing global, and several may be used at once. Raises
+        `ConfigError`, and `ManifestError` for an invalid built-in manifest.
         """
         return cls.from_file(path or cls.default_path()).with_manifests(
-            manifests,
-            default_manifests=default_manifests,
-            load_builtin_manifests=load_builtin_manifests,
+            manifests, load_builtin_manifests=load_builtin_manifests
         )
 
     def with_manifests(
         self,
-        manifests: Sequence[Path] = (),
+        manifests: Sequence[Manifest] = (),
         *,
-        default_manifests: Sequence[Path] = (),
         load_builtin_manifests: bool | None = None,
     ) -> Self:
         """
-        A copy with the apps of `manifests` and the defaults instead of its own,
-        as `load` reads them. Raises `ManifestError`, as `load` does.
+        A copy with the apps of `manifests` instead of its own, in priority
+        order, followed by the ones EzHPCy ships if `load_builtin_manifests`
+        (by default the file's `apps.load_builtin_manifests`). Of one version
+        of an app in several, the first is kept, and the others are
+        `manifest_clashes`. Raises `ManifestError` for an invalid built-in
+        manifest only.
         """
         if load_builtin_manifests is None:
             load_builtin_manifests = self.apps.load_builtin_manifests
-        defaults = [
-            *(builtin_manifests() if load_builtin_manifests else ()),
-            *default_manifests,
-        ]
+        builtins = builtin_manifests() if load_builtin_manifests else ()
         loaded = self.model_copy()
-        loaded._apps = collect_apps(
-            [Manifest.load(manifest) for manifest in manifests],
-            [Manifest.load(manifest) for manifest in defaults],
+        loaded._apps, loaded._manifest_clashes = collect_apps(
+            [*manifests, *(Manifest.load(path) for path in builtins)]
         )
         return loaded
 
@@ -529,6 +522,14 @@ class Config(BaseSettings, _ConfigValues):
         (`My_App` is `my-app`), then by version as the manifest spells it.
         """
         return self._apps
+
+    @property
+    def manifest_clashes(self) -> tuple[ManifestClash, ...]:
+        """
+        The versions of apps it was loaded with more than once, each copy but
+        the first a clash with the first.
+        """
+        return self._manifest_clashes
 
     def app(self, name: str, version: str | None = None) -> App | Link:
         """

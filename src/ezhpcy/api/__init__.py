@@ -33,12 +33,13 @@ closes its host, and with it what is attached there, withdraws its Host blocks,
 cancels the job unless it ended, and cleans up; leaving a connection's block
 closes it.
 
-Apps, such as JupyterLab, are described by manifests (`Manifest`), which a
-configuration loads (`Config.load(manifests=…)`, `Config.app`), beside the
-ones EzHPCy ships unless `load_builtin_manifests` is false; `find_manifests`
-finds those kept in folders of folders. An app runs as a process on its host,
-through EzHPCy's own Pixi, in an environment installed there, and is forwarded
-to a loopback port here:
+Apps, such as JupyterLab, are described by manifests (`Manifest.load`), which a
+configuration takes in priority order (`Config.load(manifests=…)`,
+`Config.app`), before the ones EzHPCy ships unless `load_builtin_manifests` is
+false; of one version of an app in several, the first is kept
+(`ManifestClash`). `find_manifests` finds those kept in folders of folders. An
+app runs as a process on its host, through EzHPCy's own Pixi, in an environment
+installed there, and is forwarded to a loopback port here:
 
     config = api.Config.load()
     lab = await job.host.run_app(config.app("lab"))
@@ -112,6 +113,7 @@ lazy from ezhpcy.app.manifest import (
     IntegerParameter,
     Link,
     Manifest,
+    ManifestClash,
     NumberParameter,
     Parameter,
     PathParameter,
@@ -244,6 +246,7 @@ __all__ = [
     "Login",
     "LoginStage",
     "Manifest",
+    "ManifestClash",
     "ManifestError",
     "MessageError",
     "MissingCredentials",

@@ -484,6 +484,23 @@ def test_an_invalid_builtin_manifest_is_not_blamed_on_the_option(
     assert captured == {}
 
 
+def test_one_version_in_two_manifests_is_blamed_on_the_option(
+    captured: dict, tmp_path: Path
+) -> None:
+    first = write_project(tmp_path / "a", MINIMAL_APP)
+    second = write_project(tmp_path / "b", MINIMAL_APP)
+
+    result = invoke(
+        ["tunnel", "base", "--manifest", str(first), "--manifest", str(second)]
+        + ["--app", "lab"]
+    )
+
+    assert result.exit_code == 2, result
+    assert "Invalid value for --manifest." in result.stderr
+    assert "are one version of one app" in result.stderr
+    assert captured == {}
+
+
 def test_a_key_runs_an_action_while_the_tunnel_serves(
     apps: TunnelApps, tmp_path: Path
 ) -> None:

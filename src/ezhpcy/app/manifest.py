@@ -16,8 +16,9 @@ checks.
 
 Names follow the rules for a Python package's name, and are compared normalised
 (`My_App` is `my-app`); versions are `v` and a PEP 440 version, compared as
-such (`v1.2` is `v1.2.0`). `collect_apps` gathers several manifests' apps, and
-`choose_app` picks one by name and version, the newest by default.
+such (`v1.2` is `v1.2.0`). `collect_apps` gathers several manifests' apps, the
+first copy of a version winning (`ManifestClash`), and `choose_app` picks one by
+name and version, the newest by default.
 `find_manifests` finds the manifests under a directory, and `builtin_manifests`
 are the manifests EzHPCy ships.
 
@@ -1429,41 +1430,47 @@ def _invalid(path: Path, problems: list[tuple[str, str]]) -> ManifestError:
     return ManifestError(message, path=path)
 
 
+@dataclass(frozen=True, slots=True)
+class ManifestClash:
+    """
+    One version of one app in two manifests: the copy kept, from the manifest
+    that came first, and the copy set aside. The two may spell the version
+    differently (`v1.2`, `v1.2.0`).
+    """
+
+    kept: Entry
+    set_aside: Entry
+    kept_from: Manifest
+    set_aside_from: Manifest
+
+
 def collect_apps(
-    manifests: Sequence[Manifest], defaults: Sequence[Manifest] = ()
-) -> dict[str, dict[str, Entry]]:
+    manifests: Sequence[Manifest],
+) -> tuple[dict[str, dict[str, Entry]], tuple[ManifestClash, ...]]:
     """
-    The apps of `manifests` and of a front end's `defaults`, by normalised
-    name, then by version as written. A version of an app in one of `manifests`
-    replaces the same version in `defaults`. Raises `ManifestError` for the same
-    version of an app in two of `manifests`, or in two of `defaults`.
+    The apps of `manifests`, in priority order, by normalised id, then by
+    version as written; and the clashes settled. Of one version of an app in
+    several manifests, the first is kept, and each other is a clash with it.
     """
-    found: dict[tuple[str, Version], tuple[Entry, Manifest, bool]] = {}
-    for manifest, default in [
-        *((manifest, True) for manifest in defaults),
-        *((manifest, False) for manifest in manifests),
-    ]:
+    found: dict[tuple[str, Version], tuple[Entry, Manifest]] = {}
+    clashes: list[ManifestClash] = []
+    for manifest in manifests:
         for name, versions in manifest.apps.items():
             for version, app in versions.items():
                 key = (name, parse_version(version))
                 if key in found:
-                    other, source, other_default = found[key]
-                    if other_default == default:
-                        raise ManifestError(
-                            t"{str(other):name} of {source.path:path} and "
-                            t"{str(app):name} of {manifest.path:path} are one "
-                            t"version of one app",
-                            path=manifest.path,
-                        )
+                    kept, source = found[key]
+                    clashes.append(ManifestClash(kept, app, source, manifest))
                     get_logger(__name__).debug(
-                        t"App {str(app):name} of {manifest.path:path} replaces the "
-                        t"default one of {source.path:path}."
+                        t"App {str(app):name} of {manifest.path:path} is set "
+                        t"aside for {str(kept):name} of {source.path:path}."
                     )
-                found[key] = (app, manifest, default)
+                else:
+                    found[key] = (app, manifest)
     apps: dict[str, dict[str, Entry]] = {}
-    for (name, _version), (app, _manifest, _default) in found.items():
+    for (name, _version), (app, _manifest) in found.items():
         apps.setdefault(name, {})[app.version] = app
-    return apps
+    return apps, tuple(clashes)
 
 
 def find_manifests(root: Path) -> list[Path]:

@@ -70,7 +70,7 @@ def config_of(directory: Path, manifest: str = LAB) -> api.Config:
     manifest_path = write_project(directory / "project", manifest)
     config_file = directory / "ezhpcy.toml"
     config_file.write_text("", encoding="utf-8")
-    return api.Config.load(config_file, manifests=[manifest_path])
+    return api.Config.load(config_file, manifests=[api.Manifest.load(manifest_path)])
 
 
 def fetch(url: str) -> bytes:

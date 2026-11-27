@@ -18,6 +18,7 @@ lazy from ezhpcy.api import (
     JobConfig,
     Link,
     Login,
+    Manifest,
     ManifestError,
     MissingSetting,
     SubmissionCommandError,
@@ -213,16 +214,25 @@ def chosen_apps(
     or with `every`, every version of every one.
     """
     try:
-        loaded = config.with_manifests(manifests, load_builtin_manifests=load_builtins)
+        given = [Manifest.load(path) for path in manifests]
     except ManifestError as error:
-        # A manifest given as its directory or as its file; a built-in one isn't
-        # the option's fault.
-        given = error.path is not None and bool(
-            {error.path, error.path.parent} & {path.resolve() for path in manifests}
-        )
         raise CliUsageError(
-            t"{sentence(error.message)}", param_hint="--manifest" if given else None
+            t"{sentence(error.message)}", param_hint="--manifest"
         ) from error
+    try:
+        loaded = config.with_manifests(given, load_builtin_manifests=load_builtins)
+    except ManifestError as error:
+        raise CliUsageError(t"{sentence(error.message)}") from error
+    for clash in loaded.manifest_clashes:
+        # The built-in manifests come last, so a clash with a given one is
+        # between two given ones.
+        if any(clash.set_aside_from is manifest for manifest in given):
+            raise CliUsageError(
+                t"{str(clash.kept):name} of {clash.kept_from.path:path} and "
+                t"{str(clash.set_aside):name} of {clash.set_aside_from.path:path} "
+                t"are one version of one app.",
+                param_hint="--manifest",
+            )
     if every:
         return [
             app

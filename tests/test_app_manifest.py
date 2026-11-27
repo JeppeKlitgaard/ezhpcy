@@ -136,6 +136,29 @@ def test_the_builtins_load(path: Path) -> None:
             assert app.environment.lock.is_file()
 
 
+@pytest.mark.parametrize(
+    "path", BUILTIN_MANIFESTS, ids=lambda path: path.relative_to(BUILTINS).as_posix()
+)
+def test_the_builtins_keys_hash_lf_text(path: Path) -> None:
+    # A CRLF checkout would give a Windows client keys of its own, which find no
+    # install made from Linux. Text is told from binary as Git's `text=auto` does.
+    hashed: set[Path] = set()
+    for by_version in Manifest.load(path).apps.values():
+        for app in by_version.values():
+            if isinstance(app, Link):
+                continue
+            hashed |= {app.environment.pixi, app.environment.lock}
+            if app.assets is not None:
+                hashed |= {file.path for file in app.assets.files}
+
+    crlf = []
+    for file in sorted(hashed):
+        content = file.read_bytes()
+        if b"\0" not in content[:8000] and b"\r\n" in content:
+            crlf.append(file.relative_to(BUILTINS).as_posix())
+    assert not crlf, "check out again with the .gitattributes' line endings"
+
+
 def test_the_notebook_apps_share_one_environment() -> None:
     manifest = Manifest.load(BUILTINS / "notebooks")
 
